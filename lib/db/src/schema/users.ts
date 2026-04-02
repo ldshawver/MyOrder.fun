@@ -22,6 +22,7 @@ export const usersTable = pgTable("users", {
   mfaSecret: text("mfa_secret"),
   mfaBackupCodes: text("mfa_backup_codes"),
   isActive: boolean("is_active").notNull().default(true),
+  isDefaultTech: boolean("is_default_tech").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

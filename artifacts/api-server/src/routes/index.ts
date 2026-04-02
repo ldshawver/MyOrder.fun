@@ -10,6 +10,7 @@ import notificationsRouter from "./notifications";
 import adminRouter from "./admin";
 import aiRouter from "./ai";
 import paymentsRouter from "./payments";
+import shiftsRouter from "./shifts";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use(notificationsRouter);
 router.use(adminRouter);
 router.use(aiRouter);
 router.use(paymentsRouter);
+router.use(shiftsRouter);
 
 export default router;

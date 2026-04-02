@@ -8,6 +8,7 @@ import {
   catalogItemsTable,
   usersTable,
   notificationsTable,
+  labTechShiftsTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -131,6 +132,28 @@ router.post("/orders", async (req, res): Promise<void> => {
   const tax = subtotal * 0.08; // 8% tax
   const total = subtotal + tax;
 
+  // Assign to active lab tech shift (or default tech if no shift active)
+  const [activeShift] = await db
+    .select()
+    .from(labTechShiftsTable)
+    .where(and(eq(labTechShiftsTable.tenantId, actor.tenantId), eq(labTechShiftsTable.status, "active")))
+    .orderBy(desc(labTechShiftsTable.clockedInAt))
+    .limit(1);
+
+  let assignedTechId: number | null = null;
+  let assignedShiftId: number | null = null;
+  if (activeShift) {
+    assignedTechId = activeShift.techId;
+    assignedShiftId = activeShift.id;
+  } else {
+    const [defaultTech] = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(eq(usersTable.tenantId, actor.tenantId), eq(usersTable.isDefaultTech, true)))
+      .limit(1);
+    if (defaultTech) assignedTechId = defaultTech.id;
+  }
+
   const [order] = await db.insert(ordersTable).values({
     tenantId: actor.tenantId,
     customerId: actor.id,
@@ -141,6 +164,8 @@ router.post("/orders", async (req, res): Promise<void> => {
     total: String(total.toFixed(2)),
     shippingAddress: body.data.shippingAddress ?? null,
     notes: body.data.notes ?? null,
+    assignedTechId,
+    assignedShiftId,
   }).returning();
 
   for (const { catalogItem: ci, quantity } of resolvedItems) {
