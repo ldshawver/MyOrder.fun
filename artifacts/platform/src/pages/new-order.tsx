@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { useCreateOrder, useListCatalogItems, useAiUpsellSuggestions } from "@workspace/api-client-react";
+import { useCreateOrder, useListCatalogItems, useAiUpsellSuggestions, useGetCurrentUser } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles } from "lucide-react";
+import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 export default function NewOrder() {
   const [, setLocation] = useLocation();
@@ -14,6 +15,11 @@ export default function NewOrder() {
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const prevCartRef = useRef("");
+
+  const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+  const { notifyOrderPlaced } = usePushNotifications({
+    role: (user?.role || "customer") as "customer" | "staff" | "tenant_admin" | "global_admin",
+  });
 
   const { data: catalog } = useListCatalogItems(
     { search, limit: 10, available: true },
@@ -68,6 +74,7 @@ export default function NewOrder() {
       },
       {
         onSuccess: (order) => {
+          notifyOrderPlaced(order.id, user?.firstName || undefined);
           setLocation(`/orders/${order.id}`);
         }
       }

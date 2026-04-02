@@ -96,7 +96,12 @@ function HomeRedirect() {
 function AuthenticatedApp() {
   const { data: user, isLoading } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   
-  if (isLoading) return <div className="h-screen w-full flex items-center justify-center bg-background text-foreground">Loading identity...</div>;
+  if (isLoading) return (
+    <div className="h-screen w-full flex flex-col items-center justify-center bg-background text-foreground gap-4">
+      <img src="/alavont-logo.png" alt="Alavont" className="w-16 h-16 object-contain animate-pulse" style={{ filter: "drop-shadow(0 0 24px hsl(214 90% 55% / 0.5))" }} />
+      <div className="text-sm text-muted-foreground font-medium tracking-wider">Loading...</div>
+    </div>
+  );
   if (!user) return <Redirect to="/sign-in" />;
 
   return (
