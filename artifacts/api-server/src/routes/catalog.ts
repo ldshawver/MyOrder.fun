@@ -47,15 +47,12 @@ router.get("/catalog", async (req, res): Promise<void> => {
     return;
   }
 
-  if (!actor.tenantId && actor.role !== "global_admin") {
-    res.status(403).json({ error: "No tenant associated with account" });
-    return;
-  }
-
+  // Any authenticated user can browse the catalog.
+  // Scoped to their tenant if they have one, otherwise show all available items.
   let rows = await db.select().from(catalogItemsTable)
-    .where(actor.role === "global_admin"
-      ? undefined
-      : eq(catalogItemsTable.tenantId, actor.tenantId!))
+    .where(actor.tenantId
+      ? eq(catalogItemsTable.tenantId, actor.tenantId)
+      : undefined)
     .orderBy(asc(catalogItemsTable.name));
 
   if (query.data.category) {
@@ -103,14 +100,10 @@ router.post("/catalog", requireRole("tenant_admin", "global_admin"), async (req,
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  if (!actor.tenantId && actor.role !== "global_admin") {
-    res.status(403).json({ error: "No tenant" });
-    return;
-  }
   const rows = await db
     .selectDistinct({ category: catalogItemsTable.category })
     .from(catalogItemsTable)
-    .where(actor.role === "global_admin" ? undefined : eq(catalogItemsTable.tenantId, actor.tenantId!))
+    .where(actor.tenantId ? eq(catalogItemsTable.tenantId, actor.tenantId) : undefined)
     .orderBy(asc(catalogItemsTable.category));
   res.json(ListCatalogCategoriesResponse.parse({ categories: rows.map(r => r.category) }));
 });
@@ -129,7 +122,8 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "global_admin" && row.tenantId !== actor.tenantId) {
+  // Block only if user has a tenant AND it doesn't match (not if they have no tenant)
+  if (actor.tenantId && actor.role !== "global_admin" && row.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
