@@ -10,6 +10,7 @@ import {
   notificationsTable,
   labTechShiftsTable,
 } from "@workspace/db";
+import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
   ListOrdersQueryParams,
   ListOrdersResponse,
@@ -192,6 +193,21 @@ router.post("/orders", async (req, res): Promise<void> => {
     ipAddress: req.ip,
   });
 
+  // SMS: confirm to customer + alert assigned tech (fire-and-forget)
+  try {
+    const [customer] = await db.select({ contactPhone: usersTable.contactPhone, firstName: usersTable.firstName, lastName: usersTable.lastName })
+      .from(usersTable).where(eq(usersTable.id, actor.id)).limit(1);
+    const customerPhone = customer?.contactPhone;
+    const itemCount = resolvedItems.reduce((s, r) => s + r.quantity, 0);
+    await sendSms(customerPhone, smsOrderConfirmation(order.id, total, itemCount));
+
+    if (assignedTechId) {
+      const [tech] = await db.select({ contactPhone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, assignedTechId)).limit(1);
+      const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
+      await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, total, itemCount));
+    }
+  } catch { /* non-critical */ }
+
   const orderObj = await buildOrderResponse(order);
   res.status(201).json(GetOrderResponse.parse(orderObj));
 });
@@ -303,7 +319,7 @@ router.patch("/orders/:id", requireRole("staff", "tenant_admin", "global_admin")
     .where(eq(ordersTable.id, params.data.id))
     .returning();
 
-  // Send notification to customer
+  // In-app notification + SMS to customer
   try {
     await db.insert(notificationsTable).values({
       userId: order.customerId,
@@ -313,6 +329,11 @@ router.patch("/orders/:id", requireRole("staff", "tenant_admin", "global_admin")
       resourceType: "order",
       resourceId: order.id,
     });
+  } catch { /* non-critical */ }
+  try {
+    const [customer] = await db.select({ contactPhone: usersTable.contactPhone })
+      .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
+    await sendSms(customer?.contactPhone, smsStatusUpdate(order.id, body.data.status));
   } catch { /* non-critical */ }
 
   await writeAuditLog({
@@ -403,6 +424,16 @@ router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "globa
     resourceType: "order", resourceId: String(orderId),
     metadata: { trackingUrl }, ipAddress: req.ip,
   });
+
+  // SMS customer with tracking link
+  if (trackingUrl) {
+    try {
+      const [customer] = await db.select({ contactPhone: usersTable.contactPhone })
+        .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
+      await sendSms(customer?.contactPhone, smsTrackingReady(orderId, trackingUrl));
+    } catch { /* non-critical */ }
+  }
+
   res.json({ trackingUrl: updated.trackingUrl });
 });
 

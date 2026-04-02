@@ -330,6 +330,7 @@ export interface UserProfile {
   email: string;
   firstName?: string;
   lastName?: string;
+  contactPhone?: string;
   role: UserProfileRole;
   tenantId?: number;
   tenantName?: string;

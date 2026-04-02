@@ -644,6 +644,7 @@ export const GetCurrentUserResponse = zod.object({
   email: zod.string().nullable().optional(),
   firstName: zod.string().optional(),
   lastName: zod.string().optional(),
+  contactPhone: zod.string().optional(),
   role: zod.enum(["global_admin", "tenant_admin", "staff", "customer"]),
   tenantId: zod.number().optional(),
   tenantName: zod.string().optional(),
