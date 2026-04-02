@@ -1,9 +1,12 @@
 import { Router, type IRouter } from "express";
-import { eq, count, desc } from "drizzle-orm";
+import { eq, count, desc, inArray, notInArray } from "drizzle-orm";
 import {
   db,
   tenantsTable,
   ordersTable,
+  orderItemsTable,
+  orderNotesTable,
+  notificationsTable,
   onboardingRequestsTable,
   auditLogsTable,
   usersTable,
@@ -136,6 +139,48 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
   });
 
   res.json(VerifyMfaResponse.parse({ verified: true, message: "MFA enabled successfully" }));
+});
+
+// POST /api/admin/purge — Emergency Kill Switch
+// Deletes all active (non-delivered, non-cancelled) orders and their items/notes.
+// Only callable by global_admin. Logs the action.
+router.post("/admin/purge", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const { confirm } = req.body as { confirm?: string };
+  if (confirm !== "PURGE_ALL_SESSIONS") {
+    res.status(400).json({ error: "Must send confirm: 'PURGE_ALL_SESSIONS' to proceed" });
+    return;
+  }
+
+  // Find all active orders (not delivered, not cancelled)
+  const activeOrders = await db
+    .select({ id: ordersTable.id })
+    .from(ordersTable)
+    .where(notInArray(ordersTable.status, ["delivered", "cancelled"]));
+
+  const activeIds = activeOrders.map(o => o.id);
+
+  if (activeIds.length > 0) {
+    await db.delete(orderNotesTable).where(inArray(orderNotesTable.orderId, activeIds));
+    await db.delete(orderItemsTable).where(inArray(orderItemsTable.orderId, activeIds));
+    await db.delete(ordersTable).where(inArray(ordersTable.id, activeIds));
+  }
+
+  // Clear all unread notifications
+  await db.delete(notificationsTable).where(eq(notificationsTable.isRead, false));
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "EMERGENCY_PURGE",
+    resourceType: "platform",
+    resourceId: "all",
+    metadata: { purgedOrderCount: activeIds.length },
+    ipAddress: req.ip,
+  });
+
+  res.json({ purged: true, ordersDeleted: activeIds.length });
 });
 
 export default router;

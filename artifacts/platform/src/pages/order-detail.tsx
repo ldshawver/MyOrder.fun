@@ -14,10 +14,11 @@ import {
   useGetCurrentUser
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -49,8 +50,11 @@ export default function OrderDetail() {
   const [noteContent, setNoteContent] = useState("");
   const [isInternal, setIsInternal] = useState(false);
   const [isEncrypted, setIsEncrypted] = useState(false);
+  const [trackingInput, setTrackingInput] = useState("");
+  const [trackingSaving, setTrackingSaving] = useState(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+  const { getToken } = useAuth();
   const canEditStatus = user?.role === "global_admin" || user?.role === "tenant_admin" || user?.role === "staff";
   const isCustomer = user?.role === "customer";
 
@@ -115,6 +119,28 @@ export default function OrderDetail() {
         }
       }
     );
+  };
+
+  // Sync tracking input when order loads
+  useEffect(() => {
+    if (order && (order as any).trackingUrl) {
+      setTrackingInput((order as any).trackingUrl || "");
+    }
+  }, [order]);
+
+  const handleSaveTracking = async () => {
+    setTrackingSaving(true);
+    try {
+      const token = await getToken();
+      await fetch(`/api/orders/${id}/tracking`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ trackingUrl: trackingInput.trim() || null }),
+      });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
+    } finally {
+      setTrackingSaving(false);
+    }
   };
 
   const isPendingOrProcessing = order?.status === "pending" || order?.status === "processing";
@@ -363,6 +389,73 @@ export default function OrderDetail() {
             </div>
           </div>
 
+          {/* Delivery Tracking */}
+          <div className="glass-card rounded-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-border/40 flex items-center gap-2">
+              <Truck size={14} className="text-muted-foreground" />
+              <h2 className="text-sm font-semibold uppercase tracking-wider">Delivery</h2>
+            </div>
+            <div className="px-5 py-5 space-y-4">
+              {/* Staff: paste tracking link */}
+              {canEditStatus && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
+                    Uber Courier Tracking Link
+                  </div>
+                  <Input
+                    placeholder="https://track.uber.com/..."
+                    value={trackingInput}
+                    onChange={e => setTrackingInput(e.target.value)}
+                    className="rounded-xl bg-background/50 border-border/50 text-xs h-9"
+                    data-testid="input-tracking-url"
+                  />
+                  <Button
+                    size="sm"
+                    className="w-full rounded-xl text-xs h-9 font-semibold"
+                    onClick={handleSaveTracking}
+                    disabled={trackingSaving}
+                    data-testid="button-save-tracking"
+                  >
+                    <MapPin size={13} className="mr-1.5" />
+                    {trackingSaving ? "Saving..." : "Save Tracking Link"}
+                  </Button>
+                </div>
+              )}
+
+              {/* Customer: Track My Delivery button */}
+              {isCustomer && (order as any).trackingUrl ? (
+                <a
+                  href={(order as any).trackingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex w-full items-center justify-center gap-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl transition-all shadow-lg shadow-emerald-500/20"
+                  data-testid="button-track-delivery"
+                >
+                  <Truck size={14} />
+                  Track My Delivery
+                  <ExternalLink size={12} />
+                </a>
+              ) : isCustomer ? (
+                <div className="text-xs text-muted-foreground text-center py-3">
+                  Tracking link will appear here once dispatched.
+                </div>
+              ) : null}
+
+              {/* Staff: show current link if set */}
+              {canEditStatus && (order as any).trackingUrl && (
+                <a
+                  href={(order as any).trackingUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-xs text-primary hover:underline"
+                >
+                  <ExternalLink size={11} />
+                  Preview tracking link
+                </a>
+              )}
+            </div>
+          </div>
+
           {/* Payment */}
           <div className="glass-card rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-border/40 flex items-center gap-2">
@@ -380,24 +473,72 @@ export default function OrderDetail() {
                   {order.paymentStatus}
                 </span>
               </div>
-              {order.paymentToken && (
+
+              {order.paymentStatus === OrderPaymentStatus.unpaid && (
+                <div className="space-y-3">
+                  {/* Card via Stripe */}
+                  <Button
+                    className="w-full rounded-xl font-semibold text-xs h-10"
+                    onClick={handlePay}
+                    disabled={tokenizeMutation.isPending || confirmMutation.isPending}
+                    data-testid="button-pay"
+                  >
+                    <CreditCard size={14} className="mr-2" />
+                    {tokenizeMutation.isPending || confirmMutation.isPending ? "Processing..." : "Pay with Card"}
+                  </Button>
+
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border/40" />
+                    </div>
+                    <div className="relative flex justify-center">
+                      <span className="px-2 bg-card text-[10px] text-muted-foreground uppercase tracking-widest">or send directly</span>
+                    </div>
+                  </div>
+
+                  {/* PayPal */}
+                  <a
+                    href={`https://www.paypal.com/paypalme/LuciferCruz/${order.total.toFixed(2)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#003087]/40 text-[#009cde] bg-[#003087]/10 hover:bg-[#003087]/20 px-4 py-2.5 rounded-xl transition-all"
+                    data-testid="button-paypal"
+                  >
+                    <ExternalLink size={12} />
+                    PayPal · ${order.total.toFixed(2)}
+                  </a>
+
+                  {/* Venmo */}
+                  <a
+                    href={`venmo://paycharge?txn=pay&recipients=LuciferCruz&amount=${order.total.toFixed(2)}&note=Order%20%23${order.id}`}
+                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#3D95CE]/40 text-[#3D95CE] bg-[#3D95CE]/10 hover:bg-[#3D95CE]/20 px-4 py-2.5 rounded-xl transition-all"
+                    data-testid="button-venmo"
+                  >
+                    <ExternalLink size={12} />
+                    Venmo · ${order.total.toFixed(2)}
+                  </a>
+
+                  {/* CashApp */}
+                  <a
+                    href={`https://cash.app/$LuciferCruz/${order.total.toFixed(2)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 rounded-xl transition-all"
+                    data-testid="button-cashapp"
+                  >
+                    <ExternalLink size={12} />
+                    Cash App · ${order.total.toFixed(2)}
+                  </a>
+                </div>
+              )}
+
+              {order.paymentToken && order.paymentStatus === OrderPaymentStatus.paid && (
                 <div>
                   <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest mb-1.5">Reference</div>
                   <div className="font-mono text-xs truncate bg-muted/20 p-2.5 rounded-lg border border-border/40" title={order.paymentToken}>
                     {order.paymentToken}
                   </div>
                 </div>
-              )}
-              {order.paymentStatus === OrderPaymentStatus.unpaid && (
-                <Button
-                  className="w-full rounded-xl font-semibold text-xs h-10"
-                  onClick={handlePay}
-                  disabled={tokenizeMutation.isPending || confirmMutation.isPending}
-                  data-testid="button-pay"
-                >
-                  <CreditCard size={14} className="mr-2" />
-                  {tokenizeMutation.isPending || confirmMutation.isPending ? "Processing..." : "Authorize Payment"}
-                </Button>
               )}
             </div>
           </div>

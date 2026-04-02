@@ -50,6 +50,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     total: parseFloat(order.total as string),
     shippingAddress: order.shippingAddress,
     notes: order.notes,
+    trackingUrl: order.trackingUrl ?? null,
     items: items.map(i => ({
       id: i.id,
       catalogItemId: i.catalogItemId,
@@ -353,6 +354,31 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   });
 
   res.json(GetOrderNotesResponse.parse({ notes: mapped }));
+});
+
+// PATCH /api/orders/:id/tracking — staff/admin only
+router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const orderId = parseInt(raw, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const { trackingUrl } = req.body as { trackingUrl?: string };
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+    res.status(403).json({ error: "Forbidden" }); return;
+  }
+  const [updated] = await db.update(ordersTable)
+    .set({ trackingUrl: trackingUrl ?? null })
+    .where(eq(ordersTable.id, orderId))
+    .returning();
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_TRACKING_UPDATED", tenantId: order.tenantId,
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { trackingUrl }, ipAddress: req.ip,
+  });
+  res.json({ trackingUrl: updated.trackingUrl });
 });
 
 // POST /api/orders/:id/notes

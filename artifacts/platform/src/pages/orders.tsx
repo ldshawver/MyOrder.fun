@@ -1,7 +1,21 @@
-import { useListOrders } from "@workspace/api-client-react";
+import { useMemo } from "react";
+import { useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
 import { Link } from "wouter";
-import { Plus, Package, Clock } from "lucide-react";
+import { Plus, Package, Clock, ShieldAlert } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
+
+const SESSION_ORDERS_KEY = "alavont_session_orders";
+
+function getSessionOrderIds(): number[] {
+  try {
+    const raw = sessionStorage.getItem(SESSION_ORDERS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 function StatusBadge({ status }: { status: string }) {
   const cls = `status-${status.toLowerCase()}`;
@@ -30,8 +44,19 @@ export default function Orders() {
     { limit: 50 },
     { query: { queryKey: ["listOrders"] } }
   );
+  const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+  const isCustomer = user?.role === "customer";
 
-  const hasPendingOrders = data?.orders?.some(o =>
+  // Customers only see orders from the current browser session
+  const visibleOrders = useMemo(() => {
+    const all = data?.orders ?? [];
+    if (!isCustomer) return all;
+    const sessionIds = getSessionOrderIds();
+    if (sessionIds.length === 0) return [];
+    return all.filter(o => sessionIds.includes(o.id));
+  }, [data?.orders, isCustomer]);
+
+  const hasPendingOrders = visibleOrders.some(o =>
     o.status === "pending" || o.status === "processing"
   );
 
@@ -44,7 +69,9 @@ export default function Orders() {
             Orders
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Track and manage your organization's orders.
+            {isCustomer
+              ? "Showing orders placed this session. History clears when you close your browser."
+              : "Track and manage your organization's orders."}
           </p>
         </div>
         <Link
@@ -61,14 +88,18 @@ export default function Orders() {
         <div className="flex flex-col items-center justify-center py-24 gap-6">
           <AnimatedHourglass size={160} message="Loading your orders..." />
         </div>
-      ) : data?.orders?.length === 0 ? (
+      ) : visibleOrders.length === 0 ? (
         <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center px-6" data-testid="text-empty-state">
           <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-4">
-            <Package size={24} className="text-primary" />
+            {isCustomer ? <ShieldAlert size={24} className="text-primary" /> : <Package size={24} className="text-primary" />}
           </div>
-          <h3 className="font-semibold text-base mb-2">No orders yet</h3>
+          <h3 className="font-semibold text-base mb-2">
+            {isCustomer ? "No orders this session" : "No orders yet"}
+          </h3>
           <p className="text-sm text-muted-foreground max-w-xs mb-6">
-            Place your first order to get started with Alavont Therapeutics.
+            {isCustomer
+              ? "Orders placed this session will appear here. History is cleared when your browser session ends."
+              : "Place your first order to get started with Alavont Therapeutics."}
           </p>
           <Link
             href="/orders/new"
@@ -103,7 +134,7 @@ export default function Orders() {
               ))}
             </div>
             <div className="divide-y divide-border/30">
-              {data?.orders?.map(order => (
+              {visibleOrders.map(order => (
                 <Link
                   key={order.id}
                   href={`/orders/${order.id}`}
@@ -135,7 +166,7 @@ export default function Orders() {
 
           {/* Mobile card list */}
           <div className="sm:hidden space-y-3">
-            {data?.orders?.map(order => (
+            {visibleOrders.map(order => (
               <Link
                 key={order.id}
                 href={`/orders/${order.id}`}

@@ -75,6 +75,11 @@ export default function NewOrder() {
       {
         onSuccess: (order) => {
           notifyOrderPlaced(order.id, user?.firstName || undefined);
+          // Track this session's orders for session-only history (customers)
+          try {
+            const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
+            sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
+          } catch {}
           setLocation(`/orders/${order.id}`);
         }
       }
