@@ -1,205 +1,234 @@
+import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { FlaskConical, ShieldCheck, Zap, ChevronRight } from "lucide-react";
+import { ShieldCheck, Lock, Cpu } from "lucide-react";
 
-const features = [
-  {
-    icon: FlaskConical,
-    title: "Lab-Grade Ordering",
-    desc: "Precision order management built for therapeutic compound workflows and clinical supply chains.",
-  },
-  {
-    icon: ShieldCheck,
-    title: "Compliance Ready",
-    desc: "End-to-end audit trails, encrypted notes, and role-based access controls meet regulatory standards.",
-  },
-  {
-    icon: Zap,
-    title: "Real-Time Updates",
-    desc: "Push notifications keep patients and lab technicians aligned at every step of the process.",
-  },
-];
+const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*";
+
+function useCipherText(finalText: string, startDelay = 0) {
+  const [display, setDisplay] = useState(() => finalText.replace(/./g, "█"));
+  const frameRef = useRef(0);
+
+  useEffect(() => {
+    let startTimer: ReturnType<typeof setTimeout>;
+    startTimer = setTimeout(() => {
+      let iteration = 0;
+      const total = finalText.length * 6;
+      const animate = () => {
+        setDisplay(
+          finalText
+            .split("")
+            .map((char, i) => {
+              if (char === " ") return " ";
+              if (iteration >= (i + 1) * 6) return char;
+              return CHARS[Math.floor(Math.random() * CHARS.length)];
+            })
+            .join("")
+        );
+        iteration++;
+        if (iteration < total) {
+          frameRef.current = requestAnimationFrame(animate);
+        } else {
+          setDisplay(finalText);
+        }
+      };
+      frameRef.current = requestAnimationFrame(animate);
+    }, startDelay);
+
+    return () => {
+      clearTimeout(startTimer);
+      cancelAnimationFrame(frameRef.current);
+    };
+  }, [finalText, startDelay]);
+
+  return display;
+}
 
 export default function Home() {
-  return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans overflow-x-hidden">
+  const [scanDone, setScanDone] = useState(false);
+  const line1 = useCipherText("SECURE AI", 600);
+  const line2 = useCipherText("ORDERING", 1000);
+  const line3 = useCipherText("SYSTEM", 1400);
 
-      {/* ── Header ────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 px-5 md:px-10 py-4 flex items-center justify-between border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <Link href="/" className="flex items-center gap-3 group" data-testid="text-logo">
+  useEffect(() => {
+    const t = setTimeout(() => setScanDone(true), 1800);
+    return () => clearTimeout(t);
+  }, []);
+
+  return (
+    <div
+      className="min-h-screen text-foreground flex flex-col font-sans overflow-x-hidden relative"
+      style={{ background: "#040810" }}
+    >
+      {/* Scan line sweep */}
+      <div
+        className="pointer-events-none fixed inset-0 z-50"
+        style={{
+          background: "linear-gradient(to bottom, transparent 0%, hsl(214 90% 55% / 0.06) 50%, transparent 100%)",
+          backgroundSize: "100% 4px",
+        }}
+      />
+      {scanDone ? null : (
+        <div
+          className="pointer-events-none fixed left-0 right-0 z-50 h-0.5"
+          style={{
+            background: "linear-gradient(90deg, transparent, hsl(214 90% 60%), hsl(180 90% 60%), transparent)",
+            boxShadow: "0 0 32px 8px hsl(214 90% 55% / 0.6)",
+            animation: "scanSweep 1.6s ease-in-out forwards",
+          }}
+        />
+      )}
+
+      {/* CRT grid overlay */}
+      <div
+        className="pointer-events-none fixed inset-0 z-10 opacity-[0.025]"
+        style={{
+          backgroundImage:
+            "linear-gradient(hsl(214 90% 55%) 1px, transparent 1px), linear-gradient(90deg, hsl(214 90% 55%) 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
+
+      {/* Radial glow */}
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 60% at 50% 0%, hsl(214 90% 55% / 0.10), transparent 70%)",
+        }}
+      />
+
+      {/* Header */}
+      <header className="relative z-20 sticky top-0 px-5 md:px-10 py-4 flex items-center justify-between border-b border-primary/10 bg-[#040810]/90 backdrop-blur-xl">
+        <div className="flex items-center gap-3">
           <img
             src="/alavont-logo.png"
-            alt="Alavont Therapeutics"
-            className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
+            alt="Alavont"
+            className="w-9 h-9 object-contain"
+            style={{ filter: "drop-shadow(0 0 10px hsl(214 90% 55% / 0.6))" }}
           />
           <div>
-            <div className="font-bold text-sm tracking-widest text-foreground uppercase">ALAVONT</div>
-            <div className="text-[10px] text-primary/80 tracking-widest uppercase font-medium">Therapeutics</div>
+            <div className="font-bold text-sm tracking-widest uppercase text-foreground">ALAVONT</div>
+            <div className="text-[9px] text-primary tracking-[0.3em] uppercase font-medium">THERAPEUTICS</div>
           </div>
-        </Link>
-        <div className="flex gap-3 items-center">
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-mono text-emerald-400/80 tracking-widest">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            AES-256 ENCRYPTED
+          </div>
           <Link
             href="/sign-in"
-            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors px-3 py-2"
+            className="text-xs font-semibold tracking-widest uppercase px-5 py-2.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 transition-all"
             data-testid="link-signin"
           >
             Sign In
           </Link>
-          <Link
-            href="/onboarding"
-            className="text-sm font-semibold bg-primary text-primary-foreground px-5 py-2.5 rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20 flex items-center gap-1.5"
-            data-testid="link-request-access"
-          >
-            Request Access
-            <ChevronRight size={14} />
-          </Link>
         </div>
       </header>
 
-      {/* ── Hero ──────────────────────────────────────────────────── */}
-      <main className="flex-1">
-        <section className="relative flex flex-col items-center justify-center text-center px-6 pt-20 pb-28 md:pt-32 md:pb-40 overflow-hidden">
-          {/* Background radial glow */}
+      {/* Hero */}
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-center text-center px-6 py-24 md:py-36">
+        {/* Invitation badge */}
+        <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/20 bg-primary/5 mb-10">
+          <Lock size={11} className="text-primary" />
+          <span className="text-[10px] font-mono tracking-[0.3em] text-primary uppercase">
+            Invitation Only
+          </span>
+        </div>
+
+        {/* Cipher hero title */}
+        <div className="mb-8 font-black leading-none tracking-tighter select-none" style={{ fontFeatureSettings: '"tnum"' }}>
           <div
-            className="absolute inset-0 pointer-events-none"
+            className="text-5xl sm:text-7xl md:text-8xl lg:text-9xl"
             style={{
-              background: "radial-gradient(ellipse 70% 50% at 50% 0%, hsl(214 90% 55% / 0.12), transparent)",
+              background: "linear-gradient(135deg, #fff 0%, hsl(214 90% 70%) 50%, hsl(180 90% 65%) 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+              fontVariantNumeric: "tabular-nums",
             }}
-          />
-          {/* Grid pattern overlay */}
+            data-testid="text-hero-title"
+          >
+            {line1}
+          </div>
           <div
-            className="absolute inset-0 pointer-events-none opacity-[0.03]"
+            className="text-5xl sm:text-7xl md:text-8xl lg:text-9xl"
             style={{
-              backgroundImage: "linear-gradient(hsl(214 90% 55%) 1px, transparent 1px), linear-gradient(90deg, hsl(214 90% 55%) 1px, transparent 1px)",
-              backgroundSize: "48px 48px",
-            }}
-          />
-
-          <div className="relative z-10 max-w-3xl mx-auto">
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-semibold tracking-widest uppercase mb-8">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-              Clinical Order Management Platform
-            </div>
-
-            <h1
-              className="text-4xl sm:text-5xl md:text-7xl font-bold tracking-tight mb-6 leading-[1.05]"
-              data-testid="text-hero-title"
-            >
-              Precision at Every{" "}
-              <span
-                className="text-transparent bg-clip-text"
-                style={{
-                  backgroundImage: "linear-gradient(135deg, hsl(214 90% 70%), hsl(214 90% 55%), hsl(200 90% 65%))",
-                }}
-              >
-                Step
-              </span>
-            </h1>
-
-            <p
-              className="text-base md:text-xl text-muted-foreground mb-10 max-w-xl mx-auto leading-relaxed font-light"
-              data-testid="text-hero-subtitle"
-            >
-              Alavont Therapeutics' ordering platform delivers clinical-grade supply chain management with real-time tracking, lab notifications, and end-to-end compliance.
-            </p>
-
-            <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link
-                href="/onboarding"
-                className="inline-flex items-center justify-center gap-2 text-base font-semibold bg-primary text-primary-foreground px-8 py-4 rounded-xl hover:opacity-90 transition-all shadow-xl shadow-primary/25"
-                data-testid="link-hero-cta"
-              >
-                Apply for Access
-                <ChevronRight size={18} />
-              </Link>
-              <Link
-                href="/sign-in"
-                className="inline-flex items-center justify-center gap-2 text-base font-medium border border-border/60 px-8 py-4 rounded-xl hover:bg-muted/30 transition-all"
-              >
-                Sign In
-              </Link>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Logo display ─────────────────────────────────────────── */}
-        <section className="flex justify-center pb-16">
-          <div className="relative">
-            <img
-              src="/alavont-logo.png"
-              alt="Alavont Therapeutics"
-              className="w-32 h-32 md:w-40 md:h-40 object-contain"
-              style={{
-                filter: "drop-shadow(0 0 40px hsl(214 90% 55% / 0.4)) drop-shadow(0 0 80px hsl(214 90% 55% / 0.15))",
-              }}
-            />
-          </div>
-        </section>
-
-        {/* ── Features ─────────────────────────────────────────────── */}
-        <section className="px-6 md:px-10 pb-24 max-w-5xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {features.map((feat) => {
-              const Icon = feat.icon;
-              return (
-                <div
-                  key={feat.title}
-                  className="glass-card rounded-2xl p-6 space-y-4 card-hover-glow"
-                >
-                  <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/25 flex items-center justify-center">
-                    <Icon size={20} className="text-primary" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-base mb-2">{feat.title}</h3>
-                    <p className="text-sm text-muted-foreground leading-relaxed">{feat.desc}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* ── CTA strip ────────────────────────────────────────────── */}
-        <section className="mx-6 md:mx-10 mb-16 max-w-4xl lg:mx-auto">
-          <div
-            className="relative rounded-2xl overflow-hidden p-8 md:p-12 text-center"
-            style={{
-              background: "linear-gradient(135deg, hsl(214 90% 18%), hsl(220 60% 14%))",
-              border: "1px solid hsl(214 90% 30% / 0.4)",
+              background: "linear-gradient(135deg, hsl(214 90% 70%) 0%, hsl(200 90% 60%) 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+              fontVariantNumeric: "tabular-nums",
             }}
           >
-            <div className="absolute inset-0 pointer-events-none" style={{
-              background: "radial-gradient(ellipse 60% 80% at 50% 120%, hsl(214 90% 55% / 0.2), transparent)",
-            }} />
-            <div className="relative z-10">
-              <h2 className="text-2xl md:text-3xl font-bold mb-3">Ready to get started?</h2>
-              <p className="text-muted-foreground mb-8 max-w-md mx-auto">
-                Join Alavont Therapeutics' secure ordering network. Your application is reviewed and approved by our team.
-              </p>
-              <Link
-                href="/onboarding"
-                className="inline-flex items-center gap-2 font-semibold text-sm bg-primary text-primary-foreground px-7 py-3.5 rounded-xl hover:opacity-90 transition-all shadow-xl shadow-primary/25"
-              >
-                Request Tenant Access
-                <ChevronRight size={16} />
-              </Link>
-            </div>
+            {line2}
           </div>
-        </section>
+          <div
+            className="text-5xl sm:text-7xl md:text-8xl lg:text-9xl text-foreground/20"
+            style={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            {line3}
+          </div>
+        </div>
+
+        <p
+          className="text-sm md:text-base text-muted-foreground max-w-md mb-12 leading-relaxed font-light"
+          data-testid="text-hero-subtitle"
+        >
+          A private, end-to-end encrypted ordering platform for trusted members only.
+          Access is by invitation. All sessions are secured with military-grade encryption.
+        </p>
+
+        {/* Security badges */}
+        <div className="flex flex-wrap items-center justify-center gap-3 mb-12">
+          {[
+            { icon: ShieldCheck, label: "AES-256 Encrypted" },
+            { icon: Lock, label: "Zero Knowledge Sessions" },
+            { icon: Cpu, label: "AI-Powered Ordering" },
+          ].map(({ icon: Icon, label }) => (
+            <div
+              key={label}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary/15 bg-primary/5 text-xs font-mono text-primary/80 tracking-wider"
+            >
+              <Icon size={12} />
+              {label}
+            </div>
+          ))}
+        </div>
+
+        <Link
+          href="/sign-in"
+          className="inline-flex items-center gap-2 font-semibold text-sm bg-primary text-primary-foreground px-8 py-4 rounded-xl hover:opacity-90 transition-all shadow-2xl"
+          style={{ boxShadow: "0 0 40px hsl(214 90% 55% / 0.4)" }}
+          data-testid="link-hero-cta"
+        >
+          <Lock size={15} />
+          Access Portal
+        </Link>
       </main>
 
-      {/* ── Footer ────────────────────────────────────────────────── */}
-      <footer className="border-t border-border/40 px-6 md:px-10 py-8">
-        <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+      {/* Footer */}
+      <footer className="relative z-10 border-t border-primary/10 px-6 py-6">
+        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <img src="/alavont-logo.png" alt="Alavont" className="w-7 h-7 object-contain opacity-70" />
-            <span className="text-sm text-muted-foreground">© {new Date().getFullYear()} Alavont Therapeutics. All rights reserved.</span>
+            <img src="/alavont-logo.png" alt="Alavont" className="w-6 h-6 object-contain opacity-50" />
+            <span className="text-[11px] font-mono text-muted-foreground/50 tracking-widest uppercase">
+              © {new Date().getFullYear()} Alavont Therapeutics
+            </span>
           </div>
-          <div className="flex gap-6 text-sm text-muted-foreground">
-            <Link href="/onboarding" className="hover:text-foreground transition-colors">Apply</Link>
-            <Link href="/sign-in" className="hover:text-foreground transition-colors">Sign In</Link>
+          <div className="text-[10px] font-mono text-muted-foreground/30 tracking-widest uppercase">
+            Private · Encrypted · Invitation Only
           </div>
         </div>
       </footer>
+
+      <style>{`
+        @keyframes scanSweep {
+          0%   { top: -2px; opacity: 1; }
+          90%  { top: 100vh; opacity: 0.6; }
+          100% { top: 100vh; opacity: 0; }
+        }
+      `}</style>
     </div>
   );
 }

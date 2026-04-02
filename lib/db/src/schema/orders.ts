@@ -25,6 +25,7 @@ export const ordersTable = pgTable("orders", {
   total: numeric("total", { precision: 10, scale: 2 }).notNull(),
   shippingAddress: text("shipping_address"),
   notes: text("notes"),
+  trackingUrl: text("tracking_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
