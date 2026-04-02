@@ -30,6 +30,7 @@ router.get("/users/me", async (req, res): Promise<void> => {
     email: user.email ?? undefined,
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
+    contactPhone: user.contactPhone ?? undefined,
     role: user.role,
     tenantId: user.tenantId ?? undefined,
     tenantName,
@@ -55,6 +56,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     email: user.email ?? undefined,
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
+    contactPhone: user.contactPhone ?? undefined,
     role: user.role,
     tenantId: user.tenantId ?? undefined,
     tenantName,
@@ -89,6 +91,19 @@ router.get("/users", requireRole("tenant_admin", "global_admin"), async (req, re
 
   const data = ListUsersResponse.parse({ users: rows, total: rows.length });
   res.json(data);
+});
+
+// PATCH /api/users/me/phone — user updates their own contact phone number
+router.patch("/users/me/phone", async (req, res): Promise<void> => {
+  const user = req.dbUser!;
+  const { contactPhone } = req.body as { contactPhone?: string };
+  const phone = contactPhone?.trim() || null;
+  const [updated] = await db
+    .update(usersTable)
+    .set({ contactPhone: phone })
+    .where(eq(usersTable.id, user.id))
+    .returning();
+  res.json({ contactPhone: updated.contactPhone ?? null });
 });
 
 // PATCH /api/users/:id/role

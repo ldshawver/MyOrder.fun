@@ -21,6 +21,7 @@ export const usersTable = pgTable("users", {
   mfaEnabled: boolean("mfa_enabled").notNull().default(false),
   mfaSecret: text("mfa_secret"),
   mfaBackupCodes: text("mfa_backup_codes"),
+  contactPhone: text("contact_phone"),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
