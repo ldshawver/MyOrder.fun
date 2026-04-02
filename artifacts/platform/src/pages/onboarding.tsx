@@ -8,16 +8,13 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Lock } from "lucide-react";
 
 const schema = z.object({
-  companyName: z.string().min(2, "Company name is required"),
-  contactName: z.string().min(2, "Contact name is required"),
+  contactName: z.string().min(2, "Name is required"),
   contactEmail: z.string().email("Invalid email address"),
   contactPhone: z.string().optional(),
-  businessType: z.string().min(2, "Business type is required"),
-  website: z.string().optional(),
   description: z.string().optional(),
-  expectedOrderVolume: z.string().optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -29,35 +26,39 @@ export default function Onboarding() {
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
-      companyName: "",
       contactName: "",
       contactEmail: "",
       contactPhone: "",
-      businessType: "",
-      website: "",
       description: "",
-      expectedOrderVolume: "",
     },
   });
 
   const onSubmit = (data: FormValues) => {
-    submitRequest.mutate({ data }, {
-      onSuccess: () => {
-        setSubmitted(true);
+    submitRequest.mutate({
+      data: {
+        ...data,
+        companyName: data.contactName,
+        businessType: "private",
+        expectedOrderVolume: "",
       }
+    }, {
+      onSuccess: () => setSubmitted(true),
     });
   };
 
   if (submitted) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
-        <div className="max-w-md w-full bg-card p-8 border border-border shadow-sm rounded-lg text-center" data-testid="container-success">
-          <h2 className="text-2xl font-bold mb-4" data-testid="text-success-title">Application Submitted</h2>
-          <p className="text-muted-foreground mb-6" data-testid="text-success-message">
-            Thank you for applying for an OrderFlow tenant account. Our team will review your application and be in touch shortly.
+      <div className="min-h-screen flex flex-col items-center justify-center p-4" style={{ background: "#040810" }}>
+        <div className="max-w-md w-full glass-card rounded-2xl p-10 text-center border border-primary/20" data-testid="container-success">
+          <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto mb-5">
+            <Lock size={24} className="text-primary" />
+          </div>
+          <h2 className="text-xl font-bold mb-3" data-testid="text-success-title">Access Requested</h2>
+          <p className="text-muted-foreground text-sm leading-relaxed mb-6" data-testid="text-success-message">
+            Your invitation request has been received. Our team will review and reach out to you directly.
           </p>
-          <Link href="/" className="text-primary hover:underline font-medium" data-testid="link-return-home">
-            Return to Home
+          <Link href="/" className="text-primary hover:underline font-medium text-sm" data-testid="link-return-home">
+            Return
           </Link>
         </div>
       </div>
@@ -65,126 +66,88 @@ export default function Onboarding() {
   }
 
   return (
-    <div className="min-h-screen bg-background py-12 px-4 flex flex-col items-center">
-      <div className="max-w-2xl w-full">
+    <div className="min-h-screen py-12 px-4 flex flex-col items-center justify-center" style={{ background: "#040810" }}>
+      <div className="max-w-lg w-full">
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold tracking-tight mb-2" data-testid="text-title">Request Access</h1>
-          <p className="text-muted-foreground" data-testid="text-subtitle">Apply for your organization's OrderFlow tenant.</p>
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-semibold tracking-widest uppercase mb-5">
+            <Lock size={11} />
+            Invitation Only
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight mb-2" data-testid="text-title">Request Access</h1>
+          <p className="text-muted-foreground text-sm" data-testid="text-subtitle">
+            Submit your details and we'll reach out with your invitation.
+          </p>
         </div>
 
-        <div className="bg-card border border-border p-8 rounded-sm shadow-sm" data-testid="container-form">
+        <div className="glass-card rounded-2xl p-8 border border-border/40" data-testid="container-form">
           <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <FormField
-                  control={form.control}
-                  name="companyName"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Company Name *</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Acme Corp" data-testid="input-company-name" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="website"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Website</FormLabel>
-                      <FormControl>
-                        <Input placeholder="https://acme.com" data-testid="input-website" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="contactName"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Contact Name *</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Jane Doe" data-testid="input-contact-name" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="contactEmail"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Contact Email *</FormLabel>
-                      <FormControl>
-                        <Input placeholder="jane@example.com" type="email" data-testid="input-contact-email" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="contactPhone"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Contact Phone</FormLabel>
-                      <FormControl>
-                        <Input placeholder="+1 (555) 000-0000" data-testid="input-contact-phone" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="businessType"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Business Type *</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Wholesale, Retail..." data-testid="input-business-type" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="expectedOrderVolume"
-                  render={({ field }) => (
-                    <FormItem className="md:col-span-2">
-                      <FormLabel>Expected Monthly Volume</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g. $50,000 / 1,000 orders" data-testid="input-expected-volume" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name="description"
-                  render={({ field }) => (
-                    <FormItem className="md:col-span-2">
-                      <FormLabel>Additional Context</FormLabel>
-                      <FormControl>
-                        <Textarea placeholder="Tell us about your use case" className="resize-none h-24" data-testid="input-description" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+              <FormField
+                control={form.control}
+                name="contactName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Full Name *</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Your name" className="rounded-xl h-11 bg-background/50" data-testid="input-contact-name" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="contactEmail"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Email *</FormLabel>
+                    <FormControl>
+                      <Input placeholder="you@example.com" type="email" className="rounded-xl h-11 bg-background/50" data-testid="input-contact-email" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="contactPhone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Phone</FormLabel>
+                    <FormControl>
+                      <Input placeholder="+1 (555) 000-0000" className="rounded-xl h-11 bg-background/50" data-testid="input-contact-phone" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="description"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Message <span className="normal-case font-normal">(optional)</span></FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="How can we help you?"
+                        className="resize-none h-24 rounded-xl bg-background/50"
+                        data-testid="input-description"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
-              <div className="pt-4 border-t border-border flex justify-end">
-                <Button type="submit" size="lg" disabled={submitRequest.isPending} data-testid="button-submit">
-                  {submitRequest.isPending ? "Submitting..." : "Submit Application"}
+              <div className="pt-2">
+                <Button
+                  type="submit"
+                  className="w-full rounded-xl h-11 font-semibold shadow-lg shadow-primary/20"
+                  disabled={submitRequest.isPending}
+                  data-testid="button-submit"
+                >
+                  {submitRequest.isPending ? "Submitting..." : "Submit Request"}
                 </Button>
               </div>
             </form>
