@@ -10,6 +10,7 @@ Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ord
 
 ## Product Features
 
+- **Lab Tech Shift Management**: Staff (Business Sitters) can clock in/out, enter starting inventory, and get live running totals (by item and by customer). Orders auto-assigned to active shift. Default tech receives orders when no shift is active.
 - **Hardened RBAC**: 4 roles — `global_admin`, `tenant_admin`, `staff`, `customer`
 - **Tenant Onboarding**: Formal approval workflow (`submitted → pending_review → approved → rejected → invited → activated`), with global admin gating
 - **Customer Ordering UI**: Catalog browsing, cart, checkout, order tracking with animated hourglass while pending
