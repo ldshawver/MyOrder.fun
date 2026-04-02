@@ -1,0 +1,93 @@
+Here's how you should organize the implementation code in your Node.js/TypeScript Express application:
+
+Create a config.ts file in your project's root or src directory:
+
+
+ 
+// src/config.ts or config.ts
+import dotenv from 'dotenv';
+dotenv.config();
+
+export const stripeConfig = {
+  secretKey: process.env.STRIPE_SECRET_KEY,
+  publishableKey: process.env.STRIPE_PUBLISHABLE_KEY
+};
+Create or update your server-side API file for payment handling:
+
+
+ 
+// src/routes/payments.ts or similar
+import { stripeConfig } from '../config';
+import Stripe from 'stripe';
+import express from 'express';
+
+const router = express.Router();
+const stripe = new Stripe(stripeConfig.secretKey as string, {
+  apiVersion: '2026-03-25.dahlia'
+});
+
+// Payment routes
+router.post('/create-payment-intent', async (req, res) => {
+  try {
+    const { amount, currency } = req.body;
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency,
+    });
+    res.json({ clientSecret: paymentIntent.client_secret });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Other payment routes
+// ...
+
+export default router;
+Add the route to expose the publishable key in your main application file:
+
+
+ 
+// src/app.ts or index.ts or server.ts
+import express from 'express';
+import { stripeConfig } from './config';
+import paymentRoutes from './routes/payments';
+
+const app = express();
+app.use(express.json());
+
+// API routes
+app.use('/api/payments', paymentRoutes);
+
+// Route to expose publishable key to frontend
+app.get('/api/config', (req, res) => {
+  res.json({ 
+    publishableKey: stripeConfig.publishableKey 
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+Create a .env file in your project root:
+
+STRIPE_SECRET_KEY=sk_test_your_test_key_here
+STRIPE_PUBLISHABLE_KEY=pk_test_your_test_key_here
+On the client side, you'd fetch the publishable key:
+
+
+ 
+// In your frontend code (e.g., React component)
+async function initializeStripe() {
+  const response = await fetch('/api/config');
+  const { publishableKey } = await response.json();
+  
+  const stripe = await loadStripe(publishableKey);
+  // Continue with Stripe Elements setup
+}
+Remember to:
+
+Add .env to your .gitignore file
+Install required dependencies: npm install dotenv stripe express @types/express
+This structure keeps your configuration separate, maintains proper separation of concerns, and follows security best practices by using environment variables for sensitive information
