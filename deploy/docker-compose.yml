@@ -1,0 +1,86 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── API Server ────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      SESSION_SECRET: ${SESSION_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # ── Platform (SPA) ────────────────────────────────────────
+  platform:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.platform
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - platform
+    networks:
+      - internal
+      - external
+
+volumes:
+  postgres_data:
+  nginx_logs:
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge

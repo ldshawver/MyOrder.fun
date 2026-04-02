@@ -1,0 +1,57 @@
+# ── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+RUN npm install -g pnpm@9
+
+WORKDIR /app
+
+# Copy workspace manifests first for layer caching
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY lib/db/package.json                  lib/db/
+COPY lib/api-zod/package.json             lib/api-zod/
+COPY lib/api-client-react/package.json    lib/api-client-react/
+COPY artifacts/api-server/package.json    artifacts/api-server/
+
+# Install all workspace deps
+RUN pnpm install --frozen-lockfile --filter @workspace/db... \
+                                   --filter @workspace/api-zod... \
+                                   --filter @workspace/api-server...
+
+# Copy source
+COPY lib/db/                   lib/db/
+COPY lib/api-zod/              lib/api-zod/
+COPY lib/api-client-react/     lib/api-client-react/
+COPY artifacts/api-server/     artifacts/api-server/
+COPY tsconfig.base.json        ./
+COPY tsconfig.json             ./
+
+# Build
+RUN pnpm --filter @workspace/api-server run build
+
+# ── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+RUN npm install -g pnpm@9
+
+WORKDIR /app
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY lib/db/package.json               lib/db/
+COPY lib/api-zod/package.json          lib/api-zod/
+COPY lib/api-client-react/package.json lib/api-client-react/
+COPY artifacts/api-server/package.json artifacts/api-server/
+
+RUN pnpm install --frozen-lockfile --prod \
+                 --filter @workspace/db... \
+                 --filter @workspace/api-zod... \
+                 --filter @workspace/api-server...
+
+# Copy built output
+COPY --from=builder /app/artifacts/api-server/dist artifacts/api-server/dist
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
