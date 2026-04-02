@@ -1,22 +1,39 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: onboarding
+    description: Tenant onboarding requests
+  - name: tenants
+    description: Tenant management (global admin)
+  - name: catalog
+    description: Product catalog management
+  - name: orders
+    description: Order management
+  - name: users
+    description: User management and RBAC
+  - name: audit
+    description: Audit log (global admin / tenant admin)
+  - name: ai
+    description: AI sales concierge
+  - name: admin
+    description: Global admin operations
+  - name: notifications
+    description: Order status notifications
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +41,726 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  # ─────────────── ONBOARDING ───────────────
+  /onboarding/request:
+    post:
+      operationId: submitOnboardingRequest
+      tags: [onboarding]
+      summary: Submit a new tenant onboarding request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingRequestBody"
+      responses:
+        "201":
+          description: Request submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingRequest"
+
+  /onboarding/requests:
+    get:
+      operationId: listOnboardingRequests
+      tags: [onboarding]
+      summary: List all onboarding requests (global admin)
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [submitted, pending_review, approved, rejected, invited, activated]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of onboarding requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingRequestListResponse"
+
+  /onboarding/requests/{id}:
+    get:
+      operationId: getOnboardingRequest
+      tags: [onboarding]
+      summary: Get a specific onboarding request
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Onboarding request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingRequest"
+    patch:
+      operationId: updateOnboardingRequest
+      tags: [onboarding]
+      summary: Update onboarding request status (global admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOnboardingRequestBody"
+      responses:
+        "200":
+          description: Updated onboarding request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardingRequest"
+
+  # ─────────────── TENANTS ───────────────
+  /tenants:
+    get:
+      operationId: listTenants
+      tags: [tenants]
+      summary: List all tenants (global admin)
+      responses:
+        "200":
+          description: List of tenants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantListResponse"
+
+  /tenants/{id}:
+    get:
+      operationId: getTenant
+      tags: [tenants]
+      summary: Get tenant details
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+    patch:
+      operationId: updateTenant
+      tags: [tenants]
+      summary: Update tenant settings
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantBody"
+      responses:
+        "200":
+          description: Updated tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tenant"
+
+  /tenants/{id}/summary:
+    get:
+      operationId: getTenantSummary
+      tags: [tenants]
+      summary: Tenant dashboard summary — order counts, revenue, top products
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Tenant summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantSummary"
+
+  # ─────────────── CATALOG ───────────────
+  /catalog:
+    get:
+      operationId: listCatalogItems
+      tags: [catalog]
+      summary: List catalog items for the authenticated user's tenant
+      parameters:
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: available
+          schema:
+            type: boolean
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of catalog items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogItemListResponse"
+    post:
+      operationId: createCatalogItem
+      tags: [catalog]
+      summary: Create a new catalog item (tenant admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCatalogItemBody"
+      responses:
+        "201":
+          description: Created catalog item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogItem"
+
+  /catalog/{id}:
+    get:
+      operationId: getCatalogItem
+      tags: [catalog]
+      summary: Get a catalog item by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Catalog item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogItem"
+    patch:
+      operationId: updateCatalogItem
+      tags: [catalog]
+      summary: Update a catalog item (tenant admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCatalogItemBody"
+      responses:
+        "200":
+          description: Updated catalog item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogItem"
+    delete:
+      operationId: deleteCatalogItem
+      tags: [catalog]
+      summary: Delete a catalog item (tenant admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /catalog/categories:
+    get:
+      operationId: listCatalogCategories
+      tags: [catalog]
+      summary: List all distinct categories in the tenant catalog
+      responses:
+        "200":
+          description: Categories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogCategoriesResponse"
+
+  # ─────────────── ORDERS ───────────────
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [orders]
+      summary: List orders (customers see their own; staff/admin see all in tenant)
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+        - in: query
+          name: customerId
+          schema:
+            type: integer
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+    post:
+      operationId: createOrder
+      tags: [orders]
+      summary: Place a new order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderBody"
+      responses:
+        "201":
+          description: Created order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      tags: [orders]
+      summary: Get an order by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+    patch:
+      operationId: updateOrderStatus
+      tags: [orders]
+      summary: Update order status (staff/admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrderStatusBody"
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/summary:
+    get:
+      operationId: getOrderSummary
+      tags: [orders]
+      summary: Order pipeline summary — counts by status, recent revenue
+      responses:
+        "200":
+          description: Order summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderSummary"
+
+  /orders/recent:
+    get:
+      operationId: getRecentOrders
+      tags: [orders]
+      summary: Recent orders activity feed
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Recent orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderListResponse"
+
+  # ─────────────── USERS ───────────────
+  /users/me:
+    get:
+      operationId: getCurrentUser
+      tags: [users]
+      summary: Get current authenticated user profile and role
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List users in the tenant (admin only)
+      parameters:
+        - in: query
+          name: role
+          schema:
+            type: string
+            enum: [global_admin, tenant_admin, staff, customer]
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+
+  /users/{id}/role:
+    patch:
+      operationId: updateUserRole
+      tags: [users]
+      summary: Update a user's role (tenant admin or global admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRoleBody"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  # ─────────────── AUDIT LOG ───────────────
+  /audit:
+    get:
+      operationId: listAuditLogs
+      tags: [audit]
+      summary: List audit log entries (global admin / tenant admin)
+      parameters:
+        - in: query
+          name: action
+          schema:
+            type: string
+        - in: query
+          name: actorId
+          schema:
+            type: integer
+        - in: query
+          name: tenantId
+          schema:
+            type: integer
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Audit log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogListResponse"
+
+  # ─────────────── AI CONCIERGE ───────────────
+  /ai/chat:
+    post:
+      operationId: aiConciergeChat
+      tags: [ai]
+      summary: Send a message to the AI sales concierge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiChatBody"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiChatResponse"
+
+  /ai/upsell:
+    post:
+      operationId: aiUpsellSuggestions
+      tags: [ai]
+      summary: Get AI upsell suggestions based on current cart or order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiUpsellBody"
+      responses:
+        "200":
+          description: Upsell suggestions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiUpsellResponse"
+
+  # ─────────────── NOTIFICATIONS ───────────────
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List notifications for current user
+      parameters:
+        - in: query
+          name: unreadOnly
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationListResponse"
+
+  /notifications/{id}/read:
+    patch:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark a notification as read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Notification marked read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+
+  # ─────────────── GLOBAL ADMIN ───────────────
+  /admin/stats:
+    get:
+      operationId: getAdminStats
+      tags: [admin]
+      summary: Global admin platform statistics
+      responses:
+        "200":
+          description: Platform stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStats"
+
+  /admin/mfa/setup:
+    post:
+      operationId: setupMfa
+      tags: [admin]
+      summary: Initiate MFA setup for global admin
+      responses:
+        "200":
+          description: MFA setup data (TOTP QR code)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MfaSetupResponse"
+
+  /admin/mfa/verify:
+    post:
+      operationId: verifyMfa
+      tags: [admin]
+      summary: Verify MFA token for global admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MfaVerifyBody"
+      responses:
+        "200":
+          description: MFA verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MfaVerifyResponse"
+
+  # ─────────────── PAYMENTS ───────────────
+  /payments/tokenize:
+    post:
+      operationId: tokenizePayment
+      tags: [orders]
+      summary: Create a payment token for an order (returns client secret for card element)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenizePaymentBody"
+      responses:
+        "200":
+          description: Payment token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenizePaymentResponse"
+
+  /payments/{orderId}/confirm:
+    post:
+      operationId: confirmPayment
+      tags: [orders]
+      summary: Confirm payment for an order
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmPaymentBody"
+      responses:
+        "200":
+          description: Payment confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  # ─────────────── PROTECTED NOTES ───────────────
+  /orders/{id}/notes:
+    get:
+      operationId: getOrderNotes
+      tags: [orders]
+      summary: Get protected/encrypted notes for an order
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Order notes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderNotesResponse"
+    post:
+      operationId: addOrderNote
+      tags: [orders]
+      summary: Add a protected note to an order
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddOrderNoteBody"
+      responses:
+        "201":
+          description: Note added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderNote"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +768,741 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    # ─── Onboarding ───
+    OnboardingRequestBody:
+      type: object
+      properties:
+        companyName:
+          type: string
+        contactName:
+          type: string
+        contactEmail:
+          type: string
+        contactPhone:
+          type: string
+        businessType:
+          type: string
+        website:
+          type: string
+        description:
+          type: string
+        expectedOrderVolume:
+          type: string
+      required: [companyName, contactName, contactEmail, businessType]
+
+    UpdateOnboardingRequestBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [submitted, pending_review, approved, rejected, invited, activated]
+        reviewNotes:
+          type: string
+
+    OnboardingRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+        companyName:
+          type: string
+        contactName:
+          type: string
+        contactEmail:
+          type: string
+        contactPhone:
+          type: string
+        businessType:
+          type: string
+        website:
+          type: string
+        description:
+          type: string
+        expectedOrderVolume:
+          type: string
+        status:
+          type: string
+          enum: [submitted, pending_review, approved, rejected, invited, activated]
+        reviewNotes:
+          type: string
+        reviewedBy:
+          type: integer
+        tenantId:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, companyName, contactName, contactEmail, businessType, status, createdAt, updatedAt]
+
+    OnboardingRequestListResponse:
+      type: object
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: "#/components/schemas/OnboardingRequest"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required: [requests, total, page, limit]
+
+    # ─── Tenants ───
+    Tenant:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        slug:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended, pending]
+        plan:
+          type: string
+        contactEmail:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, slug, status, createdAt, updatedAt]
+
+    UpdateTenantBody:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended, pending]
+        plan:
+          type: string
+        settings:
+          type: object
+          additionalProperties: true
+
+    TenantListResponse:
+      type: object
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tenant"
+        total:
+          type: integer
+      required: [tenants, total]
+
+    TenantSummary:
+      type: object
+      properties:
+        tenantId:
+          type: integer
+        totalOrders:
+          type: integer
+        pendingOrders:
+          type: integer
+        totalRevenue:
+          type: number
+        revenueThisMonth:
+          type: number
+        totalProducts:
+          type: integer
+        totalCustomers:
+          type: integer
+        topProducts:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              orderCount:
+                type: integer
+              revenue:
+                type: number
+      required: [tenantId, totalOrders, pendingOrders, totalRevenue, revenueThisMonth, totalProducts, totalCustomers, topProducts]
+
+    # ─── Catalog ───
+    CatalogItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenantId:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        sku:
+          type: string
+        price:
+          type: number
+        compareAtPrice:
+          type: number
+        stockQuantity:
+          type: integer
+        isAvailable:
+          type: boolean
+        imageUrl:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, tenantId, name, category, price, isAvailable, createdAt, updatedAt]
+
+    CreateCatalogItemBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        sku:
+          type: string
+        price:
+          type: number
+        compareAtPrice:
+          type: number
+        stockQuantity:
+          type: integer
+        isAvailable:
+          type: boolean
+        imageUrl:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      required: [name, category, price]
+
+    UpdateCatalogItemBody:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        sku:
+          type: string
+        price:
+          type: number
+        compareAtPrice:
+          type: number
+        stockQuantity:
+          type: integer
+        isAvailable:
+          type: boolean
+        imageUrl:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+
+    CatalogItemListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required: [items, total, page, limit]
+
+    CatalogCategoriesResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          items:
+            type: string
+      required: [categories]
+
+    # ─── Orders ───
+    OrderItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        catalogItemId:
+          type: integer
+        catalogItemName:
+          type: string
+        quantity:
+          type: integer
+        unitPrice:
+          type: number
+        totalPrice:
+          type: number
+      required: [id, catalogItemId, catalogItemName, quantity, unitPrice, totalPrice]
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenantId:
+          type: integer
+        customerId:
+          type: integer
+        customerName:
+          type: string
+        customerEmail:
+          type: string
+        status:
+          type: string
+          enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+        paymentStatus:
+          type: string
+          enum: [unpaid, pending, paid, refunded, failed]
+        paymentToken:
+          type: string
+        subtotal:
+          type: number
+        tax:
+          type: number
+        total:
+          type: number
+        shippingAddress:
+          type: string
+        notes:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, tenantId, customerId, status, paymentStatus, subtotal, total, items, createdAt, updatedAt]
+
+    CreateOrderBody:
+      type: object
+      properties:
+        shippingAddress:
+          type: string
+        notes:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              catalogItemId:
+                type: integer
+              quantity:
+                type: integer
+            required: [catalogItemId, quantity]
+      required: [items]
+
+    UpdateOrderStatusBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+        notes:
+          type: string
+      required: [status]
+
+    OrderListResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required: [orders, total, page, limit]
+
+    OrderSummary:
+      type: object
+      properties:
+        byStatus:
+          type: array
+          items:
+            type: object
+            properties:
+              status:
+                type: string
+              count:
+                type: integer
+              revenue:
+                type: number
+        totalRevenue:
+          type: number
+        revenueToday:
+          type: number
+        revenueThisWeek:
+          type: number
+        averageOrderValue:
+          type: number
+      required: [byStatus, totalRevenue, revenueToday, revenueThisWeek, averageOrderValue]
+
+    # ─── Order Notes ───
+    OrderNote:
+      type: object
+      properties:
+        id:
+          type: integer
+        orderId:
+          type: integer
+        authorId:
+          type: integer
+        authorName:
+          type: string
+        content:
+          type: string
+        isEncrypted:
+          type: boolean
+        isInternal:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, orderId, authorId, content, isEncrypted, isInternal, createdAt]
+
+    OrderNotesResponse:
+      type: object
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderNote"
+      required: [notes]
+
+    AddOrderNoteBody:
+      type: object
+      properties:
+        content:
+          type: string
+        isEncrypted:
+          type: boolean
+        isInternal:
+          type: boolean
+      required: [content]
+
+    # ─── Users ───
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        clerkId:
+          type: string
+        email:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+        role:
+          type: string
+          enum: [global_admin, tenant_admin, staff, customer]
+        tenantId:
+          type: integer
+        tenantName:
+          type: string
+        mfaEnabled:
+          type: boolean
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, clerkId, email, role, isActive, createdAt]
+
+    UpdateUserRoleBody:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [tenant_admin, staff, customer]
+      required: [role]
+
+    UserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserProfile"
+        total:
+          type: integer
+      required: [users, total]
+
+    # ─── Audit Log ───
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenantId:
+          type: integer
+        actorId:
+          type: integer
+        actorEmail:
+          type: string
+        actorRole:
+          type: string
+        action:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        ipAddress:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, actorId, actorEmail, actorRole, action, createdAt]
+
+    AuditLogListResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogEntry"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required: [entries, total, page, limit]
+
+    # ─── AI ───
+    AiChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+      required: [role, content]
+
+    AiChatBody:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiChatMessage"
+        context:
+          type: object
+          properties:
+            currentCartItems:
+              type: array
+              items:
+                type: integer
+            currentOrderId:
+              type: integer
+      required: [messages]
+
+    AiChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+        suggestedItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        conversationId:
+          type: string
+      required: [reply]
+
+    AiUpsellBody:
+      type: object
+      properties:
+        cartItemIds:
+          type: array
+          items:
+            type: integer
+        orderId:
+          type: integer
+      required: [cartItemIds]
+
+    AiUpsellResponse:
+      type: object
+      properties:
+        suggestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        reasoning:
+          type: string
+      required: [suggestions]
+
+    # ─── Notifications ───
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        type:
+          type: string
+          enum: [order_status, onboarding_update, admin_alert, payment_update]
+        title:
+          type: string
+        message:
+          type: string
+        isRead:
+          type: boolean
+        resourceType:
+          type: string
+        resourceId:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, userId, type, title, message, isRead, createdAt]
+
+    NotificationListResponse:
+      type: object
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        unreadCount:
+          type: integer
+      required: [notifications, unreadCount]
+
+    # ─── Admin Stats ───
+    AdminStats:
+      type: object
+      properties:
+        totalTenants:
+          type: integer
+        activeTenants:
+          type: integer
+        pendingOnboardingRequests:
+          type: integer
+        totalOrders:
+          type: integer
+        totalRevenue:
+          type: number
+        newTenantsThisMonth:
+          type: integer
+        recentActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLogEntry"
+      required: [totalTenants, activeTenants, pendingOnboardingRequests, totalOrders, totalRevenue, newTenantsThisMonth, recentActivity]
+
+    # ─── MFA ───
+    MfaSetupResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+        qrCodeUrl:
+          type: string
+        backupCodes:
+          type: array
+          items:
+            type: string
+      required: [secret, qrCodeUrl]
+
+    MfaVerifyBody:
+      type: object
+      properties:
+        token:
+          type: string
+      required: [token]
+
+    MfaVerifyResponse:
+      type: object
+      properties:
+        verified:
+          type: boolean
+        message:
+          type: string
+      required: [verified]
+
+    # ─── Payments ───
+    TokenizePaymentBody:
+      type: object
+      properties:
+        orderId:
+          type: integer
+        amount:
+          type: number
+        currency:
+          type: string
+          default: usd
+      required: [orderId, amount]
+
+    TokenizePaymentResponse:
+      type: object
+      properties:
+        clientSecret:
+          type: string
+        paymentIntentId:
+          type: string
+        publishableKey:
+          type: string
+      required: [clientSecret, paymentIntentId]
+
+    ConfirmPaymentBody:
+      type: object
+      properties:
+        paymentIntentId:
+          type: string
+      required: [paymentIntentId]
