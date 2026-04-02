@@ -10,6 +10,11 @@ Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ord
 
 ## Product Features
 
+- **Dual-Brand Experience**: Lucifer Cruz branding (red #DC143C, silver, black) when logged out; Alavont Therapeutics (deep navy, electric blue) when logged in. Menu toggle on catalog page switches between Alavont catalog and Lucifer Cruz WooCommerce store (set `VITE_WOOCOMMERCE_URL` env var to activate).
+- **Simplified Onboarding**: Access request form collects only name, email, phone, and optional message — no company name, business type, or volume fields.
+- **Customer Home = Shop Experience**: Logged-in customers land on a combined Alavont logo + AI shopping assistant + featured product grid (thumbnails). Admin/staff still see the metrics dashboard.
+- **Catalog with Thumbnails**: Product grid with image thumbnails (click to enlarge/order), category filter pills, and brand toggle. Admins can add/edit items including image URL import. Lucifer Cruz tab links out to the WooCommerce store.
+- **AI Sales Assistant**: Friendly conversational assistant on both the dashboard (compact) and `/ai-concierge` (full page). Suggests products inline with thumbnail previews and links directly to catalog items.
 - **Lab Tech Shift Management**: Staff (Business Sitters) can clock in/out, enter starting inventory, and get live running totals (by item and by customer). Orders auto-assigned to active shift. Default tech receives orders when no shift is active.
 - **Hardened RBAC**: 4 roles — `global_admin`, `tenant_admin`, `staff`, `customer`
 - **Tenant Onboarding**: Formal approval workflow (`submitted → pending_review → approved → rejected → invited → activated`), with global admin gating
@@ -17,11 +22,13 @@ Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ord
 - **Staff/Admin Dashboards**: Order queues, user management, catalog CRUD
 - **Tokenized Payments**: Stripe PaymentIntent integration (sandbox-safe fallback without keys)
 - **Order Status Notifications**: Persistent notification records per user + browser push notifications
-- **AI Sales Concierge**: Chat + upsell suggestions powered by live catalog data (OpenAI GPT-4o-mini)
 - **MFA for Global Admin**: TOTP-based 2FA with backup codes
 - **Full Audit Logging**: Every privileged action logged with actor, IP, resource
 - **E2E Encryption Flag**: Client-side encrypted order notes (isEncrypted flag)
 - **Mobile-First Responsive**: Bottom tab nav on mobile, sidebar on desktop, safe-area padding
+
+## WooCommerce (Lucifer Cruz Menu)
+Set `VITE_WOOCOMMERCE_URL=https://your-store.com` in environment variables to enable the Lucifer Cruz menu tab. Product cards will link directly to the WooCommerce store for checkout. The Lucifer Cruz tab shows a "not connected" banner when the env var is absent.
 
 ## UI / UX
 
