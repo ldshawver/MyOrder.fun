@@ -1,12 +1,12 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
+import Stripe from "stripe";
 import { db, ordersTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
   ConfirmPaymentParams,
   ConfirmPaymentBody,
-  ConfirmPaymentResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, writeAuditLog } from "../lib/auth";
 import { logger } from "../lib/logger";
@@ -14,10 +14,16 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
 
+function getStripeClient(): Stripe | null {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  return new Stripe(key, { apiVersion: "2025-01-27.acacia" });
+}
+
 // POST /api/payments/tokenize
 // Creates a Stripe PaymentIntent and returns the client secret so the
-// browser can use Stripe Elements to collect card details server-side.
-// The raw card number NEVER touches our server.
+// browser can use Stripe Elements to collect card details.
+// Raw card numbers NEVER touch our server.
 router.post("/payments/tokenize", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = TokenizePaymentBody.safeParse(req.body);
@@ -26,7 +32,12 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, body.data.orderId)).limit(1);
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(eq(ordersTable.id, body.data.orderId))
+    .limit(1);
+
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
@@ -36,71 +47,67 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-  if (!stripeSecretKey) {
-    // Sandbox mode when Stripe not configured: return a mock token
+  const stripe = getStripeClient();
+
+  // Sandbox mode — Stripe keys not configured
+  if (!stripe) {
     const mockPaymentIntentId = `pi_sandbox_${Date.now()}`;
     const mockClientSecret = `${mockPaymentIntentId}_secret_sandbox`;
-    await db.update(ordersTable).set({
-      paymentToken: mockClientSecret,
-      paymentIntentId: mockPaymentIntentId,
-    }).where(eq(ordersTable.id, order.id));
+    await db
+      .update(ordersTable)
+      .set({ paymentToken: mockClientSecret, paymentIntentId: mockPaymentIntentId })
+      .where(eq(ordersTable.id, order.id));
 
-    res.json(TokenizePaymentResponse.parse({
-      clientSecret: mockClientSecret,
-      paymentIntentId: mockPaymentIntentId,
-      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "pk_test_sandbox",
-    }));
+    res.json(
+      TokenizePaymentResponse.parse({
+        clientSecret: mockClientSecret,
+        paymentIntentId: mockPaymentIntentId,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "pk_test_sandbox",
+      })
+    );
     return;
   }
 
-  // Real Stripe integration
+  // Real Stripe
   try {
     const amountCents = Math.round(body.data.amount * 100);
     const currency = body.data.currency ?? "usd";
 
-    const stripeResponse = await fetch("https://api.stripe.com/v1/payment_intents", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${stripeSecretKey}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        amount: String(amountCents),
-        currency,
-        metadata: JSON.stringify({ orderId: order.id }),
-      }),
+    const intent = await stripe.paymentIntents.create({
+      amount: amountCents,
+      currency,
+      metadata: { orderId: String(order.id) },
     });
 
-    if (!stripeResponse.ok) {
-      const errorText = await stripeResponse.text();
-      logger.error({ status: stripeResponse.status, error: errorText }, "Stripe payment intent creation failed");
-      res.status(500).json({ error: "Payment processing error" });
-      return;
-    }
+    await db
+      .update(ordersTable)
+      .set({
+        paymentToken: intent.client_secret,
+        paymentIntentId: intent.id,
+        paymentStatus: "pending",
+      })
+      .where(eq(ordersTable.id, order.id));
 
-    const intent = (await stripeResponse.json()) as { id: string; client_secret: string };
-    await db.update(ordersTable).set({
-      paymentToken: intent.client_secret,
-      paymentIntentId: intent.id,
-      paymentStatus: "pending",
-    }).where(eq(ordersTable.id, order.id));
-
-    res.json(TokenizePaymentResponse.parse({
-      clientSecret: intent.client_secret,
-      paymentIntentId: intent.id,
-      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
-    }));
+    res.json(
+      TokenizePaymentResponse.parse({
+        clientSecret: intent.client_secret,
+        paymentIntentId: intent.id,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? "",
+      })
+    );
   } catch (err) {
-    logger.error({ err }, "Payment tokenization failed");
+    logger.error({ err }, "Stripe payment intent creation failed");
     res.status(500).json({ error: "Payment processing error" });
   }
 });
 
 // POST /api/payments/:orderId/confirm
+// Verifies the PaymentIntent succeeded via Stripe, then marks the order as paid.
 router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const rawId = Array.isArray(req.params.orderId) ? req.params.orderId[0] : req.params.orderId;
+  const rawId = Array.isArray(req.params.orderId)
+    ? req.params.orderId[0]
+    : req.params.orderId;
   const params = ConfirmPaymentParams.safeParse({ orderId: parseInt(rawId, 10) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -112,7 +119,12 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
     return;
   }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.orderId)).limit(1);
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(eq(ordersTable.id, params.data.orderId))
+    .limit(1);
+
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
@@ -122,14 +134,16 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
     return;
   }
 
-  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  const stripe = getStripeClient();
+  const isSandbox = !stripe || body.data.paymentIntentId.includes("sandbox");
 
-  // Sandbox mode
-  if (!stripeSecretKey || body.data.paymentIntentId.includes("sandbox")) {
-    const [updated] = await db.update(ordersTable).set({
-      paymentStatus: "paid",
-      status: "confirmed",
-    }).where(eq(ordersTable.id, order.id)).returning();
+  // Sandbox mode — auto-confirm without calling Stripe
+  if (isSandbox) {
+    const [updated] = await db
+      .update(ordersTable)
+      .set({ paymentStatus: "paid", status: "confirmed" })
+      .where(eq(ordersTable.id, order.id))
+      .returning();
 
     await writeAuditLog({
       actorId: actor.id,
@@ -143,11 +157,17 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
       ipAddress: req.ip,
     });
 
-    const { ordersTable: ot, orderItemsTable, usersTable } = await import("@workspace/db");
-    const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, updated.id));
-    const customer = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
-      .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
-    const c = customer[0];
+    const { orderItemsTable, usersTable } = await import("@workspace/db");
+    const items = await db
+      .select()
+      .from(orderItemsTable)
+      .where(eq(orderItemsTable.orderId, updated.id));
+    const [c] = await db
+      .select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+      .from(usersTable)
+      .where(eq(usersTable.id, updated.customerId))
+      .limit(1);
+
     res.json({
       id: updated.id,
       tenantId: updated.tenantId,
@@ -161,7 +181,7 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
       total: parseFloat(updated.total as string),
       shippingAddress: updated.shippingAddress,
       notes: updated.notes,
-      items: items.map(i => ({
+      items: items.map((i) => ({
         id: i.id,
         catalogItemId: i.catalogItemId,
         catalogItemName: i.catalogItemName,
@@ -175,22 +195,20 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
     return;
   }
 
-  // Real Stripe: verify the payment intent succeeded
+  // Real Stripe — verify the PaymentIntent succeeded before confirming
   try {
-    const stripeResp = await fetch(`https://api.stripe.com/v1/payment_intents/${body.data.paymentIntentId}`, {
-      headers: { Authorization: `Bearer ${stripeSecretKey}` },
-    });
-    const intent = (await stripeResp.json()) as { status: string };
+    const intent = await stripe.paymentIntents.retrieve(body.data.paymentIntentId);
 
     if (intent.status !== "succeeded") {
       res.status(402).json({ error: `Payment not complete: ${intent.status}` });
       return;
     }
 
-    const [updated] = await db.update(ordersTable).set({
-      paymentStatus: "paid",
-      status: "confirmed",
-    }).where(eq(ordersTable.id, order.id)).returning();
+    const [updated] = await db
+      .update(ordersTable)
+      .set({ paymentStatus: "paid", status: "confirmed" })
+      .where(eq(ordersTable.id, order.id))
+      .returning();
 
     await writeAuditLog({
       actorId: actor.id,
