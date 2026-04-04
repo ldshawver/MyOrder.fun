@@ -13,9 +13,9 @@ COPY lib/api-client-react/package.json    lib/api-client-react/
 COPY artifacts/api-server/package.json    artifacts/api-server/
 
 # Install all workspace deps
-RUN pnpm install --frozen-lockfile --filter @workspace/db... \
-                                   --filter @workspace/api-zod... \
-                                   --filter @workspace/api-server...
+RUN pnpm install --no-frozen-lockfile --filter @workspace/db... \
+                                      --filter @workspace/api-zod... \
+                                      --filter @workspace/api-server...
 
 # Copy source
 COPY lib/db/                   lib/db/
@@ -41,7 +41,7 @@ COPY lib/api-zod/package.json          lib/api-zod/
 COPY lib/api-client-react/package.json lib/api-client-react/
 COPY artifacts/api-server/package.json artifacts/api-server/
 
-RUN pnpm install --frozen-lockfile --prod \
+RUN pnpm install --no-frozen-lockfile --prod \
                  --filter @workspace/db... \
                  --filter @workspace/api-zod... \
                  --filter @workspace/api-server...
