@@ -1,143 +1,145 @@
-# Alavont Therapeutics — Self-Hosting Guide
+# Alavont Therapeutics — Self-Hosting & Deployment Guide
 
-## IMPORTANT: Always run commands from the project root
+## How Deployments Work
 
 ```
-/opt/alavont/          ← ALL docker compose commands go here
-  docker-compose.yml   ← main compose file (at the ROOT, not in deploy/)
-  .env                 ← your secrets
-  deploy/              ← Dockerfiles, nginx config, SSL certs
+You push to GitHub main
+        ↓
+GitHub Actions SSHes into VPS
+        ↓
+git reset --hard origin/main   (fresh code)
+        ↓
+cd /opt/alavont/deploy
+docker compose build           (rebuild containers)
+docker compose run --rm migrate (schema updates)
+docker compose up -d           (restart services)
 ```
 
-If you are inside `/opt/alavont/deploy/` move up first:
-```bash
-cd /opt/alavont
-```
+**All `docker compose` commands run from `/opt/alavont/deploy/`** — that's where `docker-compose.yml` lives.
 
 ---
 
-## First-Time Setup (complete sequence)
+## First-Time VPS Setup
 
-### Step 1 — Get the code
+### 1. Clone the repo
 ```bash
-git clone <your-repo-url> /opt/alavont
-cd /opt/alavont           # ← stay here for all commands below
+git clone https://github.com/ldshawver/myorder.fun.git /opt/alavont
+cd /opt/alavont
 ```
 
-### Step 2 — Install Docker (if not already installed)
+### 2. Run setup script
 ```bash
 bash deploy/setup.sh
 ```
+Installs Docker and gets a free SSL certificate for `app.alavont.com`.
 
-### Step 3 — Create your environment file
+### 3. Create `.env` in the `deploy/` folder
 ```bash
+cd /opt/alavont/deploy
 cp .env.example .env
 nano .env
 ```
 
-Fill in every value. Minimum required to start:
-| Variable | Value |
-|---|---|
-| `POSTGRES_DB` | `alavont` |
-| `POSTGRES_USER` | `alavont` |
-| `POSTGRES_PASSWORD` | any strong password |
-| `DATABASE_URL` | `postgresql://alavont:YOUR_PASSWORD@db:5432/alavont` |
-| `CLERK_SECRET_KEY` | from clerk.com dashboard |
-| `VITE_CLERK_PUBLISHABLE_KEY` | from clerk.com dashboard |
-| `SESSION_SECRET` | run `openssl rand -base64 48` |
+Fill in every value (see `.env.example` for descriptions):
+- `POSTGRES_PASSWORD` — choose a strong password
+- `DATABASE_URL` — `postgresql://alavont:YOUR_PASSWORD@db:5432/alavont`
+- `CLERK_SECRET_KEY` + `VITE_CLERK_PUBLISHABLE_KEY` — from clerk.com
+- `SESSION_SECRET` — run `openssl rand -base64 48`
 
-### Step 4 — Build all containers
+### 4. Build and launch
 ```bash
+cd /opt/alavont/deploy
+
 docker compose build
-```
 
-### Step 5 — Start the database first, then run migrations
-```bash
-# Start only the database
+# Start the database first
 docker compose up -d db
 
-# Wait ~5 seconds, then create all tables
+# Create all tables (only needed on first deploy)
 docker compose run --rm migrate
-```
 
-You should see output like:
-```
-[✓] Changes applied
-```
-
-### Step 6 — Start everything
-```bash
+# Start everything
 docker compose up -d
 ```
 
-### Step 7 — Verify
+### 5. Promote your first admin
 ```bash
-docker compose ps                          # all containers should show "running"
-curl http://localhost/api/health           # should return {"status":"ok"}
-```
-
----
-
-## Promote First Admin
-
-After you sign in to the app for the first time:
-
-```bash
-# See who is in the database
+# See your user record (sign in to the app first)
 docker compose exec db psql -U alavont alavont \
   -c "SELECT id, email, clerk_id, role, created_at FROM users ORDER BY created_at DESC LIMIT 5;"
 
-# Promote by user ID (replace 1 with your actual ID)
+# Promote by ID
 docker compose exec api node scripts/promote-admin.mjs 1
 ```
 
-Then sign out and back in to see admin controls.
+---
+
+## GitHub Actions Auto-Deploy Setup
+
+Every push to `main` triggers an automatic deploy. You need to add three secrets in GitHub:
+
+**GitHub → your repo → Settings → Secrets → Actions**
+
+| Secret name | Value |
+|---|---|
+| `VPS_HOST` | `195.35.11.5` |
+| `VPS_USER` | `root` |
+| `VPS_SSH_KEY` | your SSH private key (see below) |
+
+### Generating the SSH deploy key (run on VPS)
+```bash
+ssh-keygen -t ed25519 -C "github-deploy" -f /root/.ssh/github_deploy
+# Press Enter for all prompts (no passphrase)
+
+# Allow this key to log in
+cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+
+# Print the PRIVATE key — copy this into GitHub secret VPS_SSH_KEY
+cat /root/.ssh/github_deploy
+```
+
+After adding the secret, any push to `main` on GitHub will auto-deploy to the VPS.
 
 ---
 
-## Updating the App
+## Updating the App (manual)
 
 ```bash
 cd /opt/alavont
-git pull
+git fetch --all
+git reset --hard origin/main
+
+cd /opt/alavont/deploy
 docker compose build
-docker compose run --rm migrate          # picks up any new schema changes
+docker compose run --rm migrate
 docker compose up -d
 ```
 
 ---
 
-## Useful Commands (all from /opt/alavont)
+## Useful Commands (all from /opt/alavont/deploy)
 
 | Task | Command |
 |---|---|
 | View API logs | `docker compose logs -f api` |
 | View all logs | `docker compose logs -f` |
-| Restart API only | `docker compose restart api` |
-| Stop everything | `docker compose down` |
+| Restart API | `docker compose restart api` |
+| Stop all | `docker compose down` |
 | Database shell | `docker compose exec db psql -U alavont alavont` |
 | List tables | `docker compose exec db psql -U alavont alavont -c "\dt"` |
 | Run migrations | `docker compose run --rm migrate` |
-| Promote admin | `docker compose exec api node scripts/promote-admin.mjs <id-or-email>` |
+| Promote admin | `docker compose exec api node scripts/promote-admin.mjs <id>` |
 
 ---
 
 ## Troubleshooting
 
-**`relation "users" does not exist`**
-→ Migrations haven't run. Run: `docker compose run --rm migrate`
-
-**`Cannot find module '/app/scripts/promote-admin.mjs'`**
-→ You need to rebuild the API container after the fix: `docker compose build api && docker compose up -d api`
-
-**`version is obsolete` warning**
-→ Harmless, now removed from the compose file.
-
-**Running from wrong directory**
-→ Always run from `/opt/alavont`, never from `/opt/alavont/deploy/`
-
-**SSL / Nginx won't start**
-→ Make sure `deploy/nginx/ssl/fullchain.pem` and `privkey.pem` exist. See setup.sh.
+| Error | Fix |
+|---|---|
+| `relation "users" does not exist` | Run `docker compose run --rm migrate` |
+| `Cannot find module '/app/scripts/...'` | Rebuild: `docker compose build api && docker compose up -d api` |
+| Nginx won't start | Check `deploy/nginx/ssl/` has `fullchain.pem` + `privkey.pem` |
+| GitHub Actions fails to connect | Verify `VPS_SSH_KEY` secret and that the public key is in `/root/.ssh/authorized_keys` |
 
 ---
 
@@ -151,5 +153,6 @@ ufw enable
 
 ## Backup Database
 ```bash
-docker compose exec db pg_dump -U alavont alavont > backup_$(date +%Y%m%d).sql
+cd /opt/alavont/deploy
+docker compose exec db pg_dump -U alavont alavont > ../backup_$(date +%Y%m%d).sql
 ```
