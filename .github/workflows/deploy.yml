@@ -51,30 +51,47 @@ jobs:
       - name: Migrate and deploy on VPS
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            set -e
             cd /opt/alavont/deploy
 
-            # 1. Tear down all stale compose state (keeps named volumes)
-            echo "▶ Cleaning stale containers and networks..."
-            docker compose down --remove-orphans 2>/dev/null || true
-            docker rm -f deploy-db-1 deploy-api-1 deploy-platform-1 deploy-nginx-1 deploy-migrate-1 2>/dev/null || true
-            docker network rm deploy_internal deploy_external 2>/dev/null || true
-            sleep 2
+            # ── Nuclear cleanup: bypass compose, wipe by name prefix ──
+            echo "▶ Force-removing all stale deploy containers..."
+            STALE=$(docker ps -aq --filter "name=deploy-")
+            if [ -n "$STALE" ]; then
+              docker rm -f $STALE
+            fi
 
-            # 2. Start DB fresh and wait until healthy
+            echo "▶ Removing stale deploy networks..."
+            NETS=$(docker network ls --filter "name=deploy_" -q)
+            if [ -n "$NETS" ]; then
+              docker network rm $NETS 2>/dev/null || true
+            fi
+
+            sleep 3
+            echo "  Cleanup done."
+
+            # ── From here on: fail fast ───────────────────────────────
+            set -e
+
+            # 1. Start DB and wait for it to be healthy
             echo "▶ Starting database..."
             docker compose up -d db
-            echo "▶ Waiting for database to be ready..."
-            timeout 60 sh -c \
-              'until docker compose exec -T db pg_isready -U "${POSTGRES_USER:-alavont}" -d "${POSTGRES_DB:-alavont}" 2>/dev/null; do sleep 2; done'
-            echo "  Database ready."
 
-            # 3. Run migrations
+            echo "▶ Waiting for database..."
+            for i in $(seq 1 30); do
+              if docker compose exec -T db pg_isready -q 2>/dev/null; then
+                echo "  Database ready after ${i}s."
+                break
+              fi
+              sleep 2
+            done
+            docker compose exec -T db pg_isready -q  # final check — exits 1 if still not ready
+
+            # 2. Run migrations
             echo "▶ Running migrations..."
             docker compose run --rm migrate
             echo "MIGRATE SUCCESS"
 
-            # 4. Bring up full stack
+            # 3. Bring up full stack
             echo "▶ Starting all services..."
             docker compose up -d
             echo "DEPLOY SUCCESS"
