@@ -1,0 +1,23 @@
+# Runs drizzle-kit push to create / update all database tables.
+# Used as a one-shot service: docker compose run --rm migrate
+FROM node:20-alpine
+
+RUN npm install -g pnpm@9
+
+WORKDIR /app
+
+# Copy workspace manifests
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY lib/db/package.json lib/db/
+
+# Install db package INCLUDING devDependencies (drizzle-kit lives there)
+RUN pnpm install --filter @workspace/db
+
+# Copy db source (schema + config)
+COPY lib/db/ lib/db/
+COPY tsconfig.base.json ./
+COPY tsconfig.json ./
+
+WORKDIR /app/lib/db
+
+CMD ["pnpm", "run", "push"]

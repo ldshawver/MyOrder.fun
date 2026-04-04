@@ -1,75 +1,97 @@
 # Alavont Therapeutics — Self-Hosting Guide
 
-## Architecture
-Docker Compose runs the full platform from the **project root**:
-- **Nginx** — reverse proxy + SSL termination (ports 80/443)
-- **API Server** — Node.js backend (internal only, never exposed)
-- **Platform** — React SPA served as static files (internal only)
-- **PostgreSQL** — database (internal only, never exposed)
+## IMPORTANT: Always run commands from the project root
 
-All `docker compose` commands are run from the **project root**, not this `deploy/` folder.
+```
+/opt/alavont/          ← ALL docker compose commands go here
+  docker-compose.yml   ← main compose file (at the ROOT, not in deploy/)
+  .env                 ← your secrets
+  deploy/              ← Dockerfiles, nginx config, SSL certs
+```
 
----
-
-## Requirements
-- Ubuntu 22.04 or Debian 12 VPS/dedicated server
-- At least 2 GB RAM, 20 GB disk
-- DNS A record: `app.alavont.com` → your server's IP address
-- Git installed on the server
-
----
-
-## First-Time Setup
-
-### 1. Clone the project onto the server
+If you are inside `/opt/alavont/deploy/` move up first:
 ```bash
-git clone <your-repo-url> /opt/alavont
 cd /opt/alavont
 ```
 
-### 2. Run the setup script (installs Docker + SSL cert)
-Run from the project root:
+---
+
+## First-Time Setup (complete sequence)
+
+### Step 1 — Get the code
+```bash
+git clone <your-repo-url> /opt/alavont
+cd /opt/alavont           # ← stay here for all commands below
+```
+
+### Step 2 — Install Docker (if not already installed)
 ```bash
 bash deploy/setup.sh
 ```
-This installs Docker and obtains a free SSL certificate from Let's Encrypt.
 
-### 3. Create your environment file (at project root)
+### Step 3 — Create your environment file
 ```bash
 cp .env.example .env
-nano .env        # fill in every value — see comments inside
+nano .env
 ```
 
-**Critical values to set:**
-| Variable | Where to get it |
+Fill in every value. Minimum required to start:
+| Variable | Value |
 |---|---|
-| `CLERK_SECRET_KEY` | [clerk.com](https://dashboard.clerk.com) → API Keys |
-| `VITE_CLERK_PUBLISHABLE_KEY` | Same Clerk dashboard |
-| `SESSION_SECRET` | Run: `openssl rand -base64 48` |
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) |
-| `STRIPE_SECRET_KEY` | [dashboard.stripe.com](https://dashboard.stripe.com) |
-| `TWILIO_*` | [console.twilio.com](https://console.twilio.com) |
-| `POSTGRES_PASSWORD` | Choose a strong random password |
+| `POSTGRES_DB` | `alavont` |
+| `POSTGRES_USER` | `alavont` |
+| `POSTGRES_PASSWORD` | any strong password |
+| `DATABASE_URL` | `postgresql://alavont:YOUR_PASSWORD@db:5432/alavont` |
+| `CLERK_SECRET_KEY` | from clerk.com dashboard |
+| `VITE_CLERK_PUBLISHABLE_KEY` | from clerk.com dashboard |
+| `SESSION_SECRET` | run `openssl rand -base64 48` |
 
-### 4. Update Clerk for your domain
-In your Clerk dashboard → **Domains** → add `app.alavont.com` and switch to the production instance (use live keys in your `.env`).
-
-### 5. Build and launch (from project root)
+### Step 4 — Build all containers
 ```bash
 docker compose build
+```
+
+### Step 5 — Start the database first, then run migrations
+```bash
+# Start only the database
+docker compose up -d db
+
+# Wait ~5 seconds, then create all tables
+docker compose run --rm migrate
+```
+
+You should see output like:
+```
+[✓] Changes applied
+```
+
+### Step 6 — Start everything
+```bash
 docker compose up -d
 ```
 
-### 6. Run database migrations (first deploy only)
+### Step 7 — Verify
 ```bash
-docker compose exec api sh -c 'cd /app && node lib/db/dist/migrate.mjs'
+docker compose ps                          # all containers should show "running"
+curl http://localhost/api/health           # should return {"status":"ok"}
 ```
 
-### 7. Verify
+---
+
+## Promote First Admin
+
+After you sign in to the app for the first time:
+
 ```bash
-docker compose ps                             # all 4 containers: "Up"
-curl https://app.alavont.com/api/health       # HTTP 200
+# See who is in the database
+docker compose exec db psql -U alavont alavont \
+  -c "SELECT id, email, clerk_id, role, created_at FROM users ORDER BY created_at DESC LIMIT 5;"
+
+# Promote by user ID (replace 1 with your actual ID)
+docker compose exec api node scripts/promote-admin.mjs 1
 ```
+
+Then sign out and back in to see admin controls.
 
 ---
 
@@ -79,34 +101,47 @@ curl https://app.alavont.com/api/health       # HTTP 200
 cd /opt/alavont
 git pull
 docker compose build
+docker compose run --rm migrate          # picks up any new schema changes
 docker compose up -d
 ```
 
 ---
 
-## Useful Commands (all from project root)
+## Useful Commands (all from /opt/alavont)
 
 | Task | Command |
 |---|---|
-| View live logs | `docker compose logs -f api` |
-| Restart a service | `docker compose restart api` |
+| View API logs | `docker compose logs -f api` |
+| View all logs | `docker compose logs -f` |
+| Restart API only | `docker compose restart api` |
 | Stop everything | `docker compose down` |
 | Database shell | `docker compose exec db psql -U alavont alavont` |
-| Check SSL expiry | `certbot certificates` |
+| List tables | `docker compose exec db psql -U alavont alavont -c "\dt"` |
+| Run migrations | `docker compose run --rm migrate` |
+| Promote admin | `docker compose exec api node scripts/promote-admin.mjs <id-or-email>` |
 
 ---
 
-## SSL Certificate Renewal
-Certbot auto-renewal is configured via cron during setup. To renew manually:
-```bash
-certbot renew
-docker compose restart nginx
-```
+## Troubleshooting
+
+**`relation "users" does not exist`**
+→ Migrations haven't run. Run: `docker compose run --rm migrate`
+
+**`Cannot find module '/app/scripts/promote-admin.mjs'`**
+→ You need to rebuild the API container after the fix: `docker compose build api && docker compose up -d api`
+
+**`version is obsolete` warning**
+→ Harmless, now removed from the compose file.
+
+**Running from wrong directory**
+→ Always run from `/opt/alavont`, never from `/opt/alavont/deploy/`
+
+**SSL / Nginx won't start**
+→ Make sure `deploy/nginx/ssl/fullchain.pem` and `privkey.pem` exist. See setup.sh.
 
 ---
 
 ## Firewall
-Only ports 80 and 443 should be publicly accessible:
 ```bash
 ufw allow 22/tcp
 ufw allow 80/tcp
@@ -114,26 +149,7 @@ ufw allow 443/tcp
 ufw enable
 ```
 
----
-
-## Backup PostgreSQL
+## Backup Database
 ```bash
 docker compose exec db pg_dump -U alavont alavont > backup_$(date +%Y%m%d).sql
-```
-
----
-
-## File Layout
-```
-/opt/alavont/                ← project root (run all commands here)
-  docker-compose.yml         ← main compose file
-  .env                       ← your secrets (never commit this)
-  .env.example               ← template
-  deploy/
-    Dockerfile.api           ← API server build
-    Dockerfile.platform      ← frontend build
-    nginx/
-      nginx.conf             ← reverse proxy config
-      ssl/                   ← SSL certs go here
-    setup.sh                 ← first-time setup script
 ```
