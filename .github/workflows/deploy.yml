@@ -41,38 +41,46 @@ jobs:
       # ── 5. Rebuild and restart containers on VPS ───────────────────
       - name: Build images on VPS
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "cd /opt/alavont/deploy && docker compose build --pull \
-             && echo 'BUILD SUCCESS' || (echo 'BUILD FAILED'; exit 1)"
-
-      - name: Stop app containers (preserve DB)
-        run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -e
             cd /opt/alavont/deploy
-            # Stop and remove app containers + networks but keep DB volume
-            docker compose rm -sf nginx api platform migrate 2>/dev/null || true
-            # Wait for network endpoints to fully detach
-            sleep 2
-            echo "STOP SUCCESS"
+            docker compose build --pull
+            echo "BUILD SUCCESS"
           ENDSSH
 
-      - name: Run database migrations
+      - name: Migrate and deploy on VPS
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
             cd /opt/alavont/deploy
-            docker compose run --rm migrate \
-              && echo "MIGRATE SUCCESS" || (echo "MIGRATE FAILED"; exit 1)
-          ENDSSH
 
-      - name: Start all services
-        run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            set -e
-            cd /opt/alavont/deploy
-            docker compose up -d --remove-orphans \
-              && echo "DEPLOY SUCCESS" || (echo "DEPLOY FAILED"; exit 1)
+            # 1. Ensure DB is up and healthy (no-op if already running)
+            echo "▶ Starting database..."
+            docker compose up -d db
+            echo "▶ Waiting for database to be ready..."
+            timeout 60 sh -c '
+              until docker compose exec -T db pg_isready -U "${POSTGRES_USER:-alavont}" -d "${POSTGRES_DB:-alavont}" 2>/dev/null; do
+                sleep 2
+              done
+            '
+            echo "  Database ready."
+
+            # 2. Stop only app containers — leave db and its network intact
+            echo "▶ Stopping app containers (db stays up)..."
+            docker compose stop nginx api platform 2>/dev/null || true
+
+            # 3. Run migrations against the live DB
+            echo "▶ Running migrations..."
+            docker compose run --rm migrate
+            echo "MIGRATE SUCCESS"
+
+            # 4. Bring up the full stack — recreates stopped containers
+            echo "▶ Starting all services..."
+            docker compose up -d --remove-orphans
+            echo "DEPLOY SUCCESS"
+
             docker image prune -f
+
             echo ""
             echo "════════════════════════════════════"
             echo "  DEPLOY SUCCESS — $(date -u)"
