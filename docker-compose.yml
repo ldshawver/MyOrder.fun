@@ -23,7 +23,7 @@ services:
   # ── API Server ────────────────────────────────────────────
   api:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile.api
     restart: unless-stopped
     environment:
@@ -48,7 +48,7 @@ services:
   # ── Platform (SPA) ────────────────────────────────────────
   platform:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile.platform
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
@@ -65,8 +65,8 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - api

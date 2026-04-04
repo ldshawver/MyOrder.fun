@@ -47,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Self-hosting secrets
+.env
+deploy/nginx/ssl/

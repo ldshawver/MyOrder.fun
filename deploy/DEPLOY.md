@@ -1,11 +1,13 @@
 # Alavont Therapeutics — Self-Hosting Guide
 
-## What this is
-Docker Compose setup that runs the full Alavont platform on your own server:
+## Architecture
+Docker Compose runs the full platform from the **project root**:
 - **Nginx** — reverse proxy + SSL termination (ports 80/443)
-- **API Server** — Node.js backend (internal only)
+- **API Server** — Node.js backend (internal only, never exposed)
 - **Platform** — React SPA served as static files (internal only)
 - **PostgreSQL** — database (internal only, never exposed)
+
+All `docker compose` commands are run from the **project root**, not this `deploy/` folder.
 
 ---
 
@@ -25,16 +27,17 @@ git clone <your-repo-url> /opt/alavont
 cd /opt/alavont
 ```
 
-### 2. Run the setup script (installs Docker + gets SSL cert)
+### 2. Run the setup script (installs Docker + SSL cert)
+Run from the project root:
 ```bash
 bash deploy/setup.sh
 ```
+This installs Docker and obtains a free SSL certificate from Let's Encrypt.
 
-### 3. Create your environment file
+### 3. Create your environment file (at project root)
 ```bash
-cd deploy
 cp .env.example .env
-nano .env        # fill in every value — see comments in the file
+nano .env        # fill in every value — see comments inside
 ```
 
 **Critical values to set:**
@@ -49,25 +52,23 @@ nano .env        # fill in every value — see comments in the file
 | `POSTGRES_PASSWORD` | Choose a strong random password |
 
 ### 4. Update Clerk for your domain
-In your Clerk dashboard → **Domains** → add `app.alavont.com` as an authorized domain and set it as the production instance URL.
+In your Clerk dashboard → **Domains** → add `app.alavont.com` and switch to the production instance (use live keys in your `.env`).
 
-### 5. Build and launch
+### 5. Build and launch (from project root)
 ```bash
-cd /opt/alavont/deploy
 docker compose build
 docker compose up -d
 ```
 
 ### 6. Run database migrations (first deploy only)
 ```bash
-docker compose exec api sh -c \
-  'cd /app && node --import tsx/esm lib/db/src/migrate.ts'
+docker compose exec api sh -c 'cd /app && node lib/db/dist/migrate.mjs'
 ```
 
 ### 7. Verify
 ```bash
-docker compose ps           # all containers should be "Up"
-curl https://app.alavont.com/api/health
+docker compose ps                             # all 4 containers: "Up"
+curl https://app.alavont.com/api/health       # HTTP 200
 ```
 
 ---
@@ -77,14 +78,13 @@ curl https://app.alavont.com/api/health
 ```bash
 cd /opt/alavont
 git pull
-cd deploy
 docker compose build
-docker compose up -d --no-deps --build api platform
+docker compose up -d
 ```
 
 ---
 
-## Useful Commands
+## Useful Commands (all from project root)
 
 | Task | Command |
 |---|---|
@@ -97,7 +97,7 @@ docker compose up -d --no-deps --build api platform
 ---
 
 ## SSL Certificate Renewal
-Certbot auto-renewal is configured via cron. To renew manually:
+Certbot auto-renewal is configured via cron during setup. To renew manually:
 ```bash
 certbot renew
 docker compose restart nginx
@@ -114,11 +114,26 @@ ufw allow 443/tcp
 ufw enable
 ```
 
-The API server, PostgreSQL, and platform container are **never** exposed directly to the internet.
-
 ---
 
 ## Backup PostgreSQL
 ```bash
 docker compose exec db pg_dump -U alavont alavont > backup_$(date +%Y%m%d).sql
+```
+
+---
+
+## File Layout
+```
+/opt/alavont/                ← project root (run all commands here)
+  docker-compose.yml         ← main compose file
+  .env                       ← your secrets (never commit this)
+  .env.example               ← template
+  deploy/
+    Dockerfile.api           ← API server build
+    Dockerfile.platform      ← frontend build
+    nginx/
+      nginx.conf             ← reverse proxy config
+      ssl/                   ← SSL certs go here
+    setup.sh                 ← first-time setup script
 ```
