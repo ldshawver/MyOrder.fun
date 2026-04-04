@@ -7,7 +7,7 @@
 # ═══════════════════════════════════════════════════════════
 set -e
 
-DOMAIN="app.alavont.com"
+DOMAIN="myorder.fun"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEPLOY_DIR="${PROJECT_ROOT}/deploy"
 

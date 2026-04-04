@@ -31,7 +31,7 @@ cd /opt/alavont
 ```bash
 bash deploy/setup.sh
 ```
-Installs Docker and gets a free SSL certificate for `app.alavont.com`.
+Installs Docker and gets a free SSL certificate for `myorder.fun`.
 
 ### 3. Create `.env` in the `deploy/` folder
 ```bash
