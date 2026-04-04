@@ -2,12 +2,17 @@
 # ═══════════════════════════════════════════════════════════
 #  Alavont Therapeutics — Server Setup Script
 #  Run once on a fresh Ubuntu 22.04 / Debian 12 server.
-#  Usage: bash setup.sh
+#
+#  Usage (from the project root on the server):
+#    bash deploy/setup.sh
 # ═══════════════════════════════════════════════════════════
 set -e
 
 DOMAIN="app.alavont.com"
-DEPLOY_DIR="/opt/alavont"
+DEPLOY_DIR="$(cd "$(dirname "$0")/.." && pwd)"   # project root
+
+echo ""
+echo "▶ Project root detected: ${DEPLOY_DIR}"
 
 echo ""
 echo "▶ Installing Docker..."
@@ -30,7 +35,7 @@ echo "▶ Obtaining SSL certificate for ${DOMAIN}..."
 echo "   (Make sure your DNS A record points ${DOMAIN} → this server's IP first!)"
 read -p "   Press Enter to continue, Ctrl+C to skip SSL setup..."
 certbot certonly --standalone -d "${DOMAIN}" --non-interactive --agree-tos \
-  --register-unsafely-without-email || echo "SSL cert skipped — you can re-run certbot manually."
+  --register-unsafely-without-email || echo "SSL cert skipped — re-run certbot manually when DNS is ready."
 
 echo ""
 echo "▶ Copying SSL certs to deploy/nginx/ssl/ ..."
@@ -45,20 +50,19 @@ fi
 
 echo ""
 echo "▶ Setting up auto-renewal cron for SSL..."
-(crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet && docker compose -f ${DEPLOY_DIR}/deploy/docker-compose.yml restart nginx") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet && docker compose -f ${DEPLOY_DIR}/docker-compose.yml restart nginx") | crontab -
 
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo "  Setup complete!"
 echo ""
-echo "  Next steps:"
-echo "  1. cd ${DEPLOY_DIR}/deploy"
+echo "  Next steps (all from the project root: ${DEPLOY_DIR}):"
+echo ""
+echo "  1. cd ${DEPLOY_DIR}"
 echo "  2. cp .env.example .env"
-echo "  3. nano .env   (fill in all secrets)"
+echo "  3. nano .env           (fill in all secrets)"
 echo "  4. docker compose build"
 echo "  5. docker compose up -d"
-echo "  6. docker compose exec api node -e \\"
-echo '       "const {db,usersTable}=require(\"@workspace/db\");console.log(\"DB OK\")"'
 echo ""
 echo "  To run DB migrations (first deploy only):"
 echo "  docker compose exec api sh -c 'cd /app && node lib/db/dist/migrate.mjs'"
