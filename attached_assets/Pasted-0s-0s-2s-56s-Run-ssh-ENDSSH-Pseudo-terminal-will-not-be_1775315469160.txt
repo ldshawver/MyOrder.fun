@@ -1,0 +1,448 @@
+0s
+0s
+2s
+56s
+Run ssh ***@*** << 'ENDSSH'
+Pseudo-terminal will not be allocated because stdin is not a terminal.
+Welcome to Ubuntu 24.04.4 LTS (GNU/Linux 6.8.0-107-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Sat Apr  4 15:09:28 UTC 2026
+
+  System load:  0.06               Processes:             154
+  Usage of /:   14.3% of 47.39GB   Users logged in:       1
+  Memory usage: 27%                IPv4 address for eth0: ***
+  Swap usage:   0%                 IPv6 address for eth0: 2a02:4780:10:cf48::1
+
+ * Strictly confined Kubernetes makes edge and IoT secure. Learn how MicroK8s
+   just raised the bar for easy, resilient and secure K8s cluster deployment.
+
+   https://ubuntu.com/engage/secure-kubernetes-at-the-edge
+
+Expanded Security Maintenance for Applications is not enabled.
+
+5 updates can be applied immediately.
+To see these additional updates run: apt list --upgradable
+
+Enable ESM Apps to receive additional future security updates.
+See https://ubuntu.com/esm or run: sudo pro status
+
+
+1 updates could not be installed automatically. For more details,
+see /var/log/unattended-upgrades/unattended-upgrades.log
+
+▶ Rebuilding containers...
+ Image deploy-platform Building 
+ Image deploy-migrate Building 
+ Image deploy-api Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.53kB done
+#1 DONE 0.0s
+
+#2 [migrate internal] load build definition from Dockerfile.migrate
+#2 transferring dockerfile: 621B 0.0s done
+#2 DONE 0.0s
+
+#3 [api internal] load build definition from Dockerfile.api
+#3 transferring dockerfile: 2.26kB done
+#3 DONE 0.0s
+
+#4 [platform internal] load build definition from Dockerfile.platform
+#4 transferring dockerfile: 1.77kB 0.0s done
+#4 DONE 0.0s
+
+#5 [platform internal] load metadata for docker.io/library/node:20-alpine
+#5 DONE 0.3s
+
+#6 [platform internal] load metadata for docker.io/library/nginx:alpine
+#6 DONE 0.3s
+
+#7 [platform internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [migrate internal] load build context
+#8 DONE 0.0s
+
+#9 [migrate builder  1/17] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#9 resolve docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#9 ...
+
+#10 [api internal] load build context
+#10 transferring context: 542.64kB 0.2s done
+#10 DONE 0.2s
+
+#11 [platform internal] load build context
+#11 transferring context: 1.47MB 0.2s done
+#11 DONE 0.2s
+
+#12 [platform runtime 1/3] FROM docker.io/library/nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1
+#12 resolve docker.io/library/nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1 0.2s done
+#12 DONE 0.3s
+
+#9 [api builder  1/17] FROM docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c
+#9 resolve docker.io/library/node:20-alpine@sha256:f598378b5240225e6beab68fa9f356db1fb8efe55173e6d4d8153113bb8f333c 0.2s done
+#9 DONE 0.3s
+
+#8 [migrate internal] load build context
+#8 transferring context: 265.18kB 0.0s done
+#8 DONE 0.0s
+
+#13 [migrate builder  5/17] COPY lib/db/package.json               lib/db/
+#13 CACHED
+
+#14 [platform builder  4/17] COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+#14 CACHED
+
+#15 [api builder  7/16] COPY lib/api-client-react/package.json    lib/api-client-react/
+#15 CACHED
+
+#16 [api builder  5/16] COPY lib/db/package.json                  lib/db/
+#16 CACHED
+
+#17 [api builder  6/16] COPY lib/api-zod/package.json             lib/api-zod/
+#17 CACHED
+
+#18 [api builder  4/16] COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+#18 CACHED
+
+#19 [platform builder  7/17] COPY lib/api-client-react/package.json lib/api-client-react/
+#19 CACHED
+
+#20 [platform builder  8/17] COPY artifacts/platform/package.json   artifacts/platform/
+#20 CACHED
+
+#21 [platform builder  6/17] COPY lib/api-zod/package.json          lib/api-zod/
+#21 CACHED
+
+#22 [api builder  8/16] COPY artifacts/api-server/package.json    artifacts/api-server/
+#22 CACHED
+
+#23 [migrate  5/10] COPY lib/db/package.json lib/db/
+#23 CACHED
+
+#24 [migrate  4/10] COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+#24 CACHED
+
+#25 [migrate builder  2/17] RUN npm install -g pnpm@9
+#25 CACHED
+
+#26 [migrate builder  3/17] WORKDIR /app
+#26 CACHED
+
+#27 [platform builder  9/17] RUN pnpm install --no-frozen-lockfile                  --filter @workspace/api-client-react...                  --filter @workspace/platform...
+#27 CACHED
+
+#28 [platform builder 10/17] COPY lib/db/               lib/db/
+#28 DONE 0.1s
+
+#29 [migrate  6/10] RUN pnpm install --filter @workspace/db
+#29 ...
+
+#30 [platform builder 11/17] COPY lib/api-zod/          lib/api-zod/
+#30 DONE 0.3s
+
+#31 [platform builder 12/17] COPY lib/api-client-react/ lib/api-client-react/
+#31 DONE 0.1s
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 ...
+
+#33 [platform builder 13/17] COPY artifacts/platform/   artifacts/platform/
+#33 DONE 0.3s
+
+#34 [platform builder 14/17] COPY attached_assets/      attached_assets/
+#34 DONE 0.1s
+
+#35 [platform builder 15/17] COPY tsconfig.base.json    ./
+#35 DONE 0.0s
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 ...
+
+#36 [platform builder 16/17] COPY tsconfig.json         ./
+#36 DONE 0.1s
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 3.134 
+#37 3.134 > @workspace/platform@0.0.0 build /app/artifacts/platform
+#37 3.134 > vite build --config vite.config.ts
+#37 3.134 
+#37 ...
+
+#29 [migrate  6/10] RUN pnpm install --filter @workspace/db
+#29 5.235 
+#29 5.235    ╭───────────────────────────────────────────────────────────────────╮
+#29 5.235    │                                                                   │
+#29 5.235    │                Update available! 9.15.9 → 10.33.0.                │
+#29 5.235    │   Changelog: https://github.com/pnpm/pnpm/releases/tag/v10.33.0   │
+#29 5.235    │                 Run "pnpm add -g pnpm" to update.                 │
+#29 5.235    │                                                                   │
+#29 5.235    ╰───────────────────────────────────────────────────────────────────╯
+#29 5.235 
+#29 6.213 Progress: resolved 0, reused 0, downloaded 1, added 0
+#29 7.231 Progress: resolved 3, reused 0, downloaded 3, added 0
+#29 9.350 Progress: resolved 3, reused 0, downloaded 4, added 0
+#29 10.36 Progress: resolved 5, reused 0, downloaded 5, added 0
+#29 11.37 Progress: resolved 9, reused 0, downloaded 9, added 0
+#29 12.42 Progress: resolved 20, reused 0, downloaded 17, added 0
+#29 ...
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 3.183 Scope: 3 of 5 workspace projects
+#32 5.242 Progress: resolved 1, reused 0, downloaded 0, added 0
+#32 6.260 Progress: resolved 16, reused 0, downloaded 0, added 0
+#32 7.268 Progress: resolved 22, reused 0, downloaded 0, added 0
+#32 7.481 
+#32 7.481    ╭───────────────────────────────────────────────────────────────────╮
+#32 7.481    │                                                                   │
+#32 7.481    │                Update available! 9.15.9 → 10.33.0.                │
+#32 7.481    │   Changelog: https://github.com/pnpm/pnpm/releases/tag/v10.33.0   │
+#32 7.481    │                 Run "pnpm add -g pnpm" to update.                 │
+#32 7.481    │                                                                   │
+#32 7.481    ╰───────────────────────────────────────────────────────────────────╯
+#32 7.481 
+#32 8.272 Progress: resolved 27, reused 0, downloaded 0, added 0
+#32 9.305 Progress: resolved 29, reused 0, downloaded 0, added 0
+#32 10.44 Progress: resolved 32, reused 0, downloaded 0, added 0
+#32 11.50 Progress: resolved 69, reused 0, downloaded 0, added 0
+#32 12.53 Progress: resolved 118, reused 0, downloaded 0, added 0
+#32 ...
+
+#29 [migrate  6/10] RUN pnpm install --filter @workspace/db
+#29 13.53 Progress: resolved 74, reused 0, downloaded 30, added 0
+#29 14.87  WARN  2 deprecated subdependencies found: @esbuild-kit/core-utils@3.3.2, @esbuild-kit/esm-loader@2.6.5
+#29 14.97 Progress: resolved 113, reused 0, downloaded 34, added 0
+#29 15.03 .                                        |  +41 ++++
+#29 15.99 Progress: resolved 113, reused 0, downloaded 35, added 28
+#29 16.45 Progress: resolved 113, reused 0, downloaded 41, added 41, done
+#29 16.81 .../esbuild@0.18.20/node_modules/esbuild postinstall$ node install.js
+#29 16.81 .../esbuild@0.25.12/node_modules/esbuild postinstall$ node install.js
+#29 16.81 .../esbuild@0.27.3/node_modules/esbuild postinstall$ node install.js
+#29 ...
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 6.146 vite v7.3.1 building client environment for production...
+#37 6.671 transforming...
+#37 14.33 src/components/ui/tooltip.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+#37 ...
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 13.58 Progress: resolved 181, reused 0, downloaded 0, added 0
+#32 14.61 Progress: resolved 234, reused 0, downloaded 0, added 0
+#32 15.81 Progress: resolved 310, reused 0, downloaded 0, added 0
+#32 16.92  WARN  3 deprecated subdependencies found: @esbuild-kit/core-utils@3.3.2, @esbuild-kit/esm-loader@2.6.5, scmp@2.1.0
+#32 17.52 Progress: resolved 319, reused 0, downloaded 0, added 0
+#32 17.55 Progress: resolved 319, reused 0, downloaded 0, added 0, done
+#32 17.56  WARN  Issues with peer dependencies found
+#32 17.56 artifacts/api-server
+#32 17.56 └─┬ esbuild-plugin-pino 2.3.3
+#32 17.56   └── ✕ unmet peer esbuild@">=0.25.0 <=0.25.8": found 0.27.3
+#32 17.56 
+#32 18.40 .                                        | +244 ++++++++++++++++++++++++
+#32 ...
+
+#29 [migrate  6/10] RUN pnpm install --filter @workspace/db
+#29 17.68 .../esbuild@0.18.20/node_modules/esbuild postinstall: Done
+#29 17.71 .../esbuild@0.25.12/node_modules/esbuild postinstall: Done
+#29 17.72 .../esbuild@0.27.3/node_modules/esbuild postinstall: Done
+#29 22.73 . preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+#29 22.76 . preinstall: Done
+#29 22.79 Done in 21.8s using pnpm v9.15.9
+#29 DONE 23.2s
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 ...
+
+#38 [migrate  7/10] COPY lib/db/ lib/db/
+#38 DONE 0.4s
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 22.37 src/components/ui/select.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+#37 22.43 src/components/ui/label.tsx (2:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+#37 ...
+
+#39 [migrate  8/10] COPY tsconfig.base.json ./
+#39 DONE 0.1s
+
+#40 [migrate  9/10] COPY tsconfig.json ./
+#40 DONE 0.1s
+
+#41 [migrate 10/10] WORKDIR /app/lib/db
+#41 DONE 0.1s
+
+#42 [migrate] exporting to image
+#42 exporting layers
+#42 ...
+
+#32 [api builder  9/16] RUN pnpm install --no-frozen-lockfile --filter @workspace/db...                                       --filter @workspace/api-zod...                                       --filter @workspace/api-server...
+#32 39.17 .../node_modules/@clerk/shared postinstall$ node ./scripts/postinstall.mjs
+#32 39.30 .../esbuild@0.27.3/node_modules/esbuild postinstall$ node install.js
+#32 39.31 .../esbuild@0.18.20/node_modules/esbuild postinstall$ node install.js
+#32 39.32 .../esbuild@0.25.12/node_modules/esbuild postinstall$ node install.js
+#32 40.11 .../node_modules/@clerk/shared postinstall: Attention: Clerk now collects telemetry data from its SDKs when connected to development instances.
+#32 40.11 .../node_modules/@clerk/shared postinstall: The data collected is used to inform Clerk's product roadmap.
+#32 40.13 .../node_modules/@clerk/shared postinstall: To learn more, including how to opt-out from the telemetry program, visit: https://clerk.com/docs/telemetry.
+#32 40.20 .../node_modules/@clerk/shared postinstall: Done
+#32 40.39 .../esbuild@0.27.3/node_modules/esbuild postinstall: Done
+#32 40.48 .../esbuild@0.18.20/node_modules/esbuild postinstall: Done
+#32 40.52 .../esbuild@0.25.12/node_modules/esbuild postinstall: Done
+#32 42.70 . preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+#32 42.73 . preinstall: Done
+#32 43.46 Done in 42.5s using pnpm v9.15.9
+#32 DONE 44.5s
+
+#42 [migrate] exporting to image
+#42 exporting layers 16.6s done
+#42 exporting manifest sha256:52d28966265986f3c5d2c29b67525be48f3f15b108c265f8aba188df9d86c85c 0.0s done
+#42 exporting config sha256:cfcb0800dad4c1fd8e242c563300f9272d8d1fbd4c0f0e40aec05497a3a789d8 0.0s done
+#42 exporting attestation manifest sha256:50e7ec48b47afc10d8185496423aac072c50d039fe35484a38ca2cb85cc6fa2d 0.0s done
+#42 exporting manifest list sha256:b76164fc21a431e12565a602089ef9cbb816f3eb6bc5f03da4a188da1106d86a 0.0s done
+#42 naming to docker.io/library/deploy-migrate:latest done
+#42 unpacking to docker.io/library/deploy-migrate:latest
+#42 ...
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 44.42 ✓ 1934 modules transformed.
+#37 ...
+
+#43 [api builder 10/16] COPY lib/db/                   lib/db/
+#43 DONE 1.1s
+
+#44 [api builder 11/16] COPY lib/api-zod/              lib/api-zod/
+#44 DONE 0.1s
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 ...
+
+#45 [api builder 12/16] COPY lib/api-client-react/     lib/api-client-react/
+#45 DONE 0.1s
+
+#46 [api builder 13/16] COPY artifacts/api-server/     artifacts/api-server/
+#46 DONE 0.1s
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 ...
+
+#47 [api builder 14/16] COPY tsconfig.base.json        ./
+#47 DONE 0.1s
+
+#48 [api builder 15/16] COPY tsconfig.json             ./
+#48 DONE 0.1s
+
+#37 [platform builder 17/17] RUN pnpm --filter @workspace/platform run build
+#37 47.57 rendering chunks...
+#37 47.62 computing gzip size...
+#37 47.71 dist/public/index.html                   0.74 kB │ gzip:   0.41 kB
+#37 47.72 
+#37 47.72 (!) Some chunks are larger than 500 kB after minification. Consider:
+#37 47.72 - Using dynamic import() to code-split the application
+#37 47.72 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+#37 47.72 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+#37 47.72 dist/public/assets/index-DpGeptuy.css  126.61 kB │ gzip:  19.88 kB
+#37 47.72 dist/public/assets/index-CzRwGQ-M.js   718.51 kB │ gzip: 204.31 kB
+#37 47.72 ✓ built in 41.40s
+#37 DONE 48.2s
+
+#49 [api builder 16/16] RUN pnpm --filter @workspace/api-server run build
+#49 3.128 
+#49 3.128 > @workspace/api-server@0.0.0 build /app/artifacts/api-server
+#49 3.128 > node ./build.mjs
+#49 3.128 
+#49 ...
+
+#12 [platform runtime 1/3] FROM docker.io/library/nginx:alpine@sha256:e7257f1ef28ba17cf7c248cb8ccf6f0c6e0228ab9c315c152f9c203cd34cf6d1
+#12 CACHED
+
+#50 [platform runtime 2/3] COPY --from=builder /app/artifacts/platform/dist/public /usr/share/nginx/html
+#50 DONE 0.2s
+
+#49 [api builder 16/16] RUN pnpm --filter @workspace/api-server run build
+#49 ...
+
+#51 [platform runtime 3/3] COPY deploy/nginx-spa.conf /etc/nginx/conf.d/default.conf
+#51 DONE 0.2s
+
+#52 [platform] exporting to image
+#52 exporting layers
+#52 exporting layers 0.9s done
+#52 exporting manifest sha256:c4c75a5aa1689fbb621bbc72fa5d6f3a2ed55e0a585103cba62eda1609d7afa7
+#52 exporting manifest sha256:c4c75a5aa1689fbb621bbc72fa5d6f3a2ed55e0a585103cba62eda1609d7afa7 0.0s done
+#52 exporting config sha256:310b5215bcee97031b0993a01dc219269725e1df21feb206107d298363d0d3ce 0.0s done
+#52 exporting attestation manifest sha256:cd875814a23e8017d0ad6ede6ae7c855afcd942117bf4b14f201f7708ab3cb40 0.1s done
+#52 exporting manifest list sha256:b16c2efed5e4ec16317038e3b6d6732a90050d4b6f3d95ad9c3dc7eda52c5378
+#52 ...
+
+#42 [migrate] exporting to image
+#42 unpacking to docker.io/library/deploy-migrate:latest 10.3s done
+#42 DONE 27.1s
+
+#52 [platform] exporting to image
+#52 exporting manifest list sha256:b16c2efed5e4ec16317038e3b6d6732a90050d4b6f3d95ad9c3dc7eda52c5378 0.0s done
+#52 naming to docker.io/library/deploy-platform:latest done
+#52 unpacking to docker.io/library/deploy-platform:latest
+#52 unpacking to docker.io/library/deploy-platform:latest 0.2s done
+#52 DONE 1.3s
+
+#49 [api builder 16/16] RUN pnpm --filter @workspace/api-server run build
+#49 ...
+
+#53 [migrate] resolving provenance for metadata file
+#53 DONE 0.0s
+
+#49 [api builder 16/16] RUN pnpm --filter @workspace/api-server run build
+#49 ...
+
+#54 [platform] resolving provenance for metadata file
+#54 DONE 0.0s
+
+#49 [api builder 16/16] RUN pnpm --filter @workspace/api-server run build
+#49 7.683 
+#49 7.683   dist/index.mjs                      10.9mb ⚠️
+#49 7.683   dist/pino-worker.mjs               153.4kb
+#49 7.683   dist/pino-file.mjs                 142.0kb
+#49 7.683   dist/pino-pretty.mjs               114.6kb
+#49 7.683   dist/thread-stream-worker.mjs        7.3kb
+#49 7.683   dist/index.mjs.map                  18.7mb
+#49 7.683   dist/pino-worker.mjs.map           256.9kb
+#49 7.683   dist/pino-file.mjs.map             229.0kb
+#49 7.683   dist/pino-pretty.mjs.map           203.9kb
+#49 7.683   dist/thread-stream-worker.mjs.map   12.0kb
+#49 7.683 
+#49 7.683 ⚡ Done in 4106ms
+#49 DONE 7.8s
+
+#55 [api runtime  9/11] RUN pnpm install --no-frozen-lockfile --prod                  --filter @workspace/db...                  --filter @workspace/api-zod...                  --filter @workspace/api-server...
+#55 CACHED
+
+#56 [api runtime 10/11] COPY --from=builder /app/artifacts/api-server/dist artifacts/api-server/dist
+#56 CACHED
+
+#57 [api runtime 11/11] COPY scripts/ scripts/
+#57 DONE 0.0s
+
+#58 [api] exporting to image
+#58 exporting layers 0.1s done
+#58 exporting manifest sha256:df1e8e5b94758fafc57045bd609f43efbff8bef73c10a871f5ead09e1c561822 0.0s done
+#58 exporting config sha256:fe6700d1aa103f79cd72242a32a5a66d087e7f8990561009650b92d365478086 0.0s done
+#58 exporting attestation manifest sha256:0c5f1007d82b00e5a6b445587c0ded6dbef97d439035fa3c33a539cde69f8389
+#58 exporting attestation manifest sha256:0c5f1007d82b00e5a6b445587c0ded6dbef97d439035fa3c33a539cde69f8389 0.0s done
+#58 exporting manifest list sha256:2a2711dd13445e24e2054c0b60e6c48d6b10ed15b9e0a25b9942399d0f75f391 0.0s done
+#58 naming to docker.io/library/deploy-api:latest done
+#58 unpacking to docker.io/library/deploy-api:latest 0.0s done
+#58 DONE 0.3s
+
+#59 [api] resolving provenance for metadata file
+#59 DONE 0.1s
+ Image deploy-platform Built 
+ Image deploy-api Built 
+ Image deploy-migrate Built 
+▶ Running database migrations...
+ Container deploy-db-1 Stopping 
+ Container deploy-db-1 Stopped 
+ Network deploy_internal Removed 
+Error response from daemon: error while removing network: network deploy_internal has active endpoints (name:"deploy-platform-1" id:"24b583289729", name:"deploy-nginx-1" id:"6d638d878b68", name:"deploy-api-1" id:"5b873dcaf897")
+Error: Process completed with exit code 1.
