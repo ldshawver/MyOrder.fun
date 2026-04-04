@@ -39,23 +39,42 @@ jobs:
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
 
       # ── 5. Rebuild and restart containers on VPS ───────────────────
-      - name: Rebuild and restart on VPS
+      - name: Build images on VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cd /opt/alavont/deploy && docker compose build --pull \
+             && echo 'BUILD SUCCESS' || (echo 'BUILD FAILED'; exit 1)"
+
+      - name: Stop app containers (preserve DB)
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            cd /opt/alavont/deploy
+            # Stop and remove app containers + networks but keep DB volume
+            docker compose rm -sf nginx api platform migrate 2>/dev/null || true
+            # Wait for network endpoints to fully detach
+            sleep 2
+            echo "STOP SUCCESS"
+          ENDSSH
+
+      - name: Run database migrations
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
-
-            echo "▶ Rebuilding containers..."
             cd /opt/alavont/deploy
-            docker compose build --pull
+            docker compose run --rm migrate \
+              && echo "MIGRATE SUCCESS" || (echo "MIGRATE FAILED"; exit 1)
+          ENDSSH
 
-            echo "▶ Running database migrations..."
-            docker compose run --rm migrate
-
-            echo "▶ Restarting services..."
-            docker compose up -d --remove-orphans
-
-            echo "▶ Cleaning up old images..."
+      - name: Start all services
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/alavont/deploy
+            docker compose up -d --remove-orphans \
+              && echo "DEPLOY SUCCESS" || (echo "DEPLOY FAILED"; exit 1)
             docker image prune -f
-
-            echo "✓ Deployment complete."
+            echo ""
+            echo "════════════════════════════════════"
+            echo "  DEPLOY SUCCESS — $(date -u)"
+            echo "════════════════════════════════════"
           ENDSSH
