@@ -49,6 +49,9 @@ RUN pnpm install --frozen-lockfile --prod \
 # Copy built output
 COPY --from=builder /app/artifacts/api-server/dist artifacts/api-server/dist
 
+# Copy utility scripts (promote-admin, etc.)
+COPY scripts/ scripts/
+
 ENV NODE_ENV=production
 ENV PORT=8080
 

@@ -1,3 +1,0 @@
-# Secrets — never commit
-.env
-nginx/ssl/
