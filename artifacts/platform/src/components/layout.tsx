@@ -15,7 +15,8 @@ import {
   ListTodo,
   Menu,
   X,
-  ChevronRight
+  ChevronRight,
+  Printer
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
@@ -33,6 +34,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
     { href: "/staff", label: "Sitter Queue", icon: ListTodo, roles: ["tenant_admin", "staff", "global_admin"], mobileShow: false },
     { href: "/admin/users", label: "Users", icon: Users, roles: ["tenant_admin", "global_admin"], mobileShow: false },
+    { href: "/admin/print", label: "Print", icon: Printer, roles: ["tenant_admin", "global_admin"], mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["global_admin"], mobileShow: false },
   ];
 

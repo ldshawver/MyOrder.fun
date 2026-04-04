@@ -194,18 +194,41 @@ router.post("/orders", async (req, res): Promise<void> => {
   });
 
   // SMS: confirm to customer + alert assigned tech (fire-and-forget)
+  let customerName = "";
   try {
     const [customer] = await db.select({ contactPhone: usersTable.contactPhone, firstName: usersTable.firstName, lastName: usersTable.lastName })
       .from(usersTable).where(eq(usersTable.id, actor.id)).limit(1);
     const customerPhone = customer?.contactPhone;
     const itemCount = resolvedItems.reduce((s, r) => s + r.quantity, 0);
+    customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
     await sendSms(customerPhone, smsOrderConfirmation(order.id, total, itemCount));
 
     if (assignedTechId) {
       const [tech] = await db.select({ contactPhone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, assignedTechId)).limit(1);
-      const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
       await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, total, itemCount));
     }
+  } catch { /* non-critical */ }
+
+  // Print: enqueue print jobs (fire-and-forget)
+  try {
+    const { enqueueOrderPrintJobs } = await import("../lib/printService");
+    await enqueueOrderPrintJobs({
+      id: order.id,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      notes: order.notes,
+      subtotal: order.subtotal as string,
+      tax: order.tax as string,
+      total: order.total as string,
+      createdAt: order.createdAt,
+      customerName,
+      items: resolvedItems.map(r => ({
+        quantity: r.quantity,
+        catalogItemName: r.catalogItem.name,
+        unitPrice: r.catalogItem.price as string,
+        totalPrice: String((parseFloat(r.catalogItem.price as string) * r.quantity).toFixed(2)),
+      })),
+    });
   } catch { /* non-critical */ }
 
   const orderObj = await buildOrderResponse(order);

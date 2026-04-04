@@ -82,6 +82,9 @@ app.use(clerkMiddleware());
 // ── API routes ───────────────────────────────────────────────────────────────
 app.use("/api", router);
 
+// ── Print worker (background retry loop) ─────────────────────────────────────
+import("./lib/printService").then(({ startPrintWorker }) => startPrintWorker()).catch(() => {});
+
 // ── 404 handler ──────────────────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });

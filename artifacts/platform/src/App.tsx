@@ -26,6 +26,7 @@ import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
+import AdminPrint from "@/pages/admin/print";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -134,6 +135,7 @@ function AuthenticatedApp() {
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/mfa" component={MfaSetup} />
+            <Route path="/admin/print" component={AdminPrint} />
           </>
         )}
 

@@ -26,6 +26,7 @@ Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ord
 - **Full Audit Logging**: Every privileged action logged with actor, IP, resource
 - **E2E Encryption Flag**: Client-side encrypted order notes (isEncrypted flag)
 - **Mobile-First Responsive**: Bottom tab nav on mobile, sidebar on desktop, safe-area padding
+- **Thermal Print Subsystem**: Auto-prints kitchen tickets and customer receipts on order creation via a self-hosted Ubuntu print bridge. Full admin UI for printer management, job history, retry/reprint controls, and auto-print toggle.
 
 ## WooCommerce (Lucifer Cruz Menu)
 Set `VITE_WOOCOMMERCE_URL=https://your-store.com` in environment variables to enable the Lucifer Cruz menu tab. Product cards will link directly to the WooCommerce store for checkout. The Lucifer Cruz tab shows a "not connected" banner when the env var is absent.
