@@ -1,0 +1,3 @@
+# Never commit secrets or SSL certs
+.env
+nginx/ssl/
