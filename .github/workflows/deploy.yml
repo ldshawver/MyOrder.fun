@@ -7,27 +7,44 @@ on:
 
 jobs:
   deploy:
-    name: SSH → VPS → pull → rebuild
+    name: Build → Sync → Restart
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
+      # ── 1. Check out the code on the Actions runner ────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Set up SSH agent with the VPS private key ───────────────
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      # ── 3. Trust the VPS host fingerprint ──────────────────────────
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      # ── 4. Rsync source code to VPS (skip .env and ssl certs) ──────
+      - name: Sync code to VPS
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='deploy/.env' \
+            --exclude='deploy/nginx/ssl' \
+            --exclude='node_modules' \
+            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
+
+      # ── 5. Rebuild and restart containers on VPS ───────────────────
+      - name: Rebuild and restart on VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
 
-            echo "▶ Pulling latest code from origin/main..."
-            cd /opt/alavont
-            git fetch --all
-            git checkout main
-            git reset --hard origin/main
-
-            echo "▶ Building containers..."
+            echo "▶ Rebuilding containers..."
             cd /opt/alavont/deploy
             docker compose build --pull
 
@@ -37,7 +54,8 @@ jobs:
             echo "▶ Restarting services..."
             docker compose up -d --remove-orphans
 
-            echo "▶ Cleaning up unused images..."
+            echo "▶ Cleaning up old images..."
             docker image prune -f
 
             echo "✓ Deployment complete."
+          ENDSSH
