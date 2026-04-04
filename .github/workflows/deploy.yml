@@ -1,0 +1,43 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: SSH → VPS → pull → rebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            echo "▶ Pulling latest code from origin/main..."
+            cd /opt/alavont
+            git fetch --all
+            git checkout main
+            git reset --hard origin/main
+
+            echo "▶ Building containers..."
+            cd /opt/alavont/deploy
+            docker compose build --pull
+
+            echo "▶ Running database migrations..."
+            docker compose run --rm migrate
+
+            echo "▶ Restarting services..."
+            docker compose up -d --remove-orphans
+
+            echo "▶ Cleaning up unused images..."
+            docker image prune -f
+
+            echo "✓ Deployment complete."
