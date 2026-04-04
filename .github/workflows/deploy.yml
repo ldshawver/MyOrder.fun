@@ -54,29 +54,29 @@ jobs:
             set -e
             cd /opt/alavont/deploy
 
-            # 1. Ensure DB is up and healthy (no-op if already running)
+            # 1. Tear down all stale compose state (keeps named volumes)
+            echo "▶ Cleaning stale containers and networks..."
+            docker compose down --remove-orphans 2>/dev/null || true
+            docker rm -f deploy-db-1 deploy-api-1 deploy-platform-1 deploy-nginx-1 deploy-migrate-1 2>/dev/null || true
+            docker network rm deploy_internal deploy_external 2>/dev/null || true
+            sleep 2
+
+            # 2. Start DB fresh and wait until healthy
             echo "▶ Starting database..."
             docker compose up -d db
             echo "▶ Waiting for database to be ready..."
-            timeout 60 sh -c '
-              until docker compose exec -T db pg_isready -U "${POSTGRES_USER:-alavont}" -d "${POSTGRES_DB:-alavont}" 2>/dev/null; do
-                sleep 2
-              done
-            '
+            timeout 60 sh -c \
+              'until docker compose exec -T db pg_isready -U "${POSTGRES_USER:-alavont}" -d "${POSTGRES_DB:-alavont}" 2>/dev/null; do sleep 2; done'
             echo "  Database ready."
 
-            # 2. Stop only app containers — leave db and its network intact
-            echo "▶ Stopping app containers (db stays up)..."
-            docker compose stop nginx api platform 2>/dev/null || true
-
-            # 3. Run migrations against the live DB
+            # 3. Run migrations
             echo "▶ Running migrations..."
             docker compose run --rm migrate
             echo "MIGRATE SUCCESS"
 
-            # 4. Bring up the full stack — recreates stopped containers
+            # 4. Bring up full stack
             echo "▶ Starting all services..."
-            docker compose up -d --remove-orphans
+            docker compose up -d
             echo "DEPLOY SUCCESS"
 
             docker image prune -f
