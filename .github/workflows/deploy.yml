@@ -1,105 +1,60 @@
-name: Deploy to VPS
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-on:
-  push:
-    branches:
-      - main
+# 🔒 Always run from correct directory
+cd /opt/alavont/deploy
 
-jobs:
-  deploy:
-    name: Build → Sync → Restart
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+echo "== Docker / Compose diagnostics =="
+docker compose version
+docker version --format '{{.Server.Version}}'
 
-    steps:
-      # ── 1. Check out the code on the Actions runner ────────────────
-      - name: Checkout code
-        uses: actions/checkout@v4
+echo "== Pre-clean state =="
+docker compose ps -a || true
+docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}" || true
+docker network ls || true
 
-      # ── 2. Set up SSH agent with the VPS private key ───────────────
-      - name: Set up SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+echo "== Clean compose state =="
+docker compose down --remove-orphans || true
 
-      # ── 3. Trust the VPS host fingerprint ──────────────────────────
-      - name: Add VPS to known_hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+echo "== Remove leftover project containers =="
+ids="$(docker ps -aq --filter "label=com.docker.compose.project")"
+if [ -n "${ids}" ]; then
+  docker rm -f ${ids} || true
+fi
 
-      # ── 4. Rsync source code to VPS (skip .env and ssl certs) ──────
-      - name: Sync code to VPS
-        run: |
-          rsync -az --delete \
-            --exclude='.git' \
-            --exclude='deploy/.env' \
-            --exclude='deploy/nginx/ssl' \
-            --exclude='node_modules' \
-            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
+echo "== Remove leftover project networks =="
+nets="$(docker network ls -q --filter "label=com.docker.compose.project")"
+if [ -n "${nets}" ]; then
+  docker network rm ${nets} || true
+fi
 
-      # ── 5. Rebuild and restart containers on VPS ───────────────────
-      - name: Build images on VPS
-        run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            set -e
-            cd /opt/alavont/deploy
-            docker compose build --pull
-            echo "BUILD SUCCESS"
-          ENDSSH
+echo "== Build =="
+docker compose build
 
-      - name: Migrate and deploy on VPS
-        run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            cd /opt/alavont/deploy
+echo "== Start db only =="
+docker compose up -d db
 
-            # ── Nuclear cleanup: bypass compose, wipe by name prefix ──
-            echo "▶ Force-removing all stale deploy containers..."
-            STALE=$(docker ps -aq --filter "name=deploy-")
-            if [ -n "$STALE" ]; then
-              docker rm -f $STALE
-            fi
+echo "== Wait for db readiness =="
+for i in $(seq 1 30); do
+  if docker compose exec -T db pg_isready -U "${POSTGRES_USER:-postgres}" >/dev/null 2>&1; then
+    echo "DB ready"
+    break
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "DB failed to become ready"
+    docker compose logs db || true
+    exit 1
+  fi
+  sleep 2
+done
 
-            echo "▶ Removing stale deploy networks..."
-            NETS=$(docker network ls --filter "name=deploy_" -q)
-            if [ -n "$NETS" ]; then
-              docker network rm $NETS 2>/dev/null || true
-            fi
+echo "== Run migrations =="
+docker compose run --rm migrate
 
-            sleep 3
-            echo "  Cleanup done."
+echo "== Start full stack =="
+docker compose up -d
 
-            # ── From here on: fail fast ───────────────────────────────
-            set -e
+echo "== Final state =="
+docker compose ps
 
-            # 1. Start DB and wait for it to be healthy
-            echo "▶ Starting database..."
-            docker compose up -d db
-
-            echo "▶ Waiting for database..."
-            for i in $(seq 1 30); do
-              if docker compose exec -T db pg_isready -q 2>/dev/null; then
-                echo "  Database ready after ${i}s."
-                break
-              fi
-              sleep 2
-            done
-            docker compose exec -T db pg_isready -q  # final check — exits 1 if still not ready
-
-            # 2. Run migrations
-            echo "▶ Running migrations..."
-            docker compose run --rm migrate
-            echo "MIGRATE SUCCESS"
-
-            # 3. Bring up full stack
-            echo "▶ Starting all services..."
-            docker compose up -d
-            echo "DEPLOY SUCCESS"
-
-            docker image prune -f
-
-            echo ""
-            echo "════════════════════════════════════"
-            echo "  DEPLOY SUCCESS — $(date -u)"
-            echo "════════════════════════════════════"
-          ENDSSH
+echo "DEPLOY SUCCESS"
