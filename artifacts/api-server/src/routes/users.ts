@@ -16,6 +16,11 @@ const router: IRouter = Router();
 // Apply auth middleware
 router.use(requireAuth, loadDbUser, requireDbUser);
 
+function normalizeRole(role: string): string {
+  if (role === "admin") return "global_admin";
+  return role;
+}
+
 // GET /api/users/me
 router.get("/users/me", async (req, res): Promise<void> => {
   const user = req.dbUser!;
@@ -31,7 +36,7 @@ router.get("/users/me", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: user.role,
+    role: normalizeRole(user.role),
     tenantId: user.tenantId ?? undefined,
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
@@ -57,7 +62,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: user.role,
+    role: normalizeRole(user.role),
     tenantId: user.tenantId ?? undefined,
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
