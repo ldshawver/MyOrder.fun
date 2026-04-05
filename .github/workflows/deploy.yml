@@ -1,79 +1,79 @@
 name: Deploy to VPS
 
-  on:
-    push:
-      branches:
-        - main
+on:
+  push:
+    branches:
+      - main
 
-  jobs:
-    deploy:
-      name: Build → Sync → Restart
-      runs-on: ubuntu-latest
-      timeout-minutes: 30
+jobs:
+  deploy:
+    name: Build → Sync → Restart
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
-      steps:
-        # ── 1. Check out the code on the Actions runner ────────────────
-        - name: Checkout code
-          uses: actions/checkout@v4
+    steps:
+      # ── 1. Check out the code on the Actions runner ────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        # ── 2. Set up SSH agent with the VPS private key ───────────────
-        - name: Set up SSH agent
-          uses: webfactory/ssh-agent@v0.9.0
-          with:
-            ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+      # ── 2. Set up SSH agent with the VPS private key ───────────────
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
 
-        # ── 3. Trust the VPS host fingerprint ──────────────────────────
-        - name: Add VPS to known_hosts
-          run: |
-            mkdir -p ~/.ssh
-            ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-        # ── 4. Rsync source code to VPS (skip .env and ssl certs) ──────
-        - name: Sync code to VPS
-          run: |
-            rsync -az --delete \
-              --exclude='.git' \
-              --exclude='deploy/.env' \
-              --exclude='deploy/nginx/ssl' \
-              --exclude='node_modules' \
-              ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
+      # ── 3. Trust the VPS host fingerprint ──────────────────────────
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-        # ── 5. Build new images ─────────────────────────────────────────
-        - name: Build images
-          run: |
-            ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-              set -e
-              cd /opt/alavont/deploy
-              docker compose build --pull
-              echo "BUILD SUCCESS"
-            ENDSSH
+      # ── 4. Rsync source code to VPS (skip .env and ssl certs) ──────
+      - name: Sync code to VPS
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='deploy/.env' \
+            --exclude='deploy/nginx/ssl' \
+            --exclude='node_modules' \
+            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
 
-        # ── 6. Deploy: down → migrate → up ─────────────────────────────
-        - name: Deploy
-          run: |
-            ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-              set -e
-              cd /opt/alavont/deploy
+      # ── 5. Build new images ─────────────────────────────────────────
+      - name: Build images
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/alavont/deploy
+            docker compose build --pull
+            echo "BUILD SUCCESS"
+          ENDSSH
 
-              echo "▶ Stopping all services (data volumes preserved)..."
-              docker compose down 2>&1
-              sleep 5
+      # ── 6. Deploy: down → migrate → up ─────────────────────────────
+      - name: Deploy
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/alavont/deploy
 
-              echo "▶ Starting database..."
-              docker compose up -d db
-              echo "▶ Waiting 20s for postgres to initialize..."
-              sleep 20
+            echo "▶ Stopping all services (data volumes preserved)..."
+            docker compose down 2>&1
+            sleep 5
 
-              echo "▶ Running migrations..."
-              docker compose run --rm migrate
-              echo "MIGRATE SUCCESS"
+            echo "▶ Starting database..."
+            docker compose up -d db
+            echo "▶ Waiting 20s for postgres to initialize..."
+            sleep 20
 
-              echo "▶ Starting all services..."
-              docker compose up -d
-              echo "DEPLOY SUCCESS"
-              docker image prune -f
-              echo ""
-              echo "════════════════════════════════════"
-              echo "  DEPLOY SUCCESS — $(date -u)"
-              echo "════════════════════════════════════"
-            ENDSSH
-  
+            echo "▶ Running migrations..."
+            docker compose run --rm migrate
+            echo "MIGRATE SUCCESS"
+
+            echo "▶ Starting all services..."
+            docker compose up -d
+            echo "DEPLOY SUCCESS"
+            docker image prune -f
+            echo ""
+            echo "════════════════════════════════════"
+            echo "  DEPLOY SUCCESS — $(date -u)"
+            echo "════════════════════════════════════"
+          ENDSSH
