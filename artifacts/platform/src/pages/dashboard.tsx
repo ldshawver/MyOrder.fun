@@ -286,13 +286,14 @@ export default function Dashboard() {
 function CustomerHome({ user }: { user: any }) {
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
-      {/* Alavont hero header */}
+      {/* Hero header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <img
-            src="/alavont-logo.png"
-            alt="Alavont"
+            src="/lc-icon.png"
+            alt="Lucifer Cruz"
             className="w-14 h-14 object-contain"
+            style={{ filter: "invert(1) brightness(1.1)" }}
             onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div>
@@ -300,7 +301,7 @@ function CustomerHome({ user }: { user: any }) {
             <h1 className="text-2xl font-bold tracking-tight" data-testid="text-dashboard-title">
               {user?.firstName || user?.contactName || "Valued Client"}
             </h1>
-            <div className="text-xs text-primary/80 font-medium tracking-wide mt-0.5">Alavont Therapeutics</div>
+            <div className="text-xs text-primary/80 font-medium tracking-wide mt-0.5">Lucifer Cruz · Adult Boutique</div>
           </div>
         </div>
         <Link

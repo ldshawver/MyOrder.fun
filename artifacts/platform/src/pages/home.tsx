@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Lock, ExternalLink } from "lucide-react";
+import { Lock, ShieldCheck } from "lucide-react";
 
 const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*";
 
@@ -37,8 +37,8 @@ function useCipherText(finalText: string, startDelay = 0) {
 
 export default function Home() {
   const [scanDone, setScanDone] = useState(false);
-  const l1 = useCipherText("LUCIFER", 300);
-  const l2 = useCipherText("CRUZ", 700);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+  const tagline = useCipherText("ADULT BOUTIQUE", 900);
 
   useEffect(() => {
     const t = setTimeout(() => setScanDone(true), 1600);
@@ -50,6 +50,17 @@ export default function Home() {
       className="min-h-screen flex flex-col font-sans overflow-x-hidden relative"
       style={{ background: "#0A0000" }}
     >
+      <style>{`
+        @keyframes scanSweep {
+          from { top: -4px; }
+          to { top: 100vh; }
+        }
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(16px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
       {/* Crimson scan-line overlay */}
       <div
         className="pointer-events-none fixed inset-0 z-10"
@@ -81,17 +92,17 @@ export default function Home() {
       />
 
       {/* Header */}
-      <header className="relative z-30 flex items-center justify-between px-6 py-5 border-b" style={{ borderColor: "rgba(220,20,60,0.15)" }}>
+      <header className="relative z-30 flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: "rgba(220,20,60,0.15)" }}>
         <div className="flex items-center gap-3">
-          <div
-            className="w-8 h-8 rounded-lg flex items-center justify-center font-black text-xs"
-            style={{ background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff", letterSpacing: "0.05em" }}
-          >
-            LC
-          </div>
+          <img
+            src="/lc-icon.png"
+            alt="Lucifer Cruz"
+            className="w-9 h-9 object-contain"
+            style={{ filter: "invert(1) brightness(1.2)" }}
+          />
           <div>
             <div className="font-bold text-sm tracking-[0.15em]" style={{ color: "#C0C0C0" }}>LUCIFER CRUZ</div>
-            <div className="text-[9px] font-medium tracking-[0.3em] uppercase" style={{ color: "#8B0000" }}>Private Access</div>
+            <div className="text-[9px] font-medium tracking-[0.3em] uppercase" style={{ color: "#8B0000" }}>Adult Boutique · 18+</div>
           </div>
         </div>
 
@@ -113,7 +124,7 @@ export default function Home() {
       </header>
 
       {/* Hero */}
-      <main className="relative z-20 flex-1 flex flex-col items-center justify-center px-6 py-20 text-center">
+      <main className="relative z-20 flex-1 flex flex-col items-center justify-center px-6 py-16 text-center">
         {/* Glow orb */}
         <div
           className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 rounded-full pointer-events-none"
@@ -123,50 +134,85 @@ export default function Home() {
           }}
         />
 
-        <div className="relative space-y-2 mb-10">
-          <div
-            className="font-black tracking-[0.3em] leading-none select-none"
+        {/* Logo */}
+        <div className="relative mb-8">
+          <img
+            src="/lc-logo.webp"
+            alt="Lucifer Cruz"
+            className="w-auto object-contain"
             style={{
-              fontSize: "clamp(3rem, 12vw, 8rem)",
-              background: "linear-gradient(135deg, #DC143C 0%, #C0C0C0 50%, #DC143C 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-              textShadow: "none",
-              filter: "drop-shadow(0 0 30px rgba(220,20,60,0.4))",
+              height: "clamp(60px, 14vw, 120px)",
+              mixBlendMode: "screen",
+              filter: "drop-shadow(0 0 30px rgba(220,20,60,0.5))",
             }}
-          >
-            {l1}
-          </div>
-          <div
-            className="font-black tracking-[0.5em] leading-none select-none"
-            style={{
-              fontSize: "clamp(3rem, 12vw, 8rem)",
-              background: "linear-gradient(135deg, #C0C0C0 0%, #DC143C 50%, #C0C0C0 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              backgroundClip: "text",
-              filter: "drop-shadow(0 0 20px rgba(192,192,192,0.3))",
-            }}
-          >
-            {l2}
-          </div>
+          />
+        </div>
+
+        {/* Cipher tagline */}
+        <div
+          className="font-mono tracking-[0.4em] mb-3 select-none"
+          style={{
+            fontSize: "clamp(0.75rem, 2.5vw, 1.1rem)",
+            color: "#DC143C",
+            letterSpacing: "0.35em",
+          }}
+        >
+          {tagline}
+        </div>
+
+        {/* 18+ badge */}
+        <div
+          className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border mb-10 font-mono text-[10px] tracking-[0.25em] uppercase"
+          style={{ borderColor: "rgba(220,20,60,0.35)", color: "#DC143C", background: "rgba(220,20,60,0.06)" }}
+        >
+          <ShieldCheck size={11} />
+          18+ Only — Invitation Required
         </div>
 
         <p className="text-sm font-mono mb-10 max-w-sm leading-relaxed" style={{ color: "#888" }}>
-          A private, invitation-only ordering platform.<br />Access is by appointment only.
+          A private, members-only ordering boutique.<br />Access is by invitation only.
         </p>
+
+        {/* Age gate checkbox */}
+        <label className="flex items-center gap-3 mb-8 cursor-pointer group">
+          <div
+            className="w-5 h-5 rounded flex items-center justify-center border transition-all flex-shrink-0"
+            style={{
+              borderColor: ageConfirmed ? "#DC143C" : "rgba(220,20,60,0.3)",
+              background: ageConfirmed ? "rgba(220,20,60,0.2)" : "transparent",
+            }}
+          >
+            {ageConfirmed && (
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="#DC143C" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </div>
+          <input
+            type="checkbox"
+            className="sr-only"
+            checked={ageConfirmed}
+            onChange={e => setAgeConfirmed(e.target.checked)}
+          />
+          <span className="text-xs font-mono" style={{ color: "#777" }}>
+            I confirm I am 18 years of age or older
+          </span>
+        </label>
 
         {/* CTAs */}
         <div className="flex flex-col sm:flex-row gap-3 items-center">
           <Link
-            href="/sign-in"
+            href={ageConfirmed ? "/sign-in" : "#"}
             className="flex items-center gap-2 text-sm font-bold px-8 py-3.5 rounded-xl transition-all"
             style={{
-              background: "linear-gradient(135deg, #DC143C, #8B0000)",
-              color: "#fff",
-              boxShadow: "0 8px 32px rgba(220,20,60,0.4)",
+              background: ageConfirmed
+                ? "linear-gradient(135deg, #DC143C, #8B0000)"
+                : "rgba(100,0,0,0.3)",
+              color: ageConfirmed ? "#fff" : "#555",
+              boxShadow: ageConfirmed ? "0 8px 32px rgba(220,20,60,0.4)" : "none",
               letterSpacing: "0.08em",
+              cursor: ageConfirmed ? "pointer" : "not-allowed",
+              pointerEvents: ageConfirmed ? "auto" : "none",
             }}
             data-testid="link-access-portal"
           >
@@ -182,18 +228,20 @@ export default function Home() {
             REQUEST INVITATION
           </Link>
         </div>
-
-        {/* Divider */}
-        <div className="mt-20 flex items-center gap-6 w-full max-w-xs">
-          <div className="flex-1 h-px" style={{ background: "rgba(220,20,60,0.15)" }} />
-          <div className="text-[10px] font-mono tracking-[0.3em]" style={{ color: "#555" }}>ALAVONT</div>
-          <div className="flex-1 h-px" style={{ background: "rgba(220,20,60,0.15)" }} />
-        </div>
-        <p className="mt-4 text-xs font-mono" style={{ color: "#444" }}>Therapeutics Division · Private Network</p>
       </main>
 
+      {/* Footer */}
+      <footer className="relative z-20 border-t py-5 px-6 flex items-center justify-between" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
+        <div className="text-[10px] font-mono" style={{ color: "#333" }}>
+          ADULTS ONLY · MUST BE 18+ TO ENTER
+        </div>
+        <div className="text-[10px] font-mono" style={{ color: "#333" }}>
+          PRIVATE · INVITATION ONLY
+        </div>
+      </footer>
+
       {/* Corner decoration */}
-      <div className="fixed bottom-6 right-6 z-20 text-[9px] font-mono space-y-1 text-right" style={{ color: "#333" }}>
+      <div className="fixed bottom-6 right-6 z-20 text-[9px] font-mono space-y-1 text-right" style={{ color: "#2a0000" }}>
         <div>SYS://SECURE</div>
         <div>ENC: AES-256</div>
         <div>AUTH: REQUIRED</div>
