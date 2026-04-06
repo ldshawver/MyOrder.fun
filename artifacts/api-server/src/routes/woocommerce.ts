@@ -135,7 +135,7 @@ router.post(
           .from(catalogItemsTable)
           .where(and(
             eq(catalogItemsTable.tenantId, actor.tenantId),
-            eq((catalogItemsTable as any).alavontId, `wc_${wcId}`),
+            eq(catalogItemsTable.alavontId, `wc_${wcId}`),
           ))
           .limit(1);
 
