@@ -12,6 +12,8 @@ import aiRouter from "./ai";
 import paymentsRouter from "./payments";
 import shiftsRouter from "./shifts";
 import printRouter from "./print";
+import importRouter from "./import";
+import settingsRouter from "./settings";
 
 const router: IRouter = Router();
 
@@ -28,5 +30,7 @@ router.use(aiRouter);
 router.use(paymentsRouter);
 router.use(shiftsRouter);
 router.use(printRouter);
+router.use(importRouter);
+router.use(settingsRouter);
 
 export default router;

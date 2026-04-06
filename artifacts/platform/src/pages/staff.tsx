@@ -3,7 +3,8 @@ import { useListOrders, useGetCurrentUser, useListCatalogItems } from "@workspac
 import { Link } from "wouter";
 import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
-  Plus, Trash2, Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2
+  Plus, Trash2, Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
+  Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -425,6 +426,179 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
   );
 }
 
+const FULFILLMENT_STEPS = [
+  { status: "ready_behind_gate", label: "Ready Behind Gate", icon: DoorOpen, color: "blue" },
+  { status: "courier_arrived",   label: "Courier Arrived",   icon: Truck,         color: "yellow" },
+  { status: "handed_off",        label: "Handed Off",        icon: HandshakeIcon, color: "emerald" },
+  { status: "complete",          label: "Complete & Purge",  icon: ShieldOff,     color: "red" },
+];
+
+function FulfillmentCard({ order, onRefresh, getToken }: {
+  order: any;
+  onRefresh: () => void;
+  getToken: () => Promise<string | null>;
+}) {
+  const [loading, setLoading] = useState<string | null>(null);
+  const [printingReceipt, setPrintingReceipt] = useState(false);
+  const [printingLabel, setPrintingLabel] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const fulfillment = order.fulfillmentStatus as string | null;
+
+  async function setFulfillmentStatus(status: string) {
+    setLoading(status);
+    try {
+      const token = await getToken();
+      await fetch(`/api/orders/${order.id}/fulfillment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ fulfillmentStatus: status }),
+      });
+      onRefresh();
+    } catch {} finally { setLoading(null); }
+  }
+
+  async function printReceipt() {
+    setPrintingReceipt(true);
+    try {
+      const token = await getToken();
+      await fetch(`/api/print/orders/${order.id}/receipt`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {} finally { setPrintingReceipt(false); }
+  }
+
+  async function printLabel() {
+    setPrintingLabel(true);
+    try {
+      const token = await getToken();
+      await fetch(`/api/print/orders/${order.id}/label`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {} finally { setPrintingLabel(false); }
+  }
+
+  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === fulfillment);
+
+  return (
+    <div className="glass-card rounded-2xl border border-border/40 overflow-hidden" data-testid={`row-queue-${order.id}`}>
+      {/* Header row */}
+      <div className="p-4 flex items-center gap-3">
+        <div className="w-11 h-11 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+          <span className="text-xs font-mono font-bold text-primary">#{order.id}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold truncate">{order.customerName || "Unknown"}</span>
+            <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentStatus === "paid" ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/20" : "bg-yellow-500/15 text-yellow-400 border-yellow-500/20"}`}>
+              {order.paymentStatus === "paid" ? "PAID" : order.paymentStatus?.toUpperCase()}
+            </span>
+            {fulfillment && (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
+                {fulfillment.replace(/_/g, " ")}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
+            <span className="flex items-center gap-1"><Clock size={10} />{new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+            <span>{order.items.length} item{order.items.length !== 1 ? "s" : ""}</span>
+            <span className="font-mono font-bold text-foreground">${order.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+        </div>
+        <button onClick={() => setExpanded(e => !e)} className="text-muted-foreground hover:text-foreground p-1">
+          <ChevronRight size={16} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
+        </button>
+      </div>
+
+      {/* Line items (dual-brand display) */}
+      {expanded && (
+        <div className="border-t border-border/30 bg-muted/10 px-4 py-3 space-y-2">
+          <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Line Items</div>
+          {order.items.map((item: any, i: number) => (
+            <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-border/20 last:border-0">
+              <div className="flex-1">
+                <div className="font-semibold">{item.labName || item.catalogItemName}</div>
+                {item.luciferCruzName && item.luciferCruzName !== item.catalogItemName && (
+                  <div className="text-muted-foreground text-[11px] mt-0.5">LC: {item.luciferCruzName}</div>
+                )}
+                {item.receiptName && (
+                  <div className="text-muted-foreground/60 text-[10px]">Receipt: {item.receiptName}</div>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                <div className="font-mono">×{item.quantity}</div>
+                <div className="text-muted-foreground font-mono">${item.unitPrice?.toFixed(2)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Print buttons */}
+      <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
+        <Button
+          size="sm" variant="outline"
+          className="gap-1.5 text-xs h-7 rounded-lg border-border/50"
+          onClick={printReceipt}
+          disabled={printingReceipt}
+        >
+          {printingReceipt ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
+          Receipt
+        </Button>
+        <Button
+          size="sm" variant="outline"
+          className="gap-1.5 text-xs h-7 rounded-lg border-border/50"
+          onClick={printLabel}
+          disabled={printingLabel}
+        >
+          {printingLabel ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
+          Label
+        </Button>
+        <Link href={`/orders/${order.id}`} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground transition-colors">
+          View Detail →
+        </Link>
+      </div>
+
+      {/* Fulfillment action buttons */}
+      <div className="border-t border-border/30 px-4 py-3">
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
+        <div className="flex flex-wrap gap-2">
+          {FULFILLMENT_STEPS.map((step, idx) => {
+            const isDone = activeStep >= idx;
+            const isActive = fulfillment === step.status;
+            const Icon = step.icon;
+            const isLast = idx === FULFILLMENT_STEPS.length - 1;
+            return (
+              <button
+                key={step.status}
+                disabled={loading === step.status}
+                onClick={() => setFulfillmentStatus(step.status)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all ${
+                  isActive
+                    ? isLast
+                      ? "bg-red-500/20 border-red-500/40 text-red-400"
+                      : "bg-primary/15 border-primary/40 text-primary"
+                    : isDone && !isLast
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                    : "bg-muted/20 border-border/40 text-muted-foreground hover:border-border"
+                }`}
+              >
+                {loading === step.status
+                  ? <RefreshCw size={11} className="animate-spin" />
+                  : isDone && !isActive && !isLast
+                  ? <CheckCircle2 size={11} />
+                  : <Icon size={11} />}
+                {step.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BusinessSitterQueue() {
   const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<any>(null);
@@ -570,47 +744,7 @@ export default function BusinessSitterQueue() {
         ) : (
           <div className="space-y-3">
             {data?.orders?.map((order) => (
-              <Link key={order.id} href={`/orders/${order.id}`} data-testid={`row-queue-${order.id}`}>
-                <div className="glass-card card-hover-glow rounded-2xl p-4 flex items-center gap-4 cursor-pointer group">
-                  <div className="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                    <span className="text-xs font-mono font-bold text-primary">#{order.id}</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm font-semibold truncate">{order.customerName || "Unknown"}</span>
-                      {(order as any).trackingUrl && (
-                        <span className="text-[10px] font-mono bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                          Tracked
-                        </span>
-                      )}
-                      {(order as any).assignedShiftId && (
-                        <span className="text-[10px] font-mono bg-primary/10 text-primary px-2 py-0.5 rounded-full border border-primary/20">
-                          On Shift
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <Clock size={11} />
-                        {new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                      <span>{order.items.length} item{order.items.length !== 1 ? "s" : ""}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right">
-                      <div className="text-sm font-bold font-mono">
-                        ${order.total.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </div>
-                    </div>
-                    <ChevronRight
-                      size={16}
-                      className="text-muted-foreground group-hover:text-primary group-hover:translate-x-0.5 transition-all"
-                      data-testid={`link-process-${order.id}`}
-                    />
-                  </div>
-                </div>
-              </Link>
+              <FulfillmentCard key={order.id} order={order} onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })} getToken={getToken} />
             ))}
           </div>
         )}

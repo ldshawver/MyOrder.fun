@@ -5,9 +5,8 @@ import {
   timestamp,
   integer,
   numeric,
+  jsonb,
 } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod/v4";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
@@ -28,6 +27,13 @@ export const ordersTable = pgTable("orders", {
   trackingUrl: text("tracking_url"),
   assignedTechId: integer("assigned_tech_id"),
   assignedShiftId: integer("assigned_shift_id"),
+  // Fulfillment workflow
+  fulfillmentStatus: text("fulfillment_status"), // ready_behind_gate | courier_arrived | handed_off | complete
+  purgedAt: timestamp("purged_at", { withTimezone: true }),
+  auditToken: text("audit_token"),
+  // Dual-brand checkout snapshots
+  alavontCartSnapshot: jsonb("alavont_cart_snapshot"),
+  luciferCheckoutSnapshot: jsonb("lucifer_checkout_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
@@ -40,6 +46,12 @@ export const orderItemsTable = pgTable("order_items", {
   quantity: integer("quantity").notNull(),
   unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: numeric("total_price", { precision: 10, scale: 2 }).notNull(),
+  // Dual-brand snapshot at time of order
+  alavontName: text("alavont_name"),
+  luciferCruzName: text("lucifer_cruz_name"),
+  receiptName: text("receipt_name"),
+  labelName: text("label_name"),
+  labName: text("lab_name"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -53,13 +65,9 @@ export const orderNotesTable = pgTable("order_notes", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const insertOrderSchema = createInsertSchema(ordersTable).omit({ id: true, createdAt: true, updatedAt: true });
-export const insertOrderItemSchema = createInsertSchema(orderItemsTable).omit({ id: true, createdAt: true });
-export const insertOrderNoteSchema = createInsertSchema(orderNotesTable).omit({ id: true, createdAt: true });
-
-export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type Order = typeof ordersTable.$inferSelect;
-export type InsertOrderItem = z.infer<typeof insertOrderItemSchema>;
+export type InsertOrder = typeof ordersTable.$inferInsert;
 export type OrderItem = typeof orderItemsTable.$inferSelect;
-export type InsertOrderNote = z.infer<typeof insertOrderNoteSchema>;
+export type InsertOrderItem = typeof orderItemsTable.$inferInsert;
 export type OrderNote = typeof orderNotesTable.$inferSelect;
+export type InsertOrderNote = typeof orderNotesTable.$inferInsert;

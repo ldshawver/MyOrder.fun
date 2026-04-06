@@ -169,15 +169,41 @@ router.post("/orders", async (req, res): Promise<void> => {
     assignedShiftId,
   }).returning();
 
+  // Build dual-brand cart snapshot for checkout conversion
+  const alavontCartSnapshot = resolvedItems.map(r => ({
+    catalogItemId: r.catalogItem.id,
+    alavontName: r.catalogItem.alavontName ?? r.catalogItem.name,
+    alavontDescription: r.catalogItem.alavontDescription ?? r.catalogItem.description,
+    alavontImageUrl: r.catalogItem.alavontImageUrl ?? r.catalogItem.imageUrl,
+    quantity: r.quantity,
+    unitPrice: parseFloat(r.catalogItem.price as string),
+  }));
+  const luciferCheckoutSnapshot = resolvedItems.map(r => ({
+    catalogItemId: r.catalogItem.id,
+    luciferCruzName: r.catalogItem.luciferCruzName ?? r.catalogItem.name,
+    luciferCruzDescription: r.catalogItem.luciferCruzDescription ?? r.catalogItem.description,
+    luciferCruzImageUrl: r.catalogItem.luciferCruzImageUrl ?? r.catalogItem.imageUrl,
+    quantity: r.quantity,
+    unitPrice: parseFloat(r.catalogItem.price as string),
+  }));
+
+  await db.update(ordersTable).set({ alavontCartSnapshot, luciferCheckoutSnapshot }).where(eq(ordersTable.id, order.id));
+
   for (const { catalogItem: ci, quantity } of resolvedItems) {
     const unitPrice = parseFloat(ci.price as string);
     await db.insert(orderItemsTable).values({
       orderId: order.id,
       catalogItemId: ci.id,
-      catalogItemName: ci.name,
+      catalogItemName: ci.alavontName ?? ci.name,
       quantity,
       unitPrice: String(unitPrice.toFixed(2)),
       totalPrice: String((unitPrice * quantity).toFixed(2)),
+      // Dual-brand snapshot
+      alavontName: ci.alavontName ?? ci.name,
+      luciferCruzName: ci.luciferCruzName ?? ci.name,
+      receiptName: ci.receiptName ?? ci.luciferCruzName ?? ci.name,
+      labelName: ci.labelName ?? ci.luciferCruzName ?? ci.name,
+      labName: ci.labName ?? ci.alavontName ?? ci.name,
     });
   }
 
@@ -458,6 +484,93 @@ router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "globa
   }
 
   res.json({ trackingUrl: updated.trackingUrl });
+});
+
+// POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
+router.post("/orders/:id/fulfillment", requireRole("staff", "tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+
+  const { fulfillmentStatus } = req.body as { fulfillmentStatus?: string };
+  const VALID = ["ready_behind_gate", "courier_arrived", "handed_off", "complete"];
+  if (!fulfillmentStatus || !VALID.includes(fulfillmentStatus)) {
+    res.status(400).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
+  }
+
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+    res.status(403).json({ error: "Forbidden" }); return;
+  }
+
+  const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
+  // Mark status as complete on certain transitions
+  if (fulfillmentStatus === "handed_off" || fulfillmentStatus === "complete") {
+    update.status = "completed";
+  }
+
+  const [updated] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, orderId)).returning();
+
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "UPDATE_FULFILLMENT_STATUS", tenantId: order.tenantId,
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { fulfillmentStatus }, ipAddress: req.ip,
+  });
+
+  res.json({ id: updated.id, fulfillmentStatus: updated.fulfillmentStatus, status: updated.status });
+});
+
+// POST /api/orders/:id/purge — purge order data (admin only)
+router.post("/orders/:id/purge", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+    res.status(403).json({ error: "Forbidden" }); return;
+  }
+
+  const { mode } = req.body as { mode?: string };
+  const purgeMode = mode || "partial";
+
+  const { randomBytes } = await import("crypto");
+  const auditToken = order.auditToken || randomBytes(16).toString("hex");
+
+  if (purgeMode === "immediate") {
+    // Hard delete everything except a stub with the audit token
+    await db.delete(orderNotesTable).where(eq(orderNotesTable.orderId, orderId));
+    await db.delete(orderItemsTable).where(eq(orderItemsTable.orderId, orderId));
+    await db.update(ordersTable).set({
+      notes: null, shippingAddress: null, alavontCartSnapshot: null,
+      luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
+      status: "purged",
+    }).where(eq(ordersTable.id, orderId));
+  } else if (purgeMode === "partial") {
+    // Remove PII only, keep anonymous financial record
+    await db.delete(orderNotesTable).where(eq(orderNotesTable.orderId, orderId));
+    await db.update(ordersTable).set({
+      notes: null, shippingAddress: null, alavontCartSnapshot: null,
+      luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
+      status: "purged",
+    }).where(eq(ordersTable.id, orderId));
+  } else {
+    // delayed — just mark for purge, background job handles it
+    await db.update(ordersTable).set({ purgedAt: new Date(), auditToken, status: "pending_purge" })
+      .where(eq(ordersTable.id, orderId));
+  }
+
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_PURGED", tenantId: order.tenantId,
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { purgeMode, auditToken }, ipAddress: req.ip,
+  });
+
+  res.json({ success: true, purgeMode, auditToken });
 });
 
 // POST /api/orders/:id/notes
