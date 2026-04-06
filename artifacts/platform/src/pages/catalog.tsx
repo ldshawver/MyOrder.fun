@@ -11,10 +11,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, Plus, Edit2, ExternalLink, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
+import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
 import { Link } from "wouter";
 
-const LC_STORE_URL = (import.meta as any).env?.VITE_WOOCOMMERCE_URL || "";
 
 type MenuMode = "alavont" | "lucifer";
 
@@ -39,10 +38,10 @@ function CatalogItemCard({
     >
       {/* Thumbnail */}
       <div className="relative aspect-square overflow-hidden" style={{ background: isLC ? "#0A0000" : undefined }}>
-        {item.imageUrl ? (
+        {(isLC ? item.luciferCruzImageUrl : item.imageUrl) ? (
           <img
-            src={item.imageUrl}
-            alt={item.name}
+            src={isLC ? item.luciferCruzImageUrl : item.imageUrl}
+            alt={isLC ? (item.luciferCruzName || item.name) : item.name}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).style.display = "none";
@@ -77,10 +76,16 @@ function CatalogItemCard({
       {/* Info */}
       <div className="p-4 flex-1 flex flex-col gap-2">
         <div className="flex-1">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">{item.category}</div>
-          <div className="text-sm font-bold leading-snug line-clamp-2">{item.name}</div>
-          {item.description && (
-            <div className="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">{item.description}</div>
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">
+            {isLC ? (item.alavontCategory || item.category) : item.category}
+          </div>
+          <div className="text-sm font-bold leading-snug line-clamp-2">
+            {isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name)}
+          </div>
+          {(isLC ? item.luciferCruzDescription : item.description) && (
+            <div className="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">
+              {isLC ? item.luciferCruzDescription : item.description}
+            </div>
           )}
         </div>
 
@@ -90,44 +95,27 @@ function CatalogItemCard({
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(item.price).toFixed(2)}
+              ${parseFloat(isLC && item.regularPrice ? item.regularPrice : item.price).toFixed(2)}
             </span>
-            {item.compareAtPrice && parseFloat(item.compareAtPrice) > parseFloat(item.price) && (
-              <span className="text-xs text-muted-foreground line-through">
-                ${parseFloat(item.compareAtPrice).toFixed(2)}
-              </span>
-            )}
           </div>
-          {item.stockQuantity !== undefined && item.isAvailable && (
+          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>
               {item.stockQuantity === 0 ? "OUT" : `${item.stockQuantity} avail`}
             </span>
           )}
         </div>
 
-        {isLC && LC_STORE_URL ? (
-          <a
-            href={`${LC_STORE_URL}/shop`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1 flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl transition-all"
-            style={{ background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }}
-            data-testid={`link-product-${item.id}`}
-          >
-            <ExternalLink size={11} />
-            Buy from Store
-          </a>
-        ) : (
-          <Link
-            href={`/catalog/${item.id}`}
-            className="mt-1 flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl border transition-all hover:bg-primary/10"
-            style={{ borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
-            data-testid={`link-product-${item.id}`}
-          >
-            <ShoppingCart size={11} />
-            View &amp; Order
-          </Link>
-        )}
+        <Link
+          href={`/catalog/${item.id}`}
+          className="mt-1 flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"
+          style={isLC
+            ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff", border: "none" }
+            : { borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
+          data-testid={`link-product-${item.id}`}
+        >
+          <ShoppingCart size={11} />
+          {isLC ? "Order" : "View & Order"}
+        </Link>
       </div>
     </div>
   );
@@ -302,11 +290,16 @@ export default function Catalog() {
 
   const { data: categoriesRes } = useListCatalogCategories({ query: { queryKey: ["listCatalogCategories"] } });
   const { data, isLoading } = useListCatalogItems(
-    { search, category: category !== "all" ? category : undefined, limit: 60 },
+    { search, category: category !== "all" ? category : undefined, limit: 200 },
     { query: { queryKey: ["listCatalogItems", search, category] } }
   );
 
   const isLC = menuMode === "lucifer";
+
+  // In LC mode, only show items that have a luciferCruzName set
+  const displayItems = isLC
+    ? (data?.items ?? []).filter((item: any) => item.luciferCruzName)
+    : (data?.items ?? []);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -320,7 +313,7 @@ export default function Catalog() {
             {isLC ? "Lucifer Cruz" : "Menu"}
           </h1>
           <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            {isLC ? "Full collection · Powered by WooCommerce" : "Browse and order from the Alavont catalog"}
+            {isLC ? "Adult boutique items available for ordering" : "Browse and order from the Alavont catalog"}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -328,17 +321,6 @@ export default function Catalog() {
             <Button size="sm" className="rounded-xl text-xs h-9" onClick={() => setAddOpen(true)} data-testid="button-add-product">
               <Plus size={13} className="mr-1.5" /> Add Item
             </Button>
-          )}
-          {canEdit && isLC && LC_STORE_URL && (
-            <a
-              href={`${LC_STORE_URL}/wp-admin`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs font-semibold h-9 px-3 rounded-xl border transition-all"
-              style={{ borderColor: "rgba(220,20,60,0.3)", color: "#DC143C" }}
-            >
-              <ExternalLink size={12} /> Manage Store
-            </a>
           )}
         </div>
       </div>
@@ -368,114 +350,93 @@ export default function Catalog() {
         </button>
       </div>
 
-      {/* LC: store not configured */}
-      {isLC && !LC_STORE_URL && (
+      {/* LC branded banner */}
+      {isLC && (
         <div
-          className="rounded-2xl p-8 border text-center space-y-3"
-          style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.03)" }}
-        >
-          <Flame size={32} style={{ color: "#DC143C", margin: "0 auto" }} />
-          <div className="text-sm font-bold" style={{ color: "#DC143C" }}>WooCommerce Store Not Connected</div>
-          <p className="text-xs text-muted-foreground max-w-sm mx-auto leading-relaxed">
-            Set the <code className="font-mono bg-muted/30 px-1 rounded text-[11px]">VITE_WOOCOMMERCE_URL</code> environment variable to your Lucifer Cruz store URL to enable this menu.
-          </p>
-          {canEdit && (
-            <p className="text-[10px] text-muted-foreground/60 font-mono">
-              Example: https://lucifer-cruz.com
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* LC: store link banner (when configured) */}
-      {isLC && LC_STORE_URL && (
-        <div
-          className="rounded-2xl p-4 border flex items-center justify-between"
+          className="rounded-2xl p-4 border flex items-center gap-3"
           style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.04)" }}
         >
+          <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
           <p className="text-xs" style={{ color: "#C0C0C0" }}>
-            Products below link directly to the Lucifer Cruz store at checkout.
+            Lucifer Cruz items ordered here are fulfilled through Alavont Therapeutics. All transactions are private and discreet.
           </p>
-          <a
-            href={LC_STORE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs font-bold shrink-0 ml-4"
-            style={{ color: "#DC143C" }}
-          >
-            <ExternalLink size={11} /> Browse Store
-          </a>
         </div>
       )}
 
-      {/* Filters — only show for Alavont or configured LC store */}
-      {(!isLC || LC_STORE_URL) && (
-        <div className="flex gap-2 flex-wrap items-center">
-          <div className="relative min-w-[180px] max-w-xs">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="pl-9 h-9 rounded-xl text-sm bg-background/50"
-              data-testid="input-search"
-            />
-          </div>
-          <div className="flex gap-1.5 flex-wrap">
-            {["all", ...(categoriesRes?.categories ?? [])].map(cat => (
-              <button
-                key={cat}
-                onClick={() => setCategory(cat)}
-                className={`px-3 py-1.5 text-xs rounded-xl font-semibold transition-all border ${
-                  category === cat
-                    ? isLC
-                      ? "text-white border-transparent"
-                      : "bg-primary text-primary-foreground border-transparent shadow-sm shadow-primary/20"
-                    : "border-border/40 text-muted-foreground hover:text-foreground"
-                }`}
-                style={category === cat && isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)" } : {}}
-              >
-                {cat === "all" ? "All" : cat}
-              </button>
-            ))}
-          </div>
+      {/* Filters */}
+      <div className="flex gap-2 flex-wrap items-center">
+        <div className="relative min-w-[180px] max-w-xs">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-9 h-9 rounded-xl text-sm bg-background/50"
+            data-testid="input-search"
+          />
         </div>
-      )}
+        <div className="flex gap-1.5 flex-wrap">
+          {["all", ...(categoriesRes?.categories ?? [])].map(cat => (
+            <button
+              key={cat}
+              onClick={() => setCategory(cat)}
+              className={`px-3 py-1.5 text-xs rounded-xl font-semibold transition-all border ${
+                category === cat
+                  ? isLC
+                    ? "text-white border-transparent"
+                    : "bg-primary text-primary-foreground border-transparent shadow-sm shadow-primary/20"
+                  : "border-border/40 text-muted-foreground hover:text-foreground"
+              }`}
+              style={category === cat && isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)" } : {}}
+            >
+              {cat === "all" ? "All" : cat}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Grid */}
-      {(!isLC || LC_STORE_URL) && (
-        isLoading ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {[...Array(10)].map((_, i) => (
-              <div key={i} className="aspect-square rounded-2xl bg-muted/20 animate-pulse" />
-            ))}
-          </div>
-        ) : !data?.items?.length ? (
-          <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center" data-testid="text-empty-state">
+      {isLoading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {[...Array(10)].map((_, i) => (
+            <div key={i} className="aspect-square rounded-2xl bg-muted/20 animate-pulse" />
+          ))}
+        </div>
+      ) : !displayItems.length ? (
+        <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center" data-testid="text-empty-state">
+          {isLC ? (
+            <Flame size={32} style={{ color: "#DC143C", marginBottom: 12 }} />
+          ) : (
             <Package size={32} className="text-muted-foreground/40 mb-3" />
-            <div className="text-sm font-semibold mb-1">No items found</div>
-            <div className="text-xs text-muted-foreground max-w-xs">
-              {canEdit ? "Add your first menu item using the button above." : "No products available right now. Check back soon."}
-            </div>
-            {canEdit && !isLC && (
-              <Button size="sm" className="mt-5 rounded-xl" onClick={() => setAddOpen(true)}>
-                <Plus size={12} className="mr-1.5" /> Add First Item
-              </Button>
-            )}
+          )}
+          <div className="text-sm font-semibold mb-1">
+            {isLC ? "No Lucifer Cruz items found" : "No items found"}
           </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {data.items.map(item => (
-              <CatalogItemCard
-                key={item.id}
-                item={item}
-                canEdit={canEdit}
-                onEdit={setEditItem}
-                menuMode={menuMode}
-              />
-            ))}
+          <div className="text-xs text-muted-foreground max-w-xs">
+            {isLC
+              ? "No items have Lucifer Cruz names assigned yet. Import the menu CSV to populate this catalog."
+              : canEdit
+                ? "Add your first menu item using the button above."
+                : "No products available right now. Check back soon."}
           </div>
-        )
+          {canEdit && !isLC && (
+            <Button size="sm" className="mt-5 rounded-xl" onClick={() => setAddOpen(true)}>
+              <Plus size={12} className="mr-1.5" /> Add First Item
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {displayItems.map((item: any) => (
+            <CatalogItemCard
+              key={item.id}
+              item={item}
+              canEdit={canEdit}
+              onEdit={setEditItem}
+              menuMode={menuMode}
+            />
+          ))}
+        </div>
       )}
 
       {/* Dialogs */}

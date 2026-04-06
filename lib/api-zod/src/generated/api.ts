@@ -281,6 +281,17 @@ export const ListCatalogItemsResponse = zod.object({
       metadata: zod.record(zod.string(), zod.unknown()).optional(),
       createdAt: zod.coerce.date(),
       updatedAt: zod.coerce.date(),
+      // Dual-brand fields
+      alavontName: zod.string().nullable().optional(),
+      luciferCruzName: zod.string().nullable().optional(),
+      luciferCruzImageUrl: zod.string().nullable().optional(),
+      luciferCruzDescription: zod.string().nullable().optional(),
+      regularPrice: zod.number().nullable().optional(),
+      homiePrice: zod.number().nullable().optional(),
+      receiptName: zod.string().nullable().optional(),
+      labName: zod.string().nullable().optional(),
+      alavontInStock: zod.boolean().nullable().optional(),
+      alavontCategory: zod.string().nullable().optional(),
     }),
   ),
   total: zod.number(),
@@ -327,6 +338,16 @@ export const GetCatalogItemResponse = zod.object({
   metadata: zod.record(zod.string(), zod.unknown()).optional(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
+  alavontName: zod.string().nullable().optional(),
+  luciferCruzName: zod.string().nullable().optional(),
+  luciferCruzImageUrl: zod.string().nullable().optional(),
+  luciferCruzDescription: zod.string().nullable().optional(),
+  regularPrice: zod.number().nullable().optional(),
+  homiePrice: zod.number().nullable().optional(),
+  receiptName: zod.string().nullable().optional(),
+  labName: zod.string().nullable().optional(),
+  alavontInStock: zod.boolean().nullable().optional(),
+  alavontCategory: zod.string().nullable().optional(),
 });
 
 /**
@@ -365,6 +386,16 @@ export const UpdateCatalogItemResponse = zod.object({
   metadata: zod.record(zod.string(), zod.unknown()).optional(),
   createdAt: zod.coerce.date(),
   updatedAt: zod.coerce.date(),
+  alavontName: zod.string().nullable().optional(),
+  luciferCruzName: zod.string().nullable().optional(),
+  luciferCruzImageUrl: zod.string().nullable().optional(),
+  luciferCruzDescription: zod.string().nullable().optional(),
+  regularPrice: zod.number().nullable().optional(),
+  homiePrice: zod.number().nullable().optional(),
+  receiptName: zod.string().nullable().optional(),
+  labName: zod.string().nullable().optional(),
+  alavontInStock: zod.boolean().nullable().optional(),
+  alavontCategory: zod.string().nullable().optional(),
 });
 
 /**

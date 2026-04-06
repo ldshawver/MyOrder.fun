@@ -35,6 +35,17 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect) {
     metadata: i.metadata,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
+    // Dual-brand fields
+    alavontName: (i as any).alavontName ?? null,
+    luciferCruzName: (i as any).luciferCruzName ?? null,
+    luciferCruzImageUrl: (i as any).luciferCruzImageUrl ?? null,
+    luciferCruzDescription: (i as any).luciferCruzDescription ?? null,
+    regularPrice: (i as any).regularPrice ? parseFloat((i as any).regularPrice) : null,
+    homiePrice: (i as any).homiePrice ? parseFloat((i as any).homiePrice) : null,
+    receiptName: (i as any).receiptName ?? null,
+    labName: (i as any).labName ?? null,
+    alavontInStock: (i as any).alavontInStock ?? null,
+    alavontCategory: (i as any).alavontCategory ?? null,
   };
 }
 
