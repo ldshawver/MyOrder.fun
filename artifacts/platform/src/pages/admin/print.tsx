@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 
 const API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -20,65 +22,222 @@ async function apiFetch(path: string, init?: RequestInit) {
   return res.json();
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+type Printer = {
+  id: number; name: string; role: string; connectionType: string;
+  directIp?: string; directPort?: number;
+  bridgeUrl?: string; bridgePrinterName?: string;
+  isActive: boolean; copies: number; paperWidth: string; timeoutMs: number;
+  online?: boolean;
+};
+type Profile = {
+  id: number; userId: number; email: string; firstName?: string; lastName?: string; role: string;
+  receiptPrinterId?: number; labelPrinterId?: number; fallbackReceiptPrinterId?: number;
+  isDefault: boolean;
+};
+type PrintJob = {
+  id: number; orderId?: number; printerId?: number; operatorUserId?: number;
+  jobType: string; status: string; retryCount: number; printedVia?: string;
+  errorMessage?: string; createdAt: string; printedAt?: string;
+};
+type PrintTemplate = {
+  id: number; name: string; jobType: string; paperWidth: string; paperHeight: string;
+  templateJson: unknown[]; isActive: boolean; isDefault: boolean;
+};
+type RoutingStatus = {
+  operator: { userId: number; email: string; firstName?: string; lastName?: string; role: string; source: string } | null;
+  receiptPrinter: (Printer & { online: boolean | null }) | null;
+  piFallback: (Printer & { online: boolean | null }) | null;
+  labelPrinter: (Printer & { online: boolean | null }) | null;
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function statusColor(s: string) {
   if (s === "printed") return "bg-green-500/10 text-green-400 border-green-500/30";
   if (s === "failed") return "bg-red-500/10 text-red-400 border-red-500/30";
   if (s === "sending" || s === "retrying") return "bg-yellow-500/10 text-yellow-400 border-yellow-500/30";
   return "bg-muted/30 text-muted-foreground border-border/30";
 }
+function OnlineDot({ online }: { online: boolean | null | undefined }) {
+  if (online === null || online === undefined)
+    return <span className="inline-block w-2 h-2 rounded-full bg-muted-foreground/40 mr-1.5" />;
+  return <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${online ? "bg-green-400" : "bg-red-400"}`} />;
+}
+function connLabel(t: string) {
+  return { ethernet_direct: "Ethernet Direct", mac_bridge: "Mac Bridge", pi_bridge: "Pi Bridge", bridge: "Bridge" }[t] ?? t;
+}
 
-type Printer = {
-  id: number; name: string; role: string; bridgeUrl: string;
-  bridgePrinterName?: string; isActive: boolean; copies: number; paperWidth: string;
-};
-type PrintJob = {
-  id: number; orderId?: number; printerId?: number; jobType: string;
-  status: string; retryCount: number; errorMessage?: string; createdAt: string;
-};
+// ── ROUTING TAB ───────────────────────────────────────────────────────────────
+function RoutingTab() {
+  const { data, isLoading, refetch } = useQuery<RoutingStatus>({
+    queryKey: ["print-routing"],
+    queryFn: () => apiFetch("/api/print/routing"),
+    refetchInterval: 30_000,
+  });
 
+  if (isLoading) return <div className="text-muted-foreground text-sm py-12 text-center">Loading routing status…</div>;
+
+  const op = data?.operator;
+  const r = data?.receiptPrinter;
+  const pi = data?.piFallback;
+  const l = data?.labelPrinter;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Live Routing Status</h2>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Refresh</Button>
+      </div>
+
+      {/* Active Operator */}
+      <div className="bg-card border border-border/50 rounded-sm p-5">
+        <div className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Active Operator</div>
+        {op ? (
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-sm font-bold">
+              {(op.firstName?.[0] ?? op.email[0]).toUpperCase()}
+            </div>
+            <div>
+              <div className="font-medium">{op.firstName} {op.lastName}</div>
+              <div className="text-sm text-muted-foreground">{op.email}</div>
+              <div className="text-xs mt-0.5">
+                <Badge variant="outline" className="text-xs mr-2">{op.role.replace("_", " ")}</Badge>
+                <span className="text-muted-foreground">{op.source === "shift" ? "Active shift" : "Admin fallback"}</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-muted-foreground text-sm">No active operator — no lab tech on shift and no admin found.</div>
+        )}
+      </div>
+
+      {/* Printer routes */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Receipt */}
+        <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Receipt Printer</div>
+          {r ? (
+            <>
+              <div className="flex items-center gap-1.5 font-medium text-sm">
+                <OnlineDot online={r.online} />{r.name}
+              </div>
+              <div className="text-xs text-muted-foreground">{connLabel(r.connectionType)}</div>
+              {r.directIp && <div className="font-mono text-xs text-muted-foreground">{r.directIp}:{r.directPort ?? 9100}</div>}
+              <Badge variant="outline" className={`text-xs ${r.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
+                {r.online ? "Reachable" : "Unreachable"}
+              </Badge>
+            </>
+          ) : <div className="text-muted-foreground text-xs">Not configured</div>}
+        </div>
+
+        {/* Pi fallback */}
+        <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Pi Fallback (Receipt)</div>
+          {pi ? (
+            <>
+              <div className="flex items-center gap-1.5 font-medium text-sm">
+                <OnlineDot online={pi.online} />{pi.name}
+              </div>
+              <div className="text-xs text-muted-foreground">{pi.bridgeUrl}</div>
+              <Badge variant="outline" className={`text-xs ${pi.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
+                {pi.online ? "Reachable" : "Unreachable"}
+              </Badge>
+            </>
+          ) : <div className="text-muted-foreground text-xs">Not configured</div>}
+        </div>
+
+        {/* Label */}
+        <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Label Printer (Mac Bridge)</div>
+          {l ? (
+            <>
+              <div className="flex items-center gap-1.5 font-medium text-sm">
+                <OnlineDot online={l.online} />{l.name}
+              </div>
+              <div className="text-xs text-muted-foreground">{l.bridgeUrl}</div>
+              <Badge variant="outline" className={`text-xs ${l.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
+                {l.online ? "Reachable" : "Unreachable"}
+              </Badge>
+            </>
+          ) : <div className="text-muted-foreground text-xs">Not configured</div>}
+        </div>
+      </div>
+
+      <div className="text-xs text-muted-foreground border-t border-border/30 pt-4">
+        Routes checked via TCP socket probe (Ethernet) and /health endpoint (bridges). Auto-refreshes every 30s.
+      </div>
+    </div>
+  );
+}
+
+// ── PRINTERS TAB ──────────────────────────────────────────────────────────────
 function PrinterForm({ printer, onSave, onClose }: {
-  printer?: Printer; onSave: (data: Partial<Printer>) => void; onClose: () => void;
+  printer?: Printer; onSave: (d: Partial<Printer>) => void; onClose: () => void;
 }) {
   const [form, setForm] = useState({
     name: printer?.name ?? "",
     role: printer?.role ?? "kitchen",
+    connectionType: printer?.connectionType ?? "bridge",
+    directIp: printer?.directIp ?? "",
+    directPort: printer?.directPort ?? 9100,
     bridgeUrl: printer?.bridgeUrl ?? "",
     bridgePrinterName: printer?.bridgePrinterName ?? "",
     copies: printer?.copies ?? 1,
     paperWidth: printer?.paperWidth ?? "80mm",
+    timeoutMs: printer?.timeoutMs ?? 8000,
     isActive: printer?.isActive ?? true,
   });
+  const isEthernet = form.connectionType === "ethernet_direct";
+  const isBridge = !isEthernet;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1">
           <Label>Name</Label>
-          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Kitchen Printer" />
+          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Receipt Printer" />
         </div>
         <div className="space-y-1">
           <Label>Role</Label>
           <Select value={form.role} onValueChange={v => setForm(f => ({ ...f, role: v }))}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {["kitchen", "receipt", "expo", "label", "bar"].map(r => (
+              {["kitchen", "receipt", "label", "expo", "bar"].map(r => (
                 <SelectItem key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
         <div className="space-y-1 col-span-2">
-          <Label>Bridge URL</Label>
-          <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="http://192.168.1.10:3100" />
+          <Label>Connection Type</Label>
+          <Select value={form.connectionType} onValueChange={v => setForm(f => ({ ...f, connectionType: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ethernet_direct">Ethernet Direct (raw TCP socket)</SelectItem>
+              <SelectItem value="mac_bridge">Mac Bridge (HTTP)</SelectItem>
+              <SelectItem value="pi_bridge">Raspberry Pi Bridge (HTTP)</SelectItem>
+              <SelectItem value="bridge">Generic Bridge (HTTP)</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        <div className="space-y-1">
+        {isEthernet && <>
+          <div className="space-y-1">
+            <Label>Printer IP Address</Label>
+            <Input value={form.directIp} onChange={e => setForm(f => ({ ...f, directIp: e.target.value }))} placeholder="192.168.68.66" />
+          </div>
+          <div className="space-y-1">
+            <Label>Port</Label>
+            <Input type="number" value={form.directPort} onChange={e => setForm(f => ({ ...f, directPort: parseInt(e.target.value) || 9100 }))} placeholder="9100" />
+          </div>
+        </>}
+        {isBridge && <div className="space-y-1 col-span-2">
+          <Label>Bridge URL</Label>
+          <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="https://abc123.ngrok-free.app" />
+        </div>}
+        {isBridge && <div className="space-y-1">
           <Label>Printer Name on Bridge</Label>
           <Input value={form.bridgePrinterName} onChange={e => setForm(f => ({ ...f, bridgePrinterName: e.target.value }))} placeholder="PL70e" />
-        </div>
-        <div className="space-y-1">
-          <Label>Copies</Label>
-          <Input type="number" min={1} max={5} value={form.copies} onChange={e => setForm(f => ({ ...f, copies: parseInt(e.target.value) || 1 }))} />
-        </div>
+        </div>}
         <div className="space-y-1">
           <Label>Paper Width</Label>
           <Select value={form.paperWidth} onValueChange={v => setForm(f => ({ ...f, paperWidth: v }))}>
@@ -88,6 +247,14 @@ function PrinterForm({ printer, onSave, onClose }: {
               <SelectItem value="80mm">80mm</SelectItem>
             </SelectContent>
           </Select>
+        </div>
+        <div className="space-y-1">
+          <Label>Copies</Label>
+          <Input type="number" min={1} max={5} value={form.copies} onChange={e => setForm(f => ({ ...f, copies: parseInt(e.target.value) || 1 }))} />
+        </div>
+        <div className="space-y-1">
+          <Label>Timeout (ms)</Label>
+          <Input type="number" value={form.timeoutMs} onChange={e => setForm(f => ({ ...f, timeoutMs: parseInt(e.target.value) || 8000 }))} />
         </div>
         <div className="flex items-center gap-2 pt-5">
           <Switch checked={form.isActive} onCheckedChange={v => setForm(f => ({ ...f, isActive: v }))} />
@@ -102,224 +269,514 @@ function PrinterForm({ printer, onSave, onClose }: {
   );
 }
 
-export default function AdminPrint() {
+function PrintersTab() {
   const qc = useQueryClient();
-  const [jobFilter, setJobFilter] = useState("all");
-  const [printerDialog, setPrinterDialog] = useState<Printer | null | "new">(null);
+  const [dialog, setDialog] = useState<Printer | "new" | null>(null);
+  const { data, isLoading } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") });
+  const { data: healthData } = useQuery({ queryKey: ["print-health"], queryFn: () => apiFetch("/api/print/health"), refetchInterval: 30_000 });
 
-  const { data: printersData, isLoading: printersLoading } = useQuery({
-    queryKey: ["print-printers"],
-    queryFn: () => apiFetch("/api/print/printers"),
-  });
-  const { data: jobsData, isLoading: jobsLoading } = useQuery({
-    queryKey: ["print-jobs", jobFilter],
-    queryFn: () => apiFetch(`/api/print/jobs${jobFilter !== "all" ? `?status=${jobFilter}` : ""}`),
-    refetchInterval: 10_000,
-  });
-  const { data: healthData } = useQuery({
-    queryKey: ["print-health"],
-    queryFn: () => apiFetch("/api/print/health"),
-    refetchInterval: 30_000,
-  });
-  const { data: settingsData } = useQuery({
-    queryKey: ["print-settings"],
-    queryFn: () => apiFetch("/api/print/settings"),
-  });
+  const create = useMutation({ mutationFn: (d: Partial<Printer>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
+  const update = useMutation({ mutationFn: ({ id, d }: { id: number; d: Partial<Printer> }) => apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
+  const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
+  const test = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
 
-  const createPrinter = useMutation({
-    mutationFn: (data: Partial<Printer>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
-  const updatePrinter = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<Printer> }) =>
-      apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
-  const deletePrinter = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
-  const testPrinter = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }),
-  });
-  const retryJob = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/retry`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }),
-  });
-  const reprintJob = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/reprint`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }),
-  });
-  const updateSettings = useMutation({
-    mutationFn: (data: object) => apiFetch("/api/print/settings", { method: "PATCH", body: JSON.stringify(data) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-settings"] }),
-  });
-
-  const printers: Printer[] = printersData?.printers ?? [];
-  const jobs: PrintJob[] = jobsData?.jobs ?? [];
-  const health: { id: number; name: string; online: boolean }[] = healthData?.printers ?? [];
-  const settings = settingsData?.settings;
+  const printers: Printer[] = data?.printers ?? [];
+  const health: { id: number; online: boolean }[] = healthData?.printers ?? [];
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto">
-      <div className="border-b border-border/50 pb-6 flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight mb-2">Print Management</h1>
-          <p className="text-muted-foreground">Manage thermal printers, print jobs, and auto-print settings.</p>
-        </div>
-        <Dialog open={printerDialog === "new"} onOpenChange={o => setPrinterDialog(o ? "new" : null)}>
-          <DialogTrigger asChild>
-            <Button>+ Add Printer</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle>Add Printer</DialogTitle></DialogHeader>
-            <PrinterForm onSave={data => createPrinter.mutate(data)} onClose={() => setPrinterDialog(null)} />
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold">Printers</h2>
+        <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
+          <DialogTrigger asChild><Button>+ Add Printer</Button></DialogTrigger>
+          <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Add Printer</DialogTitle></DialogHeader>
+            <PrinterForm onSave={d => create.mutate(d)} onClose={() => setDialog(null)} />
           </DialogContent>
         </Dialog>
       </div>
-
-      {/* Settings */}
-      {settings && (
-        <div className="bg-card border border-border/50 rounded-sm p-4 flex items-center gap-8">
-          <div className="flex items-center gap-3">
-            <Switch
-              checked={settings.autoPrintOrders}
-              onCheckedChange={v => updateSettings.mutate({ autoPrintOrders: v })}
-            />
-            <div>
-              <div className="text-sm font-medium">Auto-print on order</div>
-              <div className="text-xs text-muted-foreground">Send to kitchen/receipt printer when order is placed</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Switch
-              checked={settings.autoPrintReceipts}
-              onCheckedChange={v => updateSettings.mutate({ autoPrintReceipts: v })}
-            />
-            <div>
-              <div className="text-sm font-medium">Auto-print receipts</div>
-              <div className="text-xs text-muted-foreground">Send customer receipt to receipt printer</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Printers */}
-      <div>
-        <h2 className="text-lg font-semibold mb-3">Printers</h2>
-        <div className="bg-card border border-border/50 rounded-sm shadow-sm overflow-hidden">
-          <Table>
-            <TableHeader className="bg-muted/10">
-              <TableRow className="border-border/50">
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Name</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Role</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Bridge URL</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Status</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {printersLoading ? (
-                <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground text-xs uppercase tracking-widest">Loading...</TableCell></TableRow>
-              ) : printers.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground text-xs">No printers configured. Add one above.</TableCell></TableRow>
-              ) : printers.map(p => {
-                const h = health.find(x => x.id === p.id);
-                return (
-                  <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
-                    <TableCell className="font-medium text-sm">{p.name}</TableCell>
-                    <TableCell><Badge variant="outline" className="uppercase text-xs">{p.role}</Badge></TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{p.bridgeUrl}</TableCell>
-                    <TableCell>
-                      {!p.isActive
-                        ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
-                        : h
-                          ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
-                          : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>
-                      }
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-2">
-                        <Button size="sm" variant="outline" onClick={() => testPrinter.mutate(p.id)}>Test</Button>
-                        <Dialog open={printerDialog === p} onOpenChange={o => setPrinterDialog(o ? p : null)}>
-                          <DialogTrigger asChild>
-                            <Button size="sm" variant="outline">Edit</Button>
-                          </DialogTrigger>
-                          <DialogContent>
-                            <DialogHeader><DialogTitle>Edit Printer</DialogTitle></DialogHeader>
-                            <PrinterForm printer={p} onSave={data => updatePrinter.mutate({ id: p.id, data })} onClose={() => setPrinterDialog(null)} />
-                          </DialogContent>
-                        </Dialog>
-                        <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete this printer?")) deletePrinter.mutate(p.id); }}>Delete</Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
-
-      {/* Print Jobs */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Print Jobs</h2>
-          <Select value={jobFilter} onValueChange={setJobFilter}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Jobs</SelectItem>
-              <SelectItem value="queued">Queued</SelectItem>
-              <SelectItem value="sending">Sending</SelectItem>
-              <SelectItem value="printed">Printed</SelectItem>
-              <SelectItem value="failed">Failed</SelectItem>
-              <SelectItem value="retrying">Retrying</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="bg-card border border-border/50 rounded-sm shadow-sm overflow-hidden">
-          <Table>
-            <TableHeader className="bg-muted/10">
-              <TableRow className="border-border/50">
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">ID</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Order</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Type</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Status</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Retries</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Time</TableHead>
-                <TableHead className="font-semibold text-xs uppercase tracking-wider">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {jobsLoading ? (
-                <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground text-xs uppercase tracking-widest">Loading...</TableCell></TableRow>
-              ) : jobs.length === 0 ? (
-                <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground text-xs">No print jobs found.</TableCell></TableRow>
-              ) : jobs.map(j => (
-                <TableRow key={j.id} className="border-border/30 hover:bg-muted/20">
-                  <TableCell className="font-mono text-xs">{j.id}</TableCell>
-                  <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
-                  <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge>
-                    {j.errorMessage && <div className="text-xs text-red-400 mt-1 max-w-xs truncate" title={j.errorMessage}>{j.errorMessage}</div>}
+      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-muted/10">
+            <TableRow className="border-border/50">
+              <TableHead className="text-xs uppercase tracking-wider">Name</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Role</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Type</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Target</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">Loading…</TableCell></TableRow>
+            ) : printers.length === 0 ? (
+              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">No printers configured.</TableCell></TableRow>
+            ) : printers.map(p => {
+              const h = health.find(x => x.id === p.id);
+              return (
+                <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
+                  <TableCell className="font-medium text-sm">{p.name}</TableCell>
+                  <TableCell><Badge variant="outline" className="text-xs uppercase">{p.role}</Badge></TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{connLabel(p.connectionType)}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {p.connectionType === "ethernet_direct" ? `${p.directIp}:${p.directPort ?? 9100}` : p.bridgeUrl}
                   </TableCell>
-                  <TableCell className="text-xs text-center">{j.retryCount}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{new Date(j.createdAt).toLocaleString()}</TableCell>
+                  <TableCell>
+                    {!p.isActive
+                      ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
+                      : h ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
+                        : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>
+                    }
+                  </TableCell>
                   <TableCell>
                     <div className="flex gap-2">
-                      {(j.status === "failed" || j.status === "retrying") && (
-                        <Button size="sm" variant="outline" onClick={() => retryJob.mutate(j.id)}>Retry</Button>
-                      )}
-                      <Button size="sm" variant="outline" onClick={() => reprintJob.mutate(j.id)}>Reprint</Button>
+                      <Button size="sm" variant="outline" onClick={() => test.mutate(p.id)}>Test</Button>
+                      <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
+                        <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
+                        <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Edit Printer</DialogTitle></DialogHeader>
+                          <PrinterForm printer={p} onSave={d => update.mutate({ id: p.id, d })} onClose={() => setDialog(null)} />
+                        </DialogContent>
+                      </Dialog>
+                      <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete?")) del.mutate(p.id); }}>Del</Button>
                     </div>
                   </TableCell>
                 </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ── PROFILES TAB ──────────────────────────────────────────────────────────────
+function ProfileForm({ profile, printers, users, onSave, onClose }: {
+  profile?: Profile; printers: Printer[]; users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[];
+  onSave: (d: object) => void; onClose: () => void;
+}) {
+  const [form, setForm] = useState({
+    userId: profile?.userId ? String(profile.userId) : "",
+    receiptPrinterId: profile?.receiptPrinterId ? String(profile.receiptPrinterId) : "none",
+    labelPrinterId: profile?.labelPrinterId ? String(profile.labelPrinterId) : "none",
+    fallbackReceiptPrinterId: profile?.fallbackReceiptPrinterId ? String(profile.fallbackReceiptPrinterId) : "none",
+    isDefault: profile?.isDefault ?? false,
+  });
+
+  const save = () => {
+    onSave({
+      userId: Number(form.userId),
+      receiptPrinterId: form.receiptPrinterId !== "none" ? Number(form.receiptPrinterId) : null,
+      labelPrinterId: form.labelPrinterId !== "none" ? Number(form.labelPrinterId) : null,
+      fallbackReceiptPrinterId: form.fallbackReceiptPrinterId !== "none" ? Number(form.fallbackReceiptPrinterId) : null,
+      isDefault: form.isDefault,
+    });
+    onClose();
+  };
+
+  return (
+    <div className="space-y-4">
+      {!profile && (
+        <div className="space-y-1">
+          <Label>Operator</Label>
+          <Select value={form.userId} onValueChange={v => setForm(f => ({ ...f, userId: v }))}>
+            <SelectTrigger><SelectValue placeholder="Select operator…" /></SelectTrigger>
+            <SelectContent>
+              {users.map(u => <SelectItem key={u.id} value={String(u.id)}>{u.email} ({u.role})</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {[
+        { key: "receiptPrinterId", label: "Receipt Printer (Ethernet Direct)" },
+        { key: "fallbackReceiptPrinterId", label: "Fallback Receipt Printer (Pi Bridge)" },
+        { key: "labelPrinterId", label: "Label Printer (Mac Bridge)" },
+      ].map(({ key, label }) => (
+        <div key={key} className="space-y-1">
+          <Label>{label}</Label>
+          <Select value={(form as Record<string, string>)[key]} onValueChange={v => setForm(f => ({ ...f, [key]: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">— None —</SelectItem>
+              {printers.filter(p => p.isActive).map(p => (
+                <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
               ))}
-            </TableBody>
-          </Table>
+            </SelectContent>
+          </Select>
+        </div>
+      ))}
+      <div className="flex items-center gap-2">
+        <Switch checked={form.isDefault} onCheckedChange={v => setForm(f => ({ ...f, isDefault: v }))} />
+        <Label>Default profile (used when no active shift)</Label>
+      </div>
+      <div className="flex gap-2 justify-end pt-2">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={!form.userId}>Save Profile</Button>
+      </div>
+    </div>
+  );
+}
+
+function ProfilesTab() {
+  const qc = useQueryClient();
+  const [dialog, setDialog] = useState<Profile | "new" | null>(null);
+  const { data } = useQuery({ queryKey: ["print-profiles"], queryFn: () => apiFetch("/api/print/profiles") });
+  const { data: printersData } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") });
+  const { data: usersData } = useQuery({ queryKey: ["print-users"], queryFn: () => apiFetch("/api/print/users") });
+
+  const save = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/profiles", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["print-profiles"] }); qc.invalidateQueries({ queryKey: ["print-routing"] }); } });
+  const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/profiles/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-profiles"] }) });
+
+  const profiles: Profile[] = data?.profiles ?? [];
+  const printers: Printer[] = printersData?.printers ?? [];
+  const users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[] = usersData?.users ?? [];
+  const printerName = (id?: number) => id ? (printers.find(p => p.id === id)?.name ?? `#${id}`) : "—";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-lg font-semibold">Operator Print Profiles</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Map each operator to their receipt, label, and fallback printers.</p>
+        </div>
+        <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
+          <DialogTrigger asChild><Button>+ Add Profile</Button></DialogTrigger>
+          <DialogContent><DialogHeader><DialogTitle>New Operator Profile</DialogTitle></DialogHeader>
+            <ProfileForm printers={printers} users={users} onSave={d => save.mutate(d)} onClose={() => setDialog(null)} />
+          </DialogContent>
+        </Dialog>
+      </div>
+      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-muted/10">
+            <TableRow className="border-border/50">
+              <TableHead className="text-xs uppercase tracking-wider">Operator</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Receipt</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Pi Fallback</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Label</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {profiles.length === 0 ? (
+              <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground text-xs">No profiles. Add one above.</TableCell></TableRow>
+            ) : profiles.map(p => (
+              <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
+                <TableCell>
+                  <div className="font-medium text-sm">{p.email}</div>
+                  <div className="text-xs text-muted-foreground">{p.role}</div>
+                  {p.isDefault && <Badge variant="outline" className="text-xs mt-1">Default</Badge>}
+                </TableCell>
+                <TableCell className="text-sm">{printerName(p.receiptPrinterId)}</TableCell>
+                <TableCell className="text-sm">{printerName(p.fallbackReceiptPrinterId)}</TableCell>
+                <TableCell className="text-sm">{printerName(p.labelPrinterId)}</TableCell>
+                <TableCell>
+                  <div className="flex gap-2">
+                    <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
+                      <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
+                      <DialogContent><DialogHeader><DialogTitle>Edit Profile — {p.email}</DialogTitle></DialogHeader>
+                        <ProfileForm profile={p} printers={printers} users={users} onSave={d => save.mutate(d)} onClose={() => setDialog(null)} />
+                      </DialogContent>
+                    </Dialog>
+                    <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete profile?")) del.mutate(p.id); }}>Del</Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ── JOBS TAB ──────────────────────────────────────────────────────────────────
+function JobsTab() {
+  const qc = useQueryClient();
+  const [filter, setFilter] = useState("all");
+  const { data, isLoading } = useQuery({
+    queryKey: ["print-jobs", filter],
+    queryFn: () => apiFetch(`/api/print/jobs${filter !== "all" ? `?status=${filter}` : ""}`),
+    refetchInterval: 10_000,
+  });
+
+  const retry = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/retry`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
+  const reprint = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/reprint`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
+
+  const jobs: PrintJob[] = data?.jobs ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-lg font-semibold">Print Jobs</h2>
+        <Select value={filter} onValueChange={setFilter}>
+          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {["all", "queued", "sending", "printed", "retrying", "failed"].map(s => (
+              <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-muted/10">
+            <TableRow className="border-border/50">
+              <TableHead className="text-xs uppercase tracking-wider">ID</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Order</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Type</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Via</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Retries</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Created</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground text-xs">Loading…</TableCell></TableRow>
+            ) : jobs.length === 0 ? (
+              <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground text-xs">No jobs found.</TableCell></TableRow>
+            ) : jobs.map(j => (
+              <TableRow key={j.id} className="border-border/30 hover:bg-muted/20">
+                <TableCell className="font-mono text-xs">{j.id}</TableCell>
+                <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
+                <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
+                <TableCell>
+                  <Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge>
+                  {j.errorMessage && <div className="text-xs text-red-400 mt-1 max-w-[160px] truncate" title={j.errorMessage}>{j.errorMessage}</div>}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">{j.printedVia ? connLabel(j.printedVia) : "—"}</TableCell>
+                <TableCell className="text-xs text-center">{j.retryCount}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{new Date(j.createdAt).toLocaleString()}</TableCell>
+                <TableCell>
+                  <div className="flex gap-1">
+                    {(j.status === "failed" || j.status === "retrying") && (
+                      <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => retry.mutate(j.id)}>Retry</Button>
+                    )}
+                    <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => reprint.mutate(j.id)}>Reprint</Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ── TEMPLATES TAB ─────────────────────────────────────────────────────────────
+function TemplateForm({ template, onSave, onClose }: {
+  template?: PrintTemplate; onSave: (d: object) => void; onClose: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: template?.name ?? "",
+    jobType: template?.jobType ?? "label",
+    paperWidth: template?.paperWidth ?? "58mm",
+    paperHeight: template?.paperHeight ?? "auto",
+    isDefault: template?.isDefault ?? false,
+    isActive: template?.isActive ?? true,
+    templateJson: template?.templateJson ? JSON.stringify(template.templateJson, null, 2) : JSON.stringify([
+      { key: "id", label: "Order #", x: 0, y: 30, fontSize: 20, fontWeight: "bold", align: "center" },
+      { key: "customerName", label: "Customer", x: 0, y: 60, fontSize: 14 },
+      { key: "total", label: "Total", x: 0, y: 80, fontSize: 14 },
+    ], null, 2),
+  });
+  const [jsonError, setJsonError] = useState("");
+
+  const save = () => {
+    try {
+      const parsed = JSON.parse(form.templateJson);
+      onSave({ ...form, templateJson: parsed });
+      onClose();
+    } catch { setJsonError("Invalid JSON"); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <Label>Name</Label>
+          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        </div>
+        <div className="space-y-1">
+          <Label>Type</Label>
+          <Select value={form.jobType} onValueChange={v => setForm(f => ({ ...f, jobType: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="label">Label</SelectItem>
+              <SelectItem value="receipt">Receipt</SelectItem>
+              <SelectItem value="order_ticket">Order Ticket</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label>Paper Width</Label>
+          <Select value={form.paperWidth} onValueChange={v => setForm(f => ({ ...f, paperWidth: v }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="58mm">58mm</SelectItem>
+              <SelectItem value="80mm">80mm</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label>Paper Height</Label>
+          <Input value={form.paperHeight} onChange={e => setForm(f => ({ ...f, paperHeight: e.target.value }))} placeholder="auto or 200mm" />
         </div>
       </div>
+      <div className="space-y-1">
+        <Label>Field Definitions (JSON)</Label>
+        <Textarea
+          value={form.templateJson}
+          onChange={e => { setForm(f => ({ ...f, templateJson: e.target.value })); setJsonError(""); }}
+          className="font-mono text-xs h-48"
+        />
+        {jsonError && <div className="text-xs text-red-400">{jsonError}</div>}
+        <div className="text-xs text-muted-foreground">Array of: {"{ key, label?, x?, y?, fontSize?, fontWeight?, align? }"}</div>
+      </div>
+      <div className="flex gap-6">
+        <div className="flex items-center gap-2"><Switch checked={form.isActive} onCheckedChange={v => setForm(f => ({ ...f, isActive: v }))} /><Label>Active</Label></div>
+        <div className="flex items-center gap-2"><Switch checked={form.isDefault} onCheckedChange={v => setForm(f => ({ ...f, isDefault: v }))} /><Label>Default</Label></div>
+      </div>
+      <div className="flex gap-2 justify-end">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={save}>Save Template</Button>
+      </div>
+    </div>
+  );
+}
+
+function TemplatesTab() {
+  const qc = useQueryClient();
+  const [dialog, setDialog] = useState<PrintTemplate | "new" | null>(null);
+  const { data, isLoading } = useQuery({ queryKey: ["print-templates"], queryFn: () => apiFetch("/api/print/templates") });
+
+  const create = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/templates", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
+  const update = useMutation({ mutationFn: ({ id, d }: { id: number; d: object }) => apiFetch(`/api/print/templates/${id}`, { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
+  const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/templates/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
+
+  const templates: PrintTemplate[] = data?.templates ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-lg font-semibold">Label & Receipt Templates</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Define field layouts for label and receipt prints.</p>
+        </div>
+        <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
+          <DialogTrigger asChild><Button>+ Add Template</Button></DialogTrigger>
+          <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>New Template</DialogTitle></DialogHeader>
+            <TemplateForm onSave={d => create.mutate(d)} onClose={() => setDialog(null)} />
+          </DialogContent>
+        </Dialog>
+      </div>
+      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-muted/10">
+            <TableRow className="border-border/50">
+              <TableHead className="text-xs uppercase tracking-wider">Name</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Type</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Paper</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Fields</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">Loading…</TableCell></TableRow>
+            ) : templates.length === 0 ? (
+              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">No templates. Add one above.</TableCell></TableRow>
+            ) : templates.map(t => (
+              <TableRow key={t.id} className="border-border/30 hover:bg-muted/20">
+                <TableCell className="font-medium text-sm">
+                  {t.name}
+                  {t.isDefault && <Badge variant="outline" className="text-xs ml-2">Default</Badge>}
+                </TableCell>
+                <TableCell className="text-xs capitalize">{t.jobType.replace("_", " ")}</TableCell>
+                <TableCell className="text-xs">{t.paperWidth}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{(t.templateJson as unknown[]).length} fields</TableCell>
+                <TableCell>
+                  <Badge variant="outline" className={`text-xs ${t.isActive ? "text-green-400 border-green-500/30" : "text-muted-foreground"}`}>
+                    {t.isActive ? "Active" : "Inactive"}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <div className="flex gap-2">
+                    <Dialog open={dialog === t} onOpenChange={o => setDialog(o ? t : null)}>
+                      <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
+                      <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Edit Template</DialogTitle></DialogHeader>
+                        <TemplateForm template={t} onSave={d => update.mutate({ id: t.id, d })} onClose={() => setDialog(null)} />
+                      </DialogContent>
+                    </Dialog>
+                    <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete template?")) del.mutate(t.id); }}>Del</Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// ── SETTINGS BAR ──────────────────────────────────────────────────────────────
+function SettingsBar() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["print-settings"], queryFn: () => apiFetch("/api/print/settings") });
+  const update = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/settings", { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-settings"] }) });
+  const s = data?.settings;
+
+  if (!s) return null;
+
+  return (
+    <div className="bg-card border border-border/50 rounded-sm p-4 flex flex-wrap items-center gap-6">
+      {[
+        { key: "autoPrintOrders", label: "Auto-print kitchen tickets" },
+        { key: "autoPrintReceipts", label: "Auto-print receipts" },
+        { key: "autoPrintLabels", label: "Auto-print labels" },
+        { key: "alertOnLabelFailure", label: "SMS alert on label failure" },
+      ].map(({ key, label }) => (
+        <div key={key} className="flex items-center gap-2">
+          <Switch checked={Boolean(s[key as keyof typeof s])} onCheckedChange={v => update.mutate({ [key]: v })} />
+          <span className="text-sm">{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+export default function AdminPrint() {
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      <div className="border-b border-border/50 pb-4">
+        <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
+        <p className="text-muted-foreground text-sm">
+          Operator-aware routing — Ethernet direct → Pi fallback for receipts. Mac bridge for labels.
+        </p>
+      </div>
+
+      <SettingsBar />
+
+      <Tabs defaultValue="routing">
+        <TabsList className="mb-4">
+          <TabsTrigger value="routing">Routing</TabsTrigger>
+          <TabsTrigger value="printers">Printers</TabsTrigger>
+          <TabsTrigger value="profiles">Profiles</TabsTrigger>
+          <TabsTrigger value="jobs">Jobs</TabsTrigger>
+          <TabsTrigger value="templates">Templates</TabsTrigger>
+        </TabsList>
+        <TabsContent value="routing"><RoutingTab /></TabsContent>
+        <TabsContent value="printers"><PrintersTab /></TabsContent>
+        <TabsContent value="profiles"><ProfilesTab /></TabsContent>
+        <TabsContent value="jobs"><JobsTab /></TabsContent>
+        <TabsContent value="templates"><TemplatesTab /></TabsContent>
+      </Tabs>
     </div>
   );
 }

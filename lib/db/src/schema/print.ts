@@ -8,16 +8,28 @@ import {
   jsonb,
 } from "drizzle-orm/pg-core";
 import { ordersTable } from "./orders";
+import { usersTable } from "./users";
 
+// ── Printers ──────────────────────────────────────────────────────────────────
+// connectionType:
+//   "ethernet_direct" — raw TCP socket to printer on LAN (receipts)
+//   "mac_bridge"      — HTTP to Mac print bridge (labels)
+//   "pi_bridge"       — HTTP to Raspberry Pi bridge (receipt fallback)
+//   "bridge"          — generic HTTP bridge (legacy)
 export const printPrintersTable = pgTable("print_printers", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   role: text("role").notNull().default("kitchen"),
-  type: text("type").notNull().default("usb"),
-  isActive: boolean("is_active").notNull().default(true),
-  bridgeUrl: text("bridge_url").notNull(),
+  // connection type controls dispatch strategy
+  connectionType: text("connection_type").notNull().default("bridge"),
+  // For ethernet_direct: IP + port for raw socket
+  directIp: text("direct_ip"),
+  directPort: integer("direct_port").default(9100),
+  // For mac_bridge / pi_bridge / bridge: HTTP endpoint
+  bridgeUrl: text("bridge_url").notNull().default(""),
   bridgePrinterName: text("bridge_printer_name"),
   apiKey: text("api_key"),
+  isActive: boolean("is_active").notNull().default(true),
   timeoutMs: integer("timeout_ms").notNull().default(8000),
   copies: integer("copies").notNull().default(1),
   paperWidth: text("paper_width").notNull().default("80mm"),
@@ -27,16 +39,71 @@ export const printPrintersTable = pgTable("print_printers", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// ── Operator Print Profiles ────────────────────────────────────────────────────
+// Maps a lab tech (or admin) to their specific printers.
+// When an order comes in, the active operator's profile is resolved first.
+export const operatorPrintProfilesTable = pgTable("operator_print_profiles", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  // Ethernet direct printer for receipts
+  receiptPrinterId: integer("receipt_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
+  // Mac bridge printer for labels
+  labelPrinterId: integer("label_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
+  // Pi bridge used as receipt fallback when Ethernet is unreachable
+  fallbackReceiptPrinterId: integer("fallback_receipt_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ── Print Assets ───────────────────────────────────────────────────────────────
+// Uploaded PNG/image files used as label template backgrounds.
+export const printAssetsTable = pgTable("print_assets", {
+  id: serial("id").primaryKey(),
+  filename: text("filename").notNull(),
+  originalName: text("original_name").notNull(),
+  mimeType: text("mime_type").notNull().default("image/png"),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  // Path relative to a configured asset directory on the server
+  storagePath: text("storage_path").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Print Templates ────────────────────────────────────────────────────────────
+// Label / receipt templates. templateJson defines field placements.
+// For labels: backgroundAssetId points to a PNG, fields render as text overlay.
+export const printTemplatesTable = pgTable("print_templates", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  jobType: text("job_type").notNull().default("label"), // label | receipt | order_ticket
+  backgroundAssetId: integer("background_asset_id").references(() => printAssetsTable.id, { onDelete: "set null" }),
+  // JSON array of field definitions: [{key, x, y, fontSize, fontWeight, align, maxWidth}]
+  templateJson: jsonb("template_json").notNull().default([]),
+  paperWidth: text("paper_width").notNull().default("58mm"),
+  paperHeight: text("paper_height").notNull().default("auto"),
+  isActive: boolean("is_active").notNull().default(true),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+// ── Print Jobs ─────────────────────────────────────────────────────────────────
 export const printJobsTable = pgTable("print_jobs", {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").references(() => ordersTable.id, { onDelete: "set null" }),
   printerId: integer("printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
-  jobType: text("job_type").notNull().default("order_ticket"),
-  status: text("status").notNull().default("queued"),
+  // which operator was active when the job was created
+  operatorUserId: integer("operator_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  jobType: text("job_type").notNull().default("order_ticket"), // order_ticket | receipt | label
+  status: text("status").notNull().default("queued"),          // queued | sending | printed | retrying | failed
   idempotencyKey: text("idempotency_key").notNull().unique(),
-  renderFormat: text("render_format").notNull().default("text"),
+  renderFormat: text("render_format").notNull().default("text"), // text | png
   payloadJson: jsonb("payload_json").notNull(),
   renderedText: text("rendered_text"),
+  // For PNG labels: base64 or file path
+  renderedImagePath: text("rendered_image_path"),
+  // Which method succeeded (ethernet_direct | mac_bridge | pi_bridge | queued)
+  printedVia: text("printed_via"),
   errorMessage: text("error_message"),
   retryCount: integer("retry_count").notNull().default(0),
   maxRetries: integer("max_retries").notNull().default(5),
@@ -46,28 +113,40 @@ export const printJobsTable = pgTable("print_jobs", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// ── Print Job Attempts ────────────────────────────────────────────────────────
 export const printJobAttemptsTable = pgTable("print_job_attempts", {
   id: serial("id").primaryKey(),
   printJobId: integer("print_job_id").notNull().references(() => printJobsTable.id, { onDelete: "cascade" }),
   attemptNumber: integer("attempt_number").notNull(),
+  // which route was tried
+  routeUsed: text("route_used"), // ethernet_direct | mac_bridge | pi_bridge | bridge
   requestPayload: jsonb("request_payload"),
   responsePayload: jsonb("response_payload"),
   success: boolean("success").notNull().default(false),
   errorMessage: text("error_message"),
+  durationMs: integer("duration_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Print Settings ─────────────────────────────────────────────────────────────
 export const printSettingsTable = pgTable("print_settings", {
   id: serial("id").primaryKey(),
   autoPrintOrders: boolean("auto_print_orders").notNull().default(true),
   autoPrintReceipts: boolean("auto_print_receipts").notNull().default(false),
+  autoPrintLabels: boolean("auto_print_labels").notNull().default(false),
   retryBackoffBaseMs: integer("retry_backoff_base_ms").notNull().default(3000),
   staleJobMinutes: integer("stale_job_minutes").notNull().default(5),
+  // Alert admin via SMS when label bridge is down
+  alertOnLabelFailure: boolean("alert_on_label_failure").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+// ── Types ─────────────────────────────────────────────────────────────────────
 export type PrintPrinter = typeof printPrintersTable.$inferSelect;
 export type PrintJob = typeof printJobsTable.$inferSelect;
 export type PrintJobAttempt = typeof printJobAttemptsTable.$inferSelect;
 export type PrintSettings = typeof printSettingsTable.$inferSelect;
+export type OperatorPrintProfile = typeof operatorPrintProfilesTable.$inferSelect;
+export type PrintTemplate = typeof printTemplatesTable.$inferSelect;
+export type PrintAsset = typeof printAssetsTable.$inferSelect;

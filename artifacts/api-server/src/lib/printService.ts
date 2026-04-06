@@ -1,4 +1,13 @@
+/**
+ * printService.ts — Production print routing with operator selection,
+ * ethernet direct, Mac bridge, Pi fallback, queue + retry.
+ *
+ * Receipt flow:  ethernet_direct → pi_bridge → queue (retry worker)
+ * Label flow:    mac_bridge → queue + SMS alert
+ */
+
 import crypto from "crypto";
+import net from "net";
 import { db } from "@workspace/db";
 import {
   printPrintersTable,
@@ -6,9 +15,19 @@ import {
   printJobAttemptsTable,
   printSettingsTable,
 } from "@workspace/db";
-import { eq, and, lte, inArray } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
+import { renderTextLabel } from "./labelRenderer";
+import {
+  selectActiveOperator,
+  resolveReceiptPrinters,
+  resolveLabelPrinter,
+  probeEthernet,
+  probeBridge,
+} from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
+
+// ── Idempotency ───────────────────────────────────────────────────────────────
 
 export function makeIdempotencyKey(orderId: number, printerId: number, jobType: string): string {
   return crypto
@@ -17,6 +36,8 @@ export function makeIdempotencyKey(orderId: number, printerId: number, jobType: 
     .digest("hex");
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
 export async function getSettings() {
   const rows = await db.select().from(printSettingsTable).limit(1);
   if (rows.length) return rows[0];
@@ -24,13 +45,17 @@ export async function getSettings() {
   return created;
 }
 
+// ── Job Creation ──────────────────────────────────────────────────────────────
+
 export async function createPrintJob(opts: {
   orderId: number;
   printerId: number;
   jobType: "order_ticket" | "receipt" | "label";
   payloadJson: object;
   renderedText: string;
-}) {
+  operatorUserId?: number;
+  renderFormat?: "text" | "png";
+}): Promise<PrintJob> {
   const key = makeIdempotencyKey(opts.orderId, opts.printerId, opts.jobType);
   const existing = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
@@ -42,75 +67,284 @@ export async function createPrintJob(opts: {
     jobType: opts.jobType,
     status: "queued",
     idempotencyKey: key,
-    renderFormat: "text",
+    renderFormat: opts.renderFormat ?? "text",
     payloadJson: opts.payloadJson,
     renderedText: opts.renderedText,
+    operatorUserId: opts.operatorUserId ?? null,
   }).returning();
   return job;
 }
 
-export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
-  await db.update(printJobsTable)
-    .set({ status: "sending", lastAttemptAt: new Date() })
-    .where(eq(printJobsTable.id, job.id));
+// ── Raw Ethernet Dispatch ──────────────────────────────────────────────────────
 
-  let success = false;
-  let errorMessage: string | null = null;
-  let responsePayload: object | null = null;
+async function dispatchEthernet(
+  job: PrintJob,
+  printer: PrintPrinter
+): Promise<{ success: boolean; error?: string }> {
+  if (!printer.directIp) return { success: false, error: "No directIp configured" };
+
+  const port = printer.directPort ?? 9100;
+  const timeoutMs = printer.timeoutMs ?? 5000;
+  const text = job.renderedText ?? "";
+  const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
+
+  return new Promise(resolve => {
+    const socket = new net.Socket();
+    let done = false;
+
+    const finish = (ok: boolean, error?: string) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve({ success: ok, error });
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.connect(port, printer.directIp!, () => {
+      socket.write(fullText, "binary", err => {
+        if (err) return finish(false, err.message);
+        setTimeout(() => finish(true), 200);
+      });
+    });
+    socket.on("timeout", () => finish(false, `TCP timeout after ${timeoutMs}ms`));
+    socket.on("error", e => finish(false, e.message));
+  });
+}
+
+// ── HTTP Bridge Dispatch ───────────────────────────────────────────────────────
+
+async function dispatchBridge(
+  job: PrintJob,
+  printer: PrintPrinter
+): Promise<{ success: boolean; error?: string; responsePayload?: object }> {
+  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+  const timeoutMs = printer.timeoutMs ?? 8000;
+  const text = job.renderedText ?? "";
+  const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), printer.timeoutMs ?? 8000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const res = await fetch(`${printer.bridgeUrl}/print`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "",
+        "x-api-key": apiKey,
       },
       body: JSON.stringify({
         printerName: printer.bridgePrinterName ?? printer.name,
         jobId: job.id,
         format: job.renderFormat,
-        text: job.renderedText,
+        text: fullText,
         payload: job.payloadJson,
-        copies: printer.copies ?? 1,
+        copies: 1, // already repeated above
       }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
 
-    responsePayload = await res.json() as object;
-    success = (responsePayload as { success?: boolean }).success === true;
-    if (!success) {
-      errorMessage = (responsePayload as { error?: string }).error ?? "Bridge returned failure";
+    const responsePayload = await res.json() as { success?: boolean; error?: string };
+    if (responsePayload.success) {
+      return { success: true, responsePayload };
     }
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : String(err);
-  }
-
-  const newRetryCount = (job.retryCount ?? 0) + 1;
-  const maxRetries = job.maxRetries ?? 5;
-
-  await db.insert(printJobAttemptsTable).values({
-    printJobId: job.id,
-    attemptNumber: newRetryCount,
-    requestPayload: { printer: printer.name, jobId: job.id },
-    responsePayload: responsePayload ?? {},
-    success,
-    errorMessage,
-  });
-
-  if (success) {
-    await db.update(printJobsTable)
-      .set({ status: "printed", printedAt: new Date(), retryCount: newRetryCount })
-      .where(eq(printJobsTable.id, job.id));
-  } else {
-    const nextStatus = newRetryCount >= maxRetries ? "failed" : "retrying";
-    await db.update(printJobsTable)
-      .set({ status: nextStatus, retryCount: newRetryCount, errorMessage })
-      .where(eq(printJobsTable.id, job.id));
+    return { success: false, error: responsePayload.error ?? "Bridge returned failure", responsePayload };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+// ── Attempt Recording ─────────────────────────────────────────────────────────
+
+async function recordAttempt(opts: {
+  jobId: number;
+  attemptNumber: number;
+  routeUsed: string;
+  success: boolean;
+  errorMessage?: string | null;
+  requestPayload: object;
+  responsePayload?: object | null;
+  durationMs?: number;
+}) {
+  await db.insert(printJobAttemptsTable).values({
+    printJobId: opts.jobId,
+    attemptNumber: opts.attemptNumber,
+    routeUsed: opts.routeUsed,
+    success: opts.success,
+    errorMessage: opts.errorMessage ?? null,
+    requestPayload: opts.requestPayload,
+    responsePayload: opts.responsePayload ?? null,
+    durationMs: opts.durationMs ?? null,
+  });
+}
+
+// ── Full Dispatch with Failover ────────────────────────────────────────────────
+
+/**
+ * Dispatch a receipt job: ethernet_direct → pi_bridge → mark retrying.
+ */
+export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  await db.update(printJobsTable)
+    .set({ status: "sending", lastAttemptAt: new Date() })
+    .where(eq(printJobsTable.id, job.id));
+
+  const attemptBase = (job.retryCount ?? 0) + 1;
+  const maxRetries = job.maxRetries ?? 5;
+
+  // ── Try primary printer (ethernet_direct or bridge) ──────────────────────
+  const t0 = Date.now();
+  let result: { success: boolean; error?: string; responsePayload?: object };
+
+  if (printer.connectionType === "ethernet_direct") {
+    result = await dispatchEthernet(job, printer);
+  } else {
+    result = await dispatchBridge(job, printer);
+  }
+
+  await recordAttempt({
+    jobId: job.id,
+    attemptNumber: attemptBase,
+    routeUsed: printer.connectionType,
+    success: result.success,
+    errorMessage: result.error,
+    requestPayload: { printerId: printer.id, route: printer.connectionType },
+    responsePayload: result.responsePayload ?? null,
+    durationMs: Date.now() - t0,
+  });
+
+  if (result.success) {
+    await db.update(printJobsTable).set({
+      status: "printed",
+      printedAt: new Date(),
+      retryCount: attemptBase,
+      printedVia: printer.connectionType,
+    }).where(eq(printJobsTable.id, job.id));
+    return;
+  }
+
+  // ── Try pi_bridge fallback ────────────────────────────────────────────────
+  const piFallbacks = await db.select().from(printPrintersTable)
+    .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.connectionType, "pi_bridge")))
+    .limit(1);
+
+  if (piFallbacks.length > 0) {
+    const pi = piFallbacks[0];
+    const t1 = Date.now();
+    const piResult = await dispatchBridge(job, pi);
+
+    await recordAttempt({
+      jobId: job.id,
+      attemptNumber: attemptBase + 1,
+      routeUsed: "pi_bridge",
+      success: piResult.success,
+      errorMessage: piResult.error,
+      requestPayload: { printerId: pi.id, route: "pi_bridge" },
+      responsePayload: piResult.responsePayload ?? null,
+      durationMs: Date.now() - t1,
+    });
+
+    if (piResult.success) {
+      await db.update(printJobsTable).set({
+        status: "printed",
+        printedAt: new Date(),
+        retryCount: attemptBase + 1,
+        printedVia: "pi_bridge",
+      }).where(eq(printJobsTable.id, job.id));
+      return;
+    }
+  }
+
+  // ── Both failed — queue for retry ─────────────────────────────────────────
+  const nextStatus = attemptBase >= maxRetries ? "failed" : "retrying";
+  await db.update(printJobsTable).set({
+    status: nextStatus,
+    retryCount: attemptBase,
+    errorMessage: result.error ?? "All receipt routes failed",
+  }).where(eq(printJobsTable.id, job.id));
+}
+
+/**
+ * Dispatch a label job: mac_bridge → queue + alert.
+ */
+export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  await db.update(printJobsTable)
+    .set({ status: "sending", lastAttemptAt: new Date() })
+    .where(eq(printJobsTable.id, job.id));
+
+  const attemptNumber = (job.retryCount ?? 0) + 1;
+  const maxRetries = job.maxRetries ?? 5;
+
+  const t0 = Date.now();
+  const result = await dispatchBridge(job, printer);
+
+  await recordAttempt({
+    jobId: job.id,
+    attemptNumber,
+    routeUsed: printer.connectionType,
+    success: result.success,
+    errorMessage: result.error,
+    requestPayload: { printerId: printer.id, route: printer.connectionType },
+    responsePayload: result.responsePayload ?? null,
+    durationMs: Date.now() - t0,
+  });
+
+  if (result.success) {
+    await db.update(printJobsTable).set({
+      status: "printed",
+      printedAt: new Date(),
+      retryCount: attemptNumber,
+      printedVia: printer.connectionType,
+    }).where(eq(printJobsTable.id, job.id));
+    return;
+  }
+
+  // Failed — queue + optionally alert
+  const nextStatus = attemptNumber >= maxRetries ? "failed" : "retrying";
+  await db.update(printJobsTable).set({
+    status: nextStatus,
+    retryCount: attemptNumber,
+    errorMessage: result.error ?? "Mac bridge unreachable",
+  }).where(eq(printJobsTable.id, job.id));
+
+  // Alert admin via SMS if configured
+  const settings = await getSettings();
+  if (settings.alertOnLabelFailure && nextStatus === "failed") {
+    await sendLabelFailureAlert(job.id, result.error ?? "unknown error").catch(() => {});
+  }
+}
+
+/** Generic dispatch — routes by jobType then connectionType. */
+export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  if (job.jobType === "label") {
+    return dispatchLabelJob(job, printer);
+  }
+  return dispatchReceiptJob(job, printer);
+}
+
+// ── Failure Alert ─────────────────────────────────────────────────────────────
+
+async function sendLabelFailureAlert(jobId: number, error: string): Promise<void> {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_PHONE_NUMBER;
+  const adminPhone = process.env.ADMIN_ALERT_PHONE;
+
+  if (!sid || !token || !from || !adminPhone) return;
+
+  await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      From: from,
+      To: adminPhone,
+      Body: `[Alavont] Label print job #${jobId} failed: ${error.slice(0, 120)}. Check Admin → Print.`,
+    }).toString(),
+  });
+}
+
+// ── Order Print Enqueue ───────────────────────────────────────────────────────
 
 export async function enqueueOrderPrintJobs(order: {
   id: number;
@@ -128,13 +362,9 @@ export async function enqueueOrderPrintJobs(order: {
   const settings = await getSettings();
   if (!settings.autoPrintOrders) return;
 
-  const printers = await db.select().from(printPrintersTable)
-    .where(and(
-      eq(printPrintersTable.isActive, true),
-      inArray(printPrintersTable.role, ["kitchen", "receipt", "expo"]),
-    ));
-
-  if (!printers.length) return;
+  // Resolve operator
+  const operator = await selectActiveOperator();
+  const profile = operator?.profile ?? null;
 
   const printOrder = {
     id: order.id,
@@ -155,23 +385,107 @@ export async function enqueueOrderPrintJobs(order: {
     createdAt: order.createdAt,
   };
 
-  for (const printer of printers) {
-    const jobType = printer.role === "receipt" ? "receipt" : "order_ticket";
-    const renderedText = jobType === "receipt"
-      ? renderCustomerReceipt(printOrder)
-      : renderKitchenTicket(printOrder);
+  // ── Receipt ───────────────────────────────────────────────────────────────
+  const { primary: receiptPrinter, fallback: piFallback } = await resolveReceiptPrinters(profile);
 
-    const job = await createPrintJob({
-      orderId: order.id,
-      printerId: printer.id,
-      jobType,
-      payloadJson: printOrder,
-      renderedText,
-    });
+  if (receiptPrinter) {
+    const renderedText = renderCustomerReceipt(printOrder);
+    const key = makeIdempotencyKey(order.id, receiptPrinter.id, "receipt");
+    const existing = await db.select().from(printJobsTable)
+      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
 
-    dispatchJob(job, printer).catch(() => {});
+    let job = existing[0];
+    if (!job) {
+      [job] = await db.insert(printJobsTable).values({
+        orderId: order.id,
+        printerId: receiptPrinter.id,
+        jobType: "receipt",
+        status: "queued",
+        idempotencyKey: key,
+        renderFormat: "text",
+        payloadJson: printOrder,
+        renderedText,
+        operatorUserId: operator?.userId ?? null,
+      }).returning();
+    }
+
+    dispatchReceiptJob(job, receiptPrinter).catch(() => {});
+  }
+
+  // ── Kitchen ticket ────────────────────────────────────────────────────────
+  // Falls back to any active kitchen/expo printer if no profile
+  const kitchenPrinters = await db.select().from(printPrintersTable)
+    .where(and(
+      eq(printPrintersTable.isActive, true),
+      eq(printPrintersTable.role, "kitchen"),
+    )).limit(3);
+
+  for (const kp of kitchenPrinters) {
+    const renderedText = renderKitchenTicket(printOrder);
+    const key = makeIdempotencyKey(order.id, kp.id, "order_ticket");
+    const existing = await db.select().from(printJobsTable)
+      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+
+    if (!existing.length) {
+      const [job] = await db.insert(printJobsTable).values({
+        orderId: order.id,
+        printerId: kp.id,
+        jobType: "order_ticket",
+        status: "queued",
+        idempotencyKey: key,
+        renderFormat: "text",
+        payloadJson: printOrder,
+        renderedText,
+        operatorUserId: operator?.userId ?? null,
+      }).returning();
+      dispatchJob(job, kp).catch(() => {});
+    }
+  }
+
+  // ── Label ─────────────────────────────────────────────────────────────────
+  if (settings.autoPrintLabels) {
+    const labelPrinter = await resolveLabelPrinter(profile);
+    if (labelPrinter) {
+      const labelTemplate = {
+        name: "Order Label",
+        paperWidth: labelPrinter.paperWidth ?? "58mm",
+        fields: [
+          { key: "id", label: "Order #", fontWeight: "bold" as const, fontSize: 20, align: "center" as const },
+          { key: "customerName", label: "Customer", fontSize: 14 },
+          { key: "total", label: "Total", fontSize: 14 },
+          { key: "createdAt", label: "Time", fontSize: 12 },
+        ],
+      };
+      const labelData = {
+        id: order.id,
+        customerName: order.customerName ?? "Walk-in",
+        total: `$${printOrder.total.toFixed(2)}`,
+        createdAt: new Date(order.createdAt).toLocaleTimeString(),
+      };
+      const renderedText = renderTextLabel(labelTemplate, labelData);
+      const key = makeIdempotencyKey(order.id, labelPrinter.id, "label");
+      const existing = await db.select().from(printJobsTable)
+        .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+
+      if (!existing.length) {
+        const [job] = await db.insert(printJobsTable).values({
+          orderId: order.id,
+          printerId: labelPrinter.id,
+          jobType: "label",
+          status: "queued",
+          idempotencyKey: key,
+          renderFormat: "text",
+          payloadJson: labelData,
+          renderedText,
+          operatorUserId: operator?.userId ?? null,
+        }).returning();
+        dispatchLabelJob(job, labelPrinter).catch(() => {});
+      }
+    }
   }
 }
+
+// ── Retry Worker ──────────────────────────────────────────────────────────────
 
 let workerRunning = false;
 
@@ -190,7 +504,7 @@ export function startPrintWorker() {
         const [printer] = await db.select().from(printPrintersTable)
           .where(eq(printPrintersTable.id, job.printerId)).limit(1);
         if (printer) {
-          await dispatchJob(job, printer);
+          await dispatchJob(job, printer).catch(() => {});
         }
       }
     } catch (_) {}
