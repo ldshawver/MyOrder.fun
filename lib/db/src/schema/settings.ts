@@ -5,6 +5,7 @@ import {
   boolean,
   text,
   timestamp,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
@@ -27,6 +28,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   purgeDelayHours: integer("purge_delay_hours").notNull().default(72),
   keepAuditToken: boolean("keep_audit_token").notNull().default(true),
   keepFailedPaymentLogs: boolean("keep_failed_payment_logs").notNull().default(true),
+  pettyCash: numeric("petty_cash", { precision: 10, scale: 2 }).default("0"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

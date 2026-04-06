@@ -28,6 +28,7 @@ import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
 import AdminImport from "@/pages/admin/import";
+import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import Layout from "@/components/layout";
 
@@ -164,6 +165,9 @@ function AuthenticatedApp() {
           </>
         )}
 
+        {(user.role === "lab_tech" || user.role === "tenant_admin" || user.role === "global_admin") && (
+          <Route path="/admin/inventory" component={AdminInventory} />
+        )}
         {(user.role === "tenant_admin" || user.role === "global_admin") && (
           <>
             <Route path="/admin/users" component={AdminUsers} />

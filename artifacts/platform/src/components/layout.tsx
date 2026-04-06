@@ -18,7 +18,8 @@ import {
   ChevronRight,
   Printer,
   Upload,
-  Settings
+  Settings,
+  ClipboardList
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
@@ -36,6 +37,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
     { href: "/staff", label: "Sitter Queue", icon: ListTodo, roles: ["tenant_admin", "staff", "global_admin"], mobileShow: false },
     { href: "/admin/users", label: "Users", icon: Users, roles: ["tenant_admin", "global_admin"], mobileShow: false },
+    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["tenant_admin", "global_admin", "lab_tech"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["tenant_admin", "global_admin"], mobileShow: false },
     { href: "/admin/print", label: "Print", icon: Printer, roles: ["tenant_admin", "global_admin"], mobileShow: false },
     { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["tenant_admin", "global_admin"], mobileShow: false },

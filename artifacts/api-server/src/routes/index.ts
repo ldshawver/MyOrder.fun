@@ -15,6 +15,7 @@ import printRouter from "./print";
 import importRouter from "./import";
 import settingsRouter from "./settings";
 import woocommerceRouter from "./woocommerce";
+import inventoryRouter from "./inventory";
 
 const router: IRouter = Router();
 
@@ -34,5 +35,6 @@ router.use(printRouter);
 router.use(importRouter);
 router.use(settingsRouter);
 router.use(woocommerceRouter);
+router.use(inventoryRouter);
 
 export default router;

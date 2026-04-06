@@ -20,7 +20,7 @@ export const catalogItemsTable = pgTable("catalog_items", {
   sku: text("sku"),
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   compareAtPrice: numeric("compare_at_price", { precision: 10, scale: 2 }),
-  stockQuantity: integer("stock_quantity").notNull().default(0),
+  stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
   isAvailable: boolean("is_available").notNull().default(true),
   imageUrl: text("image_url"),
   tags: text("tags").array().default([]),
@@ -49,6 +49,8 @@ export const catalogItemsTable = pgTable("catalog_items", {
   receiptName: text("receipt_name"),
   labelName: text("label_name"),
   labName: text("lab_name"),
+  // Inventory tracking unit
+  stockUnit: text("stock_unit").default("#"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
