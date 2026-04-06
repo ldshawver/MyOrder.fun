@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
@@ -43,19 +43,40 @@ if (!clerkPubKey) {
   throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file');
 }
 
+function AuthBrandWrapper({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ background: "#0A0000" }}>
+      <div className="pointer-events-none fixed inset-0" style={{ backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(180,0,0,0.015) 4px)" }} />
+      <div className="pointer-events-none fixed inset-0 opacity-[0.03]" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E\")", backgroundRepeat: "repeat", backgroundSize: "128px" }} />
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none" style={{ background: "radial-gradient(circle, rgba(220,20,60,0.08) 0%, transparent 70%)", filter: "blur(60px)" }} />
+      <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
+        <div className="flex flex-col items-center gap-3 mb-2">
+          <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-12 h-12 object-contain" style={{ filter: "invert(1) brightness(1.2)" }} />
+          <div className="text-center">
+            <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>LUCIFER CRUZ</div>
+            <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>Adult Boutique · 18+</div>
+          </div>
+        </div>
+        {children}
+        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>PRIVATE · INVITATION ONLY · 18+ ONLY</p>
+      </div>
+    </div>
+  );
+}
+
 function SignInPage() {
   return (
-    <div className="flex justify-center mt-16">
+    <AuthBrandWrapper>
       <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />
-    </div>
+    </AuthBrandWrapper>
   );
 }
 
 function SignUpPage() {
   return (
-    <div className="flex justify-center mt-16">
+    <AuthBrandWrapper>
       <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
-    </div>
+    </AuthBrandWrapper>
   );
 }
 
@@ -98,9 +119,9 @@ function AuthenticatedApp() {
   const { data: user, isLoading } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   
   if (isLoading) return (
-    <div className="h-screen w-full flex flex-col items-center justify-center bg-background text-foreground gap-4">
-      <img src="/alavont-logo.png" alt="Alavont" className="w-16 h-16 object-contain animate-pulse" style={{ filter: "drop-shadow(0 0 24px hsl(214 90% 55% / 0.5))" }} />
-      <div className="text-sm text-muted-foreground font-medium tracking-wider">Loading...</div>
+    <div className="h-screen w-full flex flex-col items-center justify-center gap-4" style={{ background: "#0A0000" }}>
+      <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-14 h-14 object-contain animate-pulse" style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }} />
+      <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>Loading...</div>
     </div>
   );
   if (!user) return <Redirect to="/sign-in" />;

@@ -30,13 +30,13 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     return false;
   }, [onPermissionGranted]);
 
-  const sendNotification = useCallback((title: string, body: string, icon = "/alavont-logo.png") => {
+  const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png") => {
     if (!("Notification" in window) || Notification.permission !== "granted") return;
     const n = new Notification(title, {
       body,
       icon,
-      badge: "/alavont-logo.png",
-      tag: `alavont-${Date.now()}`,
+      badge: "/lc-icon.png",
+      tag: `lc-${Date.now()}`,
     });
     n.onclick = () => {
       window.focus();
