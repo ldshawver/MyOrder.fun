@@ -14,6 +14,7 @@ import shiftsRouter from "./shifts";
 import printRouter from "./print";
 import importRouter from "./import";
 import settingsRouter from "./settings";
+import woocommerceRouter from "./woocommerce";
 
 const router: IRouter = Router();
 
@@ -32,5 +33,6 @@ router.use(shiftsRouter);
 router.use(printRouter);
 router.use(importRouter);
 router.use(settingsRouter);
+router.use(woocommerceRouter);
 
 export default router;

@@ -1,7 +1,8 @@
 import { useState, useRef } from "react";
-import { Upload, Download, FileText, CheckCircle2, AlertCircle, RotateCcw, ChevronRight } from "lucide-react";
+import { Upload, Download, FileText, CheckCircle2, AlertCircle, RotateCcw, ChevronRight, RefreshCw, ShoppingBag, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { useAuth } from "@clerk/react";
 
 const SAMPLE_HEADERS = "regular_price,homie_price,alavont_image_url,alavont_name,alavont_description,alavont_category,alavont_in_stock,alavont_is_upsell,alavont_id,alavont_created_date,alavont_updated_date,alavont_created_by_id,alavont_created_by,alavont_is_sample,lucifer_cruz_name,lucifer_cruz_image_url,lucifer_cruz_description,receipt_name,label_name,lab_name";
@@ -55,6 +56,183 @@ function parseCSVPreview(text: string): { headers: string[]; rows: PreviewRow[] 
 }
 
 const KEY_COLS = ["alavont_name", "lucifer_cruz_name", "regular_price", "alavont_category", "lab_name"];
+const WC_STORE_URL = "https://lucifercruz.com";
+
+type WcSyncResult = {
+  inserted: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+  total: number;
+};
+
+function WooCommerceSync() {
+  const { getToken } = useAuth();
+  const [storeUrl, setStoreUrl] = useState(WC_STORE_URL);
+  const [consumerKey, setConsumerKey] = useState("");
+  const [consumerSecret, setConsumerSecret] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [result, setResult] = useState<WcSyncResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSync() {
+    if (!consumerKey || !consumerSecret) {
+      setError("Both Consumer Key and Consumer Secret are required.");
+      return;
+    }
+    setSyncing(true);
+    setError(null);
+    setResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/woocommerce/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ storeUrl, consumerKey, consumerSecret }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Sync failed"); return; }
+      setResult(data);
+    } catch (e: any) {
+      setError(e?.message ?? "Network error");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-border/50 bg-card/50 overflow-hidden">
+      {/* Header */}
+      <div
+        className="flex items-center gap-3 px-5 py-4 border-b border-border/30"
+        style={{ background: "linear-gradient(135deg, rgba(220,20,60,0.08), rgba(139,0,0,0.04))" }}
+      >
+        <div
+          className="w-9 h-9 rounded-xl flex items-center justify-center"
+          style={{ background: "linear-gradient(135deg, #DC143C, #8B0000)" }}
+        >
+          <ShoppingBag size={16} className="text-white" />
+        </div>
+        <div className="flex-1">
+          <div className="text-sm font-bold">Lucifer Cruz · WooCommerce Sync</div>
+          <div className="text-xs text-muted-foreground">Pull all published products directly from your store</div>
+        </div>
+        <a
+          href="https://lucifercruz.com/wp-admin/admin.php?page=wc-settings&tab=advanced&section=keys"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border transition-all"
+          style={{ borderColor: "rgba(220,20,60,0.3)", color: "#DC143C" }}
+        >
+          Get API Keys ↗
+        </a>
+      </div>
+
+      {/* Form */}
+      <div className="p-5 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Store URL</label>
+            <Input
+              value={storeUrl}
+              onChange={e => setStoreUrl(e.target.value)}
+              placeholder="https://lucifercruz.com"
+              className="h-9 text-sm rounded-xl bg-background/50"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Consumer Key</label>
+            <Input
+              value={consumerKey}
+              onChange={e => setConsumerKey(e.target.value)}
+              placeholder="ck_xxxxxxxxxxxxxxxxxxxx"
+              className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Consumer Secret</label>
+            <div className="relative">
+              <Input
+                type={showSecret ? "text" : "password"}
+                value={consumerSecret}
+                onChange={e => setConsumerSecret(e.target.value)}
+                placeholder="cs_xxxxxxxxxxxxxxxxxxxx"
+                className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs pr-9"
+              />
+              <button
+                type="button"
+                onClick={() => setShowSecret(s => !s)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="text-[11px] text-muted-foreground leading-relaxed bg-muted/20 rounded-xl p-3">
+          <strong>How to get your keys:</strong> In WooCommerce admin → WooCommerce → Settings → Advanced → REST API → Add Key.
+          Set permissions to <strong>Read</strong>. Copy the Consumer Key and Consumer Secret before closing the page.
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-2 p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <span className="text-xs">{error}</span>
+          </div>
+        )}
+
+        {result && !error && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { label: "Inserted", value: result.inserted, color: "#10b981" },
+                { label: "Updated", value: result.updated, color: "#3b82f6" },
+                { label: "Skipped", value: result.skipped, color: "#f59e0b" },
+                { label: "Total", value: result.total, color: "#6b7280" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="glass-card rounded-xl p-3 border border-border/40 text-center">
+                  <div className="text-xl font-bold" style={{ color }}>{value}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+            {result.errors.length > 0 && (
+              <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/[0.05] p-3 max-h-32 overflow-y-auto space-y-1">
+                {result.errors.map((e, i) => (
+                  <div key={i} className="text-[11px] text-yellow-300/70 font-mono flex gap-1.5">
+                    <ChevronRight size={10} className="shrink-0 mt-0.5" />{e}
+                  </div>
+                ))}
+              </div>
+            )}
+            {result.errors.length === 0 && (
+              <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold">
+                <CheckCircle2 size={13} /> Sync complete — all {result.total} products imported successfully
+              </div>
+            )}
+          </div>
+        )}
+
+        <Button
+          onClick={handleSync}
+          disabled={syncing || !consumerKey || !consumerSecret}
+          className="gap-2 rounded-xl w-full sm:w-auto"
+          style={(!syncing && consumerKey && consumerSecret)
+            ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }
+            : {}}
+        >
+          {syncing ? (
+            <><RefreshCw size={14} className="animate-spin" /> Syncing from WooCommerce...</>
+          ) : (
+            <><RefreshCw size={14} /> Sync from WooCommerce</>
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function AdminImport() {
   const { getToken } = useAuth();
@@ -119,8 +297,18 @@ export default function AdminImport() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Import Menu</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Upload a CSV to upsert products with dual-brand naming</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Sync from WooCommerce or upload a CSV to upsert products</p>
         </div>
+      </div>
+
+      {/* WooCommerce Sync */}
+      <WooCommerceSync />
+
+      {/* Divider */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1 border-t border-border/30" />
+        <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-widest">Or import via CSV</span>
+        <div className="flex-1 border-t border-border/30" />
       </div>
 
       {/* Action row */}
