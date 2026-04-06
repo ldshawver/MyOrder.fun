@@ -117,16 +117,26 @@ function HomeRedirect() {
   );
 }
 
+const LoadingScreen = () => (
+  <div className="h-screen w-full flex flex-col items-center justify-center gap-4" style={{ background: "#0A0000" }}>
+    <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-14 h-14 object-contain animate-pulse" style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }} />
+    <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>Loading...</div>
+  </div>
+);
+
 function AuthenticatedApp() {
-  const { data: user, isLoading } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  
-  if (isLoading) return (
-    <div className="h-screen w-full flex flex-col items-center justify-center gap-4" style={{ background: "#0A0000" }}>
-      <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-14 h-14 object-contain animate-pulse" style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }} />
-      <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>Loading...</div>
-    </div>
-  );
-  if (!user) return <Redirect to="/sign-in" />;
+  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
+  const { data: user, isLoading, isError } = useGetCurrentUser({
+    query: {
+      queryKey: ["getCurrentUser"],
+      enabled: clerkLoaded && isSignedIn === true,
+      retry: 3,
+      retryDelay: 800,
+    },
+  });
+
+  if (!clerkLoaded || isLoading) return <LoadingScreen />;
+  if (isError || !user) return <Redirect to="/sign-in" />;
 
   return (
     <Layout user={user}>
