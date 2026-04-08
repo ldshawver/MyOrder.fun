@@ -100,7 +100,7 @@ export default function NdaModal({ userEmail, onAccept }: NdaModalProps) {
 
           <p className="text-xs" style={{ color: "#555" }}>
             By proceeding you confirm you are 18+ and agree to the full{" "}
-            <Link href="/terms" target="_blank" className="underline inline-flex items-center gap-1" style={{ color: "#DC143C" }}>
+            <Link href="/terms-of-service" target="_blank" className="underline inline-flex items-center gap-1" style={{ color: "#DC143C" }}>
               Terms &amp; Conditions <ExternalLink size={10} />
             </Link>{" "}
             including the NDA and Liquidated Damages provisions.

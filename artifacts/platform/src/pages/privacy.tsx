@@ -318,7 +318,7 @@ export default function PrivacyPage() {
             <div className="text-xs" style={{ color: "#666" }}>Read the full Terms including NDA and Liquidated Damages clauses.</div>
           </div>
           <Link
-            href="/terms"
+            href="/terms-of-service"
             className="flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg border transition-colors flex-shrink-0"
             style={{ borderColor: "rgba(220,20,60,0.25)", color: "#DC143C" }}
           >
