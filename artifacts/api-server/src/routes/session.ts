@@ -1,11 +1,16 @@
 import { Router, type IRouter } from "express";
 import { db, auditLogsTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser } from "../lib/auth";
+import { requireAuth, loadDbUser } from "../lib/auth";
 
 const router: IRouter = Router();
 
-router.post("/session/log", requireAuth, loadDbUser, requireDbUser, async (req, res): Promise<void> => {
-  const user = req.dbUser!;
+router.post("/session/log", requireAuth, loadDbUser, async (req, res): Promise<void> => {
+  const user = req.dbUser;
+  if (!user) {
+    res.status(204).end();
+    return;
+  }
+
   const { page, action } = req.body as { page?: string; action?: string };
 
   const ip =
@@ -28,10 +33,10 @@ router.post("/session/log", requireAuth, loadDbUser, requireDbUser, async (req, 
       },
       ipAddress: ip,
     });
-    res.status(204).end();
   } catch {
-    res.status(204).end();
+    // silently swallow — logging must never break the app
   }
+  res.status(204).end();
 });
 
 export default router;
