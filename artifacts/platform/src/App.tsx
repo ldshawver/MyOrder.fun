@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
@@ -6,9 +6,12 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
+import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
+import SessionWatermark from "@/components/session-watermark";
 
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
+import Terms from "@/pages/terms";
 import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Catalog from "@/pages/catalog";
@@ -61,7 +64,7 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
           </div>
         </div>
         {children}
-        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>PRIVATE · INVITATION ONLY · 18+ ONLY</p>
+        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>ADULTS ONLY · 18+ · DISCREET · SECURE</p>
       </div>
     </div>
   );
@@ -125,6 +128,28 @@ const LoadingScreen = () => (
   </div>
 );
 
+const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+function useSessionLogger(userEmail: string) {
+  const [location] = useLocation();
+  const { getToken } = useAuth();
+  const lastPageRef = useRef<string>("");
+
+  useEffect(() => {
+    if (location === lastPageRef.current) return;
+    lastPageRef.current = location;
+
+    getToken().then(token => {
+      if (!token) return;
+      fetch(`${BASE_API}/api/session/log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ page: location, action: "page_view" }),
+      }).catch(() => {});
+    });
+  }, [location, getToken]);
+}
+
 function AuthenticatedApp() {
   const { isLoaded: clerkLoaded, isSignedIn } = useUser();
   const { data: user, isLoading, isError } = useGetCurrentUser({
@@ -136,13 +161,22 @@ function AuthenticatedApp() {
     },
   });
 
+  const [ndaAccepted, setNdaAccepted] = useState(() => useNdaAccepted());
+
+  useSessionLogger(user?.email ?? "");
+
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
   if (isError || !user) return <Redirect to="/sign-in" />;
 
   return (
-    <Layout user={user}>
-      <Switch>
-        <Route path="/dashboard" component={Dashboard} />
+    <>
+      {!ndaAccepted && (
+        <NdaModal userEmail={user.email} onAccept={() => setNdaAccepted(true)} />
+      )}
+      <SessionWatermark email={user.email} />
+      <Layout user={user}>
+        <Switch>
+          <Route path="/dashboard" component={Dashboard} />
         
         {/* Catalog */}
         <Route path="/catalog" component={Catalog} />
@@ -185,10 +219,10 @@ function AuthenticatedApp() {
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
         <Route path="/account" component={Account} />
-
         <Route component={NotFound} />
-      </Switch>
-    </Layout>
+        </Switch>
+      </Layout>
+    </>
   );
 }
 
@@ -196,6 +230,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={HomeRedirect} />
+      <Route path="/terms" component={Terms} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/onboarding" component={Onboarding} />

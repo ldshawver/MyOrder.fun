@@ -240,8 +240,13 @@ export default function Home() {
         <div className="text-[10px] font-mono" style={{ color: "#333" }}>
           ADULTS ONLY · 18+ TO ENTER
         </div>
-        <div className="text-[10px] font-mono" style={{ color: "#333" }}>
-          DISCREET · SECURE · CURATED
+        <div className="flex items-center gap-4">
+          <Link href="/terms" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
+            TERMS &amp; PRIVACY
+          </Link>
+          <div className="text-[10px] font-mono" style={{ color: "#333" }}>
+            DISCREET · SECURE · CURATED
+          </div>
         </div>
       </footer>
     </div>
