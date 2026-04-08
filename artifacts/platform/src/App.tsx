@@ -12,6 +12,7 @@ import SessionWatermark from "@/components/session-watermark";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import Terms from "@/pages/terms";
+import Privacy from "@/pages/privacy";
 import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Catalog from "@/pages/catalog";
@@ -231,6 +232,7 @@ function Router() {
     <Switch>
       <Route path="/" component={HomeRedirect} />
       <Route path="/terms" component={Terms} />
+      <Route path="/privacy" component={Privacy} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/onboarding" component={Onboarding} />

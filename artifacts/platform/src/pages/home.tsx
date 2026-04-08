@@ -242,7 +242,10 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-4">
           <Link href="/terms" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
-            TERMS &amp; PRIVACY
+            TERMS
+          </Link>
+          <Link href="/privacy" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
+            PRIVACY
           </Link>
           <div className="text-[10px] font-mono" style={{ color: "#333" }}>
             DISCREET · SECURE · CURATED

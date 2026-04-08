@@ -322,10 +322,15 @@ export default function TermsPage() {
           <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN &nbsp;·&nbsp; LUCIFER CRUZ ADULT BOUTIQUE &nbsp;·&nbsp; ALAVONT THERAPEUTICS</div>
           <div className="text-[10px] font-mono" style={{ color: "#2a2a2a" }}>Effective {EFFECTIVE_DATE} &nbsp;·&nbsp; All rights reserved</div>
           <div className="mt-4">
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+            <Link href="/privacy" className="inline-flex items-center gap-2 text-xs font-mono px-4 py-2 rounded-lg border transition-colors" style={{ borderColor: "rgba(220,20,60,0.2)", color: "#DC143C" }}>
+              Privacy Policy →
+            </Link>
             <Link href="/" className="inline-flex items-center gap-2 text-xs font-mono px-4 py-2 rounded-lg border transition-colors" style={{ borderColor: "rgba(220,20,60,0.2)", color: "#555" }}>
               <ArrowLeft size={12} />
               Return to Platform
             </Link>
+          </div>
           </div>
         </div>
       </main>
