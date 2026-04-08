@@ -231,7 +231,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={HomeRedirect} />
-      <Route path="/terms" component={Terms} />
+      <Route path="/terms-of-service" component={Terms} />
       <Route path="/privacy" component={Privacy} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />

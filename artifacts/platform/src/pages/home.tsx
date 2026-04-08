@@ -241,7 +241,7 @@ export default function Home() {
           ADULTS ONLY · 18+ TO ENTER
         </div>
         <div className="flex items-center gap-4">
-          <Link href="/terms" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
+          <Link href="/terms-of-service" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
             TERMS
           </Link>
           <Link href="/privacy" className="text-[10px] font-mono transition-colors hover:underline" style={{ color: "#3a0000" }}>
