@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Lock, ShieldCheck } from "lucide-react";
+import { Lock, Sparkles } from "lucide-react";
 
 const CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*";
 
@@ -162,15 +162,20 @@ export default function Home() {
 
         {/* 18+ badge */}
         <div
-          className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border mb-10 font-mono text-[10px] tracking-[0.25em] uppercase"
+          className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border mb-8 font-mono text-[10px] tracking-[0.25em] uppercase"
           style={{ borderColor: "rgba(220,20,60,0.35)", color: "#DC143C", background: "rgba(220,20,60,0.06)" }}
         >
-          <ShieldCheck size={11} />
-          18+ Only — Invitation Required
+          <Sparkles size={10} />
+          Adults Only · 18+
         </div>
 
-        <p className="text-sm font-mono mb-10 max-w-sm leading-relaxed" style={{ color: "#888" }}>
-          A private, members-only ordering boutique.<br />Access is by invitation only.
+        {/* Boutique tagline */}
+        <p className="mb-2 font-semibold tracking-wide" style={{ color: "#C0C0C0", fontSize: "clamp(1rem, 3vw, 1.3rem)" }}>
+          Premium Curated Adult Products
+        </p>
+        <p className="text-sm mb-10 max-w-md leading-relaxed" style={{ color: "#666", fontFamily: "serif", fontStyle: "italic" }}>
+          Discreet, luxurious, delivered. Browse our exclusive selection
+          of pleasure goods, intimate accessories, and wellness products.
         </p>
 
         {/* Age gate checkbox */}
@@ -194,8 +199,8 @@ export default function Home() {
             checked={ageConfirmed}
             onChange={e => setAgeConfirmed(e.target.checked)}
           />
-          <span className="text-xs font-mono" style={{ color: "#777" }}>
-            I confirm I am 18 years of age or older
+          <span className="text-xs" style={{ color: "#777" }}>
+            I confirm I am 18 years of age or older and wish to enter
           </span>
         </label>
 
@@ -210,14 +215,14 @@ export default function Home() {
                 : "rgba(100,0,0,0.3)",
               color: ageConfirmed ? "#fff" : "#555",
               boxShadow: ageConfirmed ? "0 8px 32px rgba(220,20,60,0.4)" : "none",
-              letterSpacing: "0.08em",
+              letterSpacing: "0.1em",
               cursor: ageConfirmed ? "pointer" : "not-allowed",
               pointerEvents: ageConfirmed ? "auto" : "none",
             }}
             data-testid="link-access-portal"
           >
             <Lock size={14} />
-            ACCESS PORTAL
+            ENTER THE BOUTIQUE
           </Link>
           <Link
             href="/onboarding"
@@ -225,7 +230,7 @@ export default function Home() {
             style={{ borderColor: "rgba(192,192,192,0.15)", color: "#888", letterSpacing: "0.08em" }}
             data-testid="link-request-access"
           >
-            REQUEST INVITATION
+            BECOME A MEMBER
           </Link>
         </div>
       </main>
@@ -233,19 +238,12 @@ export default function Home() {
       {/* Footer */}
       <footer className="relative z-20 border-t py-5 px-6 flex items-center justify-between" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
         <div className="text-[10px] font-mono" style={{ color: "#333" }}>
-          ADULTS ONLY · MUST BE 18+ TO ENTER
+          ADULTS ONLY · 18+ TO ENTER
         </div>
         <div className="text-[10px] font-mono" style={{ color: "#333" }}>
-          PRIVATE · INVITATION ONLY
+          DISCREET · SECURE · CURATED
         </div>
       </footer>
-
-      {/* Corner decoration */}
-      <div className="fixed bottom-6 right-6 z-20 text-[9px] font-mono space-y-1 text-right" style={{ color: "#2a0000" }}>
-        <div>SYS://SECURE</div>
-        <div>ENC: AES-256</div>
-        <div>AUTH: REQUIRED</div>
-      </div>
     </div>
   );
 }
