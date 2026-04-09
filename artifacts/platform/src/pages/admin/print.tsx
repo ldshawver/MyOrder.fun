@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Eye, EyeOff, CheckCircle2, XCircle, Loader2, Printer, Tag } from "lucide-react";
 
 const API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -26,7 +27,7 @@ async function apiFetch(path: string, init?: RequestInit) {
 type Printer = {
   id: number; name: string; role: string; connectionType: string;
   directIp?: string; directPort?: number;
-  bridgeUrl?: string; bridgePrinterName?: string;
+  bridgeUrl?: string; bridgePrinterName?: string; apiKey?: string;
   isActive: boolean; copies: number; paperWidth: string; timeoutMs: number;
   online?: boolean;
 };
@@ -50,6 +51,7 @@ type RoutingStatus = {
   piFallback: (Printer & { online: boolean | null }) | null;
   labelPrinter: (Printer & { online: boolean | null }) | null;
 };
+type TestResult = { loading: boolean; ok?: boolean; error?: string; jobId?: number };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function statusColor(s: string) {
@@ -89,7 +91,6 @@ function RoutingTab() {
         <Button variant="outline" size="sm" onClick={() => refetch()}>Refresh</Button>
       </div>
 
-      {/* Active Operator */}
       <div className="bg-card border border-border/50 rounded-sm p-5">
         <div className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Active Operator</div>
         {op ? (
@@ -111,17 +112,16 @@ function RoutingTab() {
         )}
       </div>
 
-      {/* Printer routes */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Receipt */}
         <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Receipt Printer</div>
           {r ? (
             <>
-              <div className="flex items-center gap-1.5 font-medium text-sm">
-                <OnlineDot online={r.online} />{r.name}
-              </div>
+              <div className="flex items-center gap-1.5 font-medium text-sm"><OnlineDot online={r.online} />{r.name}</div>
               <div className="text-xs text-muted-foreground">{connLabel(r.connectionType)}</div>
+              {r.bridgeUrl && <div className="font-mono text-xs text-muted-foreground truncate">{r.bridgeUrl}</div>}
+              {r.bridgePrinterName && <div className="text-xs text-muted-foreground">Queue: {r.bridgePrinterName}</div>}
               {r.directIp && <div className="font-mono text-xs text-muted-foreground">{r.directIp}:{r.directPort ?? 9100}</div>}
               <Badge variant="outline" className={`text-xs ${r.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
                 {r.online ? "Reachable" : "Unreachable"}
@@ -135,10 +135,8 @@ function RoutingTab() {
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Pi Fallback (Receipt)</div>
           {pi ? (
             <>
-              <div className="flex items-center gap-1.5 font-medium text-sm">
-                <OnlineDot online={pi.online} />{pi.name}
-              </div>
-              <div className="text-xs text-muted-foreground">{pi.bridgeUrl}</div>
+              <div className="flex items-center gap-1.5 font-medium text-sm"><OnlineDot online={pi.online} />{pi.name}</div>
+              <div className="font-mono text-xs text-muted-foreground truncate">{pi.bridgeUrl}</div>
               <Badge variant="outline" className={`text-xs ${pi.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
                 {pi.online ? "Reachable" : "Unreachable"}
               </Badge>
@@ -151,10 +149,9 @@ function RoutingTab() {
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Label Printer (Mac Bridge)</div>
           {l ? (
             <>
-              <div className="flex items-center gap-1.5 font-medium text-sm">
-                <OnlineDot online={l.online} />{l.name}
-              </div>
-              <div className="text-xs text-muted-foreground">{l.bridgeUrl}</div>
+              <div className="flex items-center gap-1.5 font-medium text-sm"><OnlineDot online={l.online} />{l.name}</div>
+              <div className="font-mono text-xs text-muted-foreground truncate">{l.bridgeUrl}</div>
+              {l.bridgePrinterName && <div className="text-xs text-muted-foreground">Queue: {l.bridgePrinterName}</div>}
               <Badge variant="outline" className={`text-xs ${l.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
                 {l.online ? "Reachable" : "Unreachable"}
               </Badge>
@@ -170,39 +167,50 @@ function RoutingTab() {
   );
 }
 
-// ── PRINTERS TAB ──────────────────────────────────────────────────────────────
+// ── PRINTER FORM ──────────────────────────────────────────────────────────────
 function PrinterForm({ printer, onSave, onClose }: {
-  printer?: Printer; onSave: (d: Partial<Printer>) => void; onClose: () => void;
+  printer?: Printer; onSave: (d: Record<string, unknown>) => void; onClose: () => void;
 }) {
   const [form, setForm] = useState({
     name: printer?.name ?? "",
-    role: printer?.role ?? "kitchen",
+    role: printer?.role ?? "receipt",
     connectionType: printer?.connectionType ?? "bridge",
     directIp: printer?.directIp ?? "",
     directPort: printer?.directPort ?? 9100,
-    bridgeUrl: printer?.bridgeUrl ?? "",
+    bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3100",
     bridgePrinterName: printer?.bridgePrinterName ?? "",
+    apiKey: "" as string, // never pre-populate — use placeholder to indicate existing key
     copies: printer?.copies ?? 1,
     paperWidth: printer?.paperWidth ?? "80mm",
     timeoutMs: printer?.timeoutMs ?? 8000,
     isActive: printer?.isActive ?? true,
   });
+  const [showKey, setShowKey] = useState(false);
   const isEthernet = form.connectionType === "ethernet_direct";
   const isBridge = !isEthernet;
+  const hasExistingKey = Boolean(printer?.apiKey);
+
+  const save = () => {
+    const payload: Record<string, unknown> = { ...form };
+    // Only send apiKey if the user typed something new; blank = keep existing
+    if (!form.apiKey.trim()) delete payload.apiKey;
+    onSave(payload);
+    onClose();
+  };
 
   return (
-    <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+    <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1">
           <Label>Name</Label>
-          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Receipt Printer" />
+          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Reciept_POS80_Printer" />
         </div>
         <div className="space-y-1">
           <Label>Role</Label>
           <Select value={form.role} onValueChange={v => setForm(f => ({ ...f, role: v }))}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {["kitchen", "receipt", "label", "expo", "bar"].map(r => (
+              {["receipt", "label", "kitchen", "expo", "bar"].map(r => (
                 <SelectItem key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</SelectItem>
               ))}
             </SelectContent>
@@ -213,13 +221,14 @@ function PrinterForm({ printer, onSave, onClose }: {
           <Select value={form.connectionType} onValueChange={v => setForm(f => ({ ...f, connectionType: v }))}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="ethernet_direct">Ethernet Direct (raw TCP socket)</SelectItem>
-              <SelectItem value="mac_bridge">Mac Bridge (HTTP)</SelectItem>
+              <SelectItem value="bridge">Mac Bridge (HTTP + API key)</SelectItem>
+              <SelectItem value="mac_bridge">Mac Bridge (legacy)</SelectItem>
               <SelectItem value="pi_bridge">Raspberry Pi Bridge (HTTP)</SelectItem>
-              <SelectItem value="bridge">Generic Bridge (HTTP)</SelectItem>
+              <SelectItem value="ethernet_direct">Ethernet Direct (raw TCP socket)</SelectItem>
             </SelectContent>
           </Select>
         </div>
+
         {isEthernet && <>
           <div className="space-y-1">
             <Label>Printer IP Address</Label>
@@ -230,14 +239,55 @@ function PrinterForm({ printer, onSave, onClose }: {
             <Input type="number" value={form.directPort} onChange={e => setForm(f => ({ ...f, directPort: parseInt(e.target.value) || 9100 }))} placeholder="9100" />
           </div>
         </>}
-        {isBridge && <div className="space-y-1 col-span-2">
-          <Label>Bridge URL</Label>
-          <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="https://abc123.ngrok-free.app" />
-        </div>}
-        {isBridge && <div className="space-y-1">
-          <Label>Printer Name on Bridge</Label>
-          <Input value={form.bridgePrinterName} onChange={e => setForm(f => ({ ...f, bridgePrinterName: e.target.value }))} placeholder="PL70e" />
-        </div>}
+
+        {isBridge && <>
+          <div className="space-y-1 col-span-2">
+            <Label>Bridge URL</Label>
+            <Input
+              value={form.bridgeUrl}
+              onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))}
+              placeholder="http://100.103.51.63:3100"
+            />
+            <p className="text-xs text-muted-foreground mt-1">Tailscale IP of the Mac running the print bridge</p>
+          </div>
+          <div className="space-y-1 col-span-2">
+            <Label>Printer Name on Bridge</Label>
+            <Input
+              value={form.bridgePrinterName}
+              onChange={e => setForm(f => ({ ...f, bridgePrinterName: e.target.value }))}
+              placeholder="Reciept_POS80_Printer"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Exact printer queue name on the Mac (check with <span className="font-mono">lpstat -p</span>). Case-sensitive.
+            </p>
+          </div>
+          <div className="space-y-1 col-span-2">
+            <Label>API Key</Label>
+            <div className="relative">
+              <Input
+                type={showKey ? "text" : "password"}
+                value={form.apiKey}
+                onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
+                placeholder={hasExistingKey ? "Leave blank to keep existing key" : "Enter PRINT_BRIDGE_API_KEY"}
+                className="pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey(s => !s)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            {hasExistingKey && (
+              <p className="text-xs text-amber-400 mt-1">⚠ An API key is already set. Type a new one to replace it, or leave blank to keep it.</p>
+            )}
+            {!hasExistingKey && (
+              <p className="text-xs text-red-400 mt-1">No API key set — bridge will reject requests with 401 until one is added.</p>
+            )}
+          </div>
+        </>}
+
         <div className="space-y-1">
           <Label>Paper Width</Label>
           <Select value={form.paperWidth} onValueChange={v => setForm(f => ({ ...f, paperWidth: v }))}>
@@ -263,7 +313,165 @@ function PrinterForm({ printer, onSave, onClose }: {
       </div>
       <div className="flex gap-2 justify-end pt-2">
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={() => { onSave(form); onClose(); }}>Save Printer</Button>
+        <Button onClick={save} disabled={!form.name}>Save Printer</Button>
+      </div>
+    </div>
+  );
+}
+
+// ── Test Result Banner ─────────────────────────────────────────────────────────
+function TestBanner({ result, onDismiss }: { result: TestResult; onDismiss: () => void }) {
+  if (result.loading) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/20 rounded px-3 py-1.5 mt-1">
+        <Loader2 size={12} className="animate-spin shrink-0" />
+        Sending test print…
+      </div>
+    );
+  }
+  if (result.ok) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded px-3 py-1.5 mt-1">
+        <CheckCircle2 size={12} className="shrink-0" />
+        Test print sent successfully (Job #{result.jobId})
+        <button onClick={onDismiss} className="ml-auto text-green-400/60 hover:text-green-400">✕</button>
+      </div>
+    );
+  }
+  return (
+    <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-1.5 mt-1 space-y-0.5">
+      <div className="flex items-start gap-2">
+        <XCircle size={12} className="shrink-0 mt-0.5" />
+        <span className="font-medium">Test print failed</span>
+        <button onClick={onDismiss} className="ml-auto text-red-400/60 hover:text-red-400 shrink-0">✕</button>
+      </div>
+      {result.error && <div className="pl-5 text-red-400/80 leading-relaxed">{result.error}</div>}
+    </div>
+  );
+}
+
+// ── PRINTERS TAB ──────────────────────────────────────────────────────────────
+function PrintersSection({
+  title,
+  icon: Icon,
+  printers,
+  health,
+  testResults,
+  onTest,
+  onDismissTest,
+  dialog,
+  setDialog,
+  onUpdate,
+  onDelete,
+}: {
+  title: string;
+  icon: typeof Printer;
+  printers: Printer[];
+  health: { id: number; online: boolean }[];
+  testResults: Record<number, TestResult>;
+  onTest: (id: number) => void;
+  onDismissTest: (id: number) => void;
+  dialog: Printer | "new" | null;
+  setDialog: (d: Printer | null) => void;
+  onUpdate: (id: number, d: Record<string, unknown>) => void;
+  onDelete: (id: number) => void;
+}) {
+  if (printers.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground px-1">
+        <Icon size={12} />
+        {title}
+      </div>
+      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
+        <Table>
+          <TableHeader className="bg-muted/10">
+            <TableRow className="border-border/50">
+              <TableHead className="text-xs uppercase tracking-wider">Name</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Type</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Target / Queue</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">API Key</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
+              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {printers.map(p => {
+              const h = health.find(x => x.id === p.id);
+              const tr = testResults[p.id];
+              const target = p.connectionType === "ethernet_direct"
+                ? `${p.directIp}:${p.directPort ?? 9100}`
+                : p.bridgeUrl ?? "—";
+              return (
+                <>
+                  <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
+                    <TableCell className="font-medium text-sm">{p.name}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{connLabel(p.connectionType)}</TableCell>
+                    <TableCell className="text-xs">
+                      <div className="font-mono text-muted-foreground truncate max-w-[180px]" title={target}>{target}</div>
+                      {p.bridgePrinterName && (
+                        <div className="text-muted-foreground/60 mt-0.5">Queue: {p.bridgePrinterName}</div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {p.apiKey
+                        ? <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Set</Badge>
+                        : <Badge variant="outline" className="text-xs text-red-400 border-red-500/30">Missing</Badge>
+                      }
+                    </TableCell>
+                    <TableCell>
+                      {!p.isActive
+                        ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
+                        : h
+                          ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
+                          : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>
+                      }
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1.5 flex-wrap">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-xs h-7"
+                          disabled={tr?.loading}
+                          onClick={() => onTest(p.id)}
+                        >
+                          {tr?.loading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}
+                          Test Print
+                        </Button>
+                        <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
+                          <DialogTrigger asChild>
+                            <Button size="sm" variant="outline" className="text-xs h-7">Edit</Button>
+                          </DialogTrigger>
+                          <DialogContent className="max-w-lg">
+                            <DialogHeader><DialogTitle>Edit Printer — {p.name}</DialogTitle></DialogHeader>
+                            <PrinterForm printer={p} onSave={d => onUpdate(p.id, d)} onClose={() => setDialog(null)} />
+                          </DialogContent>
+                        </Dialog>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="text-xs h-7"
+                          onClick={() => { if (confirm(`Delete ${p.name}?`)) onDelete(p.id); }}
+                        >
+                          Del
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {tr && (
+                    <TableRow key={`${p.id}-result`} className="border-border/20">
+                      <TableCell colSpan={6} className="py-1 px-4">
+                        <TestBanner result={tr} onDismiss={() => onDismissTest(p.id)} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </>
+              );
+            })}
+          </TableBody>
+        </Table>
       </div>
     </div>
   );
@@ -272,79 +480,125 @@ function PrinterForm({ printer, onSave, onClose }: {
 function PrintersTab() {
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<Printer | "new" | null>(null);
+  const [testResults, setTestResults] = useState<Record<number, TestResult>>({});
+
   const { data, isLoading } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") });
   const { data: healthData } = useQuery({ queryKey: ["print-health"], queryFn: () => apiFetch("/api/print/health"), refetchInterval: 30_000 });
 
-  const create = useMutation({ mutationFn: (d: Partial<Printer>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
-  const update = useMutation({ mutationFn: ({ id, d }: { id: number; d: Partial<Printer> }) => apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
-  const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
-  const test = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
+  const create = useMutation({
+    mutationFn: (d: Record<string, unknown>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(d) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, d }: { id: number; d: Record<string, unknown> }) => apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(d) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
+  });
+  const del = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
+  });
+  const test = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }),
+    onMutate: (id) => setTestResults(r => ({ ...r, [id]: { loading: true } })),
+    onSuccess: (data: { ok: boolean; error?: string; jobId?: number }, id) => {
+      setTestResults(r => ({ ...r, [id]: { loading: false, ok: data.ok, error: data.error, jobId: data.jobId } }));
+      qc.invalidateQueries({ queryKey: ["print-jobs"] });
+    },
+    onError: (err: Error, id) => setTestResults(r => ({ ...r, [id]: { loading: false, ok: false, error: err.message } })),
+  });
 
   const printers: Printer[] = data?.printers ?? [];
   const health: { id: number; online: boolean }[] = healthData?.printers ?? [];
 
+  const receiptPrinters = printers.filter(p => ["receipt", "kitchen", "expo", "bar"].includes(p.role));
+  const labelPrinters = printers.filter(p => p.role === "label");
+  const otherPrinters = printers.filter(p => !["receipt", "kitchen", "expo", "bar", "label"].includes(p.role));
+
+  const sharedProps = {
+    health,
+    testResults,
+    onTest: (id: number) => test.mutate(id),
+    onDismissTest: (id: number) => setTestResults(r => { const n = { ...r }; delete n[id]; return n; }),
+    dialog,
+    setDialog: (d: Printer | null) => setDialog(d),
+    onUpdate: (id: number, d: Record<string, unknown>) => update.mutate({ id, d }),
+    onDelete: (id: number) => del.mutate(id),
+  };
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Printers</h2>
+        <div>
+          <h2 className="text-lg font-semibold">Printers</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Bridge URL: <span className="font-mono">http://100.103.51.63:3100</span> (Tailscale)
+          </p>
+        </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
           <DialogTrigger asChild><Button>+ Add Printer</Button></DialogTrigger>
-          <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Add Printer</DialogTitle></DialogHeader>
+          <DialogContent className="max-w-lg">
+            <DialogHeader><DialogTitle>Add Printer</DialogTitle></DialogHeader>
             <PrinterForm onSave={d => create.mutate(d)} onClose={() => setDialog(null)} />
           </DialogContent>
         </Dialog>
       </div>
-      <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
-        <Table>
-          <TableHeader className="bg-muted/10">
-            <TableRow className="border-border/50">
-              <TableHead className="text-xs uppercase tracking-wider">Name</TableHead>
-              <TableHead className="text-xs uppercase tracking-wider">Role</TableHead>
-              <TableHead className="text-xs uppercase tracking-wider">Type</TableHead>
-              <TableHead className="text-xs uppercase tracking-wider">Target</TableHead>
-              <TableHead className="text-xs uppercase tracking-wider">Status</TableHead>
-              <TableHead className="text-xs uppercase tracking-wider">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">Loading…</TableCell></TableRow>
-            ) : printers.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">No printers configured.</TableCell></TableRow>
-            ) : printers.map(p => {
-              const h = health.find(x => x.id === p.id);
-              return (
-                <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
-                  <TableCell className="font-medium text-sm">{p.name}</TableCell>
-                  <TableCell><Badge variant="outline" className="text-xs uppercase">{p.role}</Badge></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{connLabel(p.connectionType)}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {p.connectionType === "ethernet_direct" ? `${p.directIp}:${p.directPort ?? 9100}` : p.bridgeUrl}
-                  </TableCell>
-                  <TableCell>
-                    {!p.isActive
-                      ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
-                      : h ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
-                        : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>
-                    }
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => test.mutate(p.id)}>Test</Button>
-                      <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
-                        <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
-                        <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Edit Printer</DialogTitle></DialogHeader>
-                          <PrinterForm printer={p} onSave={d => update.mutate({ id: p.id, d })} onClose={() => setDialog(null)} />
-                        </DialogContent>
-                      </Dialog>
-                      <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete?")) del.mutate(p.id); }}>Del</Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+
+      {isLoading && <div className="text-muted-foreground text-sm text-center py-8">Loading printers…</div>}
+
+      {!isLoading && printers.length === 0 && (
+        <div className="bg-card border border-border/50 rounded-sm p-8 text-center text-muted-foreground text-sm">
+          No printers configured. Add your receipt and label printers above.
+        </div>
+      )}
+
+      {/* Receipt / Kitchen / Expo section */}
+      <PrintersSection
+        title="Receipt, Kitchen & Expo Printers"
+        icon={Printer}
+        printers={receiptPrinters}
+        {...sharedProps}
+      />
+
+      {/* Label section */}
+      <PrintersSection
+        title="Label Printers"
+        icon={Tag}
+        printers={labelPrinters}
+        {...sharedProps}
+      />
+
+      {/* Other */}
+      <PrintersSection
+        title="Other Printers"
+        icon={Printer}
+        printers={otherPrinters}
+        {...sharedProps}
+      />
+
+      {/* Bridge config reference */}
+      <div className="bg-amber-500/5 border border-amber-500/20 rounded-sm p-4 space-y-3">
+        <div className="text-xs font-semibold text-amber-400 uppercase tracking-wider">Mac Bridge Configuration Reference</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="space-y-1">
+            <div className="font-medium text-foreground">Receipt Printer (POS80)</div>
+            <div className="text-muted-foreground">Role: <span className="text-foreground">receipt</span></div>
+            <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
+            <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Reciept_POS80_Printer</span></div>
+            <div className="text-muted-foreground">API Key: set from <span className="font-mono">PRINT_BRIDGE_API_KEY</span> env on Mac</div>
+          </div>
+          <div className="space-y-1">
+            <div className="font-medium text-foreground">Label Printer (Thermal)</div>
+            <div className="text-muted-foreground">Role: <span className="text-foreground">label</span></div>
+            <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
+            <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Label_Themal_Printer</span></div>
+            <div className="text-muted-foreground">API Key: same key as receipt printer</div>
+          </div>
+        </div>
+        <div className="text-xs text-muted-foreground border-t border-amber-500/10 pt-2 mt-1">
+          Run <span className="font-mono">lpstat -p</span> on the Mac to confirm printer queue names. Names are case-sensitive.
+        </div>
       </div>
     </div>
   );
@@ -387,24 +641,46 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
           </Select>
         </div>
       )}
-      {[
-        { key: "receiptPrinterId", label: "Receipt Printer (Ethernet Direct)" },
-        { key: "fallbackReceiptPrinterId", label: "Fallback Receipt Printer (Pi Bridge)" },
-        { key: "labelPrinterId", label: "Label Printer (Mac Bridge)" },
-      ].map(({ key, label }) => (
-        <div key={key} className="space-y-1">
-          <Label>{label}</Label>
-          <Select value={(form as Record<string, string>)[key]} onValueChange={v => setForm(f => ({ ...f, [key]: v }))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">— None —</SelectItem>
-              {printers.filter(p => p.isActive).map(p => (
-                <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      ))}
+
+      <div className="space-y-1">
+        <Label>Receipt Printer</Label>
+        <Select value={form.receiptPrinterId} onValueChange={v => setForm(f => ({ ...f, receiptPrinterId: v }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">— None —</SelectItem>
+            {printers.filter(p => p.isActive && ["receipt", "kitchen", "expo", "bar"].includes(p.role)).map(p => (
+              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1">
+        <Label>Label Printer</Label>
+        <Select value={form.labelPrinterId} onValueChange={v => setForm(f => ({ ...f, labelPrinterId: v }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">— None —</SelectItem>
+            {printers.filter(p => p.isActive && p.role === "label").map(p => (
+              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1">
+        <Label>Pi Fallback Printer</Label>
+        <Select value={form.fallbackReceiptPrinterId} onValueChange={v => setForm(f => ({ ...f, fallbackReceiptPrinterId: v }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">— None —</SelectItem>
+            {printers.filter(p => p.isActive).map(p => (
+              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="flex items-center gap-2">
         <Switch checked={form.isDefault} onCheckedChange={v => setForm(f => ({ ...f, isDefault: v }))} />
         <Label>Default profile (used when no active shift)</Label>
@@ -441,7 +717,8 @@ function ProfilesTab() {
         </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
           <DialogTrigger asChild><Button>+ Add Profile</Button></DialogTrigger>
-          <DialogContent><DialogHeader><DialogTitle>New Operator Profile</DialogTitle></DialogHeader>
+          <DialogContent>
+            <DialogHeader><DialogTitle>New Operator Profile</DialogTitle></DialogHeader>
             <ProfileForm printers={printers} users={users} onSave={d => save.mutate(d)} onClose={() => setDialog(null)} />
           </DialogContent>
         </Dialog>
@@ -474,7 +751,8 @@ function ProfilesTab() {
                   <div className="flex gap-2">
                     <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
                       <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
-                      <DialogContent><DialogHeader><DialogTitle>Edit Profile — {p.email}</DialogTitle></DialogHeader>
+                      <DialogContent>
+                        <DialogHeader><DialogTitle>Edit Profile — {p.email}</DialogTitle></DialogHeader>
                         <ProfileForm profile={p} printers={printers} users={users} onSave={d => save.mutate(d)} onClose={() => setDialog(null)} />
                       </DialogContent>
                     </Dialog>
@@ -494,6 +772,7 @@ function ProfilesTab() {
 function JobsTab() {
   const qc = useQueryClient();
   const [filter, setFilter] = useState("all");
+  const [expanded, setExpanded] = useState<number | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ["print-jobs", filter],
     queryFn: () => apiFetch(`/api/print/jobs${filter !== "all" ? `?status=${filter}` : ""}`),
@@ -508,7 +787,10 @@ function JobsTab() {
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <h2 className="text-lg font-semibold">Print Jobs</h2>
+        <div>
+          <h2 className="text-lg font-semibold">Print Jobs & Logs</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">All print attempts are logged here. Click a job to see attempt details.</p>
+        </div>
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -538,30 +820,96 @@ function JobsTab() {
             ) : jobs.length === 0 ? (
               <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground text-xs">No jobs found.</TableCell></TableRow>
             ) : jobs.map(j => (
-              <TableRow key={j.id} className="border-border/30 hover:bg-muted/20">
-                <TableCell className="font-mono text-xs">{j.id}</TableCell>
-                <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
-                <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge>
-                  {j.errorMessage && <div className="text-xs text-red-400 mt-1 max-w-[160px] truncate" title={j.errorMessage}>{j.errorMessage}</div>}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">{j.printedVia ? connLabel(j.printedVia) : "—"}</TableCell>
-                <TableCell className="text-xs text-center">{j.retryCount}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">{new Date(j.createdAt).toLocaleString()}</TableCell>
-                <TableCell>
-                  <div className="flex gap-1">
-                    {(j.status === "failed" || j.status === "retrying") && (
-                      <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => retry.mutate(j.id)}>Retry</Button>
-                    )}
-                    <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => reprint.mutate(j.id)}>Reprint</Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+              <>
+                <TableRow
+                  key={j.id}
+                  className="border-border/30 hover:bg-muted/20 cursor-pointer"
+                  onClick={() => setExpanded(e => e === j.id ? null : j.id)}
+                >
+                  <TableCell className="font-mono text-xs">{j.id}</TableCell>
+                  <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
+                  <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{j.printedVia ? connLabel(j.printedVia) : "—"}</TableCell>
+                  <TableCell className="text-xs text-center">{j.retryCount}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{new Date(j.createdAt).toLocaleString()}</TableCell>
+                  <TableCell onClick={e => e.stopPropagation()}>
+                    <div className="flex gap-1">
+                      {(j.status === "failed" || j.status === "retrying") && (
+                        <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => retry.mutate(j.id)}>Retry</Button>
+                      )}
+                      <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => reprint.mutate(j.id)}>Reprint</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {expanded === j.id && (
+                  <TableRow key={`${j.id}-detail`} className="bg-muted/5 border-border/20">
+                    <TableCell colSpan={8} className="py-3 px-4">
+                      <JobDetail jobId={j.id} />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </>
             ))}
           </TableBody>
         </Table>
       </div>
+    </div>
+  );
+}
+
+function JobDetail({ jobId }: { jobId: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["print-job-detail", jobId],
+    queryFn: () => apiFetch(`/api/print/jobs/${jobId}`),
+  });
+
+  if (isLoading) return <div className="text-xs text-muted-foreground">Loading attempts…</div>;
+
+  const job = data?.job;
+  const attempts = data?.attempts ?? [];
+
+  return (
+    <div className="space-y-2">
+      {job?.errorMessage && (
+        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 flex items-start gap-2">
+          <XCircle size={12} className="shrink-0 mt-0.5" />
+          <div>
+            <div className="font-medium">Error</div>
+            <div className="mt-0.5 text-red-400/80">{job.errorMessage}</div>
+          </div>
+        </div>
+      )}
+      {attempts.length === 0
+        ? <div className="text-xs text-muted-foreground">No dispatch attempts recorded yet.</div>
+        : (
+          <div className="space-y-1.5">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground">Dispatch Attempts</div>
+            {attempts.map((a: { id: number; attemptNumber: number; routeUsed?: string; success: boolean; errorMessage?: string; durationMs?: number; createdAt: string }) => (
+              <div
+                key={a.id}
+                className={`flex items-start gap-3 text-xs rounded px-3 py-2 ${a.success ? "bg-green-500/5 border border-green-500/15" : "bg-red-500/5 border border-red-500/15"}`}
+              >
+                {a.success
+                  ? <CheckCircle2 size={12} className="text-green-400 shrink-0 mt-0.5" />
+                  : <XCircle size={12} className="text-red-400 shrink-0 mt-0.5" />
+                }
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">Attempt #{a.attemptNumber}</span>
+                    {a.routeUsed && <Badge variant="outline" className="text-xs">{connLabel(a.routeUsed)}</Badge>}
+                    {a.durationMs !== undefined && <span className="text-muted-foreground">{a.durationMs}ms</span>}
+                    <span className="text-muted-foreground ml-auto">{new Date(a.createdAt).toLocaleTimeString()}</span>
+                  </div>
+                  {a.errorMessage && <div className="text-red-400/80 mt-0.5 leading-relaxed break-words">{a.errorMessage}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      }
     </div>
   );
 }
@@ -668,7 +1016,8 @@ function TemplatesTab() {
         </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
           <DialogTrigger asChild><Button>+ Add Template</Button></DialogTrigger>
-          <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>New Template</DialogTitle></DialogHeader>
+          <DialogContent className="max-w-xl">
+            <DialogHeader><DialogTitle>New Template</DialogTitle></DialogHeader>
             <TemplateForm onSave={d => create.mutate(d)} onClose={() => setDialog(null)} />
           </DialogContent>
         </Dialog>
@@ -708,7 +1057,8 @@ function TemplatesTab() {
                   <div className="flex gap-2">
                     <Dialog open={dialog === t} onOpenChange={o => setDialog(o ? t : null)}>
                       <DialogTrigger asChild><Button size="sm" variant="outline">Edit</Button></DialogTrigger>
-                      <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Edit Template</DialogTitle></DialogHeader>
+                      <DialogContent className="max-w-xl">
+                        <DialogHeader><DialogTitle>Edit Template</DialogTitle></DialogHeader>
                         <TemplateForm template={t} onSave={d => update.mutate({ id: t.id, d })} onClose={() => setDialog(null)} />
                       </DialogContent>
                     </Dialog>
@@ -757,22 +1107,22 @@ export default function AdminPrint() {
       <div className="border-b border-border/50 pb-4">
         <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
         <p className="text-muted-foreground text-sm">
-          Operator-aware routing — Ethernet direct → Pi fallback for receipts. Mac bridge for labels.
+          Mac print bridge on Tailscale · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
         </p>
       </div>
 
       <SettingsBar />
 
-      <Tabs defaultValue="routing">
+      <Tabs defaultValue="printers">
         <TabsList className="mb-4">
-          <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="printers">Printers</TabsTrigger>
+          <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="profiles">Profiles</TabsTrigger>
-          <TabsTrigger value="jobs">Jobs</TabsTrigger>
+          <TabsTrigger value="jobs">Jobs & Logs</TabsTrigger>
           <TabsTrigger value="templates">Templates</TabsTrigger>
         </TabsList>
-        <TabsContent value="routing"><RoutingTab /></TabsContent>
         <TabsContent value="printers"><PrintersTab /></TabsContent>
+        <TabsContent value="routing"><RoutingTab /></TabsContent>
         <TabsContent value="profiles"><ProfilesTab /></TabsContent>
         <TabsContent value="jobs"><JobsTab /></TabsContent>
         <TabsContent value="templates"><TemplatesTab /></TabsContent>
