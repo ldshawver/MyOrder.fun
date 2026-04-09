@@ -208,3 +208,126 @@
 .bottom-nav-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/* ── Electric design system ─────────────────────────────────────────────── */
+
+@keyframes electric-border-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(59,130,246,0.35),
+      0 0 12px rgba(59,130,246,0.18),
+      0 8px 32px rgba(0,0,0,0.35);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(96,165,250,0.65),
+      0 0 24px rgba(59,130,246,0.32),
+      0 8px 32px rgba(0,0,0,0.35);
+  }
+}
+
+@keyframes spark-flash {
+  0%   { opacity: 0; transform: scale(0.6) rotate(-10deg); }
+  40%  { opacity: 1; transform: scale(1.1) rotate(5deg); }
+  100% { opacity: 0; transform: scale(0.8) rotate(0deg); }
+}
+
+@keyframes electric-sweep {
+  0%   { transform: translateX(-100%) skewX(-20deg); opacity: 0; }
+  30%  { opacity: 0.6; }
+  100% { transform: translateX(350%) skewX(-20deg); opacity: 0; }
+}
+
+/* Electric card — subtle hover for sidebar/nav links */
+.electric-card {
+  transition: box-shadow 0.22s ease, border-color 0.22s ease, transform 0.18s ease;
+}
+
+/* Catalog product card — more dramatic electric effect */
+.electric-catalog-card {
+  position: relative;
+  transition:
+    box-shadow 0.25s ease,
+    border-color 0.28s ease,
+    transform 0.2s ease;
+  overflow: hidden;
+}
+
+.electric-catalog-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(96,165,250,0.06) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+  transform: translateX(-100%) skewX(-20deg);
+  transition: none;
+}
+
+.electric-catalog-card:hover::before {
+  animation: electric-sweep 0.55s ease-out forwards;
+}
+
+.electric-catalog-card:hover {
+  transform: translateY(-3px) scale(1.015);
+  border-color: rgba(59,130,246,0.45) !important;
+  box-shadow:
+    0 0 0 1px rgba(59,130,246,0.25),
+    0 0 20px rgba(59,130,246,0.14),
+    0 12px 40px rgba(0,0,0,0.45);
+}
+
+/* Lucifer Cruz crimson electric variant */
+.electric-catalog-card.lc-card:hover {
+  border-color: rgba(220,20,60,0.55) !important;
+  box-shadow:
+    0 0 0 1px rgba(220,20,60,0.25),
+    0 0 20px rgba(220,20,60,0.12),
+    0 12px 40px rgba(0,0,0,0.5);
+}
+.electric-catalog-card.lc-card::before {
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(220,20,60,0.05) 50%,
+    transparent 100%
+  );
+}
+
+/* Electric hover for CTA/feature buttons */
+.electric-btn {
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+.electric-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(59,130,246,0.4), 0 8px 24px rgba(59,130,246,0.3);
+}
+
+/* ── Reduced motion overrides ───────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .electric-catalog-card::before {
+    display: none;
+  }
+  .electric-catalog-card:hover {
+    transform: none;
+    border-color: rgba(59,130,246,0.3) !important;
+    box-shadow: 0 0 0 1px rgba(59,130,246,0.25);
+  }
+  .electric-card {
+    transition: border-color 0.15s ease;
+  }
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

@@ -114,7 +114,8 @@ function HomeRedirect() {
   return (
     <>
       <Show when="signed-in">
-        <Redirect to="/dashboard" />
+        {/* Customers land on the Order Concierge; admins/staff still have the dashboard in the nav */}
+        <Redirect to="/ai-concierge" />
       </Show>
       <Show when="signed-out">
         <Home />

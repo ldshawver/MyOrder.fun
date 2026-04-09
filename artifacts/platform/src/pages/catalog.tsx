@@ -32,8 +32,8 @@ function CatalogItemCard({
 
   return (
     <div
-      className={`glass-card rounded-2xl overflow-hidden flex flex-col group transition-all hover:scale-[1.02] cursor-pointer`}
-      style={isLC ? { borderColor: "rgba(220,20,60,0.2)" } : {}}
+      className={`electric-catalog-card glass-card rounded-2xl overflow-hidden flex flex-col group cursor-pointer${isLC ? " lc-card" : ""}`}
+      style={isLC ? { borderColor: "rgba(220,20,60,0.2)" } : { borderColor: "rgba(59,130,246,0.12)" }}
       data-testid={`card-product-${item.id}`}
     >
       {/* Thumbnail */}
