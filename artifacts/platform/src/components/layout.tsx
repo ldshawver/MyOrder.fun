@@ -1,4 +1,5 @@
 import { ReactNode, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useClerk } from "@clerk/react";
@@ -246,11 +247,33 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           </Link>
         </header>
 
-        {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
-          <div className="p-4 md:p-8 max-w-7xl mx-auto pb-24 md:pb-8">
-            {children}
-          </div>
+        {/* Page content with animated transitions */}
+        <main className="flex-1 overflow-y-auto relative">
+          {/* Electric flash overlay — fires on every route change */}
+          <motion.div
+            key={`flash-${location}`}
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              background: "linear-gradient(135deg, rgba(59,130,246,0.13), rgba(139,92,246,0.08))",
+              zIndex: 10,
+            }}
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+          />
+
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={location}
+              className="p-4 md:p-8 max-w-7xl mx-auto pb-24 md:pb-8"
+              initial={{ opacity: 0, y: 18, scale: 0.99 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 1.01 }}
+              transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {children}
+            </motion.div>
+          </AnimatePresence>
         </main>
 
         {/* ── Mobile Bottom Tab Bar ────────────────────────────────── */}

@@ -209,6 +209,47 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* ── Zappy character orbit animations ───────────────────────────────────── */
+
+/* The orbit wrapper spins; the child spark dot counter-rotates to stay upright */
+.zappy-orbit-wrap {
+  position: absolute;
+  inset: 0;
+  animation: zappy-orbit-spin 3.6s linear infinite;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.zappy-orbit-1,
+.zappy-orbit-2,
+.zappy-orbit-3 {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  animation: zappy-orbit-counter 3.6s linear infinite;
+}
+
+@keyframes zappy-orbit-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes zappy-orbit-counter {
+  from { transform: translateX(-50%) rotate(0deg); }
+  to   { transform: translateX(-50%) rotate(-360deg); }
+}
+
+/* ── Neon color cycling for the avatar glow ─────────────────────────────── */
+@keyframes neon-cycle {
+  0%, 100% { filter: drop-shadow(0 0 10px rgba(59,130,246,0.7)) drop-shadow(0 0 28px rgba(59,130,246,0.2)); }
+  25%       { filter: drop-shadow(0 0 10px rgba(6,182,212,0.7))  drop-shadow(0 0 28px rgba(6,182,212,0.2));  }
+  50%       { filter: drop-shadow(0 0 10px rgba(139,92,246,0.75)) drop-shadow(0 0 28px rgba(139,92,246,0.2)); }
+  75%       { filter: drop-shadow(0 0 10px rgba(236,72,153,0.7)) drop-shadow(0 0 28px rgba(236,72,153,0.2)); }
+}
+.zappy-glow-cycle {
+  animation: neon-cycle 5s linear infinite;
+}
+
 /* ── Electric design system ─────────────────────────────────────────────── */
 
 @keyframes electric-border-pulse {

@@ -20,10 +20,12 @@ function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
     name: i.name,
     description: i.description,
     category: i.category,
-    sku: i.sku,
+    sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
-    stockQuantity: i.stockQuantity,
+    stockQuantity: i.stockQuantity !== null && i.stockQuantity !== undefined
+      ? parseInt(String(i.stockQuantity), 10)
+      : undefined,
     isAvailable: i.isAvailable,
     imageUrl: i.imageUrl,
     tags: i.tags ?? [],
