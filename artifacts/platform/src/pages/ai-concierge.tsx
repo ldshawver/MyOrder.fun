@@ -228,7 +228,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
         {/* Top glow bar */}
         <motion.div
           className="h-1 w-full"
-          style={{ background: `linear-gradient(90deg, transparent, ${MOODS.speaking.glowA}, transparent)` }}
+          style={{ background: `linear-gradient(90deg, transparent, ${MOOD_GLOWS.speaking.a}, transparent)` }}
           animate={{ opacity: [0.6, 1, 0.6] }}
           transition={{ duration: 1.4, repeat: Infinity }}
         />

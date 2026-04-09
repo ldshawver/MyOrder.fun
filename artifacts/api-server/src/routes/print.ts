@@ -161,34 +161,55 @@ router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> 
 });
 
 // ── POST /api/print/printers/:id/test ────────────────────────────────────
+// Synchronous — awaits dispatch and returns the real pass/fail result.
 router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<void> => {
   const id = parseInt(req.params.id, 10);
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, id)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
 
+  const bridgePrinterName = printer.bridgePrinterName ?? printer.name;
   const testText = [
     "================================",
     "         TEST PRINT             ",
     "================================",
-    `Printer: ${printer.name}`,
-    `Type:    ${printer.connectionType}`,
-    `Role:    ${printer.role}`,
-    `Time:    ${new Date().toLocaleString()}`,
+    `Printer : ${printer.name}`,
+    `Queue   : ${bridgePrinterName}`,
+    `Type    : ${printer.connectionType}`,
+    `Role    : ${printer.role}`,
+    `Bridge  : ${printer.bridgeUrl || "(none)"}`,
+    `Time    : ${new Date().toLocaleString()}`,
     "================================",
     "", "",
   ].join("\n");
 
-  const job = await createPrintJob({
+  // Use a unique idempotency key so repeated test presses each create a new job
+  const iKey = `test:${printer.id}:${Date.now()}`;
+  const [job] = await db.insert(printJobsTable).values({
     orderId: 0,
     printerId: printer.id,
     jobType: "order_ticket",
-    payloadJson: { test: true },
+    status: "queued",
+    idempotencyKey: iKey,
+    renderFormat: "text",
+    payloadJson: { test: true, printerName: bridgePrinterName },
     renderedText: testText,
-  });
+  }).returning();
 
-  dispatchJob(job, printer).catch(() => {});
-  res.json({ ok: true, jobId: job.id });
+  // Await the full dispatch so we can report the actual result
+  await dispatchJob(job, printer).catch(() => {});
+
+  // Re-fetch the job to get final status + error
+  const [finalJob] = await db.select().from(printJobsTable)
+    .where(eq(printJobsTable.id, job.id)).limit(1);
+  const ok = finalJob?.status === "printed";
+
+  res.json({
+    ok,
+    jobId: job.id,
+    status: finalJob?.status ?? "unknown",
+    error: ok ? undefined : (finalJob?.errorMessage ?? "Print job did not complete"),
+  });
 });
 
 // ── POST /api/print/printers/:id/probe ───────────────────────────────────

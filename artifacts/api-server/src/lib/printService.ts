@@ -122,10 +122,18 @@ async function dispatchBridge(
   const text = job.renderedText ?? "";
   const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
 
+  if (!printer.bridgeUrl) {
+    return { success: false, error: "Bridge URL not configured — set it in Admin → Print → Printers" };
+  }
+  if (!apiKey) {
+    return { success: false, error: "API key missing — add it to this printer's settings in Admin → Print → Printers" };
+  }
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    const printerName = printer.bridgePrinterName ?? printer.name;
     const res = await fetch(`${printer.bridgeUrl}/print`, {
       method: "POST",
       headers: {
@@ -133,23 +141,45 @@ async function dispatchBridge(
         "x-api-key": apiKey,
       },
       body: JSON.stringify({
-        printerName: printer.bridgePrinterName ?? printer.name,
+        printerName,
         jobId: job.id,
         format: job.renderFormat,
         text: fullText,
         payload: job.payloadJson,
-        copies: 1, // already repeated above
+        copies: 1,
       }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
+
+    // ── Classify HTTP errors explicitly ────────────────────────────────────
+    if (res.status === 401 || res.status === 403) {
+      return { success: false, error: "API key invalid or rejected — update the API Key in printer settings" };
+    }
+    if (res.status === 404) {
+      let body: { error?: string } = {};
+      try { body = await res.json(); } catch { /* ignore */ }
+      return { success: false, error: `Printer "${printerName}" not found on bridge — check the Printer Name on Bridge setting. Bridge says: ${body.error ?? "not found"}` };
+    }
+    if (!res.ok) {
+      let body: { error?: string } = {};
+      try { body = await res.json(); } catch { /* ignore */ }
+      return { success: false, error: `Bridge returned HTTP ${res.status}: ${body.error ?? res.statusText}` };
+    }
 
     const responsePayload = await res.json() as { success?: boolean; error?: string };
     if (responsePayload.success) {
       return { success: true, responsePayload };
     }
-    return { success: false, error: responsePayload.error ?? "Bridge returned failure", responsePayload };
+    return { success: false, error: responsePayload.error ?? "Bridge returned failure without details", responsePayload };
   } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) };
+    if (err instanceof Error && err.name === "AbortError") {
+      return { success: false, error: `Bridge timed out after ${timeoutMs}ms — is it reachable on Tailscale? Check ${printer.bridgeUrl}` };
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND") || msg.includes("fetch failed") || msg.includes("UND_ERR")) {
+      return { success: false, error: `Bridge unreachable at ${printer.bridgeUrl} — verify Tailscale is connected and the bridge service is running` };
+    }
+    return { success: false, error: msg };
   }
 }
 
