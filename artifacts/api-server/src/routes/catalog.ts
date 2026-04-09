@@ -28,7 +28,7 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect) {
     sku: i.sku,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
-    stockQuantity: i.stockQuantity,
+    stockQuantity: i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null,
     isAvailable: i.isAvailable,
     imageUrl: i.imageUrl ?? undefined,
     tags: i.tags ?? [],
