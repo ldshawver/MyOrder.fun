@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "@clerk/react";
 import { useGetAdminStats, useListOnboardingRequests } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -7,6 +8,7 @@ import { Link } from "wouter";
 import { ShieldAlert, Zap, AlertTriangle, X } from "lucide-react";
 
 function EmergencyKillSwitch() {
+  const { getToken } = useAuth();
   const [step, setStep] = useState<"idle" | "confirm" | "loading" | "done">("idle");
   const [result, setResult] = useState<{ ordersDeleted: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -15,10 +17,10 @@ function EmergencyKillSwitch() {
     setStep("loading");
     setError(null);
     try {
+      const token = await getToken();
       const res = await fetch("/api/admin/purge", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ confirm: "PURGE_ALL_SESSIONS" }),
       });
       const data = await res.json();

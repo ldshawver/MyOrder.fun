@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -77,6 +78,7 @@ function VisibilityBadge({ visible, label }: { visible: boolean; label: string }
 export default function CatalogDebug() {
   const { data: userRes } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const user = userRes;
+  const { getToken } = useAuth();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "hidden" | "missing">("all");
   const [wcKey, setWcKey] = useState("");
@@ -85,12 +87,22 @@ export default function CatalogDebug() {
   const [wcResult, setWcResult] = useState<any>(null);
   const qc = useQueryClient();
 
+  const authFetch = useCallback(async (path: string, init?: RequestInit) => {
+    const token = await getToken();
+    return fetch(path, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+  }, [getToken]);
+
   const { data, isLoading, refetch } = useQuery<DebugResponse>({
     queryKey: ["admin-catalog-debug"],
     queryFn: async () => {
-      const resp = await fetch("/api/admin/catalog/debug", {
-        credentials: "include",
-      });
+      const resp = await authFetch("/api/admin/catalog/debug");
       if (!resp.ok) throw new Error(await resp.text());
       return resp.json();
     },
@@ -99,7 +111,7 @@ export default function CatalogDebug() {
   const { data: wooStatus } = useQuery<WooStatus>({
     queryKey: ["woo-status"],
     queryFn: async () => {
-      const resp = await fetch("/api/admin/woocommerce/status", { credentials: "include" });
+      const resp = await authFetch("/api/admin/woocommerce/status");
       if (!resp.ok) throw new Error("Could not fetch WooCommerce status");
       return resp.json();
     },
@@ -107,10 +119,8 @@ export default function CatalogDebug() {
 
   const wooSync = useMutation({
     mutationFn: async (body: { storeUrl?: string; consumerKey: string; consumerSecret: string }) => {
-      const resp = await fetch("/api/admin/woocommerce/sync", {
+      const resp = await authFetch("/api/admin/woocommerce/sync", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(body),
       });
       const json = await resp.json();

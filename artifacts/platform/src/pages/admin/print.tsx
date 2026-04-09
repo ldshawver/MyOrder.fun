@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useCallback, createContext, useContext, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@clerk/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,17 +13,39 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Eye, EyeOff, CheckCircle2, XCircle, Loader2, Printer, Tag } from "lucide-react";
 
-async function apiFetch(path: string, init?: RequestInit) {
-  const res = await fetch(path, {
-    ...init,
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  return res.json();
+// ── Auth-aware fetch context ───────────────────────────────────────────────────
+// All API calls in this file use the Clerk Bearer token (Authorization header).
+
+type ApiFetchFn = (path: string, init?: RequestInit) => Promise<unknown>;
+
+const ApiFetchCtx = createContext<ApiFetchFn | null>(null);
+
+function useApiFetch(): ApiFetchFn {
+  const fn = useContext(ApiFetchCtx);
+  if (!fn) throw new Error("Must be inside PrintProvider");
+  return fn;
+}
+
+function PrintProvider({ children }: { children: ReactNode }) {
+  const { getToken } = useAuth();
+  const apiFetch = useCallback(async (path: string, init?: RequestInit) => {
+    const token = await getToken();
+    const res = await fetch(path, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }, [getToken]);
+
+  return <ApiFetchCtx.Provider value={apiFetch}>{children}</ApiFetchCtx.Provider>;
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -73,9 +96,10 @@ function connLabel(t: string) {
 
 // ── ROUTING TAB ───────────────────────────────────────────────────────────────
 function RoutingTab() {
+  const apiFetch = useApiFetch();
   const { data, isLoading, refetch } = useQuery<RoutingStatus>({
     queryKey: ["print-routing"],
-    queryFn: () => apiFetch("/api/print/routing"),
+    queryFn: () => apiFetch("/api/print/routing") as Promise<RoutingStatus>,
     refetchInterval: 30_000,
   });
 
@@ -110,12 +134,11 @@ function RoutingTab() {
             </div>
           </div>
         ) : (
-          <div className="text-muted-foreground text-sm">No active operator — no lab tech on shift and no admin found.</div>
+          <div className="text-muted-foreground text-sm">No active operator — no one is clocked in and no admin found.</div>
         )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Receipt */}
         <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Receipt Printer</div>
           {r ? (
@@ -124,7 +147,6 @@ function RoutingTab() {
               <div className="text-xs text-muted-foreground">{connLabel(r.connectionType)}</div>
               {r.bridgeUrl && <div className="font-mono text-xs text-muted-foreground truncate">{r.bridgeUrl}</div>}
               {r.bridgePrinterName && <div className="text-xs text-muted-foreground">Queue: {r.bridgePrinterName}</div>}
-              {r.directIp && <div className="font-mono text-xs text-muted-foreground">{r.directIp}:{r.directPort ?? 9100}</div>}
               <Badge variant="outline" className={`text-xs ${r.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>
                 {r.online ? "Reachable" : "Unreachable"}
               </Badge>
@@ -132,7 +154,6 @@ function RoutingTab() {
           ) : <div className="text-muted-foreground text-xs">Not configured</div>}
         </div>
 
-        {/* Pi fallback */}
         <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Pi Fallback (Receipt)</div>
           {pi ? (
@@ -146,7 +167,6 @@ function RoutingTab() {
           ) : <div className="text-muted-foreground text-xs">Not configured</div>}
         </div>
 
-        {/* Label */}
         <div className="bg-card border border-border/50 rounded-sm p-4 space-y-2">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">Label Printer (Mac Bridge)</div>
           {l ? (
@@ -163,7 +183,7 @@ function RoutingTab() {
       </div>
 
       <div className="text-xs text-muted-foreground border-t border-border/30 pt-4">
-        Routes checked via TCP socket probe (Ethernet) and /health endpoint (bridges). Auto-refreshes every 30s.
+        Probed via TCP socket (Ethernet) and /health endpoint (bridges). Auto-refreshes every 30s.
       </div>
     </div>
   );
@@ -181,7 +201,7 @@ function PrinterForm({ printer, onSave, onClose }: {
     directPort: printer?.directPort ?? 9100,
     bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3001",
     bridgePrinterName: printer?.bridgePrinterName ?? "",
-    apiKey: "" as string, // never pre-populate — use placeholder to indicate existing key
+    apiKey: "",
     copies: printer?.copies ?? 1,
     paperWidth: printer?.paperWidth ?? "80mm",
     timeoutMs: printer?.timeoutMs ?? 8000,
@@ -194,7 +214,6 @@ function PrinterForm({ printer, onSave, onClose }: {
 
   const save = () => {
     const payload: Record<string, unknown> = { ...form };
-    // Only send apiKey if the user typed something new; blank = keep existing
     if (!form.apiKey.trim()) delete payload.apiKey;
     onSave(payload);
     onClose();
@@ -205,7 +224,7 @@ function PrinterForm({ printer, onSave, onClose }: {
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1">
           <Label>Name</Label>
-          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Reciept_POS80_Printer" />
+          <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Receipt POS80" />
         </div>
         <div className="space-y-1">
           <Label>Role</Label>
@@ -226,7 +245,7 @@ function PrinterForm({ printer, onSave, onClose }: {
               <SelectItem value="bridge">Mac Bridge (HTTP + API key)</SelectItem>
               <SelectItem value="mac_bridge">Mac Bridge (legacy)</SelectItem>
               <SelectItem value="pi_bridge">Raspberry Pi Bridge (HTTP)</SelectItem>
-              <SelectItem value="ethernet_direct">Ethernet Direct (raw TCP socket)</SelectItem>
+              <SelectItem value="ethernet_direct">Ethernet Direct (raw TCP)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -238,30 +257,20 @@ function PrinterForm({ printer, onSave, onClose }: {
           </div>
           <div className="space-y-1">
             <Label>Port</Label>
-            <Input type="number" value={form.directPort} onChange={e => setForm(f => ({ ...f, directPort: parseInt(e.target.value) || 9100 }))} placeholder="9100" />
+            <Input type="number" value={form.directPort} onChange={e => setForm(f => ({ ...f, directPort: parseInt(e.target.value) || 9100 }))} />
           </div>
         </>}
 
         {isBridge && <>
           <div className="space-y-1 col-span-2">
             <Label>Bridge URL</Label>
-            <Input
-              value={form.bridgeUrl}
-              onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))}
-              placeholder="http://100.103.51.63:3100"
-            />
-            <p className="text-xs text-muted-foreground mt-1">Tailscale IP of the Mac running the print bridge</p>
+            <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="http://100.103.51.63:3001" />
+            <p className="text-xs text-muted-foreground mt-1">Tailscale IP + port of the Mac running the print bridge</p>
           </div>
           <div className="space-y-1 col-span-2">
             <Label>Printer Name on Bridge</Label>
-            <Input
-              value={form.bridgePrinterName}
-              onChange={e => setForm(f => ({ ...f, bridgePrinterName: e.target.value }))}
-              placeholder="Reciept_POS80_Printer"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              Exact printer queue name on the Mac (check with <span className="font-mono">lpstat -p</span>). Case-sensitive.
-            </p>
+            <Input value={form.bridgePrinterName} onChange={e => setForm(f => ({ ...f, bridgePrinterName: e.target.value }))} placeholder="Reciept_POS80_Printer" />
+            <p className="text-xs text-muted-foreground mt-1">Exact queue name from <span className="font-mono">lpstat -p</span> on the Mac. Case-sensitive.</p>
           </div>
           <div className="space-y-1 col-span-2">
             <Label>API Key</Label>
@@ -270,23 +279,16 @@ function PrinterForm({ printer, onSave, onClose }: {
                 type={showKey ? "text" : "password"}
                 value={form.apiKey}
                 onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
-                placeholder={hasExistingKey ? "Leave blank to keep existing key" : "Enter PRINT_BRIDGE_API_KEY"}
+                placeholder={hasExistingKey ? "Leave blank to keep existing key" : "Enter PRINT_BRIDGE_API_KEY value"}
                 className="pr-10"
               />
-              <button
-                type="button"
-                onClick={() => setShowKey(s => !s)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
+              <button type="button" onClick={() => setShowKey(s => !s)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                 {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
-            {hasExistingKey && (
-              <p className="text-xs text-amber-400 mt-1">⚠ An API key is already set. Type a new one to replace it, or leave blank to keep it.</p>
-            )}
-            {!hasExistingKey && (
-              <p className="text-xs text-red-400 mt-1">No API key set — bridge will reject requests with 401 until one is added.</p>
-            )}
+            {hasExistingKey
+              ? <p className="text-xs text-amber-400 mt-1">A key is already set. Type a new one to replace it, or leave blank to keep it.</p>
+              : <p className="text-xs text-red-400 mt-1">No API key set — bridge will reject requests until one is added.</p>}
           </div>
         </>}
 
@@ -323,28 +325,21 @@ function PrinterForm({ printer, onSave, onClose }: {
 
 // ── Test Result Banner ─────────────────────────────────────────────────────────
 function TestBanner({ result, onDismiss }: { result: TestResult; onDismiss: () => void }) {
-  if (result.loading) {
-    return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/20 rounded px-3 py-1.5 mt-1">
-        <Loader2 size={12} className="animate-spin shrink-0" />
-        Sending test print…
-      </div>
-    );
-  }
-  if (result.ok) {
-    return (
-      <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded px-3 py-1.5 mt-1">
-        <CheckCircle2 size={12} className="shrink-0" />
-        Test print sent successfully (Job #{result.jobId})
-        <button onClick={onDismiss} className="ml-auto text-green-400/60 hover:text-green-400">✕</button>
-      </div>
-    );
-  }
+  if (result.loading) return (
+    <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/20 rounded px-3 py-1.5 mt-1">
+      <Loader2 size={12} className="animate-spin shrink-0" />Sending test print…
+    </div>
+  );
+  if (result.ok) return (
+    <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded px-3 py-1.5 mt-1">
+      <CheckCircle2 size={12} className="shrink-0" />Test print sent (Job #{result.jobId})
+      <button onClick={onDismiss} className="ml-auto text-green-400/60 hover:text-green-400">✕</button>
+    </div>
+  );
   return (
     <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-1.5 mt-1 space-y-0.5">
       <div className="flex items-start gap-2">
-        <XCircle size={12} className="shrink-0 mt-0.5" />
-        <span className="font-medium">Test print failed</span>
+        <XCircle size={12} className="shrink-0 mt-0.5" /><span className="font-medium">Test print failed</span>
         <button onClick={onDismiss} className="ml-auto text-red-400/60 hover:text-red-400 shrink-0">✕</button>
       </div>
       {result.error && <div className="pl-5 text-red-400/80 leading-relaxed">{result.error}</div>}
@@ -352,39 +347,20 @@ function TestBanner({ result, onDismiss }: { result: TestResult; onDismiss: () =
   );
 }
 
-// ── PRINTERS TAB ──────────────────────────────────────────────────────────────
-function PrintersSection({
-  title,
-  icon: Icon,
-  printers,
-  health,
-  testResults,
-  onTest,
-  onDismissTest,
-  dialog,
-  setDialog,
-  onUpdate,
-  onDelete,
-}: {
-  title: string;
-  icon: typeof Printer;
-  printers: Printer[];
-  health: { id: number; online: boolean }[];
+// ── PRINTERS SECTION ──────────────────────────────────────────────────────────
+function PrintersSection({ title, icon: Icon, printers, health, testResults, onTest, onDismissTest, dialog, setDialog, onUpdate, onDelete }: {
+  title: string; icon: typeof Printer;
+  printers: Printer[]; health: { id: number; online: boolean }[];
   testResults: Record<number, TestResult>;
-  onTest: (id: number) => void;
-  onDismissTest: (id: number) => void;
-  dialog: Printer | "new" | null;
-  setDialog: (d: Printer | null) => void;
-  onUpdate: (id: number, d: Record<string, unknown>) => void;
-  onDelete: (id: number) => void;
+  onTest: (id: number) => void; onDismissTest: (id: number) => void;
+  dialog: Printer | "new" | null; setDialog: (d: Printer | null) => void;
+  onUpdate: (id: number, d: Record<string, unknown>) => void; onDelete: (id: number) => void;
 }) {
   if (printers.length === 0) return null;
-
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground px-1">
-        <Icon size={12} />
-        {title}
+        <Icon size={12} />{title}
       </div>
       <div className="bg-card border border-border/50 rounded-sm overflow-hidden">
         <Table>
@@ -402,9 +378,7 @@ function PrintersSection({
             {printers.map(p => {
               const h = health.find(x => x.id === p.id);
               const tr = testResults[p.id];
-              const target = p.connectionType === "ethernet_direct"
-                ? `${p.directIp}:${p.directPort ?? 9100}`
-                : p.bridgeUrl ?? "—";
+              const target = p.connectionType === "ethernet_direct" ? `${p.directIp}:${p.directPort ?? 9100}` : p.bridgeUrl ?? "—";
               return (
                 <>
                   <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
@@ -412,53 +386,30 @@ function PrintersSection({
                     <TableCell className="text-xs text-muted-foreground">{connLabel(p.connectionType)}</TableCell>
                     <TableCell className="text-xs">
                       <div className="font-mono text-muted-foreground truncate max-w-[180px]" title={target}>{target}</div>
-                      {p.bridgePrinterName && (
-                        <div className="text-muted-foreground/60 mt-0.5">Queue: {p.bridgePrinterName}</div>
-                      )}
+                      {p.bridgePrinterName && <div className="text-muted-foreground/60 mt-0.5">Queue: {p.bridgePrinterName}</div>}
                     </TableCell>
                     <TableCell className="text-xs">
-                      {p.apiKey
-                        ? <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Set</Badge>
-                        : <Badge variant="outline" className="text-xs text-red-400 border-red-500/30">Missing</Badge>
-                      }
+                      {p.apiKey ? <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">Set</Badge>
+                        : <Badge variant="outline" className="text-xs text-red-400 border-red-500/30">Missing</Badge>}
                     </TableCell>
                     <TableCell>
-                      {!p.isActive
-                        ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
-                        : h
-                          ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
-                          : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>
-                      }
+                      {!p.isActive ? <Badge variant="outline" className="text-xs text-muted-foreground">Disabled</Badge>
+                        : h ? <Badge variant="outline" className={`text-xs ${h.online ? "text-green-400 border-green-500/30" : "text-red-400 border-red-500/30"}`}>{h.online ? "Online" : "Offline"}</Badge>
+                          : <Badge variant="outline" className="text-xs text-muted-foreground">Unknown</Badge>}
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1.5 flex-wrap">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="text-xs h-7"
-                          disabled={tr?.loading}
-                          onClick={() => onTest(p.id)}
-                        >
-                          {tr?.loading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}
-                          Test Print
+                        <Button size="sm" variant="outline" className="text-xs h-7" disabled={tr?.loading} onClick={() => onTest(p.id)}>
+                          {tr?.loading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}Test Print
                         </Button>
                         <Dialog open={dialog === p} onOpenChange={o => setDialog(o ? p : null)}>
-                          <DialogTrigger asChild>
-                            <Button size="sm" variant="outline" className="text-xs h-7">Edit</Button>
-                          </DialogTrigger>
+                          <DialogTrigger asChild><Button size="sm" variant="outline" className="text-xs h-7">Edit</Button></DialogTrigger>
                           <DialogContent className="max-w-lg">
                             <DialogHeader><DialogTitle>Edit Printer — {p.name}</DialogTitle></DialogHeader>
                             <PrinterForm printer={p} onSave={d => onUpdate(p.id, d)} onClose={() => setDialog(null)} />
                           </DialogContent>
                         </Dialog>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          className="text-xs h-7"
-                          onClick={() => { if (confirm(`Delete ${p.name}?`)) onDelete(p.id); }}
-                        >
-                          Del
-                        </Button>
+                        <Button size="sm" variant="destructive" className="text-xs h-7" onClick={() => { if (confirm(`Delete ${p.name}?`)) onDelete(p.id); }}>Del</Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -479,50 +430,38 @@ function PrintersSection({
   );
 }
 
+// ── PRINTERS TAB ──────────────────────────────────────────────────────────────
 function PrintersTab() {
+  const apiFetch = useApiFetch();
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<Printer | "new" | null>(null);
   const [testResults, setTestResults] = useState<Record<number, TestResult>>({});
 
-  const { data, isLoading } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") });
-  const { data: healthData } = useQuery({ queryKey: ["print-health"], queryFn: () => apiFetch("/api/print/health"), refetchInterval: 30_000 });
+  const { data, isLoading } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") as Promise<{ printers: Printer[] }> });
+  const { data: healthData } = useQuery({ queryKey: ["print-health"], queryFn: () => apiFetch("/api/print/health") as Promise<{ printers: { id: number; online: boolean }[] }>, refetchInterval: 30_000 });
 
-  const create = useMutation({
-    mutationFn: (d: Record<string, unknown>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(d) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
-  const update = useMutation({
-    mutationFn: ({ id, d }: { id: number; d: Record<string, unknown> }) => apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(d) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
-  const del = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }),
-  });
+  const create = useMutation({ mutationFn: (d: Record<string, unknown>) => apiFetch("/api/print/printers", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
+  const update = useMutation({ mutationFn: ({ id, d }: { id: number; d: Record<string, unknown> }) => apiFetch(`/api/print/printers/${id}`, { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
+  const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-printers"] }) });
   const test = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }),
+    mutationFn: (id: number) => apiFetch(`/api/print/printers/${id}/test`, { method: "POST" }) as Promise<{ ok: boolean; error?: string; jobId?: number }>,
     onMutate: (id) => setTestResults(r => ({ ...r, [id]: { loading: true } })),
-    onSuccess: (data: { ok: boolean; error?: string; jobId?: number }, id) => {
-      setTestResults(r => ({ ...r, [id]: { loading: false, ok: data.ok, error: data.error, jobId: data.jobId } }));
-      qc.invalidateQueries({ queryKey: ["print-jobs"] });
-    },
+    onSuccess: (data, id) => { setTestResults(r => ({ ...r, [id]: { loading: false, ok: data.ok, error: data.error, jobId: data.jobId } })); qc.invalidateQueries({ queryKey: ["print-jobs"] }); },
     onError: (err: Error, id) => setTestResults(r => ({ ...r, [id]: { loading: false, ok: false, error: err.message } })),
   });
 
-  const printers: Printer[] = data?.printers ?? [];
-  const health: { id: number; online: boolean }[] = healthData?.printers ?? [];
+  const printers: Printer[] = (data as { printers: Printer[] })?.printers ?? [];
+  const health: { id: number; online: boolean }[] = (healthData as { printers: { id: number; online: boolean }[] })?.printers ?? [];
 
   const receiptPrinters = printers.filter(p => ["receipt", "kitchen", "expo", "bar"].includes(p.role));
   const labelPrinters = printers.filter(p => p.role === "label");
   const otherPrinters = printers.filter(p => !["receipt", "kitchen", "expo", "bar", "label"].includes(p.role));
 
   const sharedProps = {
-    health,
-    testResults,
+    health, testResults,
     onTest: (id: number) => test.mutate(id),
     onDismissTest: (id: number) => setTestResults(r => { const n = { ...r }; delete n[id]; return n; }),
-    dialog,
-    setDialog: (d: Printer | null) => setDialog(d),
+    dialog, setDialog: (d: Printer | null) => setDialog(d),
     onUpdate: (id: number, d: Record<string, unknown>) => update.mutate({ id, d }),
     onDelete: (id: number) => del.mutate(id),
   };
@@ -532,9 +471,7 @@ function PrintersTab() {
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-lg font-semibold">Printers</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Bridge URL: <span className="font-mono">http://100.103.51.63:3001</span> (Tailscale)
-          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">Bridge URL: <span className="font-mono">http://100.103.51.63:3001</span> (Tailscale)</p>
         </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
           <DialogTrigger asChild><Button>+ Add Printer</Button></DialogTrigger>
@@ -546,60 +483,38 @@ function PrintersTab() {
       </div>
 
       {isLoading && <div className="text-muted-foreground text-sm text-center py-8">Loading printers…</div>}
-
       {!isLoading && printers.length === 0 && (
         <div className="bg-card border border-border/50 rounded-sm p-8 text-center text-muted-foreground text-sm">
-          No printers configured. Add your receipt and label printers above.
+          No printers configured yet. Click "+ Add Printer" to add your receipt and label printers.
         </div>
       )}
 
-      {/* Receipt / Kitchen / Expo section */}
-      <PrintersSection
-        title="Receipt, Kitchen & Expo Printers"
-        icon={Printer}
-        printers={receiptPrinters}
-        {...sharedProps}
-      />
+      <PrintersSection title="Receipt, Kitchen & Expo Printers" icon={Printer} printers={receiptPrinters} {...sharedProps} />
+      <PrintersSection title="Label Printers" icon={Tag} printers={labelPrinters} {...sharedProps} />
+      <PrintersSection title="Other Printers" icon={Printer} printers={otherPrinters} {...sharedProps} />
 
-      {/* Label section */}
-      <PrintersSection
-        title="Label Printers"
-        icon={Tag}
-        printers={labelPrinters}
-        {...sharedProps}
-      />
-
-      {/* Other */}
-      <PrintersSection
-        title="Other Printers"
-        icon={Printer}
-        printers={otherPrinters}
-        {...sharedProps}
-      />
-
-      {/* Bridge config reference */}
       <div className="bg-amber-500/5 border border-amber-500/20 rounded-sm p-4 space-y-3">
         <div className="text-xs font-semibold text-amber-400 uppercase tracking-wider">Mac Bridge Configuration Reference</div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           <div className="space-y-1">
-            <div className="font-medium text-foreground">Receipt Printer (POS80)</div>
+            <div className="font-medium">Receipt Printer (POS80)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">receipt</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
             <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
-            <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Reciept_POS80_Printer</span></div>
-            <div className="text-muted-foreground">API Key: set from <span className="font-mono">PRINT_BRIDGE_API_KEY</span> env on Mac</div>
+            <div className="text-muted-foreground">Queue Name: <span className="font-mono text-foreground">Reciept_POS80_Printer</span></div>
+            <div className="text-muted-foreground">API Key env: <span className="font-mono text-foreground">PRINT_BRIDGE_API_KEY</span></div>
           </div>
           <div className="space-y-1">
-            <div className="font-medium text-foreground">Label Printer (Thermal)</div>
+            <div className="font-medium">Label Printer (Thermal)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">label</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
             <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
-            <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Label_Themal_Printer</span></div>
-            <div className="text-muted-foreground">API Key: same key as receipt printer</div>
+            <div className="text-muted-foreground">Queue Name: <span className="font-mono text-foreground">Label_Themal_Printer</span></div>
+            <div className="text-muted-foreground">API Key: same as receipt printer</div>
           </div>
         </div>
-        <div className="text-xs text-muted-foreground border-t border-amber-500/10 pt-2 mt-1">
-          Run <span className="font-mono">lpstat -p</span> on the Mac to confirm printer queue names. Names are case-sensitive.
+        <div className="text-xs text-muted-foreground border-t border-amber-500/10 pt-2">
+          Verify queue names with <span className="font-mono">lpstat -p</span> on the Mac — names are case-sensitive.
         </div>
       </div>
     </div>
@@ -608,7 +523,8 @@ function PrintersTab() {
 
 // ── PROFILES TAB ──────────────────────────────────────────────────────────────
 function ProfileForm({ profile, printers, users, onSave, onClose }: {
-  profile?: Profile; printers: Printer[]; users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[];
+  profile?: Profile; printers: Printer[];
+  users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[];
   onSave: (d: object) => void; onClose: () => void;
 }) {
   const [form, setForm] = useState({
@@ -643,7 +559,6 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
           </Select>
         </div>
       )}
-
       <div className="space-y-1">
         <Label>Receipt Printer</Label>
         <Select value={form.receiptPrinterId} onValueChange={v => setForm(f => ({ ...f, receiptPrinterId: v }))}>
@@ -651,12 +566,11 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
           <SelectContent>
             <SelectItem value="none">— None —</SelectItem>
             {printers.filter(p => p.isActive && ["receipt", "kitchen", "expo", "bar"].includes(p.role)).map(p => (
-              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+              <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
-
       <div className="space-y-1">
         <Label>Label Printer</Label>
         <Select value={form.labelPrinterId} onValueChange={v => setForm(f => ({ ...f, labelPrinterId: v }))}>
@@ -664,12 +578,11 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
           <SelectContent>
             <SelectItem value="none">— None —</SelectItem>
             {printers.filter(p => p.isActive && p.role === "label").map(p => (
-              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+              <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
-
       <div className="space-y-1">
         <Label>Pi Fallback Printer</Label>
         <Select value={form.fallbackReceiptPrinterId} onValueChange={v => setForm(f => ({ ...f, fallbackReceiptPrinterId: v }))}>
@@ -677,12 +590,11 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
           <SelectContent>
             <SelectItem value="none">— None —</SelectItem>
             {printers.filter(p => p.isActive).map(p => (
-              <SelectItem key={p.id} value={String(p.id)}>{p.name} ({connLabel(p.connectionType)})</SelectItem>
+              <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </div>
-
       <div className="flex items-center gap-2">
         <Switch checked={form.isDefault} onCheckedChange={v => setForm(f => ({ ...f, isDefault: v }))} />
         <Label>Default profile (used when no active shift)</Label>
@@ -696,18 +608,23 @@ function ProfileForm({ profile, printers, users, onSave, onClose }: {
 }
 
 function ProfilesTab() {
+  const apiFetch = useApiFetch();
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<Profile | "new" | null>(null);
-  const { data } = useQuery({ queryKey: ["print-profiles"], queryFn: () => apiFetch("/api/print/profiles") });
-  const { data: printersData } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") });
-  const { data: usersData } = useQuery({ queryKey: ["print-users"], queryFn: () => apiFetch("/api/print/users") });
 
-  const save = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/profiles", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["print-profiles"] }); qc.invalidateQueries({ queryKey: ["print-routing"] }); } });
+  const { data: profilesData } = useQuery({ queryKey: ["print-profiles"], queryFn: () => apiFetch("/api/print/profiles") as Promise<{ profiles: Profile[] }> });
+  const { data: printersData } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") as Promise<{ printers: Printer[] }> });
+  const { data: usersData } = useQuery({ queryKey: ["print-users"], queryFn: () => apiFetch("/api/print/users") as Promise<{ users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[] }> });
+
+  const save = useMutation({
+    mutationFn: (d: object) => apiFetch("/api/print/profiles", { method: "POST", body: JSON.stringify(d) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["print-profiles"] }); qc.invalidateQueries({ queryKey: ["print-routing"] }); },
+  });
   const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/profiles/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-profiles"] }) });
 
-  const profiles: Profile[] = data?.profiles ?? [];
-  const printers: Printer[] = printersData?.printers ?? [];
-  const users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[] = usersData?.users ?? [];
+  const profiles: Profile[] = (profilesData as { profiles: Profile[] })?.profiles ?? [];
+  const printers: Printer[] = (printersData as { printers: Printer[] })?.printers ?? [];
+  const users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[] = (usersData as { users: { id: number; email: string; firstName?: string; lastName?: string; role: string }[] })?.users ?? [];
   const printerName = (id?: number) => id ? (printers.find(p => p.id === id)?.name ?? `#${id}`) : "—";
 
   return (
@@ -738,7 +655,9 @@ function ProfilesTab() {
           </TableHeader>
           <TableBody>
             {profiles.length === 0 ? (
-              <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground text-xs">No profiles. Add one above.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground text-xs">
+                No profiles yet. Add one above to assign printers to each operator.
+              </TableCell></TableRow>
             ) : profiles.map(p => (
               <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
                 <TableCell>
@@ -771,27 +690,66 @@ function ProfilesTab() {
 }
 
 // ── JOBS TAB ──────────────────────────────────────────────────────────────────
+function JobDetail({ jobId }: { jobId: number }) {
+  const apiFetch = useApiFetch();
+  const { data, isLoading } = useQuery({ queryKey: ["print-job-detail", jobId], queryFn: () => apiFetch(`/api/print/jobs/${jobId}`) as Promise<{ job: PrintJob; attempts: { id: number; attemptNumber: number; routeUsed?: string; success: boolean; errorMessage?: string; durationMs?: number; createdAt: string }[] }> });
+  if (isLoading) return <div className="text-xs text-muted-foreground">Loading attempts…</div>;
+  const job = (data as { job: PrintJob })?.job;
+  const attempts = (data as { attempts: { id: number; attemptNumber: number; routeUsed?: string; success: boolean; errorMessage?: string; durationMs?: number; createdAt: string }[] })?.attempts ?? [];
+  return (
+    <div className="space-y-2">
+      {job?.errorMessage && (
+        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 flex items-start gap-2">
+          <XCircle size={12} className="shrink-0 mt-0.5" />
+          <div><div className="font-medium">Error</div><div className="mt-0.5 text-red-400/80">{job.errorMessage}</div></div>
+        </div>
+      )}
+      {attempts.length === 0 ? <div className="text-xs text-muted-foreground">No dispatch attempts recorded.</div> : (
+        <div className="space-y-1.5">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">Dispatch Attempts</div>
+          {attempts.map(a => (
+            <div key={a.id} className={`flex items-start gap-3 text-xs rounded px-3 py-2 ${a.success ? "bg-green-500/5 border border-green-500/15" : "bg-red-500/5 border border-red-500/15"}`}>
+              {a.success ? <CheckCircle2 size={12} className="text-green-400 shrink-0 mt-0.5" /> : <XCircle size={12} className="text-red-400 shrink-0 mt-0.5" />}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">Attempt #{a.attemptNumber}</span>
+                  {a.routeUsed && <Badge variant="outline" className="text-xs">{connLabel(a.routeUsed)}</Badge>}
+                  {a.durationMs !== undefined && <span className="text-muted-foreground">{a.durationMs}ms</span>}
+                  <span className="text-muted-foreground ml-auto">{new Date(a.createdAt).toLocaleTimeString()}</span>
+                </div>
+                {a.errorMessage && <div className="text-red-400/80 mt-0.5 leading-relaxed break-words">{a.errorMessage}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JobsTab() {
+  const apiFetch = useApiFetch();
   const qc = useQueryClient();
   const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState<number | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["print-jobs", filter],
-    queryFn: () => apiFetch(`/api/print/jobs${filter !== "all" ? `?status=${filter}` : ""}`),
+    queryFn: () => apiFetch(`/api/print/jobs${filter !== "all" ? `?status=${filter}` : ""}`) as Promise<{ jobs: PrintJob[] }>,
     refetchInterval: 10_000,
   });
 
   const retry = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/retry`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
   const reprint = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/jobs/${id}/reprint`, { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-jobs"] }) });
 
-  const jobs: PrintJob[] = data?.jobs ?? [];
+  const jobs: PrintJob[] = (data as { jobs: PrintJob[] })?.jobs ?? [];
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-lg font-semibold">Print Jobs & Logs</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">All print attempts are logged here. Click a job to see attempt details.</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Click any row to expand attempt details.</p>
         </div>
         <Select value={filter} onValueChange={setFilter}>
           <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
@@ -823,34 +781,24 @@ function JobsTab() {
               <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground text-xs">No jobs found.</TableCell></TableRow>
             ) : jobs.map(j => (
               <>
-                <TableRow
-                  key={j.id}
-                  className="border-border/30 hover:bg-muted/20 cursor-pointer"
-                  onClick={() => setExpanded(e => e === j.id ? null : j.id)}
-                >
+                <TableRow key={j.id} className="border-border/30 hover:bg-muted/20 cursor-pointer" onClick={() => setExpanded(e => e === j.id ? null : j.id)}>
                   <TableCell className="font-mono text-xs">{j.id}</TableCell>
                   <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
                   <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge>
-                  </TableCell>
+                  <TableCell><Badge variant="outline" className={`text-xs ${statusColor(j.status)}`}>{j.status}</Badge></TableCell>
                   <TableCell className="text-xs text-muted-foreground">{j.printedVia ? connLabel(j.printedVia) : "—"}</TableCell>
                   <TableCell className="text-xs text-center">{j.retryCount}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{new Date(j.createdAt).toLocaleString()}</TableCell>
                   <TableCell onClick={e => e.stopPropagation()}>
                     <div className="flex gap-1">
-                      {(j.status === "failed" || j.status === "retrying") && (
-                        <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => retry.mutate(j.id)}>Retry</Button>
-                      )}
+                      {(j.status === "failed" || j.status === "retrying") && <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => retry.mutate(j.id)}>Retry</Button>}
                       <Button size="sm" variant="outline" className="text-xs h-7" onClick={() => reprint.mutate(j.id)}>Reprint</Button>
                     </div>
                   </TableCell>
                 </TableRow>
                 {expanded === j.id && (
                   <TableRow key={`${j.id}-detail`} className="bg-muted/5 border-border/20">
-                    <TableCell colSpan={8} className="py-3 px-4">
-                      <JobDetail jobId={j.id} />
-                    </TableCell>
+                    <TableCell colSpan={8} className="py-3 px-4"><JobDetail jobId={j.id} /></TableCell>
                   </TableRow>
                 )}
               </>
@@ -858,60 +806,6 @@ function JobsTab() {
           </TableBody>
         </Table>
       </div>
-    </div>
-  );
-}
-
-function JobDetail({ jobId }: { jobId: number }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ["print-job-detail", jobId],
-    queryFn: () => apiFetch(`/api/print/jobs/${jobId}`),
-  });
-
-  if (isLoading) return <div className="text-xs text-muted-foreground">Loading attempts…</div>;
-
-  const job = data?.job;
-  const attempts = data?.attempts ?? [];
-
-  return (
-    <div className="space-y-2">
-      {job?.errorMessage && (
-        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 flex items-start gap-2">
-          <XCircle size={12} className="shrink-0 mt-0.5" />
-          <div>
-            <div className="font-medium">Error</div>
-            <div className="mt-0.5 text-red-400/80">{job.errorMessage}</div>
-          </div>
-        </div>
-      )}
-      {attempts.length === 0
-        ? <div className="text-xs text-muted-foreground">No dispatch attempts recorded yet.</div>
-        : (
-          <div className="space-y-1.5">
-            <div className="text-xs uppercase tracking-wider text-muted-foreground">Dispatch Attempts</div>
-            {attempts.map((a: { id: number; attemptNumber: number; routeUsed?: string; success: boolean; errorMessage?: string; durationMs?: number; createdAt: string }) => (
-              <div
-                key={a.id}
-                className={`flex items-start gap-3 text-xs rounded px-3 py-2 ${a.success ? "bg-green-500/5 border border-green-500/15" : "bg-red-500/5 border border-red-500/15"}`}
-              >
-                {a.success
-                  ? <CheckCircle2 size={12} className="text-green-400 shrink-0 mt-0.5" />
-                  : <XCircle size={12} className="text-red-400 shrink-0 mt-0.5" />
-                }
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium">Attempt #{a.attemptNumber}</span>
-                    {a.routeUsed && <Badge variant="outline" className="text-xs">{connLabel(a.routeUsed)}</Badge>}
-                    {a.durationMs !== undefined && <span className="text-muted-foreground">{a.durationMs}ms</span>}
-                    <span className="text-muted-foreground ml-auto">{new Date(a.createdAt).toLocaleTimeString()}</span>
-                  </div>
-                  {a.errorMessage && <div className="text-red-400/80 mt-0.5 leading-relaxed break-words">{a.errorMessage}</div>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )
-      }
     </div>
   );
 }
@@ -940,7 +834,7 @@ function TemplateForm({ template, onSave, onClose }: {
       const parsed = JSON.parse(form.templateJson);
       onSave({ ...form, templateJson: parsed });
       onClose();
-    } catch { setJsonError("Invalid JSON"); }
+    } catch { setJsonError("Invalid JSON — check your field definitions"); }
   };
 
   return (
@@ -978,11 +872,7 @@ function TemplateForm({ template, onSave, onClose }: {
       </div>
       <div className="space-y-1">
         <Label>Field Definitions (JSON)</Label>
-        <Textarea
-          value={form.templateJson}
-          onChange={e => { setForm(f => ({ ...f, templateJson: e.target.value })); setJsonError(""); }}
-          className="font-mono text-xs h-48"
-        />
+        <Textarea value={form.templateJson} onChange={e => { setForm(f => ({ ...f, templateJson: e.target.value })); setJsonError(""); }} className="font-mono text-xs h-48" />
         {jsonError && <div className="text-xs text-red-400">{jsonError}</div>}
         <div className="text-xs text-muted-foreground">Array of: {"{ key, label?, x?, y?, fontSize?, fontWeight?, align? }"}</div>
       </div>
@@ -999,15 +889,16 @@ function TemplateForm({ template, onSave, onClose }: {
 }
 
 function TemplatesTab() {
+  const apiFetch = useApiFetch();
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<PrintTemplate | "new" | null>(null);
-  const { data, isLoading } = useQuery({ queryKey: ["print-templates"], queryFn: () => apiFetch("/api/print/templates") });
 
+  const { data, isLoading } = useQuery({ queryKey: ["print-templates"], queryFn: () => apiFetch("/api/print/templates") as Promise<{ templates: PrintTemplate[] }> });
   const create = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/templates", { method: "POST", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
   const update = useMutation({ mutationFn: ({ id, d }: { id: number; d: object }) => apiFetch(`/api/print/templates/${id}`, { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
   const del = useMutation({ mutationFn: (id: number) => apiFetch(`/api/print/templates/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-templates"] }) });
 
-  const templates: PrintTemplate[] = data?.templates ?? [];
+  const templates: PrintTemplate[] = (data as { templates: PrintTemplate[] })?.templates ?? [];
 
   return (
     <div className="space-y-4">
@@ -1040,21 +931,14 @@ function TemplatesTab() {
             {isLoading ? (
               <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">Loading…</TableCell></TableRow>
             ) : templates.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">No templates. Add one above.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="h-20 text-center text-muted-foreground text-xs">No templates yet. Add one above.</TableCell></TableRow>
             ) : templates.map(t => (
               <TableRow key={t.id} className="border-border/30 hover:bg-muted/20">
-                <TableCell className="font-medium text-sm">
-                  {t.name}
-                  {t.isDefault && <Badge variant="outline" className="text-xs ml-2">Default</Badge>}
-                </TableCell>
+                <TableCell className="font-medium text-sm">{t.name}{t.isDefault && <Badge variant="outline" className="text-xs ml-2">Default</Badge>}</TableCell>
                 <TableCell className="text-xs capitalize">{t.jobType.replace("_", " ")}</TableCell>
                 <TableCell className="text-xs">{t.paperWidth}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{(t.templateJson as unknown[]).length} fields</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className={`text-xs ${t.isActive ? "text-green-400 border-green-500/30" : "text-muted-foreground"}`}>
-                    {t.isActive ? "Active" : "Inactive"}
-                  </Badge>
-                </TableCell>
+                <TableCell><Badge variant="outline" className={`text-xs ${t.isActive ? "text-green-400 border-green-500/30" : "text-muted-foreground"}`}>{t.isActive ? "Active" : "Inactive"}</Badge></TableCell>
                 <TableCell>
                   <div className="flex gap-2">
                     <Dialog open={dialog === t} onOpenChange={o => setDialog(o ? t : null)}>
@@ -1078,11 +962,11 @@ function TemplatesTab() {
 
 // ── SETTINGS BAR ──────────────────────────────────────────────────────────────
 function SettingsBar() {
+  const apiFetch = useApiFetch();
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ["print-settings"], queryFn: () => apiFetch("/api/print/settings") });
+  const { data } = useQuery({ queryKey: ["print-settings"], queryFn: () => apiFetch("/api/print/settings") as Promise<{ settings: Record<string, unknown> }> });
   const update = useMutation({ mutationFn: (d: object) => apiFetch("/api/print/settings", { method: "PATCH", body: JSON.stringify(d) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["print-settings"] }) });
-  const s = data?.settings;
-
+  const s = (data as { settings: Record<string, unknown> })?.settings;
   if (!s) return null;
 
   return (
@@ -1094,7 +978,7 @@ function SettingsBar() {
         { key: "alertOnLabelFailure", label: "SMS alert on label failure" },
       ].map(({ key, label }) => (
         <div key={key} className="flex items-center gap-2">
-          <Switch checked={Boolean(s[key as keyof typeof s])} onCheckedChange={v => update.mutate({ [key]: v })} />
+          <Switch checked={Boolean(s[key])} onCheckedChange={v => update.mutate({ [key]: v })} />
           <span className="text-sm">{label}</span>
         </div>
       ))}
@@ -1105,30 +989,32 @@ function SettingsBar() {
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 export default function AdminPrint() {
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      <div className="border-b border-border/50 pb-4">
-        <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
-        <p className="text-muted-foreground text-sm">
-          Mac print bridge on Tailscale (port 3001) · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
-        </p>
+    <PrintProvider>
+      <div className="space-y-6 max-w-7xl mx-auto">
+        <div className="border-b border-border/50 pb-4">
+          <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
+          <p className="text-muted-foreground text-sm">
+            Mac print bridge on Tailscale (port 3001) · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
+          </p>
+        </div>
+
+        <SettingsBar />
+
+        <Tabs defaultValue="printers">
+          <TabsList className="mb-4">
+            <TabsTrigger value="printers">Printers</TabsTrigger>
+            <TabsTrigger value="routing">Routing</TabsTrigger>
+            <TabsTrigger value="profiles">Profiles</TabsTrigger>
+            <TabsTrigger value="jobs">Jobs & Logs</TabsTrigger>
+            <TabsTrigger value="templates">Templates</TabsTrigger>
+          </TabsList>
+          <TabsContent value="printers"><PrintersTab /></TabsContent>
+          <TabsContent value="routing"><RoutingTab /></TabsContent>
+          <TabsContent value="profiles"><ProfilesTab /></TabsContent>
+          <TabsContent value="jobs"><JobsTab /></TabsContent>
+          <TabsContent value="templates"><TemplatesTab /></TabsContent>
+        </Tabs>
       </div>
-
-      <SettingsBar />
-
-      <Tabs defaultValue="printers">
-        <TabsList className="mb-4">
-          <TabsTrigger value="printers">Printers</TabsTrigger>
-          <TabsTrigger value="routing">Routing</TabsTrigger>
-          <TabsTrigger value="profiles">Profiles</TabsTrigger>
-          <TabsTrigger value="jobs">Jobs & Logs</TabsTrigger>
-          <TabsTrigger value="templates">Templates</TabsTrigger>
-        </TabsList>
-        <TabsContent value="printers"><PrintersTab /></TabsContent>
-        <TabsContent value="routing"><RoutingTab /></TabsContent>
-        <TabsContent value="profiles"><ProfilesTab /></TabsContent>
-        <TabsContent value="jobs"><JobsTab /></TabsContent>
-        <TabsContent value="templates"><TemplatesTab /></TabsContent>
-      </Tabs>
-    </div>
+    </PrintProvider>
   );
 }
