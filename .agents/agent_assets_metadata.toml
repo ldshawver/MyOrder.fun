@@ -24,6 +24,18 @@ uri = "file://attached_assets/generated_images/zappy-alavont-icon.png"
 type = "image"
 title = "alavont ai character icon"
 
+[[generated]]
+id = "_WEgOwsarIE8QAD-k4x39"
+uri = "file://attached_assets/generated_images/zappy-v3-full.png"
+type = "image"
+title = "cute stub-arm floating robot mascot portrait"
+
+[[generated]]
+id = "y42Elo85i1bP1V2fGwVgf"
+uri = "file://attached_assets/generated_images/zappy-v3-icon.png"
+type = "image"
+title = "cute robot mascot icon close-up"
+
 [[outputs]]
 id = "ml_98Ebza0EEgWA_qi6Hy"
 uri = "file://attached_assets/generated_images/zappy-alavont-full.png"
@@ -35,3 +47,15 @@ id = "RdORrj0zlUWqjZpV6q7JT"
 uri = "file://attached_assets/generated_images/zappy-alavont-icon.png"
 type = "image"
 title = "Concierge Icon — Neural Face Close-up"
+
+[[outputs]]
+id = "drTiuG7fHQLAXtMUikbSU"
+uri = "file://attached_assets/generated_images/zappy-v3-full.png"
+type = "image"
+title = "Zappy v3 — Full Body (header + modal + sidebar)"
+
+[[outputs]]
+id = "s8vSOZ_BymrlXEjRFvY84"
+uri = "file://attached_assets/generated_images/zappy-v3-icon.png"
+type = "image"
+title = "Zappy v3 — Icon (chat bubbles)"
