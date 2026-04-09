@@ -12,14 +12,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Eye, EyeOff, CheckCircle2, XCircle, Loader2, Printer, Tag } from "lucide-react";
 
-const API = import.meta.env.BASE_URL.replace(/\/$/, "");
-
 async function apiFetch(path: string, init?: RequestInit) {
-  const res = await fetch(`${API}${path}`, {
+  const res = await fetch(path, {
     ...init,
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -177,7 +179,7 @@ function PrinterForm({ printer, onSave, onClose }: {
     connectionType: printer?.connectionType ?? "bridge",
     directIp: printer?.directIp ?? "",
     directPort: printer?.directPort ?? 9100,
-    bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3100",
+    bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3001",
     bridgePrinterName: printer?.bridgePrinterName ?? "",
     apiKey: "" as string, // never pre-populate — use placeholder to indicate existing key
     copies: printer?.copies ?? 1,
@@ -531,7 +533,7 @@ function PrintersTab() {
         <div>
           <h2 className="text-lg font-semibold">Printers</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Bridge URL: <span className="font-mono">http://100.103.51.63:3100</span> (Tailscale)
+            Bridge URL: <span className="font-mono">http://100.103.51.63:3001</span> (Tailscale)
           </p>
         </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
@@ -583,7 +585,7 @@ function PrintersTab() {
             <div className="font-medium text-foreground">Receipt Printer (POS80)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">receipt</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
-            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
             <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Reciept_POS80_Printer</span></div>
             <div className="text-muted-foreground">API Key: set from <span className="font-mono">PRINT_BRIDGE_API_KEY</span> env on Mac</div>
           </div>
@@ -591,7 +593,7 @@ function PrintersTab() {
             <div className="font-medium text-foreground">Label Printer (Thermal)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">label</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
-            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
             <div className="text-muted-foreground">Printer Name: <span className="font-mono text-foreground">Label_Themal_Printer</span></div>
             <div className="text-muted-foreground">API Key: same key as receipt printer</div>
           </div>
@@ -1107,7 +1109,7 @@ export default function AdminPrint() {
       <div className="border-b border-border/50 pb-4">
         <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
         <p className="text-muted-foreground text-sm">
-          Mac print bridge on Tailscale · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
+          Mac print bridge on Tailscale (port 3001) · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
         </p>
       </div>
 

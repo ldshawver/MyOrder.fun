@@ -2,10 +2,10 @@
  * printRouter.ts — Active operator selection + printer health probes.
  *
  * Operator priority:
- *   1. Most-recent active lab tech shift (lab_tech_shifts.status = 'active')
- *   2. First active global_admin / tenant_admin
+ *   1. Most-recent active shift from lab_tech_shifts (any role — lab_tech, business_sitter, etc.)
+ *   2. Fallback: first active global_admin / tenant_admin / business_sitter
  *
- * Health probes (no WiFi SSID — VPS-side socket/HTTP checks):
+ * Health probes (VPS-side socket/HTTP checks):
  *   - ethernet_direct: TCP connect to directIp:directPort
  *   - mac_bridge / pi_bridge / bridge: GET /health on bridgeUrl
  */
@@ -33,8 +33,8 @@ export type ActiveOperator = {
 
 /**
  * Find the active operator:
- * 1. Clocked-in lab tech (most recent active shift)
- * 2. Fallback: first global_admin / tenant_admin
+ * 1. Most-recent active shift (any role — lab_tech, business_sitter, etc.)
+ * 2. Fallback: first global_admin / tenant_admin / business_sitter
  */
 export async function selectActiveOperator(): Promise<ActiveOperator | null> {
   // 1. Active lab tech shift
@@ -77,9 +77,10 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
     )
     .limit(10);
 
-  const admin = admins.find(u =>
-    u.role === "global_admin" || u.role === "tenant_admin"
-  );
+  // Priority: global_admin > tenant_admin > business_sitter
+  const admin = admins.find(u => u.role === "global_admin")
+    ?? admins.find(u => u.role === "tenant_admin")
+    ?? admins.find(u => u.role === "business_sitter");
 
   if (!admin) return null;
 
@@ -116,14 +117,15 @@ export async function resolveReceiptPrinters(
   };
 
   if (!profile) {
-    // No profile — find any active ethernet_direct printer for receipts
-    const defaults = await db.select().from(printPrintersTable)
-      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.connectionType, "ethernet_direct")))
-      .limit(1);
-    const piFallbacks = await db.select().from(printPrintersTable)
-      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.connectionType, "pi_bridge")))
-      .limit(1);
-    return { primary: defaults[0] ?? null, fallback: piFallbacks[0] ?? null };
+    // No profile — find any active receipt-role printer (ethernet_direct preferred, then bridge)
+    const allActive = await db.select().from(printPrintersTable)
+      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.role, "receipt")));
+    const primary = allActive.find(p => p.connectionType === "ethernet_direct")
+      ?? allActive.find(p => ["bridge", "mac_bridge"].includes(p.connectionType))
+      ?? allActive[0]
+      ?? null;
+    const fallback = allActive.find(p => p.connectionType === "pi_bridge") ?? null;
+    return { primary, fallback };
   }
 
   return {
@@ -137,9 +139,9 @@ export async function resolveLabelPrinter(
   profile: OperatorPrintProfile | null
 ): Promise<PrintPrinter | null> {
   if (!profile?.labelPrinterId) {
-    // find any active mac_bridge printer
+    // find any active label-role printer (bridge, mac_bridge, or ethernet_direct)
     const rows = await db.select().from(printPrintersTable)
-      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.connectionType, "mac_bridge")))
+      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.role, "label")))
       .limit(1);
     return rows[0] ?? null;
   }
