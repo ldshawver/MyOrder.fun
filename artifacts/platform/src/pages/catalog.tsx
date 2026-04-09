@@ -296,10 +296,18 @@ export default function Catalog() {
 
   const isLC = menuMode === "lucifer";
 
+  const allItems = data?.items ?? [];
+
   // In LC mode, only show items that have a luciferCruzName set
   const displayItems = isLC
-    ? (data?.items ?? []).filter((item: any) => item.luciferCruzName)
-    : (data?.items ?? []);
+    ? allItems.filter((item: any) => item.luciferCruzName)
+    : allItems;
+
+  // Determine empty-state reason for better messaging
+  const hasItemsInResponse = allItems.length > 0;
+  const hiddenByLCFilter = isLC && hasItemsInResponse && displayItems.length === 0;
+  const hiddenBySearchOrCategory = !isLC && hasItemsInResponse && displayItems.length === 0 && (!!search || category !== "all");
+  const trulyEmpty = !hasItemsInResponse && !isLoading;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
@@ -403,26 +411,56 @@ export default function Catalog() {
           ))}
         </div>
       ) : !displayItems.length ? (
-        <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center" data-testid="text-empty-state">
+        <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center px-6" data-testid="text-empty-state">
           {isLC ? (
             <Flame size={32} style={{ color: "#DC143C", marginBottom: 12 }} />
           ) : (
             <Package size={32} className="text-muted-foreground/40 mb-3" />
           )}
-          <div className="text-sm font-semibold mb-1">
-            {isLC ? "No Lucifer Cruz items found" : "No items found"}
-          </div>
-          <div className="text-xs text-muted-foreground max-w-xs">
-            {isLC
-              ? "No items have Lucifer Cruz names assigned yet. Import the menu CSV to populate this catalog."
-              : canEdit
-                ? "Add your first menu item using the button above."
-                : "No products available right now. Check back soon."}
-          </div>
-          {canEdit && !isLC && (
-            <Button size="sm" className="mt-5 rounded-xl" onClick={() => setAddOpen(true)}>
-              <Plus size={12} className="mr-1.5" /> Add First Item
-            </Button>
+
+          {/* "Hidden by LC filter" message */}
+          {hiddenByLCFilter && (
+            <>
+              <div className="text-sm font-semibold mb-1">Products exist but have no Lucifer Cruz names</div>
+              <div className="text-xs text-muted-foreground max-w-xs">
+                {allItems.length} product{allItems.length !== 1 ? "s" : ""} are in the database but none have a <code className="font-mono bg-muted/30 px-1 rounded">lucifer_cruz_name</code> assigned.
+                {canEdit && " Re-import your CSV with the lucifer_cruz_name column populated, or check Catalog Debug."}
+              </div>
+            </>
+          )}
+
+          {/* "Search/category filter hiding items" message */}
+          {hiddenBySearchOrCategory && (
+            <>
+              <div className="text-sm font-semibold mb-1">No items match this filter</div>
+              <div className="text-xs text-muted-foreground max-w-xs">
+                {allItems.length} product{allItems.length !== 1 ? "s" : ""} exist but none match the current search or category. Try clearing the filters.
+              </div>
+              <Button size="sm" variant="outline" className="mt-4 rounded-xl text-xs" onClick={() => { setSearch(""); setCategory("all"); }}>
+                Clear Filters
+              </Button>
+            </>
+          )}
+
+          {/* "Truly empty — nothing in DB" message */}
+          {trulyEmpty && !hiddenByLCFilter && !hiddenBySearchOrCategory && (
+            <>
+              <div className="text-sm font-semibold mb-1">
+                {isLC ? "No Lucifer Cruz items found" : "No products imported"}
+              </div>
+              <div className="text-xs text-muted-foreground max-w-xs">
+                {isLC
+                  ? "Import the menu CSV with lucifer_cruz_name populated, or sync from WooCommerce."
+                  : canEdit
+                    ? "No products in the catalog yet. Import a CSV from the Import Menu page."
+                    : "No products available right now. Check back soon."}
+              </div>
+              {canEdit && !isLC && (
+                <Button size="sm" className="mt-5 rounded-xl" onClick={() => setAddOpen(true)}>
+                  <Plus size={12} className="mr-1.5" /> Add First Item
+                </Button>
+              )}
+            </>
           )}
         </div>
       ) : (
