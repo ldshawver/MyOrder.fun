@@ -34,6 +34,7 @@ import AdminPrint from "@/pages/admin/print";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
+import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -210,6 +211,7 @@ function AuthenticatedApp() {
             <Route path="/admin/print" component={AdminPrint} />
             <Route path="/admin/import" component={AdminImport} />
             <Route path="/admin/settings" component={AdminSettingsPage} />
+            <Route path="/admin/catalog-debug" component={AdminCatalogDebug} />
           </>
         )}
 
