@@ -1,0 +1,37 @@
+uploads = []
+
+[[generated]]
+id = "xfBcsS-MxhgJGDfy1HO9P"
+uri = "file://attached_assets/generated_images/zappy-full.png"
+type = "image"
+title = "zappy ai character full"
+
+[[generated]]
+id = "LoBzUDixHjvYP8bB-VbYr"
+uri = "file://attached_assets/generated_images/zappy-isolated.png"
+type = "image"
+title = "zappy ai character isolated"
+
+[[generated]]
+id = "wBw-4zsBJMkCpui_-Ovbk"
+uri = "file://attached_assets/generated_images/zappy-alavont-full.png"
+type = "image"
+title = "alavont ai character portrait"
+
+[[generated]]
+id = "YNvovDvARVQ12xmpIYCaI"
+uri = "file://attached_assets/generated_images/zappy-alavont-icon.png"
+type = "image"
+title = "alavont ai character icon"
+
+[[outputs]]
+id = "ml_98Ebza0EEgWA_qi6Hy"
+uri = "file://attached_assets/generated_images/zappy-alavont-full.png"
+type = "image"
+title = "Concierge Hero — Full Body Portrait"
+
+[[outputs]]
+id = "RdORrj0zlUWqjZpV6q7JT"
+uri = "file://attached_assets/generated_images/zappy-alavont-icon.png"
+type = "image"
+title = "Concierge Icon — Neural Face Close-up"

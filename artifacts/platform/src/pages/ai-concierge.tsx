@@ -48,163 +48,108 @@ function BackgroundField() {
   );
 }
 
-// ─── Zappy the Concierge Character ───────────────────────────────────────────
+// ─── Zappy Avatar Components ─────────────────────────────────────────────────
 type ZappyMood = "idle" | "thinking" | "speaking";
 
-const MOODS: Record<ZappyMood, { bodyA: string; bodyB: string; glowA: string; glowB: string; mouthD: string }> = {
-  idle:     { bodyA: "#3B82F6", bodyB: "#1E3A8A", glowA: "rgba(59,130,246,0.7)",  glowB: "rgba(59,130,246,0.2)",  mouthD: "M 30 64 Q 50 76 70 64" },
-  thinking: { bodyA: "#06B6D4", bodyB: "#164E63", glowA: "rgba(6,182,212,0.7)",   glowB: "rgba(6,182,212,0.2)",   mouthD: "M 38 62 Q 50 66 62 62" },
-  speaking: { bodyA: "#8B5CF6", bodyB: "#2E1065", glowA: "rgba(139,92,246,0.75)", glowB: "rgba(139,92,246,0.2)",  mouthD: "M 28 58 Q 50 78 72 58" },
+const MOOD_GLOWS: Record<ZappyMood, { a: string; b: string; ring: string }> = {
+  idle:     { a: "rgba(59,130,246,0.7)",  b: "rgba(59,130,246,0.15)",  ring: "#3B82F6" },
+  thinking: { a: "rgba(6,182,212,0.7)",   b: "rgba(6,182,212,0.15)",   ring: "#06B6D4" },
+  speaking: { a: "rgba(139,92,246,0.75)", b: "rgba(139,92,246,0.15)",  ring: "#8B5CF6" },
 };
 
-function ZappyAvatar({ size = 96, mood = "idle" }: { size?: number; mood?: ZappyMood }) {
+// Small chat-bubble avatar — icon image in a rounded square with pulsing glow
+function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number; mood?: ZappyMood }) {
   const shouldReduceMotion = useReducedMotion();
-  const [pupil, setPupil] = useState({ x: 0, y: 0 });
-  const [blinkLeft, setBlinkLeft] = useState(false);
-  const [blinkRight, setBlinkRight] = useState(false);
-  const m = MOODS[mood];
+  const { a, ring } = MOOD_GLOWS[mood];
+  return (
+    <motion.div
+      className="relative shrink-0 overflow-hidden"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size * 0.28,
+        border: `1px solid ${ring}55`,
+        boxShadow: `0 0 ${size * 0.5}px ${a}`,
+      }}
+      animate={shouldReduceMotion ? {} : {
+        boxShadow: [
+          `0 0 ${size * 0.5}px ${a}`,
+          `0 0 ${size * 0.9}px ${a}`,
+          `0 0 ${size * 0.5}px ${a}`,
+        ],
+      }}
+      transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+    >
+      <img
+        src="/zappy-avatar.png"
+        alt="Zappy"
+        className="w-full h-full object-cover object-top"
+        style={{ filter: "brightness(1.05) contrast(1.05)" }}
+      />
+    </motion.div>
+  );
+}
 
-  // Randomized eye movement
-  useEffect(() => {
-    if (shouldReduceMotion) return;
-    let t: ReturnType<typeof setTimeout>;
-    const move = () => {
-      setPupil({ x: (Math.random() - 0.5) * 5, y: (Math.random() - 0.5) * 3.5 });
-      t = setTimeout(move, 1400 + Math.random() * 2200);
-    };
-    t = setTimeout(move, 800);
-    return () => clearTimeout(t);
-  }, [shouldReduceMotion]);
-
-  // Randomized blinking
-  useEffect(() => {
-    if (shouldReduceMotion) return;
-    let t: ReturnType<typeof setTimeout>;
-    const blink = () => {
-      const both = Math.random() > 0.3;
-      setBlinkLeft(true);
-      if (both) setBlinkRight(true);
-      setTimeout(() => { setBlinkLeft(false); setBlinkRight(false); }, 120);
-      t = setTimeout(blink, 2800 + Math.random() * 3500);
-    };
-    t = setTimeout(blink, 1500);
-    return () => clearTimeout(t);
-  }, [shouldReduceMotion]);
+// Large hero avatar — full-body portrait with orbital sparks + float
+function ZappyHero({ size = 120, mood = "idle" as ZappyMood }: { size?: number; mood?: ZappyMood }) {
+  const shouldReduceMotion = useReducedMotion();
+  const { a, b, ring } = MOOD_GLOWS[mood];
+  const h = Math.round(size * 1.42);
 
   return (
-    <div className="relative flex-shrink-0 select-none" style={{ width: size, height: size }}>
+    <motion.div
+      className="relative shrink-0"
+      style={{ width: size, height: h }}
+      animate={shouldReduceMotion ? {} : { y: [0, -10, 0] }}
+      transition={{ duration: 3.5, repeat: Infinity, ease: "easeInOut" }}
+    >
       {/* Orbital sparks */}
-      {!shouldReduceMotion && (
-        <>
-          <div className="zappy-orbit-wrap" style={{ width: size, height: size }}>
-            <div className="zappy-orbit-1" style={{ width: 8, height: 8, background: m.glowA, borderRadius: "50%", boxShadow: `0 0 10px ${m.glowA}` }} />
-          </div>
-          <div className="zappy-orbit-wrap" style={{ width: size, height: size, animationDelay: "-1.4s" }}>
-            <div className="zappy-orbit-2" style={{ width: 6, height: 6, background: "rgba(245,158,11,0.9)", borderRadius: "50%", boxShadow: "0 0 10px rgba(245,158,11,0.6)" }} />
-          </div>
-          <div className="zappy-orbit-wrap" style={{ width: size, height: size, animationDelay: "-2.8s" }}>
-            <div className="zappy-orbit-3" style={{ width: 5, height: 5, background: "rgba(167,139,250,0.9)", borderRadius: "50%", boxShadow: "0 0 10px rgba(167,139,250,0.6)" }} />
-          </div>
-        </>
-      )}
+      {!shouldReduceMotion && [
+        { delay: "0s",    color: ring,                    size: 8 },
+        { delay: "-1.4s", color: "rgba(245,158,11,0.9)", size: 6 },
+        { delay: "-2.8s", color: "rgba(167,139,250,0.9)", size: 5 },
+      ].map((spark, i) => (
+        <div key={i} className="zappy-orbit-wrap" style={{ width: size, height: h, animationDelay: spark.delay }}>
+          <div style={{ width: spark.size, height: spark.size, borderRadius: "50%", background: spark.color, boxShadow: `0 0 14px ${spark.color}` }} />
+        </div>
+      ))}
 
-      {/* Body bouncy wrapper */}
+      {/* Animated outer ring */}
       <motion.div
-        className="absolute inset-2"
-        animate={shouldReduceMotion ? {} : { scaleY: [1, 0.93, 1.06, 0.98, 1], scaleX: [1, 1.06, 0.95, 1.02, 1] }}
-        transition={{ duration: 1.9, repeat: Infinity, ease: "easeInOut" }}
-        style={{ transformOrigin: "bottom center" }}
+        className="absolute rounded-2xl pointer-events-none"
+        style={{ inset: -5, border: `1px solid ${ring}`, opacity: 0.3 }}
+        animate={shouldReduceMotion ? {} : { opacity: [0.15, 0.5, 0.15], scale: [1, 1.02, 1] }}
+        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+      />
+
+      {/* Second outer ring */}
+      <motion.div
+        className="absolute rounded-3xl pointer-events-none"
+        style={{ inset: -14, border: `1px solid ${ring}`, opacity: 0.1 }}
+        animate={shouldReduceMotion ? {} : { opacity: [0.05, 0.2, 0.05], scale: [1, 1.03, 1] }}
+        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
+      />
+
+      {/* Image */}
+      <div
+        className="absolute rounded-2xl overflow-hidden"
+        style={{ inset: 0, boxShadow: `0 0 50px ${a}, 0 0 100px ${b}, 0 24px 80px rgba(0,0,0,0.5)` }}
       >
-        <svg
-          viewBox="0 0 100 100"
-          width="100%"
-          height="100%"
-          style={{ overflow: "visible", filter: `drop-shadow(0 0 12px ${m.glowA}) drop-shadow(0 0 28px ${m.glowB})` }}
-        >
-          <defs>
-            <radialGradient id={`zg-body-${mood}`} cx="35%" cy="28%">
-              <stop offset="0%" stopColor={m.bodyA} stopOpacity="0.7" />
-              <stop offset="100%" stopColor={m.bodyB} stopOpacity="0.95" />
-            </radialGradient>
-          </defs>
-
-          {/* Main head circle */}
-          <circle cx="50" cy="52" r="40" fill={`url(#zg-body-${mood})`} stroke={m.bodyA} strokeWidth="1.5" strokeOpacity="0.6" />
-
-          {/* Shine highlight */}
-          <ellipse cx="36" cy="36" rx="11" ry="8" fill="white" opacity="0.18" />
-
-          {/* Cheek blush */}
-          <circle cx="24" cy="60" r="9" fill="rgba(248,113,113,0.2)" />
-          <circle cx="76" cy="60" r="9" fill="rgba(248,113,113,0.2)" />
-
-          {/* Left eye */}
-          <circle cx="35" cy="48" r="10" fill="white" opacity="0.92" />
-          <motion.circle
-            cx={35 + pupil.x}
-            cy={48 + pupil.y}
-            r={blinkLeft ? 0.6 : 6}
-            fill="#1E40AF"
-            transition={{ duration: 0.08 }}
-          />
-          {!blinkLeft && <circle cx={36.5 + pupil.x} cy={45.5 + pupil.y} r="2.2" fill="white" />}
-
-          {/* Right eye */}
-          <circle cx="65" cy="48" r="10" fill="white" opacity="0.92" />
-          <motion.circle
-            cx={65 + pupil.x}
-            cy={48 + pupil.y}
-            r={blinkRight ? 0.6 : 6}
-            fill="#1E40AF"
-            transition={{ duration: 0.08 }}
-          />
-          {!blinkRight && <circle cx={66.5 + pupil.x} cy={45.5 + pupil.y} r="2.2" fill="white" />}
-
-          {/* Mouth */}
-          <motion.path
-            d={m.mouthD}
-            stroke={m.bodyA}
-            strokeWidth="3.5"
-            fill="none"
-            strokeLinecap="round"
-            animate={{ d: m.mouthD }}
-            transition={{ duration: 0.35 }}
-          />
-
-          {/* Lightning bolt "hair" */}
-          <motion.path
-            d="M 32 13 L 28 22 L 33 22 L 26 31"
-            stroke="#FCD34D"
-            strokeWidth="2.5"
-            fill="none"
-            strokeLinecap="round"
-            animate={shouldReduceMotion ? {} : { opacity: [1, 0.4, 1], rotate: [-5, 5, -5] }}
-            transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
-            style={{ transformOrigin: "32px 22px" }}
-          />
-          <motion.path
-            d="M 50 8 L 46 18 L 52 18 L 45 28"
-            stroke="#60A5FA"
-            strokeWidth="3"
-            fill="none"
-            strokeLinecap="round"
-            animate={shouldReduceMotion ? {} : { opacity: [1, 0.5, 1], rotate: [0, -8, 0] }}
-            transition={{ duration: 0.7, repeat: Infinity, ease: "easeInOut", delay: 0.15 }}
-            style={{ transformOrigin: "50px 18px" }}
-          />
-          <motion.path
-            d="M 68 13 L 72 22 L 67 22 L 74 31"
-            stroke="#FCD34D"
-            strokeWidth="2.5"
-            fill="none"
-            strokeLinecap="round"
-            animate={shouldReduceMotion ? {} : { opacity: [1, 0.4, 1], rotate: [5, -5, 5] }}
-            transition={{ duration: 0.85, repeat: Infinity, ease: "easeInOut", delay: 0.25 }}
-            style={{ transformOrigin: "68px 22px" }}
-          />
-        </svg>
-      </motion.div>
-    </div>
+        <img
+          src="/zappy-full.png"
+          alt="Alavont AI"
+          className="w-full h-full object-cover object-top"
+          style={{ filter: "brightness(1.08) saturate(1.1)" }}
+        />
+        {/* Mood-colored energy pulse overlay */}
+        <motion.div
+          className="absolute inset-0 pointer-events-none"
+          style={{ background: `radial-gradient(circle at 50% 30%, ${a} 0%, transparent 65%)`, mixBlendMode: "screen" }}
+          animate={shouldReduceMotion ? {} : { opacity: [0, 0.25, 0] }}
+          transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+        />
+      </div>
+    </motion.div>
   );
 }
 
@@ -303,7 +248,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
             animate={shouldReduceMotion ? {} : { y: [0, -8, 0] }}
             transition={{ duration: 0.6, repeat: Infinity, ease: "easeInOut" }}
           >
-            <ZappyAvatar size={88} mood="speaking" />
+            <ZappyHero size={88} mood="speaking" />
           </motion.div>
 
           {/* Step content */}
@@ -451,7 +396,7 @@ export default function AiConcierge() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 24 }}
         >
-          <ZappyAvatar size={72} mood={zappyMood} />
+          <ZappyHero size={72} mood={zappyMood} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-2xl font-black tracking-tight" data-testid="text-title">Zappy</h1>
@@ -670,7 +615,7 @@ export default function AiConcierge() {
                       animate={{ y: [0, -6, 0] }}
                       transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
                     >
-                      <ZappyAvatar size={52} mood="idle" />
+                      <ZappyHero size={52} mood="idle" />
                     </motion.div>
                     <p className="text-[11px] text-muted-foreground/50 mt-4 leading-relaxed max-w-[140px]">
                       Ask me what you're looking for and I'll recommend something here
