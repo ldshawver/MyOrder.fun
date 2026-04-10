@@ -1,0 +1,51 @@
+name: Renew SSL Certificate
+
+on:
+  # Trigger manually from the GitHub Actions tab — use this to fix an expired cert
+  workflow_dispatch:
+  # Auto-renew on the 1st of every month at 03:15 UTC
+  schedule:
+    - cron: "15 3 1 * *"
+
+jobs:
+  renew:
+    name: Renew Let's Encrypt cert on VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      # Push the latest renewal script to the VPS in case it isn't there yet
+      - name: Sync renewal script to VPS
+        run: |
+          rsync -az deploy/renew-cert.sh \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/deploy/renew-cert.sh
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "chmod +x /opt/alavont/deploy/renew-cert.sh"
+
+      - name: Renew cert on VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -e
+            cd /opt/alavont/deploy
+            bash renew-cert.sh
+          ENDSSH
+
+      - name: Confirm site is up
+        run: |
+          sleep 5
+          curl -fsS --max-time 15 https://myorder.fun/health \
+            && echo "✅ Site is live with valid HTTPS" \
+            || echo "⚠️  Health check failed — check VPS nginx logs"
