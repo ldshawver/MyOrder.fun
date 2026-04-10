@@ -463,12 +463,20 @@ router.patch(
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
-    const { itemName, unitType, startingQuantityDefault, displayOrder, isActive } = req.body as {
+    const {
+      itemName, unitType, startingQuantityDefault, displayOrder, isActive,
+      catalogItemId, deductionQuantityPerSale, sectionName, rowType, currentStock,
+    } = req.body as {
       itemName?: string;
       unitType?: string;
       startingQuantityDefault?: number;
       displayOrder?: number;
       isActive?: boolean;
+      catalogItemId?: number | null;
+      deductionQuantityPerSale?: number | null;
+      sectionName?: string | null;
+      rowType?: string;
+      currentStock?: number | null;
     };
 
     const update: Record<string, unknown> = {};
@@ -477,6 +485,12 @@ router.patch(
     if (startingQuantityDefault !== undefined) update.startingQuantityDefault = String(startingQuantityDefault);
     if (displayOrder !== undefined) update.displayOrder = displayOrder;
     if (isActive !== undefined) update.isActive = isActive;
+    if (catalogItemId !== undefined) update.catalogItemId = catalogItemId;
+    if (deductionQuantityPerSale !== undefined)
+      update.deductionQuantityPerSale = deductionQuantityPerSale != null ? String(deductionQuantityPerSale) : null;
+    if (sectionName !== undefined) update.sectionName = sectionName;
+    if (rowType !== undefined) update.rowType = rowType;
+    if (currentStock !== undefined) update.currentStock = currentStock != null ? String(currentStock) : null;
 
     if (Object.keys(update).length === 0) {
       res.status(400).json({ error: "No fields to update" });
@@ -496,6 +510,79 @@ router.patch(
 
     if (!updated) { res.status(404).json({ error: "Template item not found" }); return; }
     res.json({ item: updated });
+  }
+);
+
+// POST /api/admin/inventory-template — create a new raw-material row
+router.post(
+  "/admin/inventory-template",
+  requireRole("tenant_admin", "global_admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
+
+    const {
+      itemName = "New Item",
+      sectionName,
+      rowType = "item",
+      unitType = "#",
+      startingQuantityDefault = 0,
+      displayOrder = 9999,
+      catalogItemId,
+      deductionQuantityPerSale = 1,
+    } = req.body as {
+      itemName?: string;
+      sectionName?: string;
+      rowType?: string;
+      unitType?: string;
+      startingQuantityDefault?: number;
+      displayOrder?: number;
+      catalogItemId?: number | null;
+      deductionQuantityPerSale?: number;
+    };
+
+    const [created] = await db
+      .insert(inventoryTemplatesTable)
+      .values({
+        tenantId: actor.tenantId,
+        itemName,
+        sectionName: sectionName ?? null,
+        rowType,
+        unitType,
+        startingQuantityDefault: String(startingQuantityDefault),
+        displayOrder,
+        isActive: true,
+        catalogItemId: catalogItemId ?? null,
+        deductionQuantityPerSale: String(deductionQuantityPerSale),
+        currentStock: String(startingQuantityDefault),
+      })
+      .returning();
+
+    res.status(201).json({ item: created });
+  }
+);
+
+// DELETE /api/admin/inventory-template/:id — permanently remove a row
+router.delete(
+  "/admin/inventory-template/:id",
+  requireRole("tenant_admin", "global_admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+    const [deleted] = await db
+      .delete(inventoryTemplatesTable)
+      .where(
+        and(
+          eq(inventoryTemplatesTable.id, id),
+          eq(inventoryTemplatesTable.tenantId, actor.tenantId!),
+        )
+      )
+      .returning();
+
+    if (!deleted) { res.status(404).json({ error: "Not found" }); return; }
+    res.json({ ok: true });
   }
 );
 

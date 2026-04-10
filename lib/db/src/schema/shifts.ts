@@ -42,6 +42,8 @@ export const inventoryTemplatesTable = pgTable("inventory_templates", {
   alavontId: text("alavont_id"),
   deductionUnitType: text("deduction_unit_type").default("#"),
   deductionQuantityPerSale: numeric("deduction_quantity_per_sale", { precision: 10, scale: 3 }).default("1"),
+  // Live running stock — decremented automatically when linked catalog items are sold
+  currentStock: numeric("current_stock", { precision: 10, scale: 3 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
