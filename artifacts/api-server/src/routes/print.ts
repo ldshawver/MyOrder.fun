@@ -186,7 +186,7 @@ router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<voi
   // Use a unique idempotency key so repeated test presses each create a new job
   const iKey = `test:${printer.id}:${Date.now()}`;
   const [job] = await db.insert(printJobsTable).values({
-    orderId: 0,
+    orderId: null,
     printerId: printer.id,
     jobType: "order_ticket",
     status: "queued",
