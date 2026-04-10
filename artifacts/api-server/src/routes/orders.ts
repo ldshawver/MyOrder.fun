@@ -9,6 +9,7 @@ import {
   usersTable,
   notificationsTable,
   labTechShiftsTable,
+  inventoryTemplatesTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -367,6 +368,45 @@ router.patch("/orders/:id", requireRole("staff", "tenant_admin", "global_admin")
     .set({ status: body.data.status, notes: body.data.notes ?? order.notes })
     .where(eq(ordersTable.id, params.data.id))
     .returning();
+
+  // Auto-deduct raw material inventory when order is fulfilled/completed
+  if (
+    (body.data.status === "fulfilled" || body.data.status === "completed") &&
+    order.status !== "fulfilled" && order.status !== "completed"
+  ) {
+    try {
+      const orderItems = await db
+        .select()
+        .from(orderItemsTable)
+        .where(eq(orderItemsTable.orderId, order.id));
+      for (const item of orderItems) {
+        if (!item.catalogItemId) continue;
+        const templates = await db
+          .select()
+          .from(inventoryTemplatesTable)
+          .where(
+            and(
+              eq(inventoryTemplatesTable.tenantId, order.tenantId),
+              eq(inventoryTemplatesTable.catalogItemId, item.catalogItemId),
+              eq(inventoryTemplatesTable.isActive, true),
+            )
+          );
+        for (const tmpl of templates) {
+          const deductPer = parseFloat(String(tmpl.deductionQuantityPerSale ?? 1));
+          const qty = parseFloat(String(item.quantity ?? 1));
+          const totalDeduct = deductPer * qty;
+          const currentStockVal = tmpl.currentStock != null
+            ? parseFloat(String(tmpl.currentStock))
+            : parseFloat(String(tmpl.startingQuantityDefault ?? 0));
+          const newStock = currentStockVal - totalDeduct;
+          await db
+            .update(inventoryTemplatesTable)
+            .set({ currentStock: String(newStock) })
+            .where(eq(inventoryTemplatesTable.id, tmpl.id));
+        }
+      }
+    } catch { /* non-critical */ }
+  }
 
   // In-app notification + SMS to customer
   try {
