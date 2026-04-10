@@ -1,0 +1,57 @@
+root@myorder:~# ssh root@195.35.11.5
+cd /opt/alavont
+bash deploy/setup.sh
+Welcome to Ubuntu 24.04.4 LTS (GNU/Linux 6.8.0-107-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Fri Apr 10 02:49:08 UTC 2026
+
+  System load:  0.0                Processes:             143
+  Usage of /:   23.5% of 47.39GB   Users logged in:       0
+  Memory usage: 30%                IPv4 address for eth0: 195.35.11.5
+  Swap usage:   0%                 IPv6 address for eth0: 2a02:4780:10:cf48::1
+
+ * Strictly confined Kubernetes makes edge and IoT secure. Learn how MicroK8s
+   just raised the bar for easy, resilient and secure K8s cluster deployment.
+
+   https://ubuntu.com/engage/secure-kubernetes-at-the-edge
+
+Expanded Security Maintenance for Applications is not enabled.
+
+8 updates can be applied immediately.
+To see these additional updates run: apt list --upgradable
+
+Enable ESM Apps to receive additional future security updates.
+See https://ubuntu.com/esm or run: sudo pro status
+
+
+1 updates could not be installed automatically. For more details,
+see /var/log/unattended-upgrades/unattended-upgrades.log
+
+Last login: Fri Apr 10 02:49:08 2026 from 169.254.0.1
+root@myorder:~# # Stop nginx so certbot can bind port 80
+cd /opt/alavont/deploy && docker compose stop nginx
+
+# Get the certificate (free, from Let's Encrypt)
+certbot certonly --standalone -d myorder.fun -d www.myorder.fun \
+  --non-interactive --agree-tos --register-unsafely-without-email
+
+# Copy the certs into the folder nginx expects
+mkdir -p /opt/alavont/deploy/nginx/ssl
+cp /etc/letsencrypt/live/myorder.fun/fullchain.pem /opt/alavont/deploy/nginx/ssl/
+cp /etc/letsencrypt/live/myorder.fun/privkey.pem   /opt/alavont/deploy/nginx/ssl/
+
+# Restart nginx — site is now HTTPS
+docker compose start nginx
+Saving debug log to /var/log/letsencrypt/letsencrypt.log
+Certificate not yet due for renewal
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Certificate not yet due for renewal; no action taken.
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+[+] start 1/1
+ ✔ Container deploy-db-1 Healthy                                                                                                                                                                               0.5s
+root@myorder:/opt/alavont/deploy# 
