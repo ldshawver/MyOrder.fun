@@ -780,8 +780,8 @@ function JobsTab() {
             ) : jobs.length === 0 ? (
               <TableRow><TableCell colSpan={8} className="h-20 text-center text-muted-foreground text-xs">No jobs found.</TableCell></TableRow>
             ) : jobs.map(j => (
-              <>
-                <TableRow key={j.id} className="border-border/30 hover:bg-muted/20 cursor-pointer" onClick={() => setExpanded(e => e === j.id ? null : j.id)}>
+              <Fragment key={j.id}>
+                <TableRow className="border-border/30 hover:bg-muted/20 cursor-pointer" onClick={() => setExpanded(e => e === j.id ? null : j.id)}>
                   <TableCell className="font-mono text-xs">{j.id}</TableCell>
                   <TableCell className="font-mono text-xs">{j.orderId ?? "—"}</TableCell>
                   <TableCell className="text-xs capitalize">{j.jobType.replace("_", " ")}</TableCell>
@@ -797,11 +797,11 @@ function JobsTab() {
                   </TableCell>
                 </TableRow>
                 {expanded === j.id && (
-                  <TableRow key={`${j.id}-detail`} className="bg-muted/5 border-border/20">
+                  <TableRow className="bg-muted/5 border-border/20">
                     <TableCell colSpan={8} className="py-3 px-4"><JobDetail jobId={j.id} /></TableCell>
                   </TableRow>
                 )}
-              </>
+              </Fragment>
             ))}
           </TableBody>
         </Table>

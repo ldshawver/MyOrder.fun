@@ -371,15 +371,17 @@ router.post("/print/jobs/:id/reprint", adminOnly, async (req, res): Promise<void
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
-  if (!job.printerId || !job.orderId) {
-    res.status(400).json({ error: "Cannot reprint: missing printer or order" }); return;
+  if (!job.printerId) {
+    res.status(400).json({ error: "Cannot reprint: no printer assigned to this job" }); return;
   }
 
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, job.printerId)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
 
-  const newKey = makeIdempotencyKey(job.orderId, job.printerId, `${job.jobType}:reprint:${Date.now()}`);
+  // Use orderId if present; test jobs have orderId=null so fall back to job id
+  const keyOrderId = job.orderId ?? job.id * -1;
+  const newKey = makeIdempotencyKey(keyOrderId, job.printerId, `${job.jobType}:reprint:${Date.now()}`);
   const [newJob] = await db.insert(printJobsTable).values({
     orderId: job.orderId,
     printerId: job.printerId,
