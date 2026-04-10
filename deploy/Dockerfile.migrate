@@ -20,4 +20,4 @@ COPY tsconfig.json ./
 
 WORKDIR /app/lib/db
 
-CMD ["pnpm", "run", "push"]
+CMD ["pnpm", "run", "push-force"]
