@@ -1,4 +1,4 @@
-import { useState, useCallback, createContext, useContext, type ReactNode } from "react";
+import { useState, useCallback, createContext, useContext, Fragment, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Badge } from "@/components/ui/badge";
@@ -380,8 +380,8 @@ function PrintersSection({ title, icon: Icon, printers, health, testResults, onT
               const tr = testResults[p.id];
               const target = p.connectionType === "ethernet_direct" ? `${p.directIp}:${p.directPort ?? 9100}` : p.bridgeUrl ?? "—";
               return (
-                <>
-                  <TableRow key={p.id} className="border-border/30 hover:bg-muted/20">
+                <Fragment key={p.id}>
+                  <TableRow className="border-border/30 hover:bg-muted/20">
                     <TableCell className="font-medium text-sm">{p.name}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{connLabel(p.connectionType)}</TableCell>
                     <TableCell className="text-xs">
@@ -414,13 +414,13 @@ function PrintersSection({ title, icon: Icon, printers, health, testResults, onT
                     </TableCell>
                   </TableRow>
                   {tr && (
-                    <TableRow key={`${p.id}-result`} className="border-border/20">
+                    <TableRow className="border-border/20">
                       <TableCell colSpan={6} className="py-1 px-4">
                         <TestBanner result={tr} onDismiss={() => onDismissTest(p.id)} />
                       </TableCell>
                     </TableRow>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </TableBody>

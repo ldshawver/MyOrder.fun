@@ -143,6 +143,50 @@ docker compose up -d
 
 ---
 
+## HTTPS / Let's Encrypt SSL
+
+**This is already fully set up in the codebase.** The nginx container handles:
+- Automatic HTTP → HTTPS redirect (port 80 → 443)
+- TLS with your Let's Encrypt certificate
+- HSTS and security headers
+
+### Getting the certificate (one-time, run on the VPS)
+
+The `setup.sh` script does this automatically. If you need to do it manually:
+
+```bash
+# Make sure nothing is running on port 80 first
+cd /opt/alavont/deploy && docker compose stop nginx
+
+# Get the cert
+certbot certonly --standalone -d myorder.fun -d www.myorder.fun \
+  --non-interactive --agree-tos --register-unsafely-without-email
+
+# Copy certs into the nginx ssl folder
+mkdir -p /opt/alavont/deploy/nginx/ssl
+cp /etc/letsencrypt/live/myorder.fun/fullchain.pem /opt/alavont/deploy/nginx/ssl/
+cp /etc/letsencrypt/live/myorder.fun/privkey.pem   /opt/alavont/deploy/nginx/ssl/
+chmod 600 /opt/alavont/deploy/nginx/ssl/privkey.pem
+
+# Restart nginx
+cd /opt/alavont/deploy && docker compose start nginx
+```
+
+### Certificate auto-renewal
+
+`setup.sh` installs a monthly cron job that calls `deploy/renew-cert.sh`, which:
+1. Stops nginx (~5 second downtime)
+2. Runs `certbot renew`
+3. Copies new certs to `deploy/nginx/ssl/`
+4. Restarts nginx
+
+To renew manually at any time:
+```bash
+bash /opt/alavont/deploy/renew-cert.sh
+```
+
+---
+
 ## Firewall
 ```bash
 ufw allow 22/tcp
