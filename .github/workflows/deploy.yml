@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    name: Build → Sync → Restart
+    name: Build → Cert → Sync → Restart
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -37,6 +37,8 @@ jobs:
             --exclude='deploy/nginx/ssl' \
             --exclude='node_modules' \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "chmod +x /opt/alavont/deploy/renew-cert.sh"
 
       # ── 5. Build new images ─────────────────────────────────────────
       - name: Build images
@@ -48,16 +50,35 @@ jobs:
             echo "BUILD SUCCESS"
           ENDSSH
 
-      # ── 6. Deploy: down → migrate → up ─────────────────────────────
-      - name: Deploy
+      # ── 6. Stop services, renew cert if needed, then redeploy ───────
+      - name: Deploy (with cert renewal)
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
             cd /opt/alavont/deploy
+            DOMAIN="myorder.fun"
 
             echo "▶ Stopping all services (data volumes preserved)..."
             docker compose down 2>&1
-            sleep 5
+            sleep 3
+
+            # ── Cert renewal while nginx is stopped (port 80 is free) ──
+            echo "▶ Checking / renewing SSL cert..."
+            if certbot renew --standalone --quiet --cert-name "${DOMAIN}" 2>/dev/null || \
+               certbot certonly --standalone \
+                 -d "${DOMAIN}" -d "www.${DOMAIN}" \
+                 --non-interactive --agree-tos \
+                 --register-unsafely-without-email \
+                 --quiet 2>/dev/null; then
+              echo "  ✓ Cert OK — copying to nginx/ssl/..."
+              mkdir -p nginx/ssl
+              cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem nginx/ssl/fullchain.pem
+              cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem   nginx/ssl/privkey.pem
+              chmod 644 nginx/ssl/fullchain.pem
+              chmod 600 nginx/ssl/privkey.pem
+            else
+              echo "  ⚠ certbot failed — using existing certs"
+            fi
 
             echo "▶ Starting database..."
             docker compose up -d db
