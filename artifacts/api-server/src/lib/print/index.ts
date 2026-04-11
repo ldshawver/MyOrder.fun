@@ -1,6 +1,11 @@
 export { charWidth, type PaperWidth } from "./widths";
-export { centerText, divider, kvLine, wrapText, itemLine, fitLogo, money, formatDate, formatShortDate } from "./formatter";
-export { getLogo } from "./logo";
+export {
+  centerText, rightAlign, divider, kvLine, wrapText, spacedText, fitLogo,
+  itemLine,
+  receiptItemLine, receiptItemColHeader, receiptTotalLine, receiptNameWidth,
+  money, formatDate, formatReceiptDate, formatShortDate,
+} from "./formatter";
+export { getLogo, getPrimaryBrandName } from "./logo";
 export { renderBlocks, type PrintBlock } from "./renderer";
 export { buildCustomerReceiptBlocks, type CustomerReceiptData, type ReceiptOrderItem } from "./templates/customerReceipt";
 export { buildInventoryStartBlocks, type InventoryStartData, type InventoryStartItem } from "./templates/inventoryStart";

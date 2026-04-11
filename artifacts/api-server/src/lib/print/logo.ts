@@ -1,32 +1,31 @@
-import fs from "fs";
-import path from "path";
-import { fitLogo, centerText } from "./formatter";
+import { centerText } from "./formatter";
 
-const LOGO_PATH = path.join(import.meta.dirname, "assets/logo.txt");
-const FALLBACK = "ALAVONT THERAPEUTICS";
+const PRIMARY_WIDE   = "A   L   A   V   O   N   T";   // 21 chars — elegant on 80mm
+const TAGLINE_WIDE   = "T H E R A P E U T I C S";     // 23 chars
+const PRIMARY_NARROW = "A L A V O N T";               // 13 chars — compact on 58mm
+const TAGLINE_NARROW = "THERAPEUTICS";                // 12 chars
 
-let _cached: string | null = null;
-
-function loadRaw(): string {
-  if (_cached !== null) return _cached;
-  try {
-    _cached = fs.readFileSync(LOGO_PATH, "utf8");
-  } catch {
-    _cached = FALLBACK;
+/**
+ * Returns centered Alavont Therapeutics logo lines for the given paper width.
+ * Dual-brand lines are NOT included here — the receipt template adds them separately
+ * via the `dualBrandName` field so they can be positioned correctly in the layout.
+ *
+ * @param width Char width of the paper (32 = 58mm, 48 = 80mm).
+ */
+export function getLogo(width: number): string[] {
+  if (width >= 40) {
+    return [
+      centerText(PRIMARY_WIDE, width),
+      centerText(TAGLINE_WIDE, width),
+    ];
   }
-  return _cached;
+  return [
+    centerText(PRIMARY_NARROW, width),
+    centerText(TAGLINE_NARROW, width),
+  ];
 }
 
-export function getLogo(width: number, brandName?: string | null): string[] {
-  const raw = loadRaw();
-  if (raw === FALLBACK) {
-    const name = brandName ?? FALLBACK;
-    return [centerText(name, width)];
-  }
-  const lines = fitLogo(raw, width);
-  // If a custom brand name is provided, append it centered below the logo
-  if (brandName && brandName !== FALLBACK) {
-    lines.push(centerText(brandName.toUpperCase(), width));
-  }
-  return lines.filter(l => l.trim().length > 0 || l === "");
+/** Returns the primary brand name for fallback text usage. */
+export function getPrimaryBrandName(): string {
+  return "ALAVONT THERAPEUTICS";
 }

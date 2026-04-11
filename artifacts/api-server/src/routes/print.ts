@@ -440,11 +440,10 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
 
 router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void> => {
   const settings = await getSettings();
-  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
-  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
-  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
-    ? getLogo(width, brandName)
-    : [];
+  const s = settings as Record<string, unknown>;
+  const width = charWidth(s.paperWidth as string ?? "80mm");
+  const dualBrandName = s.brandName as string | undefined;
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const body = req.body ?? {};
   const blocks = buildCustomerReceiptBlocks({
     orderId: body.orderId ?? 0,
@@ -454,30 +453,30 @@ router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void>
     fulfillmentType: body.fulfillmentType ?? "Pickup",
     operatorName: body.operatorName,
     paymentStatus: body.paymentStatus ?? "paid",
-    paymentMethod: body.paymentMethod,
+    paymentMethod: body.paymentMethod ?? "Cash",
     notes: body.notes,
     items: body.items ?? [
-      { name: "Sample Item", quantity: 1, unitPrice: 25.00, totalPrice: 25.00 },
+      { name: "Blue Dream 3.5g",    quantity: 1, unitPrice: 45.00, totalPrice: 45.00 },
+      { name: "House Special",      quantity: 2, unitPrice: 30.00, totalPrice: 60.00, notes: "Extra discreet packaging" },
     ],
-    subtotal: body.subtotal ?? 25.00,
-    tax: body.tax,
-    total: body.total ?? 25.00,
+    subtotal: body.subtotal ?? 105.00,
+    tax: body.tax ?? 0,
+    total: body.total ?? 105.00,
     logoLines,
-    brandName,
-    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
-    showDiscreetNotice: Boolean((settings as Record<string, unknown>).showDiscreetNotice),
-    showOperatorName: (settings as Record<string, unknown>).includeOperatorName !== false,
+    dualBrandName,
+    footerMessage: s.footerMessage as string | undefined,
+    showDiscreetNotice: Boolean(s.showDiscreetNotice),
+    showOperatorName: s.includeOperatorName !== false,
   });
   res.type("text/plain").send(renderBlocks(blocks, width));
 });
 
 router.post("/print/preview/inventory-start", adminOnly, async (req, res): Promise<void> => {
   const settings = await getSettings();
-  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
-  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
-  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
-    ? getLogo(width, brandName)
-    : [];
+  const s = settings as Record<string, unknown>;
+  const width = charWidth(s.paperWidth as string ?? "80mm");
+  const dualBrandName = s.brandName as string | undefined;
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const body = req.body ?? {};
   const blocks = buildInventoryStartBlocks({
     shiftId: body.shiftId ?? "PREVIEW",
@@ -489,18 +488,17 @@ router.post("/print/preview/inventory-start", adminOnly, async (req, res): Promi
       { rowType: "item", itemName: "Sample Item", unitType: "#", quantityStart: 10 },
     ],
     logoLines,
-    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
+    footerMessage: s.footerMessage as string | undefined,
   });
   res.type("text/plain").send(renderBlocks(blocks, width));
 });
 
 router.post("/print/preview/inventory-end", adminOnly, async (req, res): Promise<void> => {
   const settings = await getSettings();
-  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
-  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
-  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
-    ? getLogo(width, brandName)
-    : [];
+  const s = settings as Record<string, unknown>;
+  const width = charWidth(s.paperWidth as string ?? "80mm");
+  const dualBrandName = s.brandName as string | undefined;
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const body = req.body ?? {};
   const blocks = buildInventoryEndBlocks({
     shiftId: body.shiftId ?? "PREVIEW",

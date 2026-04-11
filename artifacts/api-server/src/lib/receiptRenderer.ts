@@ -1,6 +1,6 @@
 /**
  * receiptRenderer.ts — Legacy-compatible shim.
- * Delegates to the new modular print engine in ./print/.
+ * Delegates to the modular print engine in ./print/.
  */
 import {
   renderBlocks,
@@ -28,20 +28,23 @@ interface PrintOrder {
   tax?: number;
   total?: number;
   paymentStatus?: string;
+  paymentMethod?: string;
   createdAt?: string | Date;
-  // Optional branding overrides
-  operatorName?: string;
+  // Branding
   paperWidth?: string;
-  logoLines?: string[];
-  brandName?: string;
+  dualBrandName?: string;
   footerMessage?: string;
   showDiscreetNotice?: boolean;
   showOperatorName?: boolean;
+  operatorName?: string;
+  // Legacy (ignored)
+  logoLines?: string[];
+  brandName?: string;
 }
 
 export function renderKitchenTicket(order: PrintOrder): string {
   const width = charWidth(order.paperWidth ?? "80mm");
-  const logoLines = order.logoLines ?? getLogo(width, order.brandName);
+  const logoLines = getLogo(width);
   const blocks = buildCustomerReceiptBlocks({
     orderId: order.id,
     orderNumber: order.orderNumber,
@@ -50,6 +53,7 @@ export function renderKitchenTicket(order: PrintOrder): string {
     fulfillmentType: order.fulfillmentType ?? "Pickup",
     operatorName: order.operatorName,
     paymentStatus: order.paymentStatus,
+    paymentMethod: order.paymentMethod,
     notes: order.notes,
     items: (order.items ?? []).map(i => ({
       name: i.name,
@@ -62,7 +66,7 @@ export function renderKitchenTicket(order: PrintOrder): string {
     tax: order.tax,
     total: order.total ?? 0,
     logoLines,
-    brandName: order.brandName,
+    dualBrandName: order.dualBrandName,
     footerMessage: order.footerMessage,
     showDiscreetNotice: order.showDiscreetNotice ?? false,
     showOperatorName: order.showOperatorName ?? true,
