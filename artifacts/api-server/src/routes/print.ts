@@ -534,6 +534,105 @@ router.post("/print/preview/label", adminOnly, async (req, res): Promise<void> =
   res.type("text/plain").send(renderBlocks(blocks, width));
 });
 
+// ── Thank You Label (PNG image) ────────────────────────────────────────────
+// GET  /api/print/preview/thank-you-label?name=<firstName>
+//   Returns a PNG image of the personalized sticker for browser preview.
+// POST /api/print/label/thank-you
+//   Body: { firstName, copies? }
+//   Generates label, dispatches to the label printer, returns job info.
+
+router.get("/print/preview/thank-you-label", adminOnly, async (req, res): Promise<void> => {
+  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
+  const firstName = String(req.query.name ?? "Friend");
+  try {
+    const buf = await generateThankYouLabel(firstName);
+    res.type("image/png").send(buf);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void> => {
+  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
+  const b = req.body ?? {};
+  const firstName = String(b.firstName ?? "Friend").trim().slice(0, 20) || "Friend";
+  const copies    = Math.min(5, Math.max(1, parseInt(String(b.copies ?? 1), 10)));
+
+  // Resolve label printer
+  const operator   = await selectActiveOperator();
+  const labelPrinter = await resolveLabelPrinter(operator?.profile ?? null);
+  if (!labelPrinter) {
+    res.status(503).json({ error: "No label printer configured" });
+    return;
+  }
+
+  // Generate PNG
+  let pngBuf: Buffer;
+  try {
+    pngBuf = await generateThankYouLabel(firstName);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: `Image generation failed: ${msg}` });
+    return;
+  }
+
+  const iKey = `thank-you-label:${firstName}:${Date.now()}`;
+  const [job] = await db.insert(printJobsTable).values({
+    orderId: null,
+    printerId: labelPrinter.id,
+    jobType: "label",
+    status: "queued",
+    idempotencyKey: iKey,
+    renderFormat: "png",
+    payloadJson: {
+      labelType: "thank-you",
+      customerFirstName: firstName,
+      imageData: pngBuf.toString("base64"),
+    },
+    renderedText: `Thank You label — ${firstName}`,
+  }).returning();
+
+  // Dispatch and await result
+  await dispatchJob(job, labelPrinter).catch(() => {});
+
+  const [finalJob] = await db.select().from(printJobsTable)
+    .where(eq(printJobsTable.id, job.id)).limit(1);
+
+  if (copies > 1) {
+    // Additional copies: fire-and-forget
+    for (let i = 1; i < copies; i++) {
+      const extraKey = `thank-you-label:${firstName}:${Date.now()}:copy${i}`;
+      const [extraJob] = await db.insert(printJobsTable).values({
+        orderId: null,
+        printerId: labelPrinter.id,
+        jobType: "label",
+        status: "queued",
+        idempotencyKey: extraKey,
+        renderFormat: "png",
+        payloadJson: {
+          labelType: "thank-you",
+          customerFirstName: firstName,
+          imageData: pngBuf.toString("base64"),
+        },
+        renderedText: `Thank You label — ${firstName} (copy ${i + 1})`,
+      }).returning();
+      dispatchJob(extraJob, labelPrinter).catch(() => {});
+    }
+  }
+
+  res.json({
+    ok: finalJob?.status === "printed",
+    jobId: job.id,
+    status: finalJob?.status ?? "unknown",
+    firstName,
+    printerName: labelPrinter.name,
+    error: finalJob?.status === "printed"
+      ? undefined
+      : (finalJob?.errorMessage ?? "Job did not complete"),
+  });
+});
+
 // ── Users list (for profile assignment) ───────────────────────────────────
 router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
   const rows = await db.select({

@@ -960,6 +960,140 @@ function TemplatesTab() {
   );
 }
 
+// ── THANK YOU LABEL TAB ───────────────────────────────────────────────────────
+function ThankYouLabelTab() {
+  const apiFetch = useApiFetch();
+  const { getToken } = useAuth();
+  const [name, setName] = useState("");
+  const [copies, setCopies] = useState(1);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [printResult, setPrintResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [printLoading, setPrintLoading] = useState(false);
+
+  const firstName = name.trim() || "Friend";
+
+  async function loadPreview() {
+    setPreviewLoading(true);
+    setPrintResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `/api/print/preview/thank-you-label?name=${encodeURIComponent(firstName)}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(URL.createObjectURL(blob));
+    } catch (e: unknown) {
+      setPrintResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  async function printLabel() {
+    setPrintLoading(true);
+    setPrintResult(null);
+    try {
+      const data = await apiFetch("/api/print/label/thank-you", {
+        method: "POST",
+        body: JSON.stringify({ firstName, copies }),
+      }) as { ok: boolean; jobId: number; status: string; printerName: string; error?: string };
+      setPrintResult({
+        ok: data.ok,
+        message: data.ok
+          ? `Printed to ${data.printerName} (job #${data.jobId})`
+          : (data.error ?? `Job ${data.status}`),
+      });
+    } catch (e: unknown) {
+      setPrintResult({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPrintLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-lg font-semibold mb-1">Thank You Sticker Label</h2>
+        <p className="text-sm text-muted-foreground">
+          Generates a personalized 2″ × 2″ circular sticker with the customer's first name
+          printed inside the LuciferCruz.com bowl design.
+        </p>
+      </div>
+
+      <div className="bg-card border border-border/50 rounded-sm p-5 space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="ty-name">Customer First Name</Label>
+            <Input
+              id="ty-name"
+              placeholder="e.g. Samantha"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              maxLength={20}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ty-copies">Copies</Label>
+            <Input
+              id="ty-copies"
+              type="number"
+              min={1}
+              max={5}
+              value={copies}
+              onChange={e => setCopies(Math.min(5, Math.max(1, Number(e.target.value))))}
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <Button variant="outline" onClick={loadPreview} disabled={previewLoading}>
+            {previewLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Eye className="w-4 h-4 mr-2" />}
+            Preview
+          </Button>
+          <Button onClick={printLabel} disabled={printLoading}>
+            {printLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Printer className="w-4 h-4 mr-2" />}
+            Print Thank You
+          </Button>
+        </div>
+
+        {printResult && (
+          <div className={`flex items-center gap-2 text-sm rounded-sm px-3 py-2 border ${
+            printResult.ok
+              ? "bg-green-500/10 text-green-400 border-green-500/30"
+              : "bg-red-500/10 text-red-400 border-red-500/30"
+          }`}>
+            {printResult.ok
+              ? <CheckCircle2 className="w-4 h-4 shrink-0" />
+              : <XCircle className="w-4 h-4 shrink-0" />}
+            {printResult.message}
+          </div>
+        )}
+      </div>
+
+      {previewUrl && (
+        <div className="bg-card border border-border/50 rounded-sm p-5 space-y-3">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+            <Tag className="w-3.5 h-3.5" />
+            Label Preview — <span className="font-mono">{firstName}</span>
+            <span className="ml-auto text-muted-foreground/60">406 × 406 px (2″ at 203 DPI)</span>
+          </div>
+          <div className="flex justify-center">
+            <img
+              src={previewUrl}
+              alt={`Thank You label for ${firstName}`}
+              className="w-64 h-64 object-contain border border-border/30 rounded-sm shadow-sm"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SETTINGS BAR ──────────────────────────────────────────────────────────────
 function SettingsBar() {
   const apiFetch = useApiFetch();
@@ -1007,12 +1141,14 @@ export default function AdminPrint() {
             <TabsTrigger value="profiles">Profiles</TabsTrigger>
             <TabsTrigger value="jobs">Jobs & Logs</TabsTrigger>
             <TabsTrigger value="templates">Templates</TabsTrigger>
+            <TabsTrigger value="labels">Labels</TabsTrigger>
           </TabsList>
           <TabsContent value="printers"><PrintersTab /></TabsContent>
           <TabsContent value="routing"><RoutingTab /></TabsContent>
           <TabsContent value="profiles"><ProfilesTab /></TabsContent>
           <TabsContent value="jobs"><JobsTab /></TabsContent>
           <TabsContent value="templates"><TemplatesTab /></TabsContent>
+          <TabsContent value="labels"><ThankYouLabelTab /></TabsContent>
         </Tabs>
       </div>
     </PrintProvider>
