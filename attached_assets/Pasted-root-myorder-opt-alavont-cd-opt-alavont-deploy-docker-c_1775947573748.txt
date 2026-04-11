@@ -1,0 +1,32 @@
+root@myorder:/opt/alavont# cd /opt/alavont/deploy
+docker compose ps
+docker compose logs --tail=30 api
+docker compose logs --tail=30 nginx
+NAME                IMAGE                COMMAND                  SERVICE    CREATED          STATUS                 PORTS
+deploy-api-1        deploy-api           "docker-entrypoint.s…"   api        18 minutes ago   Up 18 minutes          8080/tcp
+deploy-db-1         postgres:16-alpine   "docker-entrypoint.s…"   db         7 hours ago      Up 7 hours (healthy)   5432/tcp
+deploy-nginx-1      nginx:alpine         "/docker-entrypoint.…"   nginx      18 minutes ago   Up 18 minutes          0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp
+deploy-platform-1   deploy-platform      "/docker-entrypoint.…"   platform   18 minutes ago   Up 18 minutes          80/tcp, 3000/tcp
+api-1  | {"level":30,"time":1775946436271,"pid":1,"hostname":"a13bc243fb05","port":8080,"msg":"Server listening"}
+nginx-1  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+nginx-1  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+nginx-1  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+nginx-1  | 10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+nginx-1  | 10-listen-on-ipv6-by-default.sh: info: Enabled listen on IPv6 in /etc/nginx/conf.d/default.conf
+nginx-1  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+nginx-1  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+nginx-1  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+nginx-1  | /docker-entrypoint.sh: Configuration complete; ready for start up
+nginx-1  | 172.68.10.225 - - [11/Apr/2026:22:39:50 +0000] "GET /wp-admin/setup-config.php HTTP/2.0" 200 745 "-" "https://myorder.fun/wp-admin/setup-config.php"
+nginx-1  | 172.69.50.163 - - [11/Apr/2026:22:39:55 +0000] "GET /wordpress/wp-admin/setup-config.php HTTP/2.0" 200 745 "-" "https://myorder.fun/wordpress/wp-admin/setup-config.php"
+nginx-1  | 172.70.248.80 - - [11/Apr/2026:22:41:55 +0000] "GET /wp-admin/setup-config.php HTTP/1.1" 301 169 "-" "http://myorder.fun/wp-admin/setup-config.php"
+nginx-1  | 172.68.10.225 - - [11/Apr/2026:22:41:55 +0000] "GET /wordpress/wp-admin/setup-config.php HTTP/1.1" 301 169 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 172.70.248.81 - - [11/Apr/2026:22:41:55 +0000] "GET /wp-admin/setup-config.php HTTP/2.0" 200 745 "-" "http://myorder.fun/wp-admin/setup-config.php"
+nginx-1  | 172.68.10.224 - - [11/Apr/2026:22:41:56 +0000] "GET /wordpress/wp-admin/setup-config.php HTTP/2.0" 200 745 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 172.56.168.142 - - [11/Apr/2026:22:43:38 +0000] "GET / HTTP/2.0" 200 745 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 2026/04/11 22:43:38 [warn] 30#30: *12 an upstream response is buffered to a temporary file /var/cache/nginx/proxy_temp/1/00/0000000001 while reading upstream, client: 172.56.168.142, server: myorder.fun, request: "GET /assets/index-C8cT2Dah.js HTTP/2.0", upstream: "http://172.19.0.3:3000/assets/index-C8cT2Dah.js", host: "myorder.fun", referrer: "https://myorder.fun/"
+nginx-1  | 172.56.168.142 - - [11/Apr/2026:22:43:38 +0000] "GET /assets/index-hNQA3-5J.css HTTP/2.0" 200 28124 "https://myorder.fun/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 172.56.168.142 - - [11/Apr/2026:22:43:38 +0000] "GET /assets/index-C8cT2Dah.js HTTP/2.0" 200 343934 "https://myorder.fun/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 172.56.168.142 - - [11/Apr/2026:22:43:39 +0000] "GET /lc-icon.png HTTP/2.0" 200 28862 "https://myorder.fun/" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+nginx-1  | 172.56.168.142 - - [11/Apr/2026:22:45:08 +0000] "GET / HTTP/2.0" 304 0 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+root@myorder:/opt/alavont/deploy# 
