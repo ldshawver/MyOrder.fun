@@ -319,7 +319,7 @@ function PrinterForm({ printer, onSave, onClose }: {
     connectionType: printer?.connectionType ?? "bridge",
     directIp: printer?.directIp ?? "",
     directPort: printer?.directPort ?? 9100,
-    bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3001",
+    bridgeUrl: printer?.bridgeUrl ?? "http://100.103.51.63:3100",
     bridgePrinterName: printer?.bridgePrinterName ?? "",
     apiKey: "",
     copies: printer?.copies ?? 1,
@@ -384,7 +384,7 @@ function PrinterForm({ printer, onSave, onClose }: {
         {isBridge && <>
           <div className="space-y-1 col-span-2">
             <Label>Bridge URL</Label>
-            <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="http://100.103.51.63:3001" />
+            <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="http://100.103.51.63:3100" />
             <p className="text-xs text-muted-foreground mt-1">Tailscale IP + port of the Mac running the print bridge</p>
           </div>
           <div className="space-y-1 col-span-2">
@@ -579,7 +579,7 @@ function PrintersTab() {
     try {
       const r = await apiFetch("/api/print/printers/seed-defaults", {
         method: "POST",
-        body: JSON.stringify({ bridgeUrl: "http://100.103.51.63:3001", apiKey: seedApiKey }),
+        body: JSON.stringify({ bridgeUrl: "http://100.103.51.63:3100", apiKey: seedApiKey }),
       }) as { ok: boolean; results: { action: string; name: string; role: string }[] };
       setSeedResult(r);
       qc.invalidateQueries({ queryKey: ["print-printers"] });
@@ -611,7 +611,7 @@ function PrintersTab() {
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-lg font-semibold">Printers</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Bridge URL: <span className="font-mono">http://100.103.51.63:3001</span> (Tailscale)</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Bridge URL: <span className="font-mono">http://100.103.51.63:3100</span> (Tailscale)</p>
         </div>
         <Dialog open={dialog === "new"} onOpenChange={o => setDialog(o ? "new" : null)}>
           <DialogTrigger asChild><Button>+ Add Printer</Button></DialogTrigger>
@@ -640,7 +640,7 @@ function PrintersTab() {
             <div className="font-medium">Receipt Printer (POS80)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">receipt</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
-            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
             <div className="text-muted-foreground">Queue Name: <span className="font-mono text-foreground">Reciept_POS80_Printer</span></div>
             <div className="text-muted-foreground">API Key env: <span className="font-mono text-foreground">PRINT_BRIDGE_API_KEY</span></div>
           </div>
@@ -648,7 +648,7 @@ function PrintersTab() {
             <div className="font-medium">Label Printer (Thermal)</div>
             <div className="text-muted-foreground">Role: <span className="text-foreground">label</span></div>
             <div className="text-muted-foreground">Connection: <span className="text-foreground">bridge</span></div>
-            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3001</span></div>
+            <div className="text-muted-foreground">Bridge URL: <span className="font-mono text-foreground">http://100.103.51.63:3100</span></div>
             <div className="text-muted-foreground">Queue Name: <span className="font-mono text-foreground">Label_Themal_Printer</span></div>
             <div className="text-muted-foreground">API Key: same as receipt printer</div>
           </div>
@@ -1298,7 +1298,7 @@ export default function AdminPrint() {
         <div className="border-b border-border/50 pb-4">
           <h1 className="text-3xl font-bold tracking-tight mb-1">Print Management</h1>
           <p className="text-muted-foreground text-sm">
-            Mac print bridge on Tailscale (port 3001) · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
+            Mac print bridge on Tailscale (port 3100) · Receipt: <span className="font-mono">Reciept_POS80_Printer</span> · Label: <span className="font-mono">Label_Themal_Printer</span>
           </p>
         </div>
 

@@ -744,7 +744,7 @@ router.get("/print/bridge/printers", adminOnly, async (req, res): Promise<void> 
 /** POST /api/print/printers/seed-defaults — upsert the two known-good Tailscale bridge printers */
 router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promise<void> => {
   const body = req.body ?? {};
-  const bridgeUrl = String(body.bridgeUrl ?? "http://100.103.51.63:3001");
+  const bridgeUrl = String(body.bridgeUrl ?? "http://100.103.51.63:3100");
   const apiKey    = String(body.apiKey ?? "");
 
   const defaults = [
