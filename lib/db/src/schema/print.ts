@@ -136,8 +136,14 @@ export const printSettingsTable = pgTable("print_settings", {
   autoPrintLabels: boolean("auto_print_labels").notNull().default(false),
   retryBackoffBaseMs: integer("retry_backoff_base_ms").notNull().default(3000),
   staleJobMinutes: integer("stale_job_minutes").notNull().default(5),
-  // Alert admin via SMS when label bridge is down
   alertOnLabelFailure: boolean("alert_on_label_failure").notNull().default(true),
+  // ── Receipt appearance ───────────────────────────────────────────────────────
+  includeLogo: boolean("include_logo").notNull().default(true),
+  includeOperatorName: boolean("include_operator_name").notNull().default(true),
+  showDiscreetNotice: boolean("show_discreet_notice").notNull().default(false),
+  paperWidth: text("paper_width").notNull().default("80mm"),
+  brandName: text("brand_name"),
+  footerMessage: text("footer_message"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
