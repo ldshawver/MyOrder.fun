@@ -50,9 +50,11 @@ export const FONT_LADDER: { maxLen: number; size: number }[] = [
 export const MIN_FONT_SIZE = 13;
 
 // ── Base asset path ───────────────────────────────────────────────────────────
+// At runtime, import.meta.dirname resolves to the dist/ directory.
+// build.mjs copies src/lib/print/assets/ → dist/assets/ so this path is stable
+// in both development (after build) and production.
 const BASE_PNG = path.join(
   import.meta.dirname,
-  "..",
   "assets",
   "Thank-You-Sticker-Personalized.png"
 );

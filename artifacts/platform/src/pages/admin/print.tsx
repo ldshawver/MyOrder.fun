@@ -185,6 +185,126 @@ function RoutingTab() {
       <div className="text-xs text-muted-foreground border-t border-border/30 pt-4">
         Probed via TCP socket (Ethernet) and /health endpoint (bridges). Auto-refreshes every 30s.
       </div>
+
+      <BridgeDiagnosticsPanel />
+    </div>
+  );
+}
+
+// ── BRIDGE DIAGNOSTICS PANEL ──────────────────────────────────────────────────
+type BridgeHealthResult = {
+  ok: boolean; httpStatus?: number; bridgeUrl?: string;
+  printerName?: string; hasApiKey?: boolean; error?: string;
+  body?: { status?: string; version?: string; printers?: string[] };
+};
+type BridgePrintersResult = {
+  ok: boolean; httpStatus?: number; bridgeUrl?: string; error?: string;
+  body?: { printers?: string[] } | { queues?: string[] } | unknown;
+};
+
+function BridgeDiagnosticsPanel() {
+  const apiFetch = useApiFetch();
+  const [healthResult, setHealthResult] = useState<BridgeHealthResult | null>(null);
+  const [printersResult, setPrintersResult] = useState<BridgePrintersResult | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [printersLoading, setPrintersLoading] = useState(false);
+
+  const testHealth = async () => {
+    setHealthLoading(true);
+    setHealthResult(null);
+    try {
+      const r = await apiFetch("/api/print/bridge/health") as BridgeHealthResult;
+      setHealthResult(r);
+    } catch (e) {
+      setHealthResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setHealthLoading(false);
+    }
+  };
+
+  const listPrinters = async () => {
+    setPrintersLoading(true);
+    setPrintersResult(null);
+    try {
+      const r = await apiFetch("/api/print/bridge/printers") as BridgePrintersResult;
+      setPrintersResult(r);
+    } catch (e) {
+      setPrintersResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPrintersLoading(false);
+    }
+  };
+
+  const queues: string[] = printersResult?.ok
+    ? ((printersResult.body as { printers?: string[] })?.printers
+      ?? (printersResult.body as { queues?: string[] })?.queues
+      ?? [])
+    : [];
+
+  return (
+    <div className="bg-card border border-border/50 rounded-sm p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold">Bridge Direct Diagnostics</div>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            Probe bridge health and list its known printer queues without creating a print job.
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="text-xs" disabled={healthLoading} onClick={testHealth}>
+            {healthLoading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}
+            Check Health
+          </Button>
+          <Button variant="outline" size="sm" className="text-xs" disabled={printersLoading} onClick={listPrinters}>
+            {printersLoading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}
+            List Queues
+          </Button>
+        </div>
+      </div>
+
+      {healthResult && (
+        <div className={`rounded-sm border p-3 text-xs space-y-1 ${healthResult.ok ? "bg-green-500/5 border-green-500/20" : "bg-red-500/5 border-red-500/20"}`}>
+          <div className="flex items-center gap-2 font-medium">
+            {healthResult.ok
+              ? <CheckCircle2 size={13} className="text-green-400" />
+              : <XCircle size={13} className="text-red-400" />}
+            Bridge Health: {healthResult.ok ? "OK" : "FAILED"}
+          </div>
+          {healthResult.bridgeUrl && <div className="text-muted-foreground">URL: <span className="font-mono text-foreground">{healthResult.bridgeUrl}</span></div>}
+          {healthResult.httpStatus && <div className="text-muted-foreground">HTTP Status: {healthResult.httpStatus}</div>}
+          {healthResult.hasApiKey !== undefined && <div className="text-muted-foreground">API Key: {healthResult.hasApiKey ? "present" : "missing"}</div>}
+          {healthResult.body?.version && <div className="text-muted-foreground">Version: {healthResult.body.version}</div>}
+          {healthResult.error && <div className="text-red-400 font-mono whitespace-pre-wrap">{healthResult.error}</div>}
+          {healthResult.body && !healthResult.error && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Raw response</summary>
+              <pre className="mt-1 p-2 bg-muted/20 rounded text-[10px] overflow-auto max-h-32">{JSON.stringify(healthResult.body, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+
+      {printersResult && (
+        <div className={`rounded-sm border p-3 text-xs space-y-1 ${printersResult.ok ? "bg-blue-500/5 border-blue-500/20" : "bg-red-500/5 border-red-500/20"}`}>
+          <div className="flex items-center gap-2 font-medium">
+            {printersResult.ok
+              ? <CheckCircle2 size={13} className="text-blue-400" />
+              : <XCircle size={13} className="text-red-400" />}
+            Bridge Printer Queues: {printersResult.ok ? `${queues.length} found` : "Failed"}
+          </div>
+          {queues.length > 0 && (
+            <div className="space-y-0.5 pt-1">
+              {queues.map(q => (
+                <div key={q} className="font-mono text-foreground bg-muted/20 px-2 py-0.5 rounded text-[11px]">{q}</div>
+              ))}
+            </div>
+          )}
+          {printersResult.error && <div className="text-red-400 font-mono">{printersResult.error}</div>}
+          {printersResult.ok && queues.length === 0 && (
+            <div className="text-muted-foreground">No queues returned — check bridge /printers endpoint.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -436,6 +556,9 @@ function PrintersTab() {
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<Printer | "new" | null>(null);
   const [testResults, setTestResults] = useState<Record<number, TestResult>>({});
+  const [seedApiKey, setSeedApiKey] = useState("");
+  const [seedResult, setSeedResult] = useState<{ ok: boolean; results?: { action: string; name: string; role: string }[]; error?: string } | null>(null);
+  const [seedLoading, setSeedLoading] = useState(false);
 
   const { data, isLoading } = useQuery({ queryKey: ["print-printers"], queryFn: () => apiFetch("/api/print/printers") as Promise<{ printers: Printer[] }> });
   const { data: healthData } = useQuery({ queryKey: ["print-health"], queryFn: () => apiFetch("/api/print/health") as Promise<{ printers: { id: number; online: boolean }[] }>, refetchInterval: 30_000 });
@@ -449,6 +572,23 @@ function PrintersTab() {
     onSuccess: (data, id) => { setTestResults(r => ({ ...r, [id]: { loading: false, ok: data.ok, error: data.error, jobId: data.jobId } })); qc.invalidateQueries({ queryKey: ["print-jobs"] }); },
     onError: (err: Error, id) => setTestResults(r => ({ ...r, [id]: { loading: false, ok: false, error: err.message } })),
   });
+
+  const seedDefaults = async () => {
+    setSeedLoading(true);
+    setSeedResult(null);
+    try {
+      const r = await apiFetch("/api/print/printers/seed-defaults", {
+        method: "POST",
+        body: JSON.stringify({ bridgeUrl: "http://100.103.51.63:3001", apiKey: seedApiKey }),
+      }) as { ok: boolean; results: { action: string; name: string; role: string }[] };
+      setSeedResult(r);
+      qc.invalidateQueries({ queryKey: ["print-printers"] });
+    } catch (e) {
+      setSeedResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSeedLoading(false);
+    }
+  };
 
   const printers: Printer[] = (data as { printers: Printer[] })?.printers ?? [];
   const health: { id: number; online: boolean }[] = (healthData as { printers: { id: number; online: boolean }[] })?.printers ?? [];
@@ -513,6 +653,36 @@ function PrintersTab() {
             <div className="text-muted-foreground">API Key: same as receipt printer</div>
           </div>
         </div>
+
+        <div className="border-t border-amber-500/10 pt-3 space-y-2">
+          <div className="text-xs font-medium text-amber-300">Quick Setup — Load Default Printers</div>
+          <div className="text-xs text-muted-foreground">Upserts both printers with correct queue names and bridge URL in one click.</div>
+          <div className="flex gap-2 items-center">
+            <Input
+              className="h-7 text-xs font-mono max-w-xs"
+              placeholder="API key (optional — leave blank to keep existing)"
+              value={seedApiKey}
+              onChange={e => setSeedApiKey(e.target.value)}
+            />
+            <Button size="sm" variant="outline" className="text-xs h-7 whitespace-nowrap" disabled={seedLoading} onClick={seedDefaults}>
+              {seedLoading ? <Loader2 size={11} className="animate-spin mr-1" /> : null}
+              Load Defaults
+            </Button>
+          </div>
+          {seedResult && (
+            <div className={`rounded text-xs p-2 space-y-0.5 ${seedResult.ok ? "bg-green-500/10 border border-green-500/20" : "bg-red-500/10 border border-red-500/20"}`}>
+              {seedResult.ok && seedResult.results?.map(r => (
+                <div key={r.name} className="flex items-center gap-2">
+                  <CheckCircle2 size={11} className="text-green-400 shrink-0" />
+                  <span className="font-mono">{r.name}</span>
+                  <span className="text-muted-foreground">{r.action} · {r.role}</span>
+                </div>
+              ))}
+              {!seedResult.ok && <span className="text-red-400">{seedResult.error}</span>}
+            </div>
+          )}
+        </div>
+
         <div className="text-xs text-muted-foreground border-t border-amber-500/10 pt-2">
           Verify queue names with <span className="font-mono">lpstat -p</span> on the Mac — names are case-sensitive.
         </div>

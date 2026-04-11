@@ -196,18 +196,22 @@ export async function probeBridge(
   }
 }
 
-/** Check reachability of any printer based on its connection type. */
+/** Check reachability of any printer based on its connection type.
+ *  Uses a fixed 3 s cap for health probes — regardless of printer.timeoutMs —
+ *  so the admin health page doesn't hang for 8+ s per printer.
+ */
 export async function probePrinter(printer: PrintPrinter): Promise<boolean> {
   const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+  const PROBE_TIMEOUT_MS = 3000;  // always 3 s for health checks
 
   if (printer.connectionType === "ethernet_direct") {
     if (!printer.directIp) return false;
-    return probeEthernet(printer.directIp, printer.directPort ?? 9100, printer.timeoutMs ?? 3000);
+    return probeEthernet(printer.directIp, printer.directPort ?? 9100, PROBE_TIMEOUT_MS);
   }
 
   if (["mac_bridge", "pi_bridge", "bridge"].includes(printer.connectionType)) {
     if (!printer.bridgeUrl) return false;
-    return probeBridge(printer.bridgeUrl, apiKey, printer.timeoutMs ?? 4000);
+    return probeBridge(printer.bridgeUrl, apiKey, PROBE_TIMEOUT_MS);
   }
 
   return false;

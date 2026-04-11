@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
+import { rm, cp } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -13,6 +13,14 @@ const artifactDir = path.dirname(fileURLToPath(import.meta.url));
 async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
   await rm(distDir, { recursive: true, force: true });
+
+  // Copy static assets (PNG, txt, etc.) that are referenced at runtime by dist/index.mjs
+  // via import.meta.dirname (which resolves to the dist/ directory at runtime).
+  await cp(
+    path.resolve(artifactDir, "src/lib/print/assets"),
+    path.resolve(distDir, "assets"),
+    { recursive: true }
+  ).catch(() => { /* no-op if source dir doesn't exist yet */ });
 
   await esbuild({
     entryPoints: [path.resolve(artifactDir, "src/index.ts")],

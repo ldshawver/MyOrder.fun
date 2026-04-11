@@ -633,6 +633,179 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
   });
 });
 
+// ── Bridge Diagnostics ────────────────────────────────────────────────────
+// These routes let the admin UI directly test bridge connectivity and get
+// the bridge's own printer list — without going through a print job.
+
+/** GET /api/print/bridge/health?printerId=<id>  — or defaults to first active bridge printer */
+router.get("/print/bridge/health", adminOnly, async (req, res): Promise<void> => {
+  const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
+  let printer: typeof printPrintersTable.$inferSelect | null = null;
+
+  if (pid) {
+    const rows = await db.select().from(printPrintersTable)
+      .where(eq(printPrintersTable.id, pid)).limit(1);
+    printer = rows[0] ?? null;
+  } else {
+    const rows = await db.select().from(printPrintersTable)
+      .where(eq(printPrintersTable.isActive, true)).limit(1);
+    printer = rows[0] ?? null;
+  }
+
+  if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
+
+  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+  const bridgeUrl = printer.bridgeUrl;
+  const TIMEOUT_MS = 5000;
+
+  if (!bridgeUrl) { res.json({ ok: false, error: "Bridge URL not set on this printer" }); return; }
+  if (!apiKey)    { res.json({ ok: false, error: "API key not set on this printer" }); return; }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const r = await fetch(`${bridgeUrl}/health`, {
+      headers: { "x-api-key": apiKey },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+
+    let body: unknown;
+    try { body = await r.json(); } catch { body = null; }
+
+    res.json({
+      ok: r.ok && (body as { status?: string })?.status === "ok",
+      httpStatus: r.status,
+      bridgeUrl,
+      printerName: printer.bridgePrinterName ?? printer.name,
+      hasApiKey: Boolean(apiKey),
+      body,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeout = msg.includes("AbortError") || (err instanceof Error && err.name === "AbortError");
+    res.json({
+      ok: false,
+      bridgeUrl,
+      hasApiKey: Boolean(apiKey),
+      error: isTimeout
+        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable (check Tailscale connection)`
+        : `Connection failed: ${msg}`,
+    });
+  }
+});
+
+/** GET /api/print/bridge/printers?printerId=<id>  — list bridge's known printer queues */
+router.get("/print/bridge/printers", adminOnly, async (req, res): Promise<void> => {
+  const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
+  let printer: typeof printPrintersTable.$inferSelect | null = null;
+
+  if (pid) {
+    const rows = await db.select().from(printPrintersTable)
+      .where(eq(printPrintersTable.id, pid)).limit(1);
+    printer = rows[0] ?? null;
+  } else {
+    const rows = await db.select().from(printPrintersTable)
+      .where(eq(printPrintersTable.isActive, true)).limit(1);
+    printer = rows[0] ?? null;
+  }
+
+  if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
+
+  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+  const bridgeUrl = printer.bridgeUrl;
+  const TIMEOUT_MS = 5000;
+
+  if (!bridgeUrl) { res.json({ ok: false, error: "Bridge URL not set on this printer" }); return; }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const r = await fetch(`${bridgeUrl}/printers`, {
+      headers: apiKey ? { "x-api-key": apiKey } : {},
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+
+    let body: unknown;
+    try { body = await r.json(); } catch { body = null; }
+    res.json({ ok: r.ok, httpStatus: r.status, bridgeUrl, body });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isTimeout = err instanceof Error && err.name === "AbortError";
+    res.json({
+      ok: false,
+      bridgeUrl,
+      error: isTimeout
+        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
+        : `Connection failed: ${msg}`,
+    });
+  }
+});
+
+/** POST /api/print/printers/seed-defaults — upsert the two known-good Tailscale bridge printers */
+router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promise<void> => {
+  const body = req.body ?? {};
+  const bridgeUrl = String(body.bridgeUrl ?? "http://100.103.51.63:3001");
+  const apiKey    = String(body.apiKey ?? "");
+
+  const defaults = [
+    {
+      name: "Reciept_POS80_Printer",
+      role: "receipt",
+      connectionType: "bridge" as const,
+      bridgeUrl,
+      bridgePrinterName: "Reciept_POS80_Printer",
+      apiKey: apiKey || null,
+      isActive: true,
+      paperWidth: "80mm",
+      timeoutMs: 8000,
+      copies: 1,
+    },
+    {
+      name: "Label_Themal_Printer",
+      role: "label",
+      connectionType: "bridge" as const,
+      bridgeUrl,
+      bridgePrinterName: "Label_Themal_Printer",
+      apiKey: apiKey || null,
+      isActive: true,
+      paperWidth: "58mm",
+      timeoutMs: 8000,
+      copies: 1,
+    },
+  ];
+
+  const results = [];
+  for (const d of defaults) {
+    // Try to find existing by bridgePrinterName + role
+    const existing = await db.select().from(printPrintersTable)
+      .where(eq(printPrintersTable.name, d.name)).limit(1);
+
+    if (existing.length) {
+      const updates: Record<string, unknown> = {
+        role: d.role,
+        connectionType: d.connectionType,
+        bridgeUrl: d.bridgeUrl,
+        bridgePrinterName: d.bridgePrinterName,
+        isActive: d.isActive,
+        paperWidth: d.paperWidth,
+        timeoutMs: d.timeoutMs,
+      };
+      if (d.apiKey) updates.apiKey = d.apiKey;
+
+      const [updated] = await db.update(printPrintersTable)
+        .set(updates)
+        .where(eq(printPrintersTable.id, existing[0].id))
+        .returning();
+      results.push({ action: "updated", id: updated.id, name: updated.name, role: updated.role });
+    } else {
+      const [inserted] = await db.insert(printPrintersTable).values(d).returning();
+      results.push({ action: "created", id: inserted.id, name: inserted.name, role: inserted.role });
+    }
+  }
+
+  res.json({ ok: true, bridgeUrl, results });
+});
+
 // ── Users list (for profile assignment) ───────────────────────────────────
 router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
   const rows = await db.select({

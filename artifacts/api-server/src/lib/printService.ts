@@ -26,6 +26,9 @@ import {
   probeBridge,
 } from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
+import { logger as _logger } from "./logger";
+
+const pLog = _logger.child({ module: "printService" });
 
 // ── Idempotency ───────────────────────────────────────────────────────────────
 
@@ -134,6 +137,25 @@ async function dispatchBridge(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const printerName = printer.bridgePrinterName ?? printer.name;
+
+    // Sanitize the payload for PNG jobs — don't log full base64
+    const payloadForLog = job.renderFormat === "png"
+      ? { ...((job.payloadJson as object) ?? {}), imageData: "[base64 omitted]" }
+      : job.payloadJson;
+
+    pLog.info({
+      event: "bridge_dispatch",
+      jobId: job.id,
+      jobType: job.jobType,
+      renderFormat: job.renderFormat,
+      printerId: printer.id,
+      printerName,
+      bridgeUrl: printer.bridgeUrl,
+      hasApiKey: Boolean(apiKey),
+      timeoutMs,
+      payloadKeys: Object.keys((job.payloadJson as object) ?? {}),
+    }, "dispatching to bridge");
+
     const res = await fetch(`${printer.bridgeUrl}/print`, {
       method: "POST",
       headers: {
@@ -145,7 +167,7 @@ async function dispatchBridge(
         jobId: job.id,
         format: job.renderFormat,
         text: fullText,
-        payload: job.payloadJson,
+        payload: payloadForLog,
         copies: 1,
       }),
       signal: controller.signal,
@@ -168,17 +190,25 @@ async function dispatchBridge(
 
     const responsePayload = await res.json() as { success?: boolean; error?: string };
     if (responsePayload.success) {
+      pLog.info({ event: "bridge_success", jobId: job.id, printerName, httpStatus: res.status }, "bridge print succeeded");
       return { success: true, responsePayload };
     }
-    return { success: false, error: responsePayload.error ?? "Bridge returned failure without details", responsePayload };
+    const failMsg = responsePayload.error ?? "Bridge returned failure without details";
+    pLog.warn({ event: "bridge_failure", jobId: job.id, printerName, httpStatus: res.status, bridgeError: failMsg }, "bridge print failed");
+    return { success: false, error: failMsg, responsePayload };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      return { success: false, error: `Bridge timed out after ${timeoutMs}ms — is it reachable on Tailscale? Check ${printer.bridgeUrl}` };
+      const msg = `Bridge timed out after ${timeoutMs}ms — is it reachable on Tailscale? Check ${printer.bridgeUrl}`;
+      pLog.warn({ event: "bridge_timeout", jobId: job.id, printerName, bridgeUrl: printer.bridgeUrl, timeoutMs }, msg);
+      return { success: false, error: msg };
     }
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND") || msg.includes("fetch failed") || msg.includes("UND_ERR")) {
-      return { success: false, error: `Bridge unreachable at ${printer.bridgeUrl} — verify Tailscale is connected and the bridge service is running` };
+      const friendlyMsg = `Bridge unreachable at ${printer.bridgeUrl} — verify Tailscale is connected and the bridge service is running`;
+      pLog.warn({ event: "bridge_unreachable", jobId: job.id, printerName, bridgeUrl: printer.bridgeUrl, rawError: msg }, friendlyMsg);
+      return { success: false, error: friendlyMsg };
     }
+    pLog.error({ event: "bridge_error", jobId: job.id, printerName, rawError: msg }, "unexpected bridge error");
     return { success: false, error: msg };
   }
 }
