@@ -2,6 +2,15 @@ import { Router, type IRouter } from "express";
 import { eq, desc, inArray, and } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
+  renderBlocks,
+  buildCustomerReceiptBlocks,
+  buildInventoryStartBlocks,
+  buildInventoryEndBlocks,
+  buildLabelBlocks,
+  getLogo,
+  charWidth,
+} from "../lib/print/index";
+import {
   printPrintersTable,
   printJobsTable,
   printJobAttemptsTable,
@@ -413,11 +422,118 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
   if (b.retryBackoffBaseMs !== undefined) updates.retryBackoffBaseMs = Number(b.retryBackoffBaseMs);
   if (b.staleJobMinutes !== undefined) updates.staleJobMinutes = Number(b.staleJobMinutes);
   if (b.alertOnLabelFailure !== undefined) updates.alertOnLabelFailure = Boolean(b.alertOnLabelFailure);
+  if (b.includeLogo !== undefined) updates.includeLogo = Boolean(b.includeLogo);
+  if (b.includeOperatorName !== undefined) updates.includeOperatorName = Boolean(b.includeOperatorName);
+  if (b.showDiscreetNotice !== undefined) updates.showDiscreetNotice = Boolean(b.showDiscreetNotice);
+  if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
+  if (b.brandName !== undefined) updates.brandName = b.brandName ? String(b.brandName) : null;
+  if (b.footerMessage !== undefined) updates.footerMessage = b.footerMessage ? String(b.footerMessage) : null;
   const settings = await getSettings();
   const [updated] = await db.update(printSettingsTable)
     .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
     .where(eq(printSettingsTable.id, settings.id)).returning();
   res.json({ settings: updated });
+});
+
+// ── Print Previews ─────────────────────────────────────────────────────────
+// Returns rendered plain-text for browser preview and test-dispatch review.
+
+router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void> => {
+  const settings = await getSettings();
+  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
+  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
+  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
+    ? getLogo(width, brandName)
+    : [];
+  const body = req.body ?? {};
+  const blocks = buildCustomerReceiptBlocks({
+    orderId: body.orderId ?? 0,
+    orderNumber: body.orderNumber ?? "PREVIEW",
+    createdAt: body.createdAt ?? new Date(),
+    customerName: body.customerName ?? "Preview Customer",
+    fulfillmentType: body.fulfillmentType ?? "Pickup",
+    operatorName: body.operatorName,
+    paymentStatus: body.paymentStatus ?? "paid",
+    paymentMethod: body.paymentMethod,
+    notes: body.notes,
+    items: body.items ?? [
+      { name: "Sample Item", quantity: 1, unitPrice: 25.00, totalPrice: 25.00 },
+    ],
+    subtotal: body.subtotal ?? 25.00,
+    tax: body.tax,
+    total: body.total ?? 25.00,
+    logoLines,
+    brandName,
+    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
+    showDiscreetNotice: Boolean((settings as Record<string, unknown>).showDiscreetNotice),
+    showOperatorName: (settings as Record<string, unknown>).includeOperatorName !== false,
+  });
+  res.type("text/plain").send(renderBlocks(blocks, width));
+});
+
+router.post("/print/preview/inventory-start", adminOnly, async (req, res): Promise<void> => {
+  const settings = await getSettings();
+  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
+  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
+  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
+    ? getLogo(width, brandName)
+    : [];
+  const body = req.body ?? {};
+  const blocks = buildInventoryStartBlocks({
+    shiftId: body.shiftId ?? "PREVIEW",
+    operatorName: body.operatorName ?? "Preview Operator",
+    clockedInAt: body.clockedInAt ?? new Date(),
+    tenantName: body.tenantName,
+    items: body.items ?? [
+      { rowType: "section", sectionName: "Sample Section", itemName: "Sample Section", unitType: "#", quantityStart: 0 },
+      { rowType: "item", itemName: "Sample Item", unitType: "#", quantityStart: 10 },
+    ],
+    logoLines,
+    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
+  });
+  res.type("text/plain").send(renderBlocks(blocks, width));
+});
+
+router.post("/print/preview/inventory-end", adminOnly, async (req, res): Promise<void> => {
+  const settings = await getSettings();
+  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
+  const brandName = (settings as Record<string, unknown>).brandName as string | undefined;
+  const logoLines = (settings as Record<string, unknown>).includeLogo !== false
+    ? getLogo(width, brandName)
+    : [];
+  const body = req.body ?? {};
+  const blocks = buildInventoryEndBlocks({
+    shiftId: body.shiftId ?? "PREVIEW",
+    operatorName: body.operatorName ?? "Preview Operator",
+    clockedInAt: body.clockedInAt ?? new Date(Date.now() - 3600000),
+    clockedOutAt: body.clockedOutAt ?? new Date(),
+    tenantName: body.tenantName,
+    items: body.items ?? [
+      { rowType: "section", sectionName: "Sample Section", itemName: "Sample Section", unitType: "#", quantityStart: 0, quantitySold: 0, quantityEnd: 0 },
+      { rowType: "item", itemName: "Sample Item", unitType: "#", quantityStart: 10, quantitySold: 3, quantityEnd: 7 },
+    ],
+    totalSales: body.totalSales,
+    pettyCash: body.pettyCash,
+    notes: body.notes,
+    logoLines,
+    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
+  });
+  res.type("text/plain").send(renderBlocks(blocks, width));
+});
+
+router.post("/print/preview/label", adminOnly, async (req, res): Promise<void> => {
+  const settings = await getSettings();
+  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
+  const body = req.body ?? {};
+  const blocks = buildLabelBlocks({
+    title: body.title ?? "PRODUCT LABEL",
+    line1: body.line1 ?? "Sample Product",
+    line2: body.line2,
+    line3: body.line3,
+    barcode: body.barcode,
+    footer: body.footer,
+  });
+  res.type("text/plain").send(renderBlocks(blocks, width));
 });
 
 // ── Users list (for profile assignment) ───────────────────────────────────
