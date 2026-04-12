@@ -1,0 +1,247 @@
+Perform a full end-to-end audit, diagnosis, cleanup, and repair pass on the MyOrder.fun printing system. The printing setup is disorganized and not working reliably. I need you to methodically audit every layer, identify what is broken, fix what can be fixed in code/config, and produce a clear action list for any remaining manual steps.
+
+Goal:
+Make the printing system actually work as intended for:
+- receipt printing
+- label printing
+- print routing
+- bridge health
+- print templates
+- print jobs and logs
+
+Audit and verify all of the following:
+1. printers
+2. bridge profiles
+3. printer routing
+4. operator-based routing
+5. printer health checks
+6. print jobs
+7. print logs
+8. receipt templates
+9. label templates
+10. bridge connectivity
+11. CUPS assumptions
+12. .env assumptions
+13. Tailscale assumptions
+14. Mac Studio bridge
+15. Raspberry Pi bridge
+
+The system currently includes:
+- a Mac Studio print bridge
+- a Raspberry Pi print bridge
+- printer roles for receipt and label
+- label printing only for delivery orders or Lucifer Cruz shipment orders
+- logic intended to prefer Raspberry Pi by default, but potentially use the Mac Studio bridge if on the same network
+- Tailscale-based remote bridge access
+- bridge API key auth
+- CUPS-backed printer names on local bridge machines
+
+I need a disciplined audit and repair pass.
+
+PHASE 1 — INVENTORY THE WHOLE PRINTING SYSTEM
+1. Find and list every print-related file/module/component/service in the codebase, including:
+   - printer config models
+   - print service / bridge service
+   - bridge health probes
+   - bridge diagnostics routes
+   - printer settings UI
+   - printer routing logic
+   - operator/business sitter routing logic
+   - print jobs DB model
+   - test print route
+   - receipt renderer
+   - label renderer
+   - thank-you label generator
+   - template files
+   - admin settings related to printing
+2. Produce a concise map of how printing is supposed to work end-to-end.
+
+PHASE 2 — AUDIT PRINTER CONFIGS
+3. Audit printer records and expected printer definitions.
+4. Confirm the system has explicit printer roles and clear mappings for:
+   - receipt printer(s)
+   - label printer(s)
+5. Verify printer names are consistent everywhere:
+   - DB/config
+   - UI
+   - bridge requests
+   - logs
+   - test print payloads
+6. Detect stale/incorrect names such as:
+   - old queue names
+   - old printer aliases
+   - wrong case
+   - wrong role assignment
+7. Output a normalized canonical printer list with:
+   - printer role
+   - printer name on bridge
+   - preferred bridge
+   - fallback bridge
+   - current health status
+
+PHASE 3 — AUDIT BRIDGE PROFILES
+8. Audit both bridge profiles:
+   - Mac Studio bridge
+   - Raspberry Pi bridge
+9. Confirm each bridge has:
+   - bridge URL
+   - API key handling
+   - health endpoint usage
+   - printer listing endpoint usage
+   - print endpoint usage
+10. Detect wrong/stale URLs or ports, including any old 3001/3100 mismatches.
+11. Verify the bridge profile model is not duplicated or drifted in multiple places.
+
+PHASE 4 — AUDIT ROUTING LOGIC
+12. Audit the current routing resolver.
+13. Verify receipt routing and label routing are separate and role-driven.
+14. Verify label eligibility rules:
+   - only for delivery orders
+   - or Lucifer Cruz shipment orders
+15. Verify behavior when operator is not on the same network as Mac Studio.
+16. Verify business sitter and lab technician routing rules.
+17. Verify fallback behavior when:
+   - preferred bridge is down
+   - printer not found on bridge
+   - operator not on correct network
+18. Output the actual routing decision tree in plain English.
+
+PHASE 5 — AUDIT PRINT JOBS / TEST PRINT FLOW
+19. Audit the print_jobs table usage and model.
+20. Confirm test prints do not require fake order IDs that break inserts.
+21. Verify the app can:
+   - create test print jobs
+   - create real receipt jobs
+   - create label jobs
+22. Verify failures surface clean admin-safe errors instead of stack traces/HTML.
+23. Audit retry behavior and idempotency if present.
+
+PHASE 6 — AUDIT LOGGING
+24. Audit all print-related logs.
+25. Confirm logs capture:
+   - selected bridge
+   - selected printer
+   - selected role
+   - selected operator
+   - bridge URL
+   - method used
+   - response success/failure
+   - reason for fallback or skip
+26. Confirm secrets, API keys, and large base64 payloads are redacted.
+27. Make logs organized and useful for diagnosis.
+
+PHASE 7 — AUDIT TEMPLATES / LABELS
+28. Audit receipt templates:
+   - customer receipts
+   - starting inventory receipts
+   - ending inventory / clock-out sheets
+29. Audit label templates:
+   - thank-you labels
+   - delivery labels if present
+30. Confirm receipt templates use the selected line-item naming mode correctly:
+   - Alavont only
+   - Lucifer Cruz only
+   - both
+31. Confirm label printing only occurs for eligible order types.
+32. Confirm label generation path is consistent with the bridge’s supported print method.
+
+PHASE 8 — AUDIT ENV / CUPS / MACHINE ASSUMPTIONS
+33. Review and document exactly what each machine must have configured manually:
+   - Mac Studio
+   - Raspberry Pi
+34. Audit .env assumptions in code:
+   - bridge port
+   - printer name
+   - bridge API key
+   - USB device or CUPS printer name
+   - optional direct printer IP
+35. Confirm environment variables are named consistently.
+36. Detect and remove any hardcoded printer values that override .env.
+37. Confirm whether bridge code expects:
+   - CUPS printing
+   - direct USB printing
+   - raw socket printing
+38. Ensure the code handles the intended method in the right order and logs it.
+
+PHASE 9 — AUDIT TAILSCALE ASSUMPTIONS
+39. Audit any code or config that assumes static Tailscale IPs.
+40. Detect stale bridge URLs or MagicDNS mismatches.
+41. Make the system resilient if bridge IPs change.
+42. Recommend whether to use:
+   - Tailscale IPs
+   - MagicDNS names
+43. Clearly identify where Tailscale health/connectivity is assumed but not verified.
+
+PHASE 10 — VERIFY MAC STUDIO BRIDGE
+44. Audit code assumptions for the Mac Studio bridge.
+45. Confirm expected Mac printer names are correct.
+46. Confirm whether the Mac bridge should only be used when same-network rules pass.
+47. Verify the bridge profile and printer assignments reflect that intended behavior.
+48. Detect any code still treating Mac as the default when Pi should be default.
+
+PHASE 11 — VERIFY RASPBERRY PI BRIDGE
+49. Audit code assumptions for the Raspberry Pi bridge.
+50. Confirm Pi is the default bridge for receipt printing unless same-network Mac rule intentionally overrides.
+51. Confirm Pi bridge settings are consistent and not mixed with Mac settings.
+52. Confirm label fallback to Pi is supported if Mac label printing is not allowed and Pi label printer exists.
+
+PHASE 12 — DIAGNOSTIC / TEST WORKFLOW
+53. Add or repair a clear diagnostic workflow in admin UI and/or backend:
+   - Check Bridge Health
+   - List Bridge Printers
+   - Test Receipt Print
+   - Test Label Print
+   - Run Full Printer Audit
+54. Each diagnostic result must clearly show:
+   - bridge tested
+   - printer tested
+   - status
+   - failure reason
+   - suggested next step
+
+PHASE 13 — REPAIR PASS
+55. Fix all code/config drift found during the audit.
+56. Remove stale defaults, dead code, and conflicting printer assumptions.
+57. Normalize naming and port usage.
+58. Normalize bridge selection logic.
+59. Normalize printer selection logic by role.
+60. Normalize test print flow.
+61. Normalize error handling and messages.
+62. Keep production-safe logging and validation.
+
+PHASE 14 — FINAL OUTPUT
+63. Deliver a final report that includes:
+   A. Current printer inventory
+   B. Current bridge inventory
+   C. Canonical settings the system expects
+   D. Exact routing rules
+   E. What was broken
+   F. What was fixed
+   G. What still requires manual action on Mac Studio
+   H. What still requires manual action on Raspberry Pi
+   I. What settings to verify in CUPS
+   J. What settings to verify in .env
+   K. What settings to verify in Tailscale
+   L. Exact ordered test steps to confirm the system now works
+
+64. The final ordered manual test checklist should include:
+   1. verify bridge health
+   2. verify bridge printer list
+   3. verify receipt test print
+   4. verify label test print
+   5. verify delivery order triggers label
+   6. verify non-delivery order does not trigger label
+   7. verify routing behavior when Mac same-network condition is met
+   8. verify routing behavior when Mac same-network condition is not met
+   9. verify fallback behavior when a bridge is unavailable
+
+Guardrails:
+- Do not assume the current print system is correct
+- Do not leave stale bridge URLs or old queue names in place
+- Do not rely on connection type alone for printer role
+- Do not expose secrets in output or UI
+- Do not stop after logging issues; fix what can be fixed
+- Keep code organized and reduce the current disorganization
+
+Expected result:
+By the end of this pass, the printing system should be understandable, organized, diagnosable, and either fully working or blocked only by clearly documented manual machine-side issues.

@@ -1,9 +1,13 @@
 /**
- * printService.ts — Production print routing with operator selection,
- * ethernet direct, Mac bridge, Pi fallback, queue + retry.
+ * printService.ts — Production print dispatch with operator selection,
+ * ethernet direct, and HTTP bridge support, queue + retry.
  *
- * Receipt flow:  ethernet_direct → pi_bridge → queue (retry worker)
- * Label flow:    mac_bridge → queue + SMS alert
+ * Receipt flow:  ethernet_direct → bridge (resolved by printRouter) → queue
+ * Label flow:    bridge (resolved by printRoutingResolver) → queue + SMS alert
+ *
+ * Bridge selection (which bridge URL/key to use) is determined by:
+ *   - Receipts: resolveReceiptPrinters() → picks printer by role + connectionType
+ *   - Labels:   resolveRoutingDecision() → picks printer by bridge profile + health + network
  */
 
 import crypto from "crypto";
@@ -289,49 +293,19 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
     return;
   }
 
-  // ── Try pi_bridge fallback ────────────────────────────────────────────────
-  const piFallbacks = await db.select().from(printPrintersTable)
-    .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.connectionType, "pi_bridge")))
-    .limit(1);
-
-  if (piFallbacks.length > 0) {
-    const pi = piFallbacks[0];
-    const t1 = Date.now();
-    const piResult = await dispatchBridge(job, pi);
-
-    await recordAttempt({
-      jobId: job.id,
-      attemptNumber: attemptBase + 1,
-      routeUsed: "pi_bridge",
-      success: piResult.success,
-      errorMessage: piResult.error,
-      requestPayload: { printerId: pi.id, route: "pi_bridge" },
-      responsePayload: piResult.responsePayload ?? null,
-      durationMs: Date.now() - t1,
-    });
-
-    if (piResult.success) {
-      await db.update(printJobsTable).set({
-        status: "printed",
-        printedAt: new Date(),
-        retryCount: attemptBase + 1,
-        printedVia: "pi_bridge",
-      }).where(eq(printJobsTable.id, job.id));
-      return;
-    }
-  }
-
-  // ── Both failed — queue for retry ─────────────────────────────────────────
+  // ── Failed — queue for retry ───────────────────────────────────────────────
+  // Bridge selection and fallback ordering is handled upstream by
+  // resolveReceiptPrinters / resolveRoutingDecision before the job is created.
   const nextStatus = attemptBase >= maxRetries ? "failed" : "retrying";
   await db.update(printJobsTable).set({
     status: nextStatus,
     retryCount: attemptBase,
-    errorMessage: result.error ?? "All receipt routes failed",
+    errorMessage: result.error ?? "Receipt print failed — bridge unreachable or rejected job",
   }).where(eq(printJobsTable.id, job.id));
 }
 
 /**
- * Dispatch a label job: mac_bridge → queue + alert.
+ * Dispatch a label job via the resolved bridge printer → queue + SMS alert on failure.
  */
 export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
   await db.update(printJobsTable)
@@ -370,7 +344,7 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
   await db.update(printJobsTable).set({
     status: nextStatus,
     retryCount: attemptNumber,
-    errorMessage: result.error ?? "Mac bridge unreachable",
+    errorMessage: result.error ?? "Label print failed — bridge unreachable or rejected job",
   }).where(eq(printJobsTable.id, job.id));
 
   // Alert admin via SMS if configured

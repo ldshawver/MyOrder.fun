@@ -176,7 +176,13 @@ export function probeEthernet(
   });
 }
 
-/** Probe an HTTP bridge's /health endpoint. Resolves true if status === "ok". */
+/**
+ * Probe an HTTP bridge's /health endpoint.
+ * Accepts both bridge versions:
+ *   - New server.js:  { success: true, status: "ok", ... }
+ *   - Old Mac bridge: { success: true, message: "...", ... }  (no status field)
+ * Returns true if the bridge responded with success or status=ok.
+ */
 export async function probeBridge(
   bridgeUrl: string,
   apiKey: string,
@@ -189,8 +195,9 @@ export async function probeBridge(
       headers: { "x-api-key": apiKey },
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
-    const data = await res.json() as { status?: string };
-    return data.status === "ok";
+    if (!res.ok) return false;
+    const data = await res.json() as { status?: string; success?: boolean };
+    return data.status === "ok" || data.success === true;
   } catch {
     return false;
   }
