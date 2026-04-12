@@ -1,0 +1,49 @@
+  GNU nano 7.2                                                                                           .env *                                                                                                   
+# ═══════════════════════════════════════════════════════════
+#  Alavont Therapeutics — Self-Hosting Environment Variables
+#  Copy this file to .env and fill in every value.
+#  NEVER commit the .env file to version control.
+# ═══════════════════════════════════════════════════════════
+
+# ── Database ────────────────────────────────────────────────
+# PostgreSQL connection string.
+# If using the bundled Postgres container leave this as-is.
+DATABASE_URL=postgresql://alavont:Wow548302@db:5432/alavont
+
+# ── Clerk Authentication ────────────────────────────────────
+# Get these from https://dashboard.clerk.com → your app → API Keys
+CLERK_PUBLISHABLE_KEY=pk_live_b3Blbi1yYWJiaXQtMTIuY2xlcmsuYWNjb3VudHMuZGV2JA
+VITE_CLERK_PUBLISHABLE_KEY=pk_live_b3Blbi1yYWJiaXQtMTIuY2xlcmsuYWNjb3VudHMuZGV2JA
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsubXlvcmRlci5mdW4k
+CLERK_SECRET_KEY=sk_live_S9Amh63Tedxz5KDmd8iwAVROztwmV4VgJtmTMU5j8h
+#── Session ─────────────────────────────────────────────────
+CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsubXlvcmRlci5mdW4k
+CLERK_PUBLISHABLE_KEY=pk_live_Y2xlcmsubXlvcmRlci5mdW4k
+
+Default=sk_live_S9Amh63Tedxz5KDmd8iwAVROztwmV4VgJtmTMU5j8h
+
+Frontend_API_URL
+https://clerk.myorder.fun
+
+Backend_API_URL
+https://api.clerk.com
+JWKS_URL
+https://clerk.myorder.fun/.well-known/jwks.json
+JWKS_PublicKey
+-----BEGIN PUBLIC KEY-----MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyKZRhywuMpran2lAAsE5
+gVOjz8QQrG5YHzgootZY/i4CnnZzUz92fleDiGts+6Nua9YvIa3DXXtN4Wcv7oHs
+x4YdM8MQYhzR6E32w9GrUsC666CtFSym+Jalcs/XzlR0CHSTQ8/XTtCEBCjOzgz3
+DmVll6RiWdhX1ajdFFihNisiUxLV99U+gpqbQYtwjIZlh6GH7AHw7RkdqtTLL5+i
+BxZ1CpqXWclBwp73l+yVgjCdt0yFi7tjaPNSzUAJu1MrY/Q24hljiPevPNIhNBjj
+LRBZP2jZOca+DoR+Oi/6QlChC0nutcjzJukfa/k5KqS+D+ss6rZCddqC01uBRl85
+EwIDAQAB-----END PUBLIC KEY-----
+# Long random string — run: openssl rand -base64 48
+SESSION_SECRET=mXBUGtxBhMZpPzKPPGsm6d1UbbqD6zNP6bI5XOIMw5iC7nw1cbYBOTiYCGeNioHyiwW/Nb7PM62j+5xGtSUa5g==
+
+# ── OpenAI (AI Concierge) ───────────────────────────────────
+OPENAI_API_KEY=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
+
+# ── Stripe (Payments) ───────────────────────────────────────
+
+^G Help          ^O Write Out     ^W Where Is      ^K Cut           ^T Execute       ^C Location      M-U Undo         M-A Set Mark     M-] To Bracket   M-Q Previous     ^B Back          ^◂ Prev Word
+^X Exit          ^R Read File     ^\ Replace       ^U Paste         ^J Justify       ^/ Go To Line    M-E Redo         M-6 Copy         ^Q Where Was     M-W Next         ^F Forward       ^▸ Next Word
