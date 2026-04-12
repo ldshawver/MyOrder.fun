@@ -279,35 +279,60 @@ async function handlePrint(req, res) {
   const {
     text = "",
     imagePath = "",
+    imageBase64 = "",
+    format = "text",
     printerName = "",
     jobId = null,
     copies = 1,
   } = body;
 
-  if (!text && !imagePath) {
+  if (!text && !imagePath && !imageBase64) {
     return respond(res, 400, {
       success: false,
-      error: "Missing text or imagePath payload",
+      error: "Missing text, imagePath, or imageBase64 payload",
     });
   }
 
+  // If an imageBase64 payload came in, decode it to a temp PNG so CUPS can print it.
+  let tempImagePath = null;
+  if (imageBase64) {
+    try {
+      const buf = Buffer.from(imageBase64, "base64");
+      tempImagePath = path.join(
+        os.tmpdir(),
+        `print_${Date.now()}_${Math.random().toString(36).slice(2)}.png`
+      );
+      fs.writeFileSync(tempImagePath, buf);
+    } catch (e) {
+      return respond(res, 500, {
+        success: false,
+        error: `Failed to decode imageBase64: ${e.message}`,
+      });
+    }
+  }
+
+  // Only validate imagePath if explicitly provided (not the temp file we just wrote)
   if (imagePath && !fs.existsSync(imagePath)) {
+    if (tempImagePath) try { fs.unlinkSync(tempImagePath); } catch {}
     return respond(res, 400, {
       success: false,
       error: `imagePath does not exist: ${imagePath}`,
     });
   }
 
+  const resolvedImagePath = tempImagePath || imagePath || null;
   const safeCopies = clampCopies(copies);
   const methodTargetPrinter = printerName || PRINTER_NAME || null;
 
   log("info", "Print job received", {
     jobId,
+    format,
     requestedPrinter: printerName || null,
     configuredPrinter: PRINTER_NAME || null,
     usingPrinter: methodTargetPrinter,
     hasText: Boolean(text),
-    hasImagePath: Boolean(imagePath),
+    hasImagePath: Boolean(resolvedImagePath),
+    isBase64Image: Boolean(imageBase64),
     copies: safeCopies,
   });
 
@@ -336,19 +361,29 @@ async function handlePrint(req, res) {
     }
   }
 
-  // 2) CUPS: text or image
+  // Helper: clean up the temp PNG after we're done (success or failure)
+  const cleanupTemp = () => {
+    if (tempImagePath) {
+      try { fs.unlinkSync(tempImagePath); } catch {}
+    }
+  };
+
+  // 2) CUPS: text or image (including decoded base64 PNG written to tempImagePath)
   try {
     printViaCups({
       text,
-      imagePath,
+      imagePath: resolvedImagePath,
       printerName,
       copies: safeCopies,
     });
 
+    cleanupTemp();
+
     log("info", "Printed via CUPS", {
       jobId,
       printer: methodTargetPrinter || "default",
-      imagePath: imagePath || null,
+      imagePath: resolvedImagePath || null,
+      isBase64Image: Boolean(imageBase64),
     });
 
     return respond(res, 200, {
@@ -368,6 +403,8 @@ async function handlePrint(req, res) {
     try {
       printRawUsb(text, safeCopies);
 
+      cleanupTemp();
+
       log("info", "Printed via USB", {
         jobId,
         device: USB_DEVICE,
@@ -385,6 +422,8 @@ async function handlePrint(req, res) {
       });
     }
   }
+
+  cleanupTemp();
 
   log("error", "All print methods failed", { jobId });
 
