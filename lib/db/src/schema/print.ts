@@ -10,6 +10,29 @@ import {
 import { ordersTable } from "./orders";
 import { usersTable } from "./users";
 
+// ── Bridge Profiles ────────────────────────────────────────────────────────────
+// Represents a physical print bridge server (Mac Studio or Raspberry Pi).
+// Printers reference a bridge profile; routing logic uses profiles to determine
+// which bridge to target based on operator network location and priority.
+export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  // mac_studio | raspberry_pi | generic
+  bridgeType: text("bridge_type").notNull().default("generic"),
+  bridgeUrl: text("bridge_url").notNull(),
+  apiKey: text("api_key").notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  // Lower number = higher priority (1 = most preferred)
+  priority: integer("priority").notNull().default(10),
+  // Server-side same-network detection: compare operator IP prefix (e.g. "192.168.1.")
+  networkSubnetHint: text("network_subnet_hint"),
+  // receipt | label | both
+  supportedRoles: text("supported_roles").notNull().default("both"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 // ── Printers ──────────────────────────────────────────────────────────────────
 // connectionType:
 //   "ethernet_direct" — raw TCP socket to printer on LAN (receipts)
@@ -22,10 +45,12 @@ export const printPrintersTable = pgTable("print_printers", {
   role: text("role").notNull().default("kitchen"),
   // connection type controls dispatch strategy
   connectionType: text("connection_type").notNull().default("bridge"),
+  // Optional link to a bridge profile (overrides bridgeUrl/apiKey when set)
+  bridgeProfileId: integer("bridge_profile_id").references(() => printBridgeProfilesTable.id, { onDelete: "set null" }),
   // For ethernet_direct: IP + port for raw socket
   directIp: text("direct_ip"),
   directPort: integer("direct_port").default(9100),
-  // For mac_bridge / pi_bridge / bridge: HTTP endpoint
+  // For mac_bridge / pi_bridge / bridge: HTTP endpoint (used when no bridgeProfileId)
   bridgeUrl: text("bridge_url").notNull().default(""),
   bridgePrinterName: text("bridge_printer_name"),
   apiKey: text("api_key"),
@@ -149,6 +174,7 @@ export const printSettingsTable = pgTable("print_settings", {
 });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+export type PrintBridgeProfile = typeof printBridgeProfilesTable.$inferSelect;
 export type PrintPrinter = typeof printPrintersTable.$inferSelect;
 export type PrintJob = typeof printJobsTable.$inferSelect;
 export type PrintJobAttempt = typeof printJobAttemptsTable.$inferSelect;

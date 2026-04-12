@@ -12,6 +12,7 @@ import {
 } from "../lib/print/index";
 import {
   printPrintersTable,
+  printBridgeProfilesTable,
   printJobsTable,
   printJobAttemptsTable,
   printSettingsTable,
@@ -739,6 +740,138 @@ router.get("/print/bridge/printers", adminOnly, async (req, res): Promise<void> 
         : `Connection failed: ${msg}`,
     });
   }
+});
+
+// ── Bridge Profiles CRUD ──────────────────────────────────────────────────────
+
+/** GET /api/print/bridge-profiles — list all bridge profiles */
+router.get("/print/bridge-profiles", adminOnly, async (_req, res): Promise<void> => {
+  const profiles = await db.select().from(printBridgeProfilesTable).orderBy(printBridgeProfilesTable.priority);
+  res.json(profiles);
+});
+
+/** POST /api/print/bridge-profiles — create a bridge profile */
+router.post("/print/bridge-profiles", adminOnly, async (req, res): Promise<void> => {
+  const b = req.body ?? {};
+  if (!b.name || !b.bridgeUrl) { res.status(400).json({ error: "name and bridgeUrl are required" }); return; }
+  const [row] = await db.insert(printBridgeProfilesTable).values({
+    name: String(b.name),
+    bridgeType: String(b.bridgeType ?? "generic"),
+    bridgeUrl: String(b.bridgeUrl),
+    apiKey: String(b.apiKey ?? ""),
+    isActive: b.isActive !== false,
+    priority: Number(b.priority ?? 10),
+    networkSubnetHint: b.networkSubnetHint ? String(b.networkSubnetHint) : null,
+    supportedRoles: String(b.supportedRoles ?? "both"),
+    notes: b.notes ? String(b.notes) : null,
+  }).returning();
+  res.status(201).json(row);
+});
+
+/** PATCH /api/print/bridge-profiles/:id — update a bridge profile */
+router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body ?? {};
+  const updates: Partial<typeof printBridgeProfilesTable.$inferInsert> = {};
+  if (b.name !== undefined) updates.name = String(b.name);
+  if (b.bridgeType !== undefined) updates.bridgeType = String(b.bridgeType);
+  if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
+  if (b.apiKey !== undefined) updates.apiKey = String(b.apiKey);
+  if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
+  if (b.priority !== undefined) updates.priority = Number(b.priority);
+  if (b.networkSubnetHint !== undefined) updates.networkSubnetHint = b.networkSubnetHint ? String(b.networkSubnetHint) : null;
+  if (b.supportedRoles !== undefined) updates.supportedRoles = String(b.supportedRoles);
+  if (b.notes !== undefined) updates.notes = b.notes ? String(b.notes) : null;
+  const [row] = await db.update(printBridgeProfilesTable).set(updates).where(eq(printBridgeProfilesTable.id, id)).returning();
+  if (!row) { res.status(404).json({ error: "Bridge profile not found" }); return; }
+  res.json(row);
+});
+
+/** DELETE /api/print/bridge-profiles/:id */
+router.delete("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  await db.delete(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id));
+  res.json({ success: true });
+});
+
+/** POST /api/print/bridge-profiles/:id/probe — health check a bridge profile */
+router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
+  const profile = rows[0];
+  if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
+
+  const TIMEOUT_MS = 5000;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const r = await fetch(`${profile.bridgeUrl}/health`, {
+      headers: { "x-api-key": profile.apiKey },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+    let body: unknown;
+    try { body = await r.json(); } catch { body = null; }
+    res.json({
+      ok: r.ok && (body as { status?: string })?.status === "ok",
+      httpStatus: r.status,
+      bridgeUrl: profile.bridgeUrl,
+      body,
+    });
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === "AbortError";
+    res.json({
+      ok: false,
+      bridgeUrl: profile.bridgeUrl,
+      error: isTimeout
+        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
+        : `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+});
+
+/** POST /api/print/bridge-profiles/:id/list-printers — list CUPS printers on a bridge */
+router.post("/print/bridge-profiles/:id/list-printers", adminOnly, async (req, res): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
+  const profile = rows[0];
+  if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
+
+  const TIMEOUT_MS = 5000;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const r = await fetch(`${profile.bridgeUrl}/printers`, {
+      headers: { "x-api-key": profile.apiKey },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timer));
+    let body: unknown;
+    try { body = await r.json(); } catch { body = null; }
+    res.json({ ok: r.ok, httpStatus: r.status, bridgeUrl: profile.bridgeUrl, body });
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === "AbortError";
+    res.json({
+      ok: false,
+      bridgeUrl: profile.bridgeUrl,
+      error: isTimeout ? `Timed out after ${TIMEOUT_MS}ms` : `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+});
+
+/** GET /api/print/routing/decision — show current routing decision for a test order */
+router.get("/print/routing/decision", adminOnly, async (req, res): Promise<void> => {
+  const { resolveRoutingDecision, getActiveOperatorIp } = await import("../lib/printRoutingResolver.js");
+  const role = (req.query.role as string) === "label" ? "label" : "receipt";
+  const tenantId = req.query.tenantId ? parseInt(String(req.query.tenantId), 10) : undefined;
+  const fulfillmentType = req.query.fulfillmentType ? String(req.query.fulfillmentType) : undefined;
+  const shippingAddress = req.query.shippingAddress ? String(req.query.shippingAddress) : undefined;
+
+  const operatorIp = await getActiveOperatorIp();
+  const decision = await resolveRoutingDecision(
+    role,
+    { id: 0, tenantId, fulfillmentType, shippingAddress },
+    operatorIp
+  );
+  res.json({ operatorIp, decision });
 });
 
 /** POST /api/print/printers/seed-defaults — upsert the two known-good Tailscale bridge printers */

@@ -426,6 +426,8 @@ export async function enqueueOrderPrintJobs(order: {
   items: { quantity: number; catalogItemName: string; unitPrice: string; totalPrice: string; notes?: string | null }[];
   customerName?: string;
   fulfillmentType?: string;
+  tenantId?: number | null;
+  shippingAddress?: string | null;
 }) {
   const settings = await getSettings();
   if (!settings.autoPrintOrders) return;
@@ -451,6 +453,13 @@ export async function enqueueOrderPrintJobs(order: {
     total: parseFloat(order.total as string),
     paymentStatus: order.paymentStatus,
     createdAt: order.createdAt,
+  };
+
+  const orderContext = {
+    id: order.id,
+    tenantId: order.tenantId ?? null,
+    fulfillmentType: order.fulfillmentType ?? null,
+    shippingAddress: order.shippingAddress ?? null,
   };
 
   // ── Receipt ───────────────────────────────────────────────────────────────
@@ -512,42 +521,65 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Label ─────────────────────────────────────────────────────────────────
   if (settings.autoPrintLabels) {
-    const labelPrinter = await resolveLabelPrinter(profile);
-    if (labelPrinter) {
-      const labelTemplate = {
-        name: "Order Label",
-        paperWidth: labelPrinter.paperWidth ?? "58mm",
-        fields: [
-          { key: "id", label: "Order #", fontWeight: "bold" as const, fontSize: 20, align: "center" as const },
-          { key: "customerName", label: "Customer", fontSize: 14 },
-          { key: "total", label: "Total", fontSize: 14 },
-          { key: "createdAt", label: "Time", fontSize: 12 },
-        ],
-      };
-      const labelData = {
-        id: order.id,
-        customerName: order.customerName ?? "Walk-in",
-        total: `$${printOrder.total.toFixed(2)}`,
-        createdAt: new Date(order.createdAt).toLocaleTimeString(),
-      };
-      const renderedText = renderTextLabel(labelTemplate, labelData);
-      const key = makeIdempotencyKey(order.id, labelPrinter.id, "label");
-      const existing = await db.select().from(printJobsTable)
-        .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+    const { resolveRoutingDecision, shouldPrintLabel } = await import("./printRoutingResolver.js");
 
-      if (!existing.length) {
-        const [job] = await db.insert(printJobsTable).values({
-          orderId: order.id,
-          printerId: labelPrinter.id,
-          jobType: "label",
-          status: "queued",
-          idempotencyKey: key,
-          renderFormat: "text",
-          payloadJson: labelData,
-          renderedText,
-          operatorUserId: operator?.userId ?? null,
-        }).returning();
-        dispatchLabelJob(job, labelPrinter).catch(() => {});
+    // Label eligibility gate — only delivery orders or Lucifer Cruz shipments
+    const eligibility = shouldPrintLabel(orderContext);
+    if (!eligibility.eligible) {
+      pLog.info({ event: "label_skipped_not_eligible", orderId: order.id, reason: eligibility.reason }, "label skipped");
+    } else {
+      // Try smart routing resolver first (uses bridge profiles when configured)
+      const routingDecision = await resolveRoutingDecision("label", orderContext);
+
+      // Determine which printer to use
+      let labelPrinter = routingDecision.selectedPrinter;
+
+      // If routing resolver found no bridge profiles, fall back to legacy resolution
+      if (!labelPrinter && routingDecision.selectedBridgeProfileId === null && !routingDecision.blockedReason) {
+        labelPrinter = await resolveLabelPrinter(profile);
+      }
+
+      if (!labelPrinter && routingDecision.blockedReason) {
+        // Routing explicitly blocked label (e.g. operator not on Mac network, no Pi label bridge)
+        pLog.warn({ event: "label_blocked", orderId: order.id, reason: routingDecision.blockedReason }, "label blocked by routing policy");
+      } else if (labelPrinter) {
+        const labelTemplate = {
+          name: "Order Label",
+          paperWidth: labelPrinter.paperWidth ?? "58mm",
+          fields: [
+            { key: "id", label: "Order #", fontWeight: "bold" as const, fontSize: 20, align: "center" as const },
+            { key: "customerName", label: "Customer", fontSize: 14 },
+            { key: "total", label: "Total", fontSize: 14 },
+            { key: "createdAt", label: "Time", fontSize: 12 },
+          ],
+        };
+        const labelData = {
+          id: order.id,
+          customerName: order.customerName ?? "Walk-in",
+          total: `$${printOrder.total.toFixed(2)}`,
+          createdAt: new Date(order.createdAt).toLocaleTimeString(),
+        };
+        const renderedText = renderTextLabel(labelTemplate, labelData);
+        const key = makeIdempotencyKey(order.id, labelPrinter.id, "label");
+        const existing = await db.select().from(printJobsTable)
+          .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+
+        if (!existing.length) {
+          const [job] = await db.insert(printJobsTable).values({
+            orderId: order.id,
+            printerId: labelPrinter.id,
+            jobType: "label",
+            status: "queued",
+            idempotencyKey: key,
+            renderFormat: "text",
+            payloadJson: { ...labelData, _routingDecision: { decisionReason: routingDecision.decisionReason, fallbackUsed: routingDecision.fallbackUsed } },
+            renderedText,
+            operatorUserId: operator?.userId ?? null,
+          }).returning();
+          dispatchLabelJob(job, labelPrinter).catch(() => {});
+        }
+      } else {
+        pLog.warn({ event: "label_no_printer", orderId: order.id, decision: routingDecision.decisionReason }, "label skipped: no printer available");
       }
     }
   }

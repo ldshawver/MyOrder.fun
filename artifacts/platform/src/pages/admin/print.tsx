@@ -1264,6 +1264,276 @@ function ThankYouLabelTab() {
   );
 }
 
+// ── BRIDGE PROFILES TAB ───────────────────────────────────────────────────────
+type BridgeProfile = {
+  id: number; name: string; bridgeType: string; bridgeUrl: string; apiKey: string;
+  isActive: boolean; priority: number; networkSubnetHint?: string | null;
+  supportedRoles: string; notes?: string | null; createdAt: string;
+};
+type BridgeProbeResult = { loading: boolean; ok?: boolean; error?: string; printers?: string[] };
+
+function BridgeProfilesTab() {
+  const apiFetch = useApiFetch();
+  const qc = useQueryClient();
+  const [editId, setEditId] = useState<number | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [probeResults, setProbeResults] = useState<Record<number, BridgeProbeResult>>({});
+  const [routingDecision, setRoutingDecision] = useState<{ operatorIp: string | null; decision: unknown } | null>(null);
+  const [routingLoading, setRoutingLoading] = useState(false);
+  const [routingRole, setRoutingRole] = useState<"receipt" | "label">("receipt");
+  const [routingFt, setRoutingFt] = useState("delivery");
+  const [routingTenant, setRoutingTenant] = useState("1");
+
+  const { data: profiles = [], isLoading } = useQuery({
+    queryKey: ["bridge-profiles"],
+    queryFn: () => apiFetch("/api/print/bridge-profiles") as Promise<BridgeProfile[]>,
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/print/bridge-profiles/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["bridge-profiles"] }),
+  });
+
+  const probeOne = async (profile: BridgeProfile) => {
+    setProbeResults(r => ({ ...r, [profile.id]: { loading: true } }));
+    try {
+      const res = await apiFetch(`/api/print/bridge-profiles/${profile.id}/probe`, { method: "POST" }) as { ok: boolean; error?: string };
+      setProbeResults(r => ({ ...r, [profile.id]: { loading: false, ok: res.ok, error: res.error } }));
+    } catch (e) {
+      setProbeResults(r => ({ ...r, [profile.id]: { loading: false, ok: false, error: String(e) } }));
+    }
+  };
+
+  const listPrinters = async (profile: BridgeProfile) => {
+    setProbeResults(r => ({ ...r, [profile.id]: { loading: true } }));
+    try {
+      const res = await apiFetch(`/api/print/bridge-profiles/${profile.id}/list-printers`, { method: "POST" }) as { ok: boolean; body?: { printers?: string[] }; error?: string };
+      setProbeResults(r => ({ ...r, [profile.id]: { loading: false, ok: res.ok, printers: res.body?.printers ?? [], error: res.error } }));
+    } catch (e) {
+      setProbeResults(r => ({ ...r, [profile.id]: { loading: false, ok: false, error: String(e) } }));
+    }
+  };
+
+  const checkRouting = async () => {
+    setRoutingLoading(true);
+    setRoutingDecision(null);
+    try {
+      const params = new URLSearchParams({ role: routingRole, fulfillmentType: routingFt });
+      if (routingRole === "label") { params.set("tenantId", routingTenant); params.set("shippingAddress", "123 Test St"); }
+      const res = await apiFetch(`/api/print/routing/decision?${params}`) as { operatorIp: string | null; decision: unknown };
+      setRoutingDecision(res);
+    } catch (e) { setRoutingDecision({ operatorIp: null, decision: { error: String(e) } }); }
+    finally { setRoutingLoading(false); }
+  };
+
+  const bridgeTypeLabel = (bt: string) =>
+    bt === "raspberry_pi" ? "🫐 Raspberry Pi" : bt === "mac_studio" ? "🖥 Mac Studio" : "Generic";
+
+  if (isLoading) return <div className="text-sm text-muted-foreground p-4">Loading bridge profiles…</div>;
+
+  return (
+    <div className="space-y-6">
+      {/* Bridge profile list */}
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold">Bridge Profiles</h3>
+        <Button size="sm" onClick={() => setShowAdd(true)}>+ Add Profile</Button>
+      </div>
+
+      {profiles.length === 0 && (
+        <div className="text-sm text-muted-foreground border rounded p-4">
+          No bridge profiles configured. Add one to enable smart routing.
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {profiles.map(p => {
+          const probe = probeResults[p.id];
+          return (
+            <div key={p.id} className="border rounded-lg p-4 space-y-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{p.name}</span>
+                    <Badge variant="outline">{bridgeTypeLabel(p.bridgeType)}</Badge>
+                    <Badge variant={p.isActive ? "default" : "secondary"}>{p.isActive ? "Active" : "Inactive"}</Badge>
+                    <Badge variant="outline">Priority {p.priority}</Badge>
+                    <Badge variant="outline">{p.supportedRoles}</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground font-mono mt-1">{p.bridgeUrl}</p>
+                  {p.networkSubnetHint && <p className="text-xs text-muted-foreground">Subnet hint: <span className="font-mono">{p.networkSubnetHint}</span></p>}
+                  {p.notes && <p className="text-xs text-muted-foreground">{p.notes}</p>}
+                  {probe && !probe.loading && (
+                    <div className={`text-xs mt-1 flex items-center gap-1 ${probe.ok ? "text-green-600" : "text-red-500"}`}>
+                      {probe.ok ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                      {probe.ok ? "Online" : probe.error ?? "Unreachable"}
+                      {probe.printers && probe.printers.length > 0 && <span className="ml-2 text-muted-foreground">Printers: {probe.printers.join(", ")}</span>}
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2 flex-shrink-0">
+                  <Button size="sm" variant="outline" disabled={probe?.loading} onClick={() => probeOne(p)}>
+                    {probe?.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : "Health"}
+                  </Button>
+                  <Button size="sm" variant="outline" disabled={probe?.loading} onClick={() => listPrinters(p)}>Printers</Button>
+                  <Button size="sm" variant="outline" onClick={() => setEditId(p.id)}>Edit</Button>
+                  <Button size="sm" variant="destructive" onClick={() => { if (confirm("Delete this bridge profile?")) deleteMut.mutate(p.id); }}>Del</Button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Routing decision tester */}
+      <div className="border rounded-lg p-4 space-y-3">
+        <h4 className="font-semibold text-sm">Routing Decision Tester</h4>
+        <p className="text-xs text-muted-foreground">Simulates which bridge the system would choose for the current active operator.</p>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <Label className="text-xs">Role</Label>
+            <Select value={routingRole} onValueChange={v => setRoutingRole(v as "receipt" | "label")}>
+              <SelectTrigger className="w-28 h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="receipt">Receipt</SelectItem><SelectItem value="label">Label</SelectItem></SelectContent>
+            </Select>
+          </div>
+          {routingRole === "label" && <>
+            <div>
+              <Label className="text-xs">Fulfillment Type</Label>
+              <Input className="w-28 h-8 text-xs" value={routingFt} onChange={e => setRoutingFt(e.target.value)} placeholder="delivery" />
+            </div>
+            <div>
+              <Label className="text-xs">Tenant ID</Label>
+              <Input className="w-20 h-8 text-xs" value={routingTenant} onChange={e => setRoutingTenant(e.target.value)} placeholder="1" />
+            </div>
+          </>}
+          <Button size="sm" onClick={checkRouting} disabled={routingLoading}>
+            {routingLoading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+            Check Routing
+          </Button>
+        </div>
+        {routingDecision && (
+          <div className="bg-muted rounded p-3 text-xs space-y-1 font-mono">
+            <div>Operator IP: {routingDecision.operatorIp ?? "unknown"}</div>
+            <pre className="whitespace-pre-wrap">{JSON.stringify(routingDecision.decision, null, 2)}</pre>
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit dialog */}
+      {(showAdd || editId !== null) && (
+        <BridgeProfileDialog
+          profile={editId !== null ? profiles.find(p => p.id === editId) ?? null : null}
+          onClose={() => { setShowAdd(false); setEditId(null); qc.invalidateQueries({ queryKey: ["bridge-profiles"] }); }}
+          apiFetch={apiFetch}
+        />
+      )}
+    </div>
+  );
+}
+
+function BridgeProfileDialog({ profile, onClose, apiFetch }: {
+  profile: BridgeProfile | null;
+  onClose: () => void;
+  apiFetch: ApiFetchFn;
+}) {
+  const isEdit = profile !== null;
+  const [form, setForm] = useState({
+    name: profile?.name ?? "",
+    bridgeType: profile?.bridgeType ?? "raspberry_pi",
+    bridgeUrl: profile?.bridgeUrl ?? "",
+    apiKey: profile?.apiKey ?? "",
+    isActive: profile?.isActive ?? true,
+    priority: profile?.priority ?? 5,
+    networkSubnetHint: profile?.networkSubnetHint ?? "",
+    supportedRoles: profile?.supportedRoles ?? "both",
+    notes: profile?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = { ...form, networkSubnetHint: form.networkSubnetHint || null, notes: form.notes || null, apiKey: form.apiKey || "" };
+      if (isEdit) {
+        await apiFetch(`/api/print/bridge-profiles/${profile!.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      } else {
+        await apiFetch("/api/print/bridge-profiles", { method: "POST", body: JSON.stringify(payload) });
+      }
+      onClose();
+    } catch (e) { alert(String(e)); setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-lg p-6 space-y-4">
+        <h3 className="font-semibold">{isEdit ? "Edit Bridge Profile" : "Add Bridge Profile"}</h3>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2">
+            <Label className="text-xs">Name</Label>
+            <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Raspberry Pi Bridge" />
+          </div>
+          <div>
+            <Label className="text-xs">Bridge Type</Label>
+            <Select value={form.bridgeType} onValueChange={v => setForm(f => ({ ...f, bridgeType: v }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="raspberry_pi">Raspberry Pi</SelectItem>
+                <SelectItem value="mac_studio">Mac Studio</SelectItem>
+                <SelectItem value="generic">Generic</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Supported Roles</Label>
+            <Select value={form.supportedRoles} onValueChange={v => setForm(f => ({ ...f, supportedRoles: v }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="both">Both (receipt + label)</SelectItem>
+                <SelectItem value="receipt">Receipt only</SelectItem>
+                <SelectItem value="label">Label only</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="col-span-2">
+            <Label className="text-xs">Bridge URL</Label>
+            <Input value={form.bridgeUrl} onChange={e => setForm(f => ({ ...f, bridgeUrl: e.target.value }))} placeholder="http://100.103.51.63:3100" />
+          </div>
+          <div className="col-span-2">
+            <Label className="text-xs">API Key</Label>
+            <div className="flex gap-2">
+              <Input type={showKey ? "text" : "password"} value={form.apiKey} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))} placeholder="print-bridge-secret" className="flex-1" />
+              <Button type="button" size="sm" variant="ghost" onClick={() => setShowKey(s => !s)}>{showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</Button>
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Priority <span className="text-muted-foreground">(lower = higher priority)</span></Label>
+            <Input type="number" min={1} max={99} value={form.priority} onChange={e => setForm(f => ({ ...f, priority: parseInt(e.target.value) || 5 }))} />
+          </div>
+          <div>
+            <Label className="text-xs">Network Subnet Hint <span className="text-muted-foreground">(e.g. 192.168.1.)</span></Label>
+            <Input value={form.networkSubnetHint} onChange={e => setForm(f => ({ ...f, networkSubnetHint: e.target.value }))} placeholder="192.168.1." />
+          </div>
+          <div className="col-span-2">
+            <Label className="text-xs">Notes</Label>
+            <Textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} placeholder="Luke's Mac Studio on office LAN" />
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch checked={form.isActive} onCheckedChange={v => setForm(f => ({ ...f, isActive: v }))} />
+            <Label className="text-xs">Active</Label>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving}>{saving ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}{isEdit ? "Save Changes" : "Create Profile"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── SETTINGS BAR ──────────────────────────────────────────────────────────────
 function SettingsBar() {
   const apiFetch = useApiFetch();
@@ -1305,8 +1575,9 @@ export default function AdminPrint() {
         <SettingsBar />
 
         <Tabs defaultValue="printers">
-          <TabsList className="mb-4">
+          <TabsList className="mb-4 flex-wrap h-auto">
             <TabsTrigger value="printers">Printers</TabsTrigger>
+            <TabsTrigger value="bridges">Bridges</TabsTrigger>
             <TabsTrigger value="routing">Routing</TabsTrigger>
             <TabsTrigger value="profiles">Profiles</TabsTrigger>
             <TabsTrigger value="jobs">Jobs & Logs</TabsTrigger>
@@ -1314,6 +1585,7 @@ export default function AdminPrint() {
             <TabsTrigger value="labels">Labels</TabsTrigger>
           </TabsList>
           <TabsContent value="printers"><PrintersTab /></TabsContent>
+          <TabsContent value="bridges"><BridgeProfilesTab /></TabsContent>
           <TabsContent value="routing"><RoutingTab /></TabsContent>
           <TabsContent value="profiles"><ProfilesTab /></TabsContent>
           <TabsContent value="jobs"><JobsTab /></TabsContent>
