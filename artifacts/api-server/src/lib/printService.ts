@@ -156,20 +156,28 @@ async function dispatchBridge(
       payloadKeys: Object.keys((job.payloadJson as object) ?? {}),
     }, "dispatching to bridge");
 
+    // For PNG jobs, pull the base64 image out of payloadJson.imageData and send
+    // it as imageBase64 so the bridge can write it to a temp file and lp-print it.
+    const imageBase64 = job.renderFormat === "png"
+      ? ((job.payloadJson as Record<string, unknown>)?.imageData as string | undefined)
+      : undefined;
+
+    const bridgeBody: Record<string, unknown> = {
+      printerName,
+      jobId: job.id,
+      format: job.renderFormat,
+      text: fullText,
+      copies: 1,
+    };
+    if (imageBase64) bridgeBody.imageBase64 = imageBase64;
+
     const res = await fetch(`${printer.bridgeUrl}/print`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
       },
-      body: JSON.stringify({
-        printerName,
-        jobId: job.id,
-        format: job.renderFormat,
-        text: fullText,
-        payload: payloadForLog,
-        copies: 1,
-      }),
+      body: JSON.stringify(bridgeBody),
       signal: controller.signal,
     }).finally(() => clearTimeout(timer));
 
