@@ -147,6 +147,7 @@ router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> =
   if (b.name !== undefined) updates.name = String(b.name);
   if (b.role !== undefined) updates.role = String(b.role);
   if (b.connectionType !== undefined) updates.connectionType = String(b.connectionType);
+  if (b.bridgeProfileId !== undefined) updates.bridgeProfileId = b.bridgeProfileId ? Number(b.bridgeProfileId) : null;
   if (b.directIp !== undefined) updates.directIp = b.directIp ? String(b.directIp) : null;
   if (b.directPort !== undefined) updates.directPort = Number(b.directPort);
   if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
