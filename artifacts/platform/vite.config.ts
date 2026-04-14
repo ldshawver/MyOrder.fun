@@ -13,7 +13,9 @@ function getRequiredPort(): number {
   const rawPort = process.env.PORT;
 
   if (!rawPort) {
-    throw new Error("PORT environment variable is required but was not provided.");
+    throw new Error(
+      "PORT environment variable is required but was not provided.",
+    );
   }
 
   const port = Number(rawPort);
@@ -29,13 +31,17 @@ function getRequiredBasePath(): string {
   const rawBasePath = process.env.BASE_PATH;
 
   if (!rawBasePath) {
-    throw new Error("BASE_PATH environment variable is required but was not provided.");
+    throw new Error(
+      "BASE_PATH environment variable is required but was not provided.",
+    );
   }
 
   const basePath = rawBasePath.trim();
 
   if (!basePath.startsWith("/")) {
-    throw new Error(`Invalid BASE_PATH value: "${rawBasePath}". BASE_PATH must start with "/".`);
+    throw new Error(
+      `Invalid BASE_PATH value: "${rawBasePath}". BASE_PATH must start with "/".`,
+    );
   }
 
   return basePath;
@@ -80,11 +86,22 @@ export default defineConfig(async () => {
       alias: {
         "@": path.resolve(__dirname, "src"),
       },
-      dedupe: ["react", "react-dom", "@radix-ui/react-tooltip"],
+      dedupe: [
+        "react",
+        "react-dom",
+        "@radix-ui/react-tooltip",
+        "@clerk/react",
+        "@clerk/shared",
+      ],
       preserveSymlinks: true,
     },
     optimizeDeps: {
-      include: ["@radix-ui/react-tooltip"],
+      include: [
+        "@radix-ui/react-tooltip",
+        "regexparam",
+        "@clerk/react",
+        "@clerk/shared",
+      ],
     },
     server: {
       host: "0.0.0.0",
