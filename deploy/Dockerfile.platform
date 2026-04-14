@@ -15,7 +15,7 @@ COPY artifacts/platform/package.json   artifacts/platform/
 # Inline npmrc so Docker re-evaluates this layer when settings change
 RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
 
-RUN pnpm install --no-frozen-lockfile \
+RUN NODE_ENV=development pnpm install --no-frozen-lockfile \
                  --filter @workspace/api-client-react... \
                  --filter @workspace/platform...
 
