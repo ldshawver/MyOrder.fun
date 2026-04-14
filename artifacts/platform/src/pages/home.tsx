@@ -225,7 +225,7 @@ export default function Home() {
             ENTER THE BOUTIQUE
           </Link>
           <Link
-            href="/onboarding"
+            href="/waitlist"
             className="flex items-center gap-2 text-xs font-semibold px-6 py-3.5 rounded-xl border transition-all"
             style={{ borderColor: "rgba(192,192,192,0.15)", color: "#888", letterSpacing: "0.08em" }}
             data-testid="link-request-access"

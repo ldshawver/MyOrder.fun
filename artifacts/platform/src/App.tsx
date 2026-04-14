@@ -11,9 +11,9 @@ import SessionWatermark from "@/components/session-watermark";
 
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
+import WaitlistPage from "@/pages/waitlist";
 import Terms from "@/pages/terms";
 import Privacy from "@/pages/privacy";
-import Onboarding from "@/pages/onboarding";
 import Dashboard from "@/pages/dashboard";
 import Catalog from "@/pages/catalog";
 import CatalogItemDetail from "@/pages/catalog-item";
@@ -38,7 +38,11 @@ import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+// Only use the proxy URL in production builds — in dev it points to the live
+// domain which isn't reachable from Replit, causing Clerk JS to fail to load.
+const clerkProxyUrl = import.meta.env.PROD
+  ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
+  : undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function stripBase(path: string): string {
@@ -169,7 +173,7 @@ function AuthenticatedApp() {
   useSessionLogger(user?.email ?? "");
 
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
-  if (isError || !user) return <Redirect to="/sign-in" />;
+  if (isError || !user) return <Redirect to="/waitlist" />;
 
   return (
     <>
@@ -238,13 +242,16 @@ function Router() {
       <Route path="/privacy" component={Privacy} />
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
-      <Route path="/onboarding" component={Onboarding} />
+      <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/onboarding">
+        <Redirect to="/waitlist" />
+      </Route>
       <Route>
         <Show when="signed-in">
           <AuthenticatedApp />
         </Show>
         <Show when="signed-out">
-          <Redirect to="/sign-in" />
+          <Redirect to="/waitlist" />
         </Show>
       </Route>
     </Switch>
@@ -267,6 +274,7 @@ function ClerkProviderWithRoutes() {
     <ClerkProvider
       publishableKey={clerkPubKey}
       proxyUrl={clerkProxyUrl}
+      waitlistUrl={`${basePath}/waitlist`}
       routerPush={(to) => setLocation(stripBase(to))}
       routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
     >
