@@ -1,5 +1,6 @@
 {pkgs}: {
   deps = [
+    pkgs.nano
     pkgs.pkgconf
     pkgs.librsvg
     pkgs.libjpeg
