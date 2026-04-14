@@ -1,0 +1,49 @@
+root@myorder:~/MyOrder.fun# git pull origin main
+bash deploy/setup-vps.sh
+remote: Enumerating objects: 12, done.
+remote: Counting objects: 100% (12/12), done.
+remote: Compressing objects: 100% (3/3), done.
+remote: Total 8 (delta 5), reused 8 (delta 5), pack-reused 0 (from 0)
+Unpacking objects: 100% (8/8), 2.15 KiB | 550.00 KiB/s, done.
+From https://github.com/ldshawver/MyOrder.fun
+ * branch            main       -> FETCH_HEAD
+   5a80b29..3ba609d  main       -> origin/main
+Updating 5a80b29..3ba609d
+Fast-forward
+ attached_assets/Pasted-root-myorder-MyOrder-fun-git-pull-origin-main-bash-depl_1776156850969.txt | 56 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ deploy/setup-vps.sh                                                                              |  2 +-
+ 2 files changed, 57 insertions(+), 1 deletion(-)
+ create mode 100644 attached_assets/Pasted-root-myorder-MyOrder-fun-git-pull-origin-main-bash-depl_1776156850969.txt
+
+══════════════════════════════════════════════
+  myorder.fun — VPS Setup
+══════════════════════════════════════════════
+
+✓ DATABASE_URL is set
+
+→ Installing dependencies...
+Scope: all 9 workspace projects
+Lockfile is up to date, resolution step is skipped
+Already up to date
+. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+└─ Done in 16ms
+╭ Warning ───────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                            │
+│   Ignored build scripts: @clerk/shared@4.6.0, sharp@0.34.5.                                │
+│   Run "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.   │
+│                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────╯
+Done in 2.6s using pnpm v10.33.0
+
+→ Running database migrations...
+
+> @workspace/db@0.0.0 push /root/MyOrder.fun/lib/db
+> drizzle-kit push --config ./drizzle.config.ts
+
+Reading config file '/root/MyOrder.fun/lib/db/drizzle.config.ts'
+Using 'pg' driver for database querying
+[⣷] Pulling schema from database...
+/root/MyOrder.fun/lib/db:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/db@0.0.0 push: `drizzle-kit push --config ./drizzle.config.ts`
+Exit status 1
+root@myorder:~/MyOrder.fun# 
