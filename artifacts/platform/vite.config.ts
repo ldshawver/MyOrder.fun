@@ -7,15 +7,13 @@ import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const appRoot = path.resolve(__dirname, "..", "..");
+const repoRoot = path.resolve(__dirname, "..", "..");
 
-function readRequiredPort(): number {
+function getRequiredPort(): number {
   const rawPort = process.env.PORT;
 
   if (!rawPort) {
-    throw new Error(
-      "PORT environment variable is required but was not provided.",
-    );
+    throw new Error("PORT environment variable is required but was not provided.");
   }
 
   const port = Number(rawPort);
@@ -27,24 +25,20 @@ function readRequiredPort(): number {
   return port;
 }
 
-function readRequiredBasePath(): string {
+function getRequiredBasePath(): string {
   const rawBasePath = process.env.BASE_PATH;
 
   if (!rawBasePath) {
-    throw new Error(
-      "BASE_PATH environment variable is required but was not provided.",
-    );
+    throw new Error("BASE_PATH environment variable is required but was not provided.");
   }
 
-  const normalizedBasePath = rawBasePath.trim();
+  const basePath = rawBasePath.trim();
 
-  if (!normalizedBasePath.startsWith("/")) {
-    throw new Error(
-      `Invalid BASE_PATH value: "${rawBasePath}". BASE_PATH must start with "/".`,
-    );
+  if (!basePath.startsWith("/")) {
+    throw new Error(`Invalid BASE_PATH value: "${rawBasePath}". BASE_PATH must start with "/".`);
   }
 
-  return normalizedBasePath;
+  return basePath;
 }
 
 async function getPlugins(): Promise<PluginOption[]> {
@@ -66,7 +60,7 @@ async function getPlugins(): Promise<PluginOption[]> {
 
     plugins.push(
       cartographer({
-        root: appRoot,
+        root: repoRoot,
       }),
       devBanner(),
     );
@@ -76,8 +70,8 @@ async function getPlugins(): Promise<PluginOption[]> {
 }
 
 export default defineConfig(async () => {
-  const port = readRequiredPort();
-  const basePath = readRequiredBasePath();
+  const port = getRequiredPort();
+  const basePath = getRequiredBasePath();
 
   return {
     base: basePath,
@@ -86,11 +80,11 @@ export default defineConfig(async () => {
       alias: {
         "@": path.resolve(__dirname, "src"),
       },
-      dedupe: [
-        "react",
-        "react-dom",
-        "@radix-ui/react-tooltip",
-      ],
+      dedupe: ["react", "react-dom", "@radix-ui/react-tooltip"],
+      preserveSymlinks: true,
+    },
+    optimizeDeps: {
+      include: ["@radix-ui/react-tooltip"],
     },
     server: {
       host: "0.0.0.0",
