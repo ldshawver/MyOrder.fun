@@ -51,3 +51,6 @@ Thumbs.db
 # Self-hosting secrets
 .env
 deploy/nginx/ssl/
+
+# Replit attached assets (terminal pastes, screenshots)
+attached_assets/
