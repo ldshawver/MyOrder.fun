@@ -6,11 +6,14 @@ RUN npm install -g pnpm@9
 WORKDIR /app
 
 # Copy workspace manifests first for layer caching
-COPY .npmrc package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY lib/db/package.json               lib/db/
 COPY lib/api-zod/package.json          lib/api-zod/
 COPY lib/api-client-react/package.json lib/api-client-react/
 COPY artifacts/platform/package.json   artifacts/platform/
+
+# Inline npmrc so Docker re-evaluates this layer when settings change
+RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
 
 RUN pnpm install --no-frozen-lockfile \
                  --filter @workspace/api-client-react... \

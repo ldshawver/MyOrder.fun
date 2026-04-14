@@ -9,11 +9,13 @@ RUN npm install -g pnpm@9
 WORKDIR /app
 
 # Copy workspace manifests first for layer caching
-COPY .npmrc package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY lib/db/package.json                  lib/db/
 COPY lib/api-zod/package.json             lib/api-zod/
 COPY lib/api-client-react/package.json    lib/api-client-react/
 COPY artifacts/api-server/package.json    artifacts/api-server/
+
+RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
 
 # Install all workspace deps
 RUN pnpm install --no-frozen-lockfile --filter @workspace/db... \
@@ -40,11 +42,13 @@ RUN npm install -g pnpm@9
 
 WORKDIR /app
 
-COPY .npmrc package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY lib/db/package.json               lib/db/
 COPY lib/api-zod/package.json          lib/api-zod/
 COPY lib/api-client-react/package.json lib/api-client-react/
 COPY artifacts/api-server/package.json artifacts/api-server/
+
+RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
 
 RUN pnpm install --no-frozen-lockfile --prod \
                  --filter @workspace/db... \
