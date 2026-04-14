@@ -27,7 +27,7 @@ echo "✓ DATABASE_URL is set"
 # ── 2. Install dependencies ──────────────────────────────────────
 echo ""
 echo "→ Installing dependencies..."
-pnpm install --frozen-lockfile
+pnpm install --no-frozen-lockfile
 
 # ── 3. Run database migrations ───────────────────────────────────
 echo ""
