@@ -32,7 +32,7 @@ pnpm install --no-frozen-lockfile
 # ── 3. Run database migrations ───────────────────────────────────
 echo ""
 echo "→ Running database migrations..."
-pnpm --filter @workspace/db run push
+pnpm --filter @workspace/db run push-force
 
 # ── 4. Seed tenants + catalog ────────────────────────────────────
 echo ""
