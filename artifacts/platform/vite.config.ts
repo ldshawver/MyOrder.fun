@@ -1,82 +1,109 @@
-import { defineConfig } from "vite";
+import { defineConfig, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import path from "path";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-const rawPort = process.env.PORT;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const appRoot = path.resolve(__dirname, "..", "..");
 
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
+function readRequiredPort(): number {
+  const rawPort = process.env.PORT;
+
+  if (!rawPort) {
+    throw new Error(
+      "PORT environment variable is required but was not provided.",
+    );
+  }
+
+  const port = Number(rawPort);
+
+  if (!Number.isFinite(port) || port <= 0) {
+    throw new Error(`Invalid PORT value: "${rawPort}"`);
+  }
+
+  return port;
 }
 
-const port = Number(rawPort);
+function readRequiredBasePath(): string {
+  const rawBasePath = process.env.BASE_PATH;
 
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
+  if (!rawBasePath) {
+    throw new Error(
+      "BASE_PATH environment variable is required but was not provided.",
+    );
+  }
+
+  const normalizedBasePath = rawBasePath.trim();
+
+  if (!normalizedBasePath.startsWith("/")) {
+    throw new Error(
+      `Invalid BASE_PATH value: "${rawBasePath}". BASE_PATH must start with "/".`,
+    );
+  }
+
+  return normalizedBasePath;
 }
 
-const basePath = process.env.BASE_PATH;
-
-if (!basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
-
-export default defineConfig({
-  base: basePath,
-  plugins: [
+async function getPlugins(): Promise<PluginOption[]> {
+  const plugins: PluginOption[] = [
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
-      ? [
-          await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer({
-              root: path.resolve(import.meta.dirname, ".."),
-            }),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
-        ]
-      : []),
-  ],
-  resolve: {
-    alias: {
-      "@": path.resolve(import.meta.dirname, "src"),
-      "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
-    },
-    dedupe: ["react", "react-dom"],
-  },
-  root: path.resolve(import.meta.dirname),
-  build: {
-    outDir: path.resolve(import.meta.dirname, "dist/public"),
-    emptyOutDir: true,
-  },
-  server: {
-    port,
-    host: "0.0.0.0",
-    allowedHosts: true,
-    fs: {
-      strict: true,
-      deny: ["**/.*"],
-    },
-    proxy: {
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-        secure: false,
+  ];
+
+  const isReplitDev =
+    process.env.NODE_ENV !== "production" &&
+    typeof process.env.REPL_ID !== "undefined";
+
+  if (isReplitDev) {
+    const [{ cartographer }, { devBanner }] = await Promise.all([
+      import("@replit/vite-plugin-cartographer"),
+      import("@replit/vite-plugin-dev-banner"),
+    ]);
+
+    plugins.push(
+      cartographer({
+        root: appRoot,
+      }),
+      devBanner(),
+    );
+  }
+
+  return plugins;
+}
+
+export default defineConfig(async () => {
+  const port = readRequiredPort();
+  const basePath = readRequiredBasePath();
+
+  return {
+    base: basePath,
+    plugins: await getPlugins(),
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "src"),
       },
+      dedupe: [
+        "react",
+        "react-dom",
+        "@radix-ui/react-tooltip",
+      ],
     },
-  },
-  preview: {
-    port,
-    host: "0.0.0.0",
-    allowedHosts: true,
-  },
+    server: {
+      host: "0.0.0.0",
+      port,
+      strictPort: true,
+    },
+    preview: {
+      host: "0.0.0.0",
+      port,
+      strictPort: true,
+    },
+    build: {
+      sourcemap: true,
+    },
+  };
 });
