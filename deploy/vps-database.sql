@@ -1,0 +1,733 @@
+-- myorder.fun VPS Database Setup
+-- Run: psql $DATABASE_URL -f deploy/vps-database.sql
+
+SET client_min_messages = warning;
+
+CREATE TABLE IF NOT EXISTS public.admin_settings (
+    id integer NOT NULL,
+    tenant_id integer NOT NULL,
+    menu_import_enabled boolean DEFAULT true NOT NULL,
+    show_out_of_stock boolean DEFAULT false NOT NULL,
+    enabled_processors text[] DEFAULT '{stripe}'::text[] NOT NULL,
+    checkout_conversion_preview boolean DEFAULT false NOT NULL,
+    merchant_image_enabled boolean DEFAULT true NOT NULL,
+    auto_print_on_payment boolean DEFAULT false NOT NULL,
+    receipt_template_style text DEFAULT 'standard'::text NOT NULL,
+    label_template_style text DEFAULT 'standard'::text NOT NULL,
+    purge_mode text DEFAULT 'delayed'::text NOT NULL,
+    purge_delay_hours integer DEFAULT 72 NOT NULL,
+    keep_audit_token boolean DEFAULT true NOT NULL,
+    keep_failed_payment_logs boolean DEFAULT true NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    petty_cash numeric(10,2) DEFAULT 0
+);
+CREATE SEQUENCE public.admin_settings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.admin_settings_id_seq OWNED BY public.admin_settings.id;
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id integer NOT NULL,
+    tenant_id integer,
+    actor_id integer NOT NULL,
+    actor_email text NOT NULL,
+    actor_role text NOT NULL,
+    action text NOT NULL,
+    resource_type text,
+    resource_id text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    ip_address text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.audit_logs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.audit_logs_id_seq OWNED BY public.audit_logs.id;
+CREATE TABLE IF NOT EXISTS public.catalog_items (
+    id integer NOT NULL,
+    tenant_id integer NOT NULL,
+    name text NOT NULL,
+    description text,
+    category text NOT NULL,
+    sku text,
+    price numeric(10,2) NOT NULL,
+    compare_at_price numeric(10,2),
+    stock_quantity numeric(10,2) DEFAULT 0,
+    is_available boolean DEFAULT true NOT NULL,
+    image_url text,
+    tags text[] DEFAULT '{}'::text[],
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    regular_price numeric(10,2),
+    homie_price numeric(10,2),
+    alavont_name text,
+    alavont_description text,
+    alavont_category text,
+    alavont_image_url text,
+    alavont_in_stock boolean DEFAULT true NOT NULL,
+    alavont_is_upsell boolean DEFAULT false NOT NULL,
+    alavont_is_sample boolean DEFAULT false NOT NULL,
+    alavont_id text,
+    alavont_created_date text,
+    alavont_updated_date text,
+    alavont_created_by_id text,
+    alavont_created_by text,
+    lucifer_cruz_name text,
+    lucifer_cruz_image_url text,
+    lucifer_cruz_description text,
+    receipt_name text,
+    label_name text,
+    lab_name text,
+    stock_unit text DEFAULT '#'::text
+);
+CREATE SEQUENCE public.catalog_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.catalog_items_id_seq OWNED BY public.catalog_items.id;
+CREATE TABLE IF NOT EXISTS public.inventory_templates (
+    id integer NOT NULL,
+    tenant_id integer NOT NULL,
+    section_name text,
+    item_name text,
+    row_type text DEFAULT 'item'::text NOT NULL,
+    unit_type text DEFAULT '#'::text,
+    starting_quantity_default numeric(10,3) DEFAULT '0'::numeric,
+    display_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    catalog_item_id integer,
+    alavont_id text,
+    deduction_unit_type text DEFAULT '#'::text,
+    deduction_quantity_per_sale numeric(10,3) DEFAULT '1'::numeric,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    current_stock numeric(10,3)
+);
+CREATE SEQUENCE public.inventory_templates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.inventory_templates_id_seq OWNED BY public.inventory_templates.id;
+CREATE TABLE IF NOT EXISTS public.lab_tech_shifts (
+    id integer NOT NULL,
+    tenant_id integer NOT NULL,
+    tech_id integer NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    ip_address text,
+    clocked_in_at timestamp with time zone DEFAULT now() NOT NULL,
+    clocked_out_at timestamp with time zone,
+    summary json,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.lab_tech_shifts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.lab_tech_shifts_id_seq OWNED BY public.lab_tech_shifts.id;
+CREATE TABLE IF NOT EXISTS public.notifications (
+    id integer NOT NULL,
+    user_id integer NOT NULL,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text NOT NULL,
+    is_read boolean DEFAULT false NOT NULL,
+    resource_type text,
+    resource_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.notifications_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
+CREATE TABLE IF NOT EXISTS public.onboarding_requests (
+    id integer NOT NULL,
+    company_name text NOT NULL,
+    contact_name text NOT NULL,
+    contact_email text NOT NULL,
+    contact_phone text,
+    business_type text NOT NULL,
+    website text,
+    description text,
+    expected_order_volume text,
+    status text DEFAULT 'submitted'::text NOT NULL,
+    review_notes text,
+    reviewed_by integer,
+    tenant_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.onboarding_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.onboarding_requests_id_seq OWNED BY public.onboarding_requests.id;
+CREATE TABLE IF NOT EXISTS public.operator_print_profiles (
+    id integer NOT NULL,
+    user_id integer NOT NULL,
+    receipt_printer_id integer,
+    label_printer_id integer,
+    fallback_receipt_printer_id integer,
+    is_default boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.operator_print_profiles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.operator_print_profiles_id_seq OWNED BY public.operator_print_profiles.id;
+CREATE TABLE IF NOT EXISTS public.order_items (
+    id integer NOT NULL,
+    order_id integer NOT NULL,
+    catalog_item_id integer NOT NULL,
+    catalog_item_name text NOT NULL,
+    quantity integer NOT NULL,
+    unit_price numeric(10,2) NOT NULL,
+    total_price numeric(10,2) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    alavont_name text,
+    lucifer_cruz_name text,
+    receipt_name text,
+    label_name text,
+    lab_name text
+);
+CREATE SEQUENCE public.order_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.order_items_id_seq OWNED BY public.order_items.id;
+CREATE TABLE IF NOT EXISTS public.order_notes (
+    id integer NOT NULL,
+    order_id integer NOT NULL,
+    author_id integer NOT NULL,
+    content text NOT NULL,
+    is_encrypted text DEFAULT 'false'::text NOT NULL,
+    is_internal text DEFAULT 'false'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.order_notes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.order_notes_id_seq OWNED BY public.order_notes.id;
+CREATE TABLE IF NOT EXISTS public.orders (
+    id integer NOT NULL,
+    tenant_id integer NOT NULL,
+    customer_id integer NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    payment_status text DEFAULT 'unpaid'::text NOT NULL,
+    payment_token text,
+    payment_intent_id text,
+    subtotal numeric(10,2) NOT NULL,
+    tax numeric(10,2) DEFAULT '0'::numeric NOT NULL,
+    total numeric(10,2) NOT NULL,
+    shipping_address text,
+    notes text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    tracking_url text,
+    assigned_tech_id integer,
+    assigned_shift_id integer,
+    fulfillment_status text,
+    purged_at timestamp with time zone,
+    audit_token text,
+    alavont_cart_snapshot jsonb,
+    lucifer_checkout_snapshot jsonb
+);
+CREATE SEQUENCE public.orders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.orders_id_seq OWNED BY public.orders.id;
+CREATE TABLE IF NOT EXISTS public.print_assets (
+    id integer NOT NULL,
+    filename text NOT NULL,
+    original_name text NOT NULL,
+    mime_type text DEFAULT 'image/png'::text NOT NULL,
+    size_bytes integer DEFAULT 0 NOT NULL,
+    storage_path text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.print_assets_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_assets_id_seq OWNED BY public.print_assets.id;
+CREATE TABLE IF NOT EXISTS public.print_bridge_profiles (
+    id integer NOT NULL,
+    name text NOT NULL,
+    bridge_type text DEFAULT 'generic'::text NOT NULL,
+    bridge_url text NOT NULL,
+    api_key text DEFAULT ''::text NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    priority integer DEFAULT 10 NOT NULL,
+    network_subnet_hint text,
+    supported_roles text DEFAULT 'both'::text NOT NULL,
+    notes text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.print_bridge_profiles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_bridge_profiles_id_seq OWNED BY public.print_bridge_profiles.id;
+CREATE TABLE IF NOT EXISTS public.print_job_attempts (
+    id integer NOT NULL,
+    print_job_id integer NOT NULL,
+    attempt_number integer NOT NULL,
+    request_payload jsonb,
+    response_payload jsonb,
+    success boolean DEFAULT false NOT NULL,
+    error_message text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    route_used text,
+    duration_ms integer
+);
+CREATE SEQUENCE public.print_job_attempts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_job_attempts_id_seq OWNED BY public.print_job_attempts.id;
+CREATE TABLE IF NOT EXISTS public.print_jobs (
+    id integer NOT NULL,
+    order_id integer,
+    printer_id integer,
+    job_type text DEFAULT 'order_ticket'::text NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    render_format text DEFAULT 'text'::text NOT NULL,
+    payload_json jsonb NOT NULL,
+    rendered_text text,
+    error_message text,
+    retry_count integer DEFAULT 0 NOT NULL,
+    max_retries integer DEFAULT 5 NOT NULL,
+    last_attempt_at timestamp with time zone,
+    printed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    operator_user_id integer,
+    rendered_image_path text,
+    printed_via text
+);
+CREATE SEQUENCE public.print_jobs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_jobs_id_seq OWNED BY public.print_jobs.id;
+CREATE TABLE IF NOT EXISTS public.print_printers (
+    id integer NOT NULL,
+    name text NOT NULL,
+    role text DEFAULT 'kitchen'::text NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    bridge_url text DEFAULT ''::text NOT NULL,
+    bridge_printer_name text,
+    api_key text,
+    timeout_ms integer DEFAULT 8000 NOT NULL,
+    copies integer DEFAULT 1 NOT NULL,
+    paper_width text DEFAULT '80mm'::text NOT NULL,
+    supports_cut boolean DEFAULT true NOT NULL,
+    supports_cash_drawer boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    connection_type text DEFAULT 'bridge'::text NOT NULL,
+    direct_ip text,
+    direct_port integer DEFAULT 9100,
+    bridge_profile_id integer
+);
+CREATE SEQUENCE public.print_printers_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_printers_id_seq OWNED BY public.print_printers.id;
+CREATE TABLE IF NOT EXISTS public.print_settings (
+    id integer NOT NULL,
+    auto_print_orders boolean DEFAULT true NOT NULL,
+    auto_print_receipts boolean DEFAULT false NOT NULL,
+    retry_backoff_base_ms integer DEFAULT 3000 NOT NULL,
+    stale_job_minutes integer DEFAULT 5 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    auto_print_labels boolean DEFAULT false NOT NULL,
+    alert_on_label_failure boolean DEFAULT true NOT NULL,
+    include_logo boolean DEFAULT true NOT NULL,
+    include_operator_name boolean DEFAULT true NOT NULL,
+    show_discreet_notice boolean DEFAULT false NOT NULL,
+    paper_width text DEFAULT '80mm'::text NOT NULL,
+    brand_name text,
+    footer_message text
+);
+CREATE SEQUENCE public.print_settings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_settings_id_seq OWNED BY public.print_settings.id;
+CREATE TABLE IF NOT EXISTS public.print_templates (
+    id integer NOT NULL,
+    name text NOT NULL,
+    job_type text DEFAULT 'label'::text NOT NULL,
+    background_asset_id integer,
+    template_json jsonb DEFAULT '[]'::jsonb NOT NULL,
+    paper_width text DEFAULT '58mm'::text NOT NULL,
+    paper_height text DEFAULT 'auto'::text NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.print_templates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.print_templates_id_seq OWNED BY public.print_templates.id;
+CREATE TABLE IF NOT EXISTS public.shift_inventory_items (
+    id integer NOT NULL,
+    shift_id integer NOT NULL,
+    catalog_item_id integer,
+    item_name text NOT NULL,
+    unit_price numeric(10,2) DEFAULT '0'::numeric NOT NULL,
+    quantity_start numeric(10,3) DEFAULT '0'::numeric NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    template_item_id integer,
+    section_name text,
+    row_type text DEFAULT 'item'::text,
+    unit_type text DEFAULT '#'::text,
+    display_order integer DEFAULT 0,
+    quantity_sold numeric(10,3) DEFAULT '0'::numeric,
+    quantity_end numeric(10,3),
+    is_flagged boolean DEFAULT false
+);
+CREATE SEQUENCE public.shift_inventory_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.shift_inventory_items_id_seq OWNED BY public.shift_inventory_items.id;
+CREATE TABLE IF NOT EXISTS public.tenants (
+    id integer NOT NULL,
+    name text NOT NULL,
+    slug text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    plan text DEFAULT 'standard'::text NOT NULL,
+    contact_email text,
+    settings jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.tenants_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.tenants_id_seq OWNED BY public.tenants.id;
+CREATE TABLE IF NOT EXISTS public.users (
+    id integer NOT NULL,
+    clerk_id text NOT NULL,
+    email text,
+    first_name text,
+    last_name text,
+    role text DEFAULT 'customer'::text NOT NULL,
+    tenant_id integer,
+    mfa_enabled boolean DEFAULT false NOT NULL,
+    mfa_secret text,
+    mfa_backup_codes text,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_default_tech boolean DEFAULT false NOT NULL,
+    contact_phone text
+);
+CREATE SEQUENCE public.users_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+ALTER TABLE ONLY public.admin_settings ALTER COLUMN id SET DEFAULT nextval('public.admin_settings_id_seq'::regclass);
+ALTER TABLE ONLY public.audit_logs ALTER COLUMN id SET DEFAULT nextval('public.audit_logs_id_seq'::regclass);
+ALTER TABLE ONLY public.catalog_items ALTER COLUMN id SET DEFAULT nextval('public.catalog_items_id_seq'::regclass);
+ALTER TABLE ONLY public.inventory_templates ALTER COLUMN id SET DEFAULT nextval('public.inventory_templates_id_seq'::regclass);
+ALTER TABLE ONLY public.lab_tech_shifts ALTER COLUMN id SET DEFAULT nextval('public.lab_tech_shifts_id_seq'::regclass);
+ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
+ALTER TABLE ONLY public.onboarding_requests ALTER COLUMN id SET DEFAULT nextval('public.onboarding_requests_id_seq'::regclass);
+ALTER TABLE ONLY public.operator_print_profiles ALTER COLUMN id SET DEFAULT nextval('public.operator_print_profiles_id_seq'::regclass);
+ALTER TABLE ONLY public.order_items ALTER COLUMN id SET DEFAULT nextval('public.order_items_id_seq'::regclass);
+ALTER TABLE ONLY public.order_notes ALTER COLUMN id SET DEFAULT nextval('public.order_notes_id_seq'::regclass);
+ALTER TABLE ONLY public.orders ALTER COLUMN id SET DEFAULT nextval('public.orders_id_seq'::regclass);
+ALTER TABLE ONLY public.print_assets ALTER COLUMN id SET DEFAULT nextval('public.print_assets_id_seq'::regclass);
+ALTER TABLE ONLY public.print_bridge_profiles ALTER COLUMN id SET DEFAULT nextval('public.print_bridge_profiles_id_seq'::regclass);
+ALTER TABLE ONLY public.print_job_attempts ALTER COLUMN id SET DEFAULT nextval('public.print_job_attempts_id_seq'::regclass);
+ALTER TABLE ONLY public.print_jobs ALTER COLUMN id SET DEFAULT nextval('public.print_jobs_id_seq'::regclass);
+ALTER TABLE ONLY public.print_printers ALTER COLUMN id SET DEFAULT nextval('public.print_printers_id_seq'::regclass);
+ALTER TABLE ONLY public.print_settings ALTER COLUMN id SET DEFAULT nextval('public.print_settings_id_seq'::regclass);
+ALTER TABLE ONLY public.print_templates ALTER COLUMN id SET DEFAULT nextval('public.print_templates_id_seq'::regclass);
+ALTER TABLE ONLY public.shift_inventory_items ALTER COLUMN id SET DEFAULT nextval('public.shift_inventory_items_id_seq'::regclass);
+ALTER TABLE ONLY public.tenants ALTER COLUMN id SET DEFAULT nextval('public.tenants_id_seq'::regclass);
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+ALTER TABLE ONLY public.admin_settings
+    ADD CONSTRAINT admin_settings_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.catalog_items
+    ADD CONSTRAINT catalog_items_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.inventory_templates
+    ADD CONSTRAINT inventory_templates_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.lab_tech_shifts
+    ADD CONSTRAINT lab_tech_shifts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.onboarding_requests
+    ADD CONSTRAINT onboarding_requests_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.operator_print_profiles
+    ADD CONSTRAINT operator_print_profiles_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.order_items
+    ADD CONSTRAINT order_items_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.order_notes
+    ADD CONSTRAINT order_notes_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_assets
+    ADD CONSTRAINT print_assets_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_bridge_profiles
+    ADD CONSTRAINT print_bridge_profiles_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_job_attempts
+    ADD CONSTRAINT print_job_attempts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_jobs
+    ADD CONSTRAINT print_jobs_idempotency_key_unique UNIQUE (idempotency_key);
+ALTER TABLE ONLY public.print_jobs
+    ADD CONSTRAINT print_jobs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_printers
+    ADD CONSTRAINT print_printers_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_settings
+    ADD CONSTRAINT print_settings_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.print_templates
+    ADD CONSTRAINT print_templates_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.shift_inventory_items
+    ADD CONSTRAINT shift_inventory_items_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.tenants
+    ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.tenants
+    ADD CONSTRAINT tenants_slug_unique UNIQUE (slug);
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_clerk_id_unique UNIQUE (clerk_id);
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.admin_settings
+    ADD CONSTRAINT admin_settings_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_actor_id_users_id_fk FOREIGN KEY (actor_id) REFERENCES public.users(id);
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.catalog_items
+    ADD CONSTRAINT catalog_items_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.inventory_templates
+    ADD CONSTRAINT inventory_templates_catalog_item_id_catalog_items_id_fk FOREIGN KEY (catalog_item_id) REFERENCES public.catalog_items(id);
+ALTER TABLE ONLY public.inventory_templates
+    ADD CONSTRAINT inventory_templates_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.lab_tech_shifts
+    ADD CONSTRAINT lab_tech_shifts_tech_id_users_id_fk FOREIGN KEY (tech_id) REFERENCES public.users(id);
+ALTER TABLE ONLY public.lab_tech_shifts
+    ADD CONSTRAINT lab_tech_shifts_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id);
+ALTER TABLE ONLY public.onboarding_requests
+    ADD CONSTRAINT onboarding_requests_reviewed_by_users_id_fk FOREIGN KEY (reviewed_by) REFERENCES public.users(id);
+ALTER TABLE ONLY public.onboarding_requests
+    ADD CONSTRAINT onboarding_requests_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.operator_print_profiles
+    ADD CONSTRAINT operator_print_profiles_fallback_receipt_printer_id_print_print FOREIGN KEY (fallback_receipt_printer_id) REFERENCES public.print_printers(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.operator_print_profiles
+    ADD CONSTRAINT operator_print_profiles_label_printer_id_print_printers_id_fk FOREIGN KEY (label_printer_id) REFERENCES public.print_printers(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.operator_print_profiles
+    ADD CONSTRAINT operator_print_profiles_receipt_printer_id_print_printers_id_fk FOREIGN KEY (receipt_printer_id) REFERENCES public.print_printers(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.operator_print_profiles
+    ADD CONSTRAINT operator_print_profiles_user_id_users_id_fk FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.order_items
+    ADD CONSTRAINT order_items_catalog_item_id_catalog_items_id_fk FOREIGN KEY (catalog_item_id) REFERENCES public.catalog_items(id);
+ALTER TABLE ONLY public.order_items
+    ADD CONSTRAINT order_items_order_id_orders_id_fk FOREIGN KEY (order_id) REFERENCES public.orders(id);
+ALTER TABLE ONLY public.order_notes
+    ADD CONSTRAINT order_notes_author_id_users_id_fk FOREIGN KEY (author_id) REFERENCES public.users(id);
+ALTER TABLE ONLY public.order_notes
+    ADD CONSTRAINT order_notes_order_id_orders_id_fk FOREIGN KEY (order_id) REFERENCES public.orders(id);
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_customer_id_users_id_fk FOREIGN KEY (customer_id) REFERENCES public.users(id);
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+ALTER TABLE ONLY public.print_job_attempts
+    ADD CONSTRAINT print_job_attempts_print_job_id_print_jobs_id_fk FOREIGN KEY (print_job_id) REFERENCES public.print_jobs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.print_jobs
+    ADD CONSTRAINT print_jobs_operator_user_id_users_id_fk FOREIGN KEY (operator_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.print_jobs
+    ADD CONSTRAINT print_jobs_order_id_orders_id_fk FOREIGN KEY (order_id) REFERENCES public.orders(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.print_jobs
+    ADD CONSTRAINT print_jobs_printer_id_print_printers_id_fk FOREIGN KEY (printer_id) REFERENCES public.print_printers(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.print_printers
+    ADD CONSTRAINT print_printers_bridge_profile_id_print_bridge_profiles_id_fk FOREIGN KEY (bridge_profile_id) REFERENCES public.print_bridge_profiles(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.print_templates
+    ADD CONSTRAINT print_templates_background_asset_id_print_assets_id_fk FOREIGN KEY (background_asset_id) REFERENCES public.print_assets(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.shift_inventory_items
+    ADD CONSTRAINT shift_inventory_items_catalog_item_id_catalog_items_id_fk FOREIGN KEY (catalog_item_id) REFERENCES public.catalog_items(id);
+ALTER TABLE ONLY public.shift_inventory_items
+    ADD CONSTRAINT shift_inventory_items_shift_id_lab_tech_shifts_id_fk FOREIGN KEY (shift_id) REFERENCES public.lab_tech_shifts(id);
+ALTER TABLE ONLY public.shift_inventory_items
+    ADD CONSTRAINT shift_inventory_items_template_item_id_inventory_templates_id_f FOREIGN KEY (template_item_id) REFERENCES public.inventory_templates(id);
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_tenant_id_tenants_id_fk FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+-- ── DATA ─────────────────────────────────────────────────────
+
+INSERT INTO public.tenants VALUES (10, 'Alavont Therapeutics', 'alavont', 'active', 'standard', NULL, '{}', '2026-04-06 09:02:13.83781+00', '2026-04-06 09:02:13.83781+00') ON CONFLICT DO NOTHING;
+INSERT INTO public.tenants VALUES (1, 'Lucifer Cruz', 'lucifer-corp', 'active', 'pro', 'admin@acme.com', '{"maxUsers": 50, "allowCustomerSelfSignup": true}', '2026-04-02 04:43:22.481128+00', '2026-04-02 04:43:22.481128+00') ON CONFLICT DO NOTHING;
+
+INSERT INTO public.catalog_items VALUES (10, 10, 'Premium Smoke Collection', NULL, 'Psychedelics & Hallucinogens', NULL, 100.00, NULL, 0.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 100.00, 100.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Premium Smoke Collection', NULL, NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (11, 10, 'Premium Smoke Collection', NULL, 'Psychedelics & Hallucinogens', NULL, 65.00, NULL, 0.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 65.00, 65.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Premium Smoke Collection', NULL, NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (12, 10, 'Premium Smoke Collection', NULL, 'Psychedelics & Hallucinogens', NULL, 80.00, NULL, 0.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 80.00, 80.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Premium Smoke Collection', NULL, NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (14, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 25.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 25.00, 25.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (15, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 45.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 45.00, 45.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (16, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 80.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 80.00, 80.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (17, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 100.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 100.00, 100.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (18, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 190.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 190.00, 190.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (19, 10, 'AquaSilk Water-Based Lubricants', NULL, 'Depressants & Precursors', NULL, 25.00, NULL, 2.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 25.00, 25.00, NULL, NULL, 'Depressants & Precursors', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'AquaSilk Water-Based Lubricants', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (20, 10, 'AquaSilk Water-Based Lubricants', NULL, 'Depressants & Precursors', NULL, 40.00, NULL, 1.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 40.00, 40.00, NULL, NULL, 'Depressants & Precursors', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'AquaSilk Water-Based Lubricants', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (21, 10, 'AquaSilk Water-Based Lubricants', NULL, 'Depressants & Precursors', NULL, 200.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 200.00, 200.00, NULL, NULL, 'Depressants & Precursors', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'AquaSilk Water-Based Lubricants', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (23, 10, 'Crimson Brick Condoms', NULL, 'Pharmacy', NULL, 7.00, NULL, 22.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 7.00, 7.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Crimson Brick Condoms', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (24, 10, 'Obsidian Edge Collection', NULL, 'Pharmacy', NULL, 10.00, NULL, 17.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 10.00, 10.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Obsidian Edge Collection', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (26, 10, 'Vibrating Mechanical Dildo', NULL, 'Stimulants', NULL, 100.00, NULL, 0.00, true, 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 100.00, 100.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Vibrating Mecanical Dildo', 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (28, 10, 'Blue Cockring', NULL, 'Psychedelics & Hallucinogens', NULL, 5.00, NULL, 10.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 5.00, 5.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Blue Cockring', NULL, NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (30, 10, 'Leather Cockrings', NULL, 'Psychedelics & Hallucinogens', NULL, 25.00, NULL, 1.00, true, 'https://www.out-grow.com/cdn/shop/articles/reishi_mushrooms_next_to_a_cup_of_mushroom_tea_14a0a392-a388-4837-8374-364876236344_724x.jpg?v=1773240953', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 25.00, 25.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Leather Cockrings', 'https://www.out-grow.com/cdn/shop/articles/reishi_mushrooms_next_to_a_cup_of_mushroom_tea_14a0a392-a388-4837-8374-364876236344_724x.jpg?v=1773240953', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (31, 10, 'Silicone Cockrings', NULL, 'Psychedelics & Hallucinogens', NULL, 20.00, NULL, 0.00, true, 'https://assets.bonappetit.com/photos/659dc8eb07e73072ddb39849/master/pass/SHROOM-CHOCOLATES_5.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 20.00, 20.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Silicone Cockrings', 'https://assets.bonappetit.com/photos/659dc8eb07e73072ddb39849/master/pass/SHROOM-CHOCOLATES_5.jpg', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (33, 10, 'Restraints', NULL, 'Dissociative''s', NULL, 100.00, NULL, 0.00, true, 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 100.00, 100.00, NULL, NULL, 'Dissociative''s', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Restraints', 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (35, 10, 'Bong Stem', NULL, 'Accessories', NULL, 10.00, NULL, 1.00, true, 'https://www.bongoutlet.ca/cdn/shop/files/202404301923dy4PwhkpQ2_b42700f6-c8ec-4aa6-9047-a6a7c092f8cf_700x700.jpg?v=1715049353', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 10.00, 10.00, NULL, NULL, 'Accessories', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Bong Stem', 'https://www.bongoutlet.ca/cdn/shop/files/202404301923dy4PwhkpQ2_b42700f6-c8ec-4aa6-9047-a6a7c092f8cf_700x700.jpg?v=1715049353', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (36, 10, 'Butane Lighter', NULL, 'Accessories', NULL, 10.00, NULL, 2.00, true, 'https://img.kwcdn.com/product/fancy/b09d05ea-a6fb-4cfc-abd8-ed88c5e74727.jpg?imageView2/2/w/1300/q/90/format/avif', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 10.00, 10.00, NULL, NULL, 'Accessories', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Butain Lighter', 'https://img.kwcdn.com/product/fancy/b09d05ea-a6fb-4cfc-abd8-ed88c5e74727.jpg?imageView2/2/w/1300/q/90/format/avif', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (37, 10, 'Oil Burner', NULL, 'Accessories', NULL, 10.00, NULL, 2.00, true, 'https://rukminim2.flixcart.com/image/480/640/xif0q/hookah-mouth-tip/0/s/7/3-0113-all-of-all-original-imah9ysqcgnftubw.jpeg?q=90', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 10.00, 10.00, NULL, NULL, 'Accessories', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Oil Burner', 'https://rukminim2.flixcart.com/image/480/640/xif0q/hookah-mouth-tip/0/s/7/3-0113-all-of-all-original-imah9ysqcgnftubw.jpeg?q=90', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (38, 10, 'Midnight Lace Set', NULL, 'Pharmacy', NULL, 6.00, NULL, 21.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 6.00, 6.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Midnight Lace Set', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (39, 10, 'Velvet Embrace Set', NULL, 'Pharmacy', NULL, 4.00, NULL, 6.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 4.00, 4.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Velvet Embrace Set', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (40, 10, 'Crimson Silk Ensemble', NULL, 'Pharmacy', NULL, 3.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 3.00, 3.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Crimson Silk Ensemble', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (41, 10, 'Obsidian Desire Set', NULL, 'Pharmacy', NULL, 9.00, NULL, 23.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 9.00, 9.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Obsidian Desire Set', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (42, 10, 'Euphoria Lace Collection', NULL, 'Pharmacy', NULL, 7.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 7.00, 7.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Euphoria Lace Collection', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (43, 10, 'Soft Touch Satin Set', NULL, 'Pharmacy', NULL, 5.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 5.00, 5.00, NULL, NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Soft Touch Satin Set', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (25, 10, 'Sex Machine with Dildo', NULL, 'Stimulants', NULL, 300.00, NULL, 3.69, true, 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 300.00, 300.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Sex Machine with dildo', 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (27, 10, 'Metal Cockrings', NULL, 'Psychedelics & Hallucinogens', NULL, 20.00, NULL, 2.31, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 20.00, 20.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'metal Cockrings', NULL, NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (32, 10, 'Restraints', NULL, 'Dissociative''s', NULL, 60.00, NULL, 0.94, true, 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 60.00, 60.00, NULL, NULL, 'Dissociative''s', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Restraints', 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (34, 10, 'Sex Swing', NULL, 'Stimulants', NULL, 20.00, NULL, 1.26, true, 'https://breathelifehealingcenters.com/wp-content/uploads/2015/02/imgres4.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 20.00, 20.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Sex Swing', 'https://breathelifehealingcenters.com/wp-content/uploads/2015/02/imgres4.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (29, 10, 'Black Cockring', NULL, 'Psychedelics & Hallucinogens', NULL, 5.00, NULL, 10.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-09 01:33:40.29+00', 5.00, 5.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Black Cockring', NULL, NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (9, 10, 'Premium Smoke Collection', NULL, 'Psychedelics & Hallucinogens', NULL, 60.00, NULL, 0.00, true, NULL, '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 60.00, 60.00, NULL, NULL, 'Psychedelics & Hallucinogens', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Premium Smoke Collection', NULL, NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (22, 10, 'AquaSilk Water-Based Lubricants', NULL, 'Depressants & Precursors', NULL, 300.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 300.00, 300.00, NULL, NULL, 'Depressants & Precursors', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'AquaSilk Water-Based Lubricants', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', NULL, NULL, NULL, NULL, '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (13, 10, 'Intimate Gel Collection', NULL, 'Stimulants', NULL, 20.00, NULL, 89.70, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{}', '2026-04-06 09:12:44.45816+00', '2026-04-06 09:12:44.45816+00', 20.00, 20.00, NULL, NULL, 'Stimulants', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Intimate Gel Collection', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', NULL, NULL, NULL, NULL, 'G') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (47, 10, 'Kinky Toy', 'Push boundaries, embrace taboos, and surrender to your wildest kinks — this toy brings fantasies to life.', 'Kink &amp; Fetish', NULL, 16.99, NULL, 0.00, true, NULL, '{}', '{}', '2026-04-06 20:47:03.319958+00', '2026-04-11 09:47:51.278+00', 16.99, 14.99, 'Kinky Toy', NULL, 'Kink &amp; Fetish', NULL, true, false, false, 'wc_3496', '2025-01-02T21:47:08', '2025-06-12T17:36:18', NULL, NULL, 'Kinky Toy', NULL, 'Unpredictable, versatile, and wickedly kinky. This toy invites you to dive headfirst into your filthiest fantasies. Made for serious players who love variety in their power play. Key Features • Extreme Versatility – Adapts to multiple kinks and scenarios • Durable Build – Crafted for intense sessions • Safe Materials – Easy to sanitize and body-safe • Portable & Discreet – Ready for any scene, anywhere • Visual Fetish Appeal – Stimulates both body and mind Perfect For Adventurous gay men who crave intense kink sessions, versatile play, and heady submission or domination scenarios.', 'Kinky Toy', 'Kinky Toy', 'Kinky Toy', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (50, 10, '1 Month Membership', '1 Month Membership: Billed once, good for 30 days', 'Membership', '120231', 9.00, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2023/09/month.png', '{}', '{}', '2026-04-06 20:47:03.330636+00', '2026-04-11 09:47:51.292+00', 9.00, NULL, '1 Month Membership', NULL, 'Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/month.png', true, false, false, 'wc_1463', '2023-09-07T03:18:47', '2026-01-04T11:26:59', NULL, NULL, '1 Month Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/month.png', '1 Month Membership: Billed once, good for 30 days', '1 Month Membership', '1 Month Membership', '1 Month Membership', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (52, 10, 'Flexerall', NULL, 'Pharmacy', NULL, 6.00, NULL, 108.00, true, NULL, '{}', '{}', '2026-04-06 21:21:53.369868+00', '2026-04-06 21:21:53.369868+00', 6.00, NULL, 'Flexerall', NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Flexerall', NULL, NULL, 'Flexerall', 'Flexerall', 'Flexerall', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (53, 10, 'Doxycycline', NULL, 'Pharmacy', NULL, 5.00, NULL, 7.00, true, NULL, '{}', '{}', '2026-04-06 21:21:57.404466+00', '2026-04-06 21:21:57.404466+00', 5.00, NULL, 'Doxycycline', NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Doxycycline', NULL, NULL, 'Doxycycline', 'Doxycycline', 'Doxycycline', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (54, 10, 'Amoxicillin', NULL, 'Pharmacy', NULL, 5.00, NULL, 12.00, true, NULL, '{}', '{}', '2026-04-06 21:22:01.368042+00', '2026-04-06 21:22:01.368042+00', 5.00, NULL, 'Amoxicillin', NULL, 'Pharmacy', NULL, true, false, false, NULL, NULL, NULL, NULL, NULL, 'Amoxicillin', NULL, NULL, 'Amoxicillin', 'Amoxicillin', 'Amoxicillin', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (61, 10, '1/4 Ounce of T', '1/4 oz of Crystal Meth (" Tina" or "Ice") is 7 Grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', NULL, 80.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{"luciferCruzCategory": "Lube"}', '2026-04-08 22:33:56.523789+00', '2026-04-09 01:29:50.184+00', 80.00, 80.00, '1/4 Ounce of T', '1/4 oz of Crystal Meth (" Tina" or "Ice") is 7 Grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', true, true, false, 'UkOuvlLrnuEyT5B9Hvo9GNvihuD4B5bZTYBr', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Warming - Intimate Gel Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Intimate%20gel%20collection%20display.png?inline=true&key=1775675373910', 'A specialty lubricant that creates a gentle heat sensation upon contact.', 'Warming - Intimate Gel Collection', 'Warming - Intimate Gel Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (45, 10, 'Noble Essence Scented Candle', 'Create irresistible atmosphere with decadent candles, mists, and intimate fragrances.', 'Self Care &amp; Ambiance', 'noble-essence-scented-candle', 8.99, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2025/06/IMG_1212-2-1-scaled.jpg', '{}', '{}', '2026-04-06 20:47:03.304656+00', '2026-04-11 09:47:51.27+00', 8.99, 7.99, 'Noble Essence Scented Candle', NULL, 'Self Care &amp; Ambiance', 'https://lucifercruz.com/wp-content/uploads/2025/06/IMG_1212-2-1-scaled.jpg', true, false, false, 'wc_3663', '2025-01-27T18:14:10', '2026-01-04T11:27:00', NULL, NULL, 'Noble Essence Scented Candle', 'https://lucifercruz.com/wp-content/uploads/2025/06/IMG_1212-2-1-scaled.jpg', 'Set the stage for seduction with decadent candles, mists, and room fragrances that transform any space into an erotic sanctuary. Key Features • Sensual scented candles • Room sprays and body mists • Fragrance notes to heighten mood • Beautiful presentation • Ideal for pre-play ambiance Perfect For Lovers building the perfect erotic atmosphere.', 'Noble Essence Scented Candle', 'Noble Essence Scented Candle', 'Noble Essence Scented Candle', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (51, 10, 'Membership', 'Monthly Membership: Billed each month, good for 30 days', 'Membership', '220232', 7.00, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2023/09/monthly-1.png', '{}', '{}', '2026-04-06 20:47:03.334039+00', '2026-04-11 09:47:51.295+00', 7.00, NULL, 'Membership', NULL, 'Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/monthly-1.png', true, false, false, 'wc_1455', '2023-09-07T00:55:49', '2026-01-04T11:26:53', NULL, NULL, 'Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/monthly-1.png', 'Member benefits Discounts to exclusive products in our store 2 exclusive video updates per week. Additional bonus videos. 1000+ videos for unlimited viewing and downloading. Updated daily. No hidden costs. Gay owned and operated Secure payment Add Free paypal.Buttons({ style: { shape: ''rect'', color: ''gold'', layout: ''vertical'', label: ''subscribe'' }, createSubscription: function(data, actions) { return actions.subscription.create({ /* Creates the subscription */ plan_id: ''P-65N50531T69047338M7AH6CQ'' }); }, onApprove: function(data, actions) { alert(data.subscriptionID); // You can add optional success message for the subscriber here } }).render(''#paypal-button-container-P-65N50531T69047338M7AH6CQ''); // Renders the PayPal button', 'Membership', 'Membership', 'Membership', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (56, 10, 'Real Feel Deluxe No 7 Wallbanger Vibrating Dildo', 'The Real Feel Deluxe No. 7 Wallbanger is a realistic, dual-density vibrating dildo made from body-safe TPE that features a powerful suction cup base for hands-free use on any flat surface.', 'Dildo', 'NddRrNVIytI4wF6T00DUUtD7x1K7tFoJXQJY', 100.00, NULL, 5.00, true, 'https://i.frog.ink/7UQusv9G/187024876691-3_600.jpg?v=1741325312.593', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.505688+00', '2026-04-09 07:30:24.787+00', 100.00, 100.00, '1 Gram DMT', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', false, false, false, 'GZTZQRxodZyL02Cmw6VTGvhKpf5eZXMgncMp', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Real Feel Deluxe No 7 Wallbanger Vibrating Dildo', 'https://i.frog.ink/7UQusv9G/187024876691-3_600.jpg?v=1741325312.593', NULL, 'Real Feel Deluxe No 7 Wallbanger Vibrating Dildo', 'Real Feel Deluxe No 7 Wallbanger Vibrating Dildo', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (57, 10, 'DMT  Vape (Cartrige Only)', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', NULL, 65.00, NULL, 0.00, false, 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.509361+00', '2026-04-09 01:29:50.16+00', 65.00, 65.00, 'DMT  Vape (Cartrige Only)', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', false, true, false, 'NddRrNVIytI4wF6T00DUUtD7x1K7tFoJXQJY', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Realistic Foreskin Dildo', 'https://www.adultscare.com/theme/images/loose-skin-dildo-realistic.jpg', NULL, 'Realistic Foreskin Dildo', 'Realistic Foreskin Dildo', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (58, 10, 'DMT  Vape', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', NULL, 80.00, NULL, 0.00, false, 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.513064+00', '2026-04-09 01:29:50.174+00', 80.00, 80.00, 'DMT  Vape', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', false, false, false, 'Dt8JO5pMDXKLcE3VsYPZGXeDYijrXnZPO6Pt', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Real Feel Deluxe 11 Inch Wall Banger Vibe in Black', 'https://www.pinkcherry.com/cdn/shop/products/media_d92698fe-c4ce-41f6-8dd7-d8bdb014adb0.jpg?v=1748671117', NULL, 'Real Feel Deluxe 11 Inch Wall Banger Vibe in Black', 'Real Feel Deluxe 11 Inch Wall Banger Vibe in Black', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (48, 10, 'Premium Silicone lube', 'Slide into pleasure. This premium silicone lube keeps every stroke wet, wild, and ready for more.', 'Self Care &amp; Ambiance', NULL, 26.99, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2025/01/black-minimalist-coming-soon-poster_1225739-32.avif', '{}', '{}', '2026-04-06 20:47:03.323443+00', '2026-04-11 09:47:51.282+00', 26.99, NULL, 'Premium Silicone lube', NULL, 'Self Care &amp; Ambiance', 'https://lucifercruz.com/wp-content/uploads/2025/01/black-minimalist-coming-soon-poster_1225739-32.avif', true, false, false, 'wc_3497', '2025-01-02T21:45:52', '2025-06-17T09:17:43', NULL, NULL, 'Premium Silicone lube', 'https://lucifercruz.com/wp-content/uploads/2025/01/black-minimalist-coming-soon-poster_1225739-32.avif', 'Silky smooth and endlessly slick, this premium silicone lube is designed for men who demand stamina and luxury. Whether itÕs intense solo sessions or partnered pounding, stay gliding with no interruptions. Key Features ¥ Premium Silicone Formula Ð Ultra-slick, non-drying glide ¥ Body-Safe Ð Non-toxic, fragrance-free, and hypoallergenic ¥ Long-Lasting Ð Minimal reapplication needed, perfect for anal play ¥ Waterproof Ð Ideal for wet play, showers, and prolonged sessions ¥ Versatile Use Ð Compatible with most toys and condoms (non-silicone) Perfect For Men craving relentless glide, deeper penetration, and luxurious friction-free experiences Ñ whether solo or shared.', 'Premium Silicone lube', 'Premium Silicone lube', 'Premium Silicone lube', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (64, 10, '1 oz BDO', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', NULL, 25.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{"luciferCruzCategory": "Water Lube"}', '2026-04-08 22:33:56.533223+00', '2026-04-09 01:29:50.195+00', 25.00, 25.00, '1 oz BDO', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', true, true, false, 'llfERYuWndoPIDQlTnMZ8XxZ4yV7GpI9n881', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'AquaSilk Water-Based Lubricants', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/AquaSilk%20lubricant%20collection%20with%20water%20splashes.png?inline=true&key=1775675373894', 'A premium, hydrating lubricant that mimics natural moisture for a silk-like feel.', 'AquaSilk Water-Based Lubricants', 'AquaSilk Water-Based Lubricants', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (65, 10, '2 oz BDO', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', NULL, 40.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{"luciferCruzCategory": "Water Lube"}', '2026-04-08 22:33:56.53738+00', '2026-04-09 01:29:50.198+00', 40.00, 40.00, '2 oz BDO', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', true, true, false, 'jWtwrS0dZOYnVxnFv4P7Dk9T0hmlyaN7l0zY', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'AquaSilk Water-Based Lubricants', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/AquaSilk%20lubricant%20collection%20with%20water%20splashes.png?inline=true&key=1775675373894', 'A premium, hydrating lubricant that mimics natural moisture for a silk-like feel.', 'AquaSilk Water-Based Lubricants', 'AquaSilk Water-Based Lubricants', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (67, 10, '34 oz BDO ( 1 Liter)', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', NULL, 300.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{"luciferCruzCategory": "Water Lube"}', '2026-04-08 22:33:56.544415+00', '2026-04-09 01:29:50.208+00', 300.00, 300.00, '34 oz BDO ( 1 Liter)', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', true, false, false, 'fI5QuMhBnEwbaEWF0TSunI5iAmgYrCEU100J', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'AquaSilk Water-Based Lubricants', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/AquaSilk%20lubricant%20collection%20with%20water%20splashes.png?inline=true&key=1775675373894', 'A premium, hydrating lubricant that mimics natural moisture for a silk-like feel.', 'AquaSilk Water-Based Lubricants', 'AquaSilk Water-Based Lubricants', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (69, 10, 'Black Diamond', 'Sildenafil (Viagra):How it works: Usually taken 30�60 minutes before sexual activity.Duration: Lasts about 4�5 hours.Typical Dose: 50 mg - 100mg is standard, but this is 200 mg.', 'Pharmacy', NULL, 10.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.551005+00', '2026-04-09 01:29:50.214+00', 10.00, 10.00, 'Black Diamond', 'Sildenafil (Viagra):How it works: Usually taken 30�60 minutes before sexual activity.Duration: Lasts about 4�5 hours.Typical Dose: 50 mg - 100mg is standard, but this is 200 mg.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, false, false, '70ExPm2jUKpeo2UqrS4cnULGCRIAesLM18Xg', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Obsidian Edge Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/image_5b6f10d2.png?inline=true&key=1775675775009', 'A sleek, premium line of intimate essentials designed for a modern aesthetic.', 'Obsidian Edge Collection', 'Obsidian Edge Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (70, 10, '1 Gram Cocain', 'Cocaine is a powerful stimulant drug derived from the coca plant. It appears as a fine, white, crystalline powder (hydrochloride) or an off-white rock (crack), typically snorted to produce intense euphoria, energy, and alertness.', 'Stimulants', NULL, 300.00, NULL, 0.00, true, 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.55411+00', '2026-04-09 01:29:50.217+00', 300.00, 300.00, '1 Gram Cocain', 'Cocaine is a powerful stimulant drug derived from the coca plant. It appears as a fine, white, crystalline powder (hydrochloride) or an off-white rock (crack), typically snorted to produce intense euphoria, energy, and alertness.', 'Stimulants', 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', true, false, false, 'cxudOaAKohiAHfm4FCOp2nWKACCC6L9WXpvZ', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Sex Machine with dildo', 'https://img.bestvibe.com/cdn-cgi/image/format=auto/t/750x750/images/goods/2223/gallery/20231030194659_36789.gif', NULL, 'Sex Machine with dildo', 'Sex Machine with dildo', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (73, 10, '1 Watermellon Mushroom Gummie', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', NULL, 5.00, NULL, 10.00, true, 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', '{}', '{"luciferCruzCategory": "Cockring"}', '2026-04-08 22:33:56.563318+00', '2026-04-09 01:32:24.961+00', 5.00, 5.00, '1 Watermellon Mushroom Gummie', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', true, true, false, 'aGFPi3MCUFvy6LY2fNJrxc4qradn9ruvqLlo', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Blue Cockring', 'https://shevibe.com/cdn/shop/files/SE-6010-05-F__79313.1646856789.1280.1280.jpg?v=1721097400&width=1280', NULL, 'Blue Cockring', 'Blue Cockring', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (78, 10, '1 Ketamine Gram', 'Ketamine is a dissociative anesthetic that has some hallucinogenic effects. Ketamine distorts the perception of sight and sound and makes the user feel disconnected and not in control. It is referred to as a �dissociative anesthetic hallucinogen� because it makes patients feel detached from their pain and environment.', 'Dissociative''s', NULL, 100.00, NULL, 0.00, true, 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', '{}', '{"luciferCruzCategory": "Restraints"}', '2026-04-08 22:33:56.580464+00', '2026-04-09 01:29:50.246+00', 100.00, 100.00, '1 Ketamine Gram', 'Ketamine is a dissociative anesthetic that has some hallucinogenic effects. Ketamine distorts the perception of sight and sound and makes the user feel disconnected and not in control. It is referred to as a �dissociative anesthetic hallucinogen� because it makes patients feel detached from their pain and environment.', 'Dissociative''s', 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', true, false, false, '8FxVyNZvyX0Nj7sqBdCxzHwhd7Zs0bXnp72r', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Restraints', 'https://www.boyzshop.com/cdn/shop/products/BS-AG728-Male-Model-001.jpg?v=1624037634&width=533', NULL, 'Restraints', 'Restraints', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (79, 10, '1 Molly Pill', 'Molly: Crystalline powder or capsule form of 3,4-methylenedioxymethamphetamine (MDMA), a synthetic drug.', 'Stimulants', NULL, 20.00, NULL, 0.00, true, 'https://breathelifehealingcenters.com/wp-content/uploads/2015/02/imgres4.jpg', '{}', '{"luciferCruzCategory": "Sex Swing"}', '2026-04-08 22:33:56.583049+00', '2026-04-09 01:29:50.25+00', 20.00, 20.00, '1 Molly Pill', 'Molly: Crystalline powder or capsule form of 3,4-methylenedioxymethamphetamine (MDMA), a synthetic drug.', 'Stimulants', 'https://breathelifehealingcenters.com/wp-content/uploads/2015/02/imgres4.jpg', true, true, false, 'UYi7Z2QEMqCEUSKGst1PU9IW5GweOxL2huCj', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Sex Swing', 'https://i0.wp.com/resources.xrbrands.com/wp-content/uploads/2017/10/2017-10-13_0659.png?fit=895%2C498&ssl=1', NULL, 'Sex Swing', 'Sex Swing', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (80, 10, 'Oil Burning Bong Stem', 'Glass Piece', 'Accessories', NULL, 10.00, NULL, 0.00, true, 'https://www.bongoutlet.ca/cdn/shop/files/202404301923dy4PwhkpQ2_b42700f6-c8ec-4aa6-9047-a6a7c092f8cf_700x700.jpg?v=1715049353', '{}', '{"luciferCruzCategory": "Accessories"}', '2026-04-08 22:33:56.586082+00', '2026-04-09 01:29:50.252+00', 10.00, 10.00, 'Oil Burning Bong Stem', 'Glass Piece', 'Accessories', 'https://www.bongoutlet.ca/cdn/shop/files/202404301923dy4PwhkpQ2_b42700f6-c8ec-4aa6-9047-a6a7c092f8cf_700x700.jpg?v=1715049353', true, false, false, 'U7vWzJDYBHn7s4lv6sr57QoVkSOprwaeqJ1Q', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Bong Stem', 'https://www.bongoutlet.ca/cdn/shop/files/202404301923dy4PwhkpQ2_b42700f6-c8ec-4aa6-9047-a6a7c092f8cf_700x700.jpg?v=1715049353', NULL, 'Bong Stem', 'Bong Stem', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (81, 10, 'Oil Burner', 'Glass Piece', 'Accessories', NULL, 10.00, NULL, 0.00, true, 'https://img.kwcdn.com/product/fancy/b09d05ea-a6fb-4cfc-abd8-ed88c5e74727.jpg?imageView2/2/w/1300/q/90/format/avif', '{}', '{"luciferCruzCategory": "Accessories"}', '2026-04-08 22:33:56.589151+00', '2026-04-09 01:29:50.255+00', 10.00, 10.00, 'Oil Burner', 'Glass Piece', 'Accessories', 'https://img.kwcdn.com/product/fancy/b09d05ea-a6fb-4cfc-abd8-ed88c5e74727.jpg?imageView2/2/w/1300/q/90/format/avif', true, false, false, '1z8zZwP6ec6I7OeivklKoKbMBMgPuTmQBbC1', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Butain Lighter', 'https://img.kwcdn.com/product/fancy/b09d05ea-a6fb-4cfc-abd8-ed88c5e74727.jpg?imageView2/2/w/1300/q/90/format/avif', 'A powerful, wind-resistant lighter for various lighting needs.', 'Butain Lighter', 'Butain Lighter', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (82, 10, 'Butane Lighter', 'variouse color/styles', 'Accessories', NULL, 10.00, NULL, 0.00, true, 'https://rukminim2.flixcart.com/image/480/640/xif0q/hookah-mouth-tip/0/s/7/3-0113-all-of-all-original-imah9ysqcgnftubw.jpeg?q=90', '{}', '{"luciferCruzCategory": "Accessories"}', '2026-04-08 22:33:56.592079+00', '2026-04-09 01:29:50.258+00', 10.00, 10.00, 'Butane Lighter', 'variouse color/styles', 'Accessories', 'https://rukminim2.flixcart.com/image/480/640/xif0q/hookah-mouth-tip/0/s/7/3-0113-all-of-all-original-imah9ysqcgnftubw.jpeg?q=90', true, false, false, '0gM1jCB3fqfi7V7bwjAzs656Lss5JrUWNnwP', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Oil Burner', 'https://rukminim2.flixcart.com/image/480/640/xif0q/hookah-mouth-tip/0/s/7/3-0113-all-of-all-original-imah9ysqcgnftubw.jpeg?q=90', NULL, 'Oil Burner', 'Oil Burner', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (83, 10, 'Tremedol', 'Tremedol __: A common misspelling of Tramadol, an opioid pain medication.', 'Pharmacy', NULL, 6.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.595543+00', '2026-04-09 01:29:50.262+00', 6.00, 6.00, 'Tremedol', 'Tremedol __: A common misspelling of Tramadol, an opioid pain medication.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'WIi4kEPSTu1EhiqprfUZ4Ine9TTf8z4LMyWo', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Midnight Lace Set', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Midnight Lace Set', 'Midnight Lace Set', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (84, 10, 'Amoxicilin', 'Amoxicilin __: A common misspelling of Amoxicillin, a widely used antibiotic.', 'Pharmacy', NULL, 4.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.598485+00', '2026-04-09 01:29:50.264+00', 4.00, 4.00, 'Amoxicilin', 'Amoxicilin __: A common misspelling of Amoxicillin, a widely used antibiotic.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'brQgq0UfFJzuCVsuFWyxz6FQsfw2Alvcm5kB', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Velvet Embrace Set', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Velvet Embrace Set', 'Velvet Embrace Set', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (85, 10, 'Doxycycline', 'Doxycycline __: A tetracycline-class antibiotic used to treat a variety of bacterial infections.', 'Pharmacy', NULL, 3.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.60153+00', '2026-04-09 01:29:50.268+00', 3.00, 3.00, 'Doxycycline', 'Doxycycline __: A tetracycline-class antibiotic used to treat a variety of bacterial infections.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'HRdxxedW3vW1l2va0L2VErKPHaJoLTk4ZZdt', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Crimson Silk Ensemble', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Crimson Silk Ensemble', 'Crimson Silk Ensemble', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (86, 10, 'Zinotram', 'Zinotram __: A brand name for a combination medication containing tramadol and paracetamol for pain relief.', 'Pharmacy', NULL, 9.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.604314+00', '2026-04-09 01:29:50.272+00', 9.00, 9.00, 'Zinotram', 'Zinotram __: A brand name for a combination medication containing tramadol and paracetamol for pain relief.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'qKYL5f1o68obTFc2Wwi9yHXWGFev6upOZsqE', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Obsidian Desire Set', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Obsidian Desire Set', 'Obsidian Desire Set', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (88, 10, 'Flexerall�', 'Flexerall�', 'Pharmacy', NULL, 5.00, NULL, 0.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.610199+00', '2026-04-09 01:29:50.278+00', 5.00, 5.00, 'Flexerall�', 'Flexerall�', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'MCeTAMhqQUQTY0Nua0GwiNq1taKVKIoyPEPa', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Soft Touch Satin Set', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Soft Touch Satin Set', 'Soft Touch Satin Set', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (62, 10, 'Cooling - Intimate Gel Collection', 'A Half Ounce Crystal Meth (" Tina" or "Ice") is 14 Grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', NULL, 100.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{"luciferCruzCategory": "Lube"}', '2026-04-08 22:33:56.52763+00', '2026-04-09 01:29:50.188+00', 100.00, 100.00, 'Cooling - Intimate Gel Collection', 'A Half Ounce Crystal Meth (" Tina" or "Ice") is 14 Grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', true, false, false, '99nnZ5Nh5UvvKDH3O090WZY26ZK52q44FMak', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Cooling - Intimate Gel Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Intimate%20gel%20collection%20display.png?inline=true&key=1775675373910', 'A refreshing lubricant that provides a tingly, chilled sensation', 'Cooling - Intimate Gel Collection', 'Cooling - Intimate Gel Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (63, 10, 'Numbing - Intimate Gel Collection Lubricant', 'An Ounce of Crystal Meth (" Tina" or "Ice") is 28 grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', NULL, 190.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{"luciferCruzCategory": "Lube"}', '2026-04-08 22:33:56.530662+00', '2026-04-09 01:29:50.192+00', 190.00, 190.00, 'Numbing - Intimate Gel Collection Lubricant', 'An Ounce of Crystal Meth (" Tina" or "Ice") is 28 grams: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', true, false, false, 'CJOuXdjmvCElTPH7nXH7VOcbJ4ZuN9oVydG7', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Numbing - Intimate Gel Collection Lubricant', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Intimate%20gel%20collection%20display.png?inline=true&key=1775675373910', 'A refreshing lubricant that provides a tingly, chilled sensation', 'Numbing - Intimate Gel Collection Lubricant', 'Numbing - Intimate Gel Collection Lubricant', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (60, 10, '1 Ball T', 'an 1/8 oz of Crystal Meth (" Tina" or "Ice") 3.5 Grams and is also called a ball: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', NULL, 45.00, NULL, 0.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{"luciferCruzCategory": "Lube"}', '2026-04-08 22:33:56.520123+00', '2026-04-09 06:54:48.661+00', 45.00, 45.00, '1 Ball T', 'an 1/8 oz of Crystal Meth (" Tina" or "Ice") 3.5 Grams and is also called a ball: Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', true, true, false, 'Uo9vP5ROfDvFzLKs9eULvARQjH9untv8fC1A', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Aqua - Intimate Gel Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Intimate%20gel%20collection%20display.png?inline=true&key=1775675373910', 'A clean, water-based lubricant that provides a natural feel and easy cleanup.', 'Aqua - Intimate Gel Collection', 'Aqua - Intimate Gel Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (59, 10, '1 Gram T', '1 Gram of Crystal Meth (" Tina" or "Ice"): Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', NULL, 20.00, NULL, 39.00, true, 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', '{}', '{"luciferCruzCategory": "Lube"}', '2026-04-08 22:33:56.516553+00', '2026-04-09 21:14:05.153+00', 20.00, 20.00, '1 Gram T', '1 Gram of Crystal Meth (" Tina" or "Ice"): Large, clear, or bluish-white translucent shards that resemble broken glass, rock salt, or ice. This is often the purest and most potent form, typically smoked in small glass pipes or bongs', 'Stimulants', 'https://img.lb.wbmdstatic.com/vim/live/webmd/consumer_assets/site_images/article_thumbnails/BigBead/crystal_meth_bigBEAD/1800x1200_crystal_meth_bigBEAD.jpg', true, true, false, 'NK5AtcW0rfrUanetDvV7pl1Ngx9FBKwKzt92', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Silky - Intimate Gel Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Intimate%20gel%20collection%20display.png?inline=true&key=1775675373910', 'A smooth, long-lasting lubricant designed to enhance comfort and sensation.', 'Silky - Intimate Gel Collection', 'Silky - Intimate Gel Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (66, 10, '17 oz BDO (1/2 Liter)', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', NULL, 200.00, NULL, 0.00, true, 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', '{}', '{"luciferCruzCategory": "Water Lube"}', '2026-04-08 22:33:56.540927+00', '2026-04-09 01:29:50.202+00', 200.00, 200.00, '17 oz BDO (1/2 Liter)', 'BDO: G aka water, is a recreational drug used for its euphoric, sedative, and disinhibiting effects.', 'Depressants & Precursors', 'https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcQ24N5r4HbVoVD_nJtnu8GHZabguH8YSz_hsTXL8QLZXN7nspQ2zU2i0i5nRFXvknJSEVB6F73jREtyq1NwGb-jitqfHrsbGyfWZ4MakjIUJzeG8El2QhXAnxqnZRI-lfWRadTE-h4&usqp=CAc', true, false, false, 'TZasrxogfMo3L51hjJQYkZtD0eokKtS2yNxs', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'AquaSilk Water-Based Lubricants', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/AquaSilk%20lubricant%20collection%20with%20water%20splashes.png?inline=true&key=1775675373894', 'A premium, hydrating lubricant that mimics natural moisture for a silk-like feel.', 'AquaSilk Water-Based Lubricants', 'AquaSilk Water-Based Lubricants', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (71, 10, '1 Gram Cocain', 'Cocaine is a powerful stimulant drug derived from the coca plant. It appears as a fine, white, crystalline powder (hydrochloride) or an off-white rock (crack), typically snorted to produce intense euphoria, energy, and alertness.', 'Stimulants', NULL, 100.00, NULL, 0.00, true, 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.557464+00', '2026-04-09 01:29:50.221+00', 100.00, 100.00, '1 Gram Cocain', 'Cocaine is a powerful stimulant drug derived from the coca plant. It appears as a fine, white, crystalline powder (hydrochloride) or an off-white rock (crack), typically snorted to produce intense euphoria, energy, and alertness.', 'Stimulants', 'https://cdn.rehabfiles.com/sites/sanctuarylodge/wp-content/uploads/2025/04/cocaine-powder-and-roll-on-table.jpeg', true, true, false, 'ZDRqy3zCIN6awHWei6vBM7lfHdk2LYunAalM', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Vibrating Mecanical Dildo', 'https://images-na.ssl-images-amazon.com/images/I/710Ucm0vCAL._AC_UL375_SR375,375_.jpg', NULL, 'Vibrating Mecanical Dildo', 'Vibrating Mecanical Dildo', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (77, 10, '1/2 Gram Ketamine', 'Ketamine is a dissociative anesthetic that has some hallucinogenic effects. Ketamine distorts the perception of sight and sound and makes the user feel disconnected and not in control. It is referred to as a �dissociative anesthetic hallucinogen� because it makes patients feel detached from their pain and environment.', 'Dissociative''s', NULL, 60.00, NULL, 0.00, true, 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', '{}', '{"luciferCruzCategory": "Restraints"}', '2026-04-08 22:33:56.577463+00', '2026-04-09 01:29:50.242+00', 60.00, 60.00, '1/2 Gram Ketamine', 'Ketamine is a dissociative anesthetic that has some hallucinogenic effects. Ketamine distorts the perception of sight and sound and makes the user feel disconnected and not in control. It is referred to as a �dissociative anesthetic hallucinogen� because it makes patients feel detached from their pain and environment.', 'Dissociative''s', 'https://img1.wsimg.com/isteam/ip/1133c026-3023-47bf-89fc-bab69a8d9ccc/c38ad25d-6f73-4ab6-9801-a3f3565ba783.png', true, true, false, '4ULnTijLXG6lnZwMOjMjqbEcgMuPmwofHZuE', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Restraints', 'https://romanticdepot.com/store/wp-content/uploads/2024/10/Elite-BDSM-Behind-the-Back-Collar-Adjustable-Neck-and-Wrist-Restraints-%E2%80%93-Black-1.jpg', NULL, 'Restraints', 'Restraints', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (72, 10, '1 Gram Mushrooms', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', NULL, 20.00, NULL, 1.60, true, 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', '{}', '{"luciferCruzCategory": "Cockring"}', '2026-04-08 22:33:56.560311+00', '2026-04-09 21:08:49.467+00', 20.00, 20.00, '1 Gram Mushrooms', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', true, true, false, 'CHL0IjXa0hLVPfn1YuZQ6NCWwNgQRq4ZT45T', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'metal Cockrings', 'https://m.media-amazon.com/images/I/61-FniBDb5L.jpg', NULL, 'metal Cockrings', 'metal Cockrings', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (74, 10, '1 Rasberry Mushroom Gummie', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', NULL, 5.00, NULL, 10.00, true, 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', '{}', '{"luciferCruzCategory": "Cockring"}', '2026-04-08 22:33:56.566649+00', '2026-04-09 01:31:50.297+00', 5.00, 5.00, '1 Rasberry Mushroom Gummie', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', 'https://media.post.rvohealth.io/wp-content/uploads/2019/02/Psychedelic_Mushrooms_Color-1200x628-Facebook.jpg', true, true, false, 'XxnAaN7xcSX3IRgAeeRoVjknrepZ4yNvSCIx', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Black Cockring', 'https://i5.walmartimages.com/seo/Silicone-Penis-Ring-CENTEREL-3-in-1-Ultra-Soft-Ring-for-Men-Couple-Black_fcec371c-5255-4a93-a18d-6c16effce2ab.c8c7417bac320b5dd7cb7726f1eec0ea.jpeg?odnHeight=768&odnWidth=768&odnBg=FFFFFF', NULL, 'Black Cockring', 'Black Cockring', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (55, 10, '1/2 Gram DMT', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', NULL, 60.00, NULL, 0.00, false, 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', '{}', '{"luciferCruzCategory": "Dildo"}', '2026-04-08 22:33:56.498991+00', '2026-04-09 01:33:01.887+00', 60.00, 60.00, '1/2 Gram DMT', 'DMT: Dimethyltryptamine is a powerful serotonergic psychedelic drug of the tryptamine family, naturally found in many plants and animals. Known as "The Spirit Molecule," it induces intense, short-acting hallucinogenic experiences when smoked or ingested,', 'Psychedelics & Hallucinogens', 'https://cdn.adf.org.au/media/images/DMT.width-1524.jpg', false, true, false, 'HH6zy4Q6XNsjCjD79D6xy8yXk7FH2Lu34NWv', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Squirting Dildo', 'https://m.media-amazon.com/images/I/61r-xPaz3fL._AC_UF1000,1000_QL80_.jpg', NULL, 'Squirting Dildo', 'Squirting Dildo', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (76, 10, 'Mushroom Milk Chocolate', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', NULL, 20.00, NULL, 1.00, true, 'https://assets.bonappetit.com/photos/659dc8eb07e73072ddb39849/master/pass/SHROOM-CHOCOLATES_5.jpg', '{}', '{"luciferCruzCategory": "Cockring"}', '2026-04-08 22:33:56.573817+00', '2026-04-09 01:33:43.497+00', 20.00, 20.00, 'Mushroom Milk Chocolate', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', 'https://assets.bonappetit.com/photos/659dc8eb07e73072ddb39849/master/pass/SHROOM-CHOCOLATES_5.jpg', true, false, false, 'bMhzSgSdUTYO3ABJbDIhI8LrRUWTqaFInQwl', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Silicone Cockrings', 'https://cdn11.bigcommerce.com/s-1di03wle/images/stencil/800x800/products/3779/19729/ah337_retouch_bulk-001_695x.jpg__48727.1726614400.jpg?c=2', NULL, 'Silicone Cockrings', 'Silicone Cockrings', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (68, 10, 'Red Brick', 'Red Brick is a "dual-action" combination tablet used primarily to treat erectile dysfunction (ED). It contains two  ingredients in well-known brand-name medications:Sildenafil Citrate (100 mg): The active ingredient in Viagra.Tadalafil (20 mg): The active ingredient in Cialis.', 'Pharmacy', NULL, 7.00, NULL, 22.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.548025+00', '2026-04-09 01:36:32.15+00', 7.00, 7.00, 'Red Brick', 'Red Brick is a "dual-action" combination tablet used primarily to treat erectile dysfunction (ED). It contains two  ingredients in well-known brand-name medications:Sildenafil Citrate (100 mg): The active ingredient in Viagra.Tadalafil (20 mg): The active ingredient in Cialis.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, false, false, 'EpPu7v0nCRoQYR5az3AV3qKhsMXWbvDA6Gof', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Crimson Brick Condoms', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Crimson%20Brick%20Condoms%20in%20focus.png?inline=true&key=1775675726711', 'Reliable, high-quality protection with a unique, bold brand identity.', 'Crimson Brick Condoms', 'Crimson Brick Condoms', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (87, 10, 'Viagra', 'Viagra __: The brand name for sildenafil, a medication used to treat erectile dysfunction.', 'Pharmacy', NULL, 7.00, NULL, 6.00, true, 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', '{}', '{"luciferCruzCategory": "Lingerie"}', '2026-04-08 22:33:56.607263+00', '2026-04-09 01:37:39.986+00', 7.00, 7.00, 'Viagra', 'Viagra __: The brand name for sildenafil, a medication used to treat erectile dysfunction.', 'Pharmacy', 'https://assets.iflscience.com/assets/articleNo/71185/aImg/71449/drugs-o.webp', true, true, false, 'KSYBCdbNa6VxE05XiLHCB8nOkxxcZgROqsqP', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Euphoria Lace Collection', 'https://srv1058-files.hstgr.io/465a63004b9e49a2/api/preview/big/public_html/wp-content/uploads/2026/04/Luxurious%20lingerie%20set%20collection.png?inline=true&key=1775677870391', NULL, 'Euphoria Lace Collection', 'Euphoria Lace Collection', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (75, 10, 'Mushroom Tea Bag', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', NULL, 25.00, NULL, 1.00, true, 'https://www.out-grow.com/cdn/shop/articles/reishi_mushrooms_next_to_a_cup_of_mushroom_tea_14a0a392-a388-4837-8374-364876236344_724x.jpg?v=1773240953', '{}', '{"luciferCruzCategory": "Cockring"}', '2026-04-08 22:33:56.570327+00', '2026-04-09 21:09:12.873+00', 25.00, 25.00, 'Mushroom Tea Bag', 'Magic mushrooms, or "shrooms," are wild or cultivated fungi containing the psychoactive compounds psilocybin and psilocin, which induce hallucinations and altered perceptions.', 'Psychedelics & Hallucinogens', 'https://www.out-grow.com/cdn/shop/articles/reishi_mushrooms_next_to_a_cup_of_mushroom_tea_14a0a392-a388-4837-8374-364876236344_724x.jpg?v=1773240953', true, true, false, 'gHLsEAHnAkcSVat62Kn4cLwJ3whsiAZpZnTX', '2026-03-31T16:41:53.752000', '2026-03-31T16:41:53.752000', '69cbf85e0bb7753a7f80855a', 'luke@adiken.com', 'Leather Cockrings', 'https://m.media-amazon.com/images/I/715MR2lnBuL.jpg', NULL, 'Leather Cockrings', 'Leather Cockrings', 'Alavont Thereputics', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (44, 10, 'Premium Silicone lube', 'Slide into pleasure. This premium silicone lube keeps every stroke wet, wild, and ready for more.', 'Lubricants &amp; Enhancers', 'premium-silicone-lubricant-gallon', 205.99, NULL, 0.00, false, 'https://lucifercruz.com/wp-content/uploads/2025/01/16-Lube.png', '{}', '{}', '2026-04-06 20:47:03.025459+00', '2026-04-11 09:47:51.265+00', 205.99, NULL, 'Premium Silicone lube', NULL, 'Lubricants &amp; Enhancers', 'https://lucifercruz.com/wp-content/uploads/2025/01/16-Lube.png', false, false, false, 'wc_3868', '2025-02-13T13:34:25', '2026-01-04T11:26:55', NULL, NULL, 'Premium Silicone lube', 'https://lucifercruz.com/wp-content/uploads/2025/01/16-Lube.png', 'Silky smooth and endlessly slick, this premium silicone lube is designed for men who demand stamina and luxury. Whether itÕs intense solo sessions or partnered pounding, stay gliding with no interruptions. Key Features ¥ Premium Silicone Formula Ð Ultra-slick, non-drying glide ¥ Body-Safe Ð Non-toxic, fragrance-free, and hypoallergenic ¥ Long-Lasting Ð Minimal reapplication needed, perfect for anal play ¥ Waterproof Ð Ideal for wet play, showers, and prolonged sessions ¥ Versatile Use Ð Compatible with most toys and condoms (non-silicone) Perfect For Men craving relentless glide, deeper penetration, and luxurious friction-free experiences Ñ whether solo or shared.', 'Premium Silicone lube', 'Premium Silicone lube', 'Premium Silicone lube', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (46, 10, 'Salt Scrub -Noble Essence', 'A powerful fusion of exfoliation and sensual fragrance â€” where raw freshness meets luxury skin care.', 'Lubricants &amp; Enhancers', 'salt-scrub', 7.99, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2025/01/sugarscrub.webp', '{}', '{}', '2026-04-06 20:47:03.30755+00', '2026-04-11 09:47:51.274+00', 7.99, 6.99, 'Salt Scrub -Noble Essence', NULL, 'Lubricants &amp; Enhancers', 'https://lucifercruz.com/wp-content/uploads/2025/01/sugarscrub.webp', true, false, false, 'wc_3660', '2025-01-27T18:05:29', '2026-01-04T11:26:50', NULL, NULL, 'Salt Scrub -Noble Essence', 'https://lucifercruz.com/wp-content/uploads/2025/01/sugarscrub.webp', 'The Noble Essence Salt Scrub delivers a refined grooming experience that leaves your skin feeling renewed, smooth, and deeply hydrated. Infused with the signature fresh, spicy, and woody Noble Essence fragrance, every use transforms your skincare ritual into a bold, invigorating moment. Crafted with a hand-selected blend of natural salts, nourishing shea butter, moisturizing jojoba oil, gentle liquid Castile soap, and other high-quality ingredients, this scrub exfoliates dead skin cells while restoring essential moisture. The scent opens with crisp bergamot, unfolds into a warm peppery heart, and settles into a rich ambroxan base â€” making each application as intoxicating as it is effective. Key Features: â€¢ Fresh, spicy, and woody fragrance profile â€¢ Exfoliates, smooths, and hydrates the skin â€¢ Made with Shea Butter, Jojoba Oil, and Liquid Castile Soap â€¢ Hand-picked premium salts for gentle yet effective exfoliation â€¢ Leaves skin soft, supple, and lightly fragranced â€¢ Perfect for pre-shave prep or full-body pampering Perfect For: â€¢ Daily skincare rituals with a masculine edge â€¢ Prepping skin for a close shave â€¢ Gifting for men who appreciate luxury grooming', 'Salt Scrub -Noble Essence', 'Salt Scrub -Noble Essence', 'Salt Scrub -Noble Essence', '#') ON CONFLICT DO NOTHING;
+INSERT INTO public.catalog_items VALUES (49, 10, 'Annual Membership', 'Annual Membership: Billed each year, good for 365 days', 'Membership', '320233', 80.00, NULL, 0.00, true, 'https://lucifercruz.com/wp-content/uploads/2023/09/annual-2.png', '{}', '{}', '2026-04-06 20:47:03.326822+00', '2026-04-11 09:47:51.286+00', 80.00, NULL, 'Annual Membership', NULL, 'Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/annual-2.png', true, false, false, 'wc_1464', '2023-09-07T03:37:38', '2025-09-11T22:16:06', NULL, NULL, 'Annual Membership', 'https://lucifercruz.com/wp-content/uploads/2023/09/annual-2.png', 'Member benefits 2 exclusive video updates per week. Additional bonus videos. 1000+ videos for unlimited viewing and downloading. Updated daily. No hidden costs. Gay owned and operated Secure payment Add Free - Save by paying annually - paypal.Buttons({ style: { shape: ''rect'', color: ''gold'', layout: ''vertical'', label: ''subscribe'' }, createSubscription: function(data, actions) { return actions.subscription.create({ /* Creates the subscription */ plan_id: ''P-6JR405776P8820620M6OADKY'' }); }, onApprove: function(data, actions) { alert(data.subscriptionID); // You can add optional success message for the subscriber here } }).render(''#paypal-button-container-P-6JR405776P8820620M6OADKY''); // Renders the PayPal button', 'Annual Membership', 'Annual Membership', 'Annual Membership', '#') ON CONFLICT DO NOTHING;
+
+-- Reset sequences
+SELECT setval('public.tenants_id_seq', (SELECT COALESCE(MAX(id),1) FROM public.tenants));
+SELECT setval('public.catalog_items_id_seq', (SELECT COALESCE(MAX(id),1) FROM public.catalog_items));
+SELECT setval('public.users_id_seq', 200);
+
+-- Done!

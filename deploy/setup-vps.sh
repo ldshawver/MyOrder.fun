@@ -29,16 +29,11 @@ echo ""
 echo "→ Installing dependencies..."
 pnpm install --no-frozen-lockfile
 
-# ── 3. Run database migrations ───────────────────────────────────
+# ── 3. Create schema + seed catalog ─────────────────────────────
 echo ""
-echo "→ Running database migrations..."
-pnpm --filter @workspace/db run push-force
-
-# ── 4. Seed tenants + catalog ────────────────────────────────────
-echo ""
-echo "→ Seeding tenants and catalog data..."
-psql "$DATABASE_URL" -f deploy/seed-catalog.sql
-echo "✓ Catalog seeded (80 items, 2 tenants)"
+echo "→ Setting up database schema and seeding catalog..."
+psql "$DATABASE_URL" -f deploy/vps-database.sql
+echo "✓ Schema created and catalog seeded (80 items, 2 tenants)"
 
 # ── 5. Build frontend ────────────────────────────────────────────
 echo ""
