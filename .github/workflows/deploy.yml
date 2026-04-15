@@ -60,7 +60,7 @@ jobs:
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
             # Clear stale Docker builder cache so old bad layers don't conflict
-            docker builder prune -f
+            docker builder prune -af
             cd /opt/alavont/deploy
             docker compose build --pull
             echo "BUILD SUCCESS"
