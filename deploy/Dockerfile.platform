@@ -1,5 +1,7 @@
 # ── Stage 1: Build ──────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+# Use glibc (Debian) node so rollup's native binary matches the lockfile
+# platform. Only the final nginx stage needs to be small.
+FROM node:20 AS builder
 
 RUN npm install -g pnpm@10
 
