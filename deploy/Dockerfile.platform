@@ -13,10 +13,6 @@ COPY lib/api-client-react/package.json lib/api-client-react/
 COPY artifacts/api-server/package.json artifacts/api-server/
 COPY artifacts/platform/package.json   artifacts/platform/
 
-# Force flat (npm-style) node_modules so vite binary is physically present,
-# not hidden behind pnpm's virtual-store symlinks.
-RUN echo "node-linker=hoisted" >> .npmrc
-
 RUN NODE_ENV=development pnpm install --no-frozen-lockfile
 
 # Copy source
