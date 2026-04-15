@@ -42,15 +42,25 @@ jobs:
             --exclude='deploy/.env' \
             --exclude='deploy/nginx/ssl' \
             --exclude='node_modules' \
+            --exclude='**/node_modules' \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "chmod +x /opt/alavont/deploy/renew-cert.sh"
+
+      # ── 4b. Remove any stale node_modules on VPS (rsync --delete skips
+      #        excluded dirs, so old ones linger and corrupt Docker context)
+      - name: Clean stale node_modules on VPS
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
 
       # ── 5. Build new images ─────────────────────────────────────────
       - name: Build images
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
+            # Clear stale Docker builder cache so old bad layers don't conflict
+            docker builder prune -f
             cd /opt/alavont/deploy
             docker compose build --pull
             echo "BUILD SUCCESS"
