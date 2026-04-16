@@ -774,6 +774,8 @@ export const ListUsersResponse = zod.object({
       tenantName: zod.string().nullable().optional(),
       mfaEnabled: zod.boolean().nullable().optional(),
       isActive: zod.boolean(),
+      status: zod.enum(["pending", "approved", "rejected"]).optional(),
+      contactPhone: zod.string().nullable().optional(),
       createdAt: zod.coerce.date(),
     }),
   ),

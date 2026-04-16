@@ -79,10 +79,16 @@ router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promi
   let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
 
   if (query.data.role) {
-    rows = rows.filter(u => u.role === query.data.role);
+    // Compare against the normalized role so legacy values still match
+    rows = rows.filter(u => normalizeRole(u.role) === query.data.role);
   }
 
-  const data = ListUsersResponse.parse({ users: rows, total: rows.length });
+  // Normalize each row's role before Zod validation — a single user with a
+  // legacy role value (e.g. "customer") would otherwise throw and return an
+  // empty list to the client with no visible error.
+  const normalized = rows.map(u => ({ ...u, role: normalizeRole(u.role) }));
+
+  const data = ListUsersResponse.parse({ users: normalized, total: normalized.length });
   res.json(data);
 });
 

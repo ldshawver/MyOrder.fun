@@ -360,6 +360,7 @@ export interface UserProfile {
   tenantName?: string;
   mfaEnabled?: boolean;
   isActive: boolean;
+  status?: "pending" | "approved" | "rejected";
   createdAt: string;
 }
 
