@@ -26,7 +26,7 @@ export default function CatalogItemDetail() {
   const [editForm, setEditForm] = useState({ name: "", price: 0, category: "", description: "" });
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const canEdit = user?.role === "global_admin" || user?.role === "tenant_admin";
+  const canEdit = user?.role === "admin" || user?.role === "supervisor";
 
   const { data: item, isLoading, isError } = useGetCatalogItem(
     id,

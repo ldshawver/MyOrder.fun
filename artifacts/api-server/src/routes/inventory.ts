@@ -9,7 +9,7 @@ router.use(requireAuth, loadDbUser, requireDbUser);
 // GET /api/admin/inventory — all catalog items with stock data
 router.get(
   "/admin/inventory",
-  requireRole("tenant_admin", "global_admin", "lab_tech"),
+  requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -49,7 +49,7 @@ router.get(
 // PATCH /api/admin/inventory/:id — update stock_quantity and/or stock_unit
 router.patch(
   "/admin/inventory/:id",
-  requireRole("tenant_admin", "global_admin", "lab_tech"),
+  requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -86,7 +86,7 @@ router.patch(
 // PATCH /api/admin/inventory/petty-cash
 router.patch(
   "/admin/inventory/petty-cash",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }

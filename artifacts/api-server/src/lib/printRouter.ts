@@ -77,9 +77,9 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
     )
     .limit(10);
 
-  // Priority: global_admin > tenant_admin > business_sitter
-  const admin = admins.find(u => u.role === "global_admin")
-    ?? admins.find(u => u.role === "tenant_admin")
+  // Priority: admin > supervisor > business_sitter
+  const admin = admins.find(u => u.role === "admin")
+    ?? admins.find(u => u.role === "supervisor")
     ?? admins.find(u => u.role === "business_sitter");
 
   if (!admin) return null;

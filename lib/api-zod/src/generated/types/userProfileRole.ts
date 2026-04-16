@@ -10,8 +10,8 @@ export type UserProfileRole =
   (typeof UserProfileRole)[keyof typeof UserProfileRole];
 
 export const UserProfileRole = {
-  global_admin: "global_admin",
-  tenant_admin: "tenant_admin",
-  staff: "staff",
-  customer: "customer",
+  admin: "admin",
+  supervisor: "supervisor",
+  business_sitter: "business_sitter",
+  user: "user",
 } as const;

@@ -45,7 +45,7 @@ export default function Orders() {
     { query: { queryKey: ["listOrders"] } }
   );
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const isCustomer = user?.role === "customer";
+  const isCustomer = user?.role === "user";
 
   // Customers only see orders from the current browser session
   const visibleOrders = useMemo(() => {

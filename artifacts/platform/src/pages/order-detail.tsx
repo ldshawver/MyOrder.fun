@@ -55,11 +55,11 @@ export default function OrderDetail() {
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
-  const canEditStatus = user?.role === "global_admin" || user?.role === "tenant_admin" || user?.role === "staff";
-  const isCustomer = user?.role === "customer";
+  const canEditStatus = user?.role === "admin" || user?.role === "supervisor" || user?.role === "business_sitter";
+  const isCustomer = user?.role === "user";
 
   const { notifyOrderStatusChange } = usePushNotifications({
-    role: (user?.role || "customer") as "customer" | "staff" | "tenant_admin" | "global_admin",
+    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
   });
 
   const { data: order, isLoading: isOrderLoading } = useGetOrder(

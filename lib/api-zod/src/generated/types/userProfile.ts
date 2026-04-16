@@ -19,5 +19,6 @@ export interface UserProfile {
   mfaEnabled?: boolean;
   isActive: boolean;
   status?: "pending" | "approved" | "rejected";
+  contactPhone?: string;
   createdAt: Date;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from "react";
 
-export type NotificationRole = "customer" | "staff" | "tenant_admin" | "global_admin";
+export type NotificationRole = "user" | "business_sitter" | "supervisor" | "admin";
 
 interface UsePushNotificationsOptions {
   role: NotificationRole;
@@ -46,7 +46,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
   }, []);
 
   const notifyOrderPlaced = useCallback((orderId: number, customerName?: string) => {
-    if (role === "staff" || role === "tenant_admin" || role === "global_admin") {
+    if (role === "business_sitter" || role === "supervisor" || role === "admin") {
       sendNotification(
         "New Order Received",
         `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`
@@ -55,10 +55,10 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
   }, [role, sendNotification]);
 
   const notifyOrderReady = useCallback((orderId: number) => {
-    if (role === "customer") {
+    if (role === "user") {
       sendNotification(
         "Your Order is Ready!",
-        `Order #${orderId} has been completed and is ready. Thank you for choosing Alavont Therapeutics.`
+        `Order #${orderId} has been completed and is ready. Thank you for choosing Lucifer Cruz.`
       );
     }
   }, [role, sendNotification]);
@@ -67,7 +67,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     const messages: Record<string, { title: string; body: string }> = {
       processing: {
         title: "Order In Progress",
-        body: `Order #${orderId} is now being processed by our lab team.`,
+        body: `Order #${orderId} is now being processed by our team.`,
       },
       ready: {
         title: "Order Ready for Pickup",
@@ -82,7 +82,6 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     if (msg) sendNotification(msg.title, msg.body);
   }, [sendNotification]);
 
-  // Auto-request permission on mount
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       const timer = setTimeout(() => requestPermission(), 3000);

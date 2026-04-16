@@ -177,7 +177,7 @@ function AuthenticatedApp() {
   if (isError || !user) return <Redirect to="/waitlist" />;
 
   if (user.status === "pending" || user.status === "rejected") {
-    if (user.role !== "global_admin") {
+    if (user.role !== "admin") {
       return <Redirect to="/pending" />;
     }
   }
@@ -204,7 +204,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {user.role === "global_admin" && (
+        {user.role === "admin" && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -213,10 +213,10 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(user.role === "lab_tech" || user.role === "tenant_admin" || user.role === "global_admin") && (
+        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(user.role === "tenant_admin" || user.role === "global_admin") && (
+        {(user.role === "supervisor" || user.role === "admin") && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/mfa" component={MfaSetup} />
@@ -227,7 +227,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(user.role === "staff" || user.role === "tenant_admin" || user.role === "global_admin") && (
+        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
           <Route path="/staff" component={StaffQueue} />
         )}
 

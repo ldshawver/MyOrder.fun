@@ -31,13 +31,13 @@ function mapTenant(t: typeof tenantsTable.$inferSelect) {
 }
 
 // GET /api/tenants
-router.get("/tenants", requireRole("global_admin"), async (_req, res): Promise<void> => {
+router.get("/tenants", requireRole("admin"), async (_req, res): Promise<void> => {
   const rows = await db.select().from(tenantsTable).orderBy(desc(tenantsTable.createdAt));
   res.json(ListTenantsResponse.parse({ tenants: rows.map(mapTenant), total: rows.length }));
 });
 
 // GET /api/tenants/:id
-router.get("/tenants/:id", requireRole("global_admin", "tenant_admin"), async (req, res): Promise<void> => {
+router.get("/tenants/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantParams.safeParse({ id: parseInt(raw, 10) });
@@ -46,7 +46,7 @@ router.get("/tenants/:id", requireRole("global_admin", "tenant_admin"), async (r
     return;
   }
   // Tenant admin can only view their own tenant
-  if (actor.role === "tenant_admin" && params.data.id !== actor.tenantId) {
+  if (actor.role === "supervisor" && params.data.id !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -59,7 +59,7 @@ router.get("/tenants/:id", requireRole("global_admin", "tenant_admin"), async (r
 });
 
 // PATCH /api/tenants/:id
-router.patch("/tenants/:id", requireRole("global_admin"), async (req, res): Promise<void> => {
+router.patch("/tenants/:id", requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateTenantParams.safeParse({ id: parseInt(raw, 10) });
@@ -92,7 +92,7 @@ router.patch("/tenants/:id", requireRole("global_admin"), async (req, res): Prom
 });
 
 // GET /api/tenants/:id/summary
-router.get("/tenants/:id/summary", requireRole("global_admin", "tenant_admin", "staff"), async (req, res): Promise<void> => {
+router.get("/tenants/:id/summary", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantSummaryParams.safeParse({ id: parseInt(raw, 10) });
@@ -101,7 +101,7 @@ router.get("/tenants/:id/summary", requireRole("global_admin", "tenant_admin", "
     return;
   }
   const tenantId = params.data.id;
-  if (actor.role !== "global_admin" && actor.tenantId !== tenantId) {
+  if (actor.role !== "admin" && actor.tenantId !== tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }

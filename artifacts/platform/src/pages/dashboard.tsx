@@ -225,8 +225,8 @@ function FeaturedItems() {
 export default function Dashboard() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
 
-  /* Global admin */
-  if (user?.role === "global_admin") {
+  /* Admin */
+  if (user?.role === "admin") {
     return (
       <div className="space-y-8">
         <div>

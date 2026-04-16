@@ -85,7 +85,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     .orderBy(desc(ordersTable.createdAt));
 
   // Customers see only their own orders
-  if (actor.role === "customer") {
+  if (actor.role === "user") {
     rows = rows.filter(o => o.customerId === actor.id);
   }
   if (query.data.status) rows = rows.filter(o => o.status === query.data.status);
@@ -263,7 +263,7 @@ router.post("/orders", async (req, res): Promise<void> => {
 });
 
 // GET /api/orders/summary
-router.get("/orders/summary", requireRole("tenant_admin", "global_admin", "staff"), async (req, res): Promise<void> => {
+router.get("/orders/summary", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   if (!actor.tenantId) {
     res.status(400).json({ error: "No tenant" });
@@ -295,7 +295,7 @@ router.get("/orders/summary", requireRole("tenant_admin", "global_admin", "staff
 });
 
 // GET /api/orders/recent
-router.get("/orders/recent", requireRole("tenant_admin", "global_admin", "staff"), async (req, res): Promise<void> => {
+router.get("/orders/recent", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   if (!actor.tenantId) {
     res.status(400).json({ error: "No tenant" });
@@ -329,11 +329,11 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
-  if (actor.role === "customer" && order.customerId !== actor.id) {
+  if (actor.role === "user" && order.customerId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -342,7 +342,7 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id
-router.patch("/orders/:id", requireRole("staff", "tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateOrderStatusParams.safeParse({ id: parseInt(raw, 10) });
@@ -360,7 +360,7 @@ router.patch("/orders/:id", requireRole("staff", "tenant_admin", "global_admin")
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -455,14 +455,14 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
 
   let notes = await db.select().from(orderNotesTable).where(eq(orderNotesTable.orderId, params.data.id)).orderBy(desc(orderNotesTable.createdAt));
   // Customers cannot see internal notes
-  if (actor.role === "customer") {
+  if (actor.role === "user") {
     notes = notes.filter(n => n.isInternal !== "true");
   }
 
@@ -492,7 +492,7 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id/tracking — staff/admin only
-router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.patch("/orders/:id/tracking", requireRole("business_sitter", "supervisor", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const orderId = parseInt(raw, 10);
@@ -500,7 +500,7 @@ router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "globa
   const { trackingUrl } = req.body as { trackingUrl?: string };
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" }); return;
   }
   const [updated] = await db.update(ordersTable)
@@ -527,7 +527,7 @@ router.patch("/orders/:id/tracking", requireRole("staff", "tenant_admin", "globa
 });
 
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
-router.post("/orders/:id/fulfillment", requireRole("staff", "tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.post("/orders/:id/fulfillment", requireRole("business_sitter", "supervisor", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -540,7 +540,7 @@ router.post("/orders/:id/fulfillment", requireRole("staff", "tenant_admin", "glo
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" }); return;
   }
 
@@ -563,14 +563,14 @@ router.post("/orders/:id/fulfillment", requireRole("staff", "tenant_admin", "glo
 });
 
 // POST /api/orders/:id/purge — purge order data (admin only)
-router.post("/orders/:id/purge", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.post("/orders/:id/purge", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" }); return;
   }
 
@@ -632,7 +632,7 @@ router.post("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (actor.role !== "global_admin" && order.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }

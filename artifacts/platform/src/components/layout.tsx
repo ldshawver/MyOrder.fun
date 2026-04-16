@@ -30,21 +30,21 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const { signOut } = useClerk();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  usePushNotifications({ role: user.role as "customer" | "staff" | "tenant_admin" | "global_admin" });
+  usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
 
   const navItems = [
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
-    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
-    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
-    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["tenant_admin", "staff", "customer", "global_admin"], mobileShow: true },
-    { href: "/staff", label: "Sitter Queue", icon: ListTodo, roles: ["tenant_admin", "staff", "global_admin"], mobileShow: false },
-    { href: "/admin/users", label: "Users", icon: Users, roles: ["tenant_admin", "global_admin"], mobileShow: false },
-    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["tenant_admin", "global_admin", "lab_tech"], mobileShow: false },
-    { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["tenant_admin", "global_admin"], mobileShow: false },
-    { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["tenant_admin", "global_admin"], mobileShow: false },
-    { href: "/admin/print", label: "Print", icon: Printer, roles: ["tenant_admin", "global_admin"], mobileShow: false },
-    { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["tenant_admin", "global_admin"], mobileShow: false },
-    { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["global_admin"], mobileShow: false },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
+    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
+    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
+    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
+    { href: "/staff", label: "Sitter Queue", icon: ListTodo, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/admin/users", label: "Users", icon: Users, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/print", label: "Print", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
 
   const visibleNavItems = navItems.filter(item => item.roles.includes(user.role));

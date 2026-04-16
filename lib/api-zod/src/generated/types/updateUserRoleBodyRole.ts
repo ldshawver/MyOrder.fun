@@ -10,7 +10,7 @@ export type UpdateUserRoleBodyRole =
   (typeof UpdateUserRoleBodyRole)[keyof typeof UpdateUserRoleBodyRole];
 
 export const UpdateUserRoleBodyRole = {
-  tenant_admin: "tenant_admin",
-  staff: "staff",
-  customer: "customer",
+  supervisor: "supervisor",
+  business_sitter: "business_sitter",
+  user: "user",
 } as const;

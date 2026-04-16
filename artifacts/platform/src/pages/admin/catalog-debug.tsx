@@ -134,7 +134,7 @@ export default function CatalogDebug() {
     },
   });
 
-  if (!user || (user.role !== "tenant_admin" && user.role !== "global_admin")) {
+  if (!user || (user.role !== "supervisor" && user.role !== "admin")) {
     return (
       <div className="glass-card rounded-2xl p-8 text-center">
         <XCircle className="mx-auto text-red-400 mb-3" size={32} />

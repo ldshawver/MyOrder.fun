@@ -16,7 +16,7 @@ export const usersTable = pgTable("users", {
   email: text("email"),
   firstName: text("first_name"),
   lastName: text("last_name"),
-  role: text("role").notNull().default("customer"),
+  role: text("role").notNull().default("user"),
   tenantId: integer("tenant_id").references(() => tenantsTable.id),
   mfaEnabled: boolean("mfa_enabled").notNull().default(false),
   mfaSecret: text("mfa_secret"),

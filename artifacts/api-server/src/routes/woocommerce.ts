@@ -56,7 +56,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
 // POST /api/admin/woocommerce/sync
 router.post(
   "/admin/woocommerce/sync",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -166,7 +166,7 @@ router.post(
 // GET /api/admin/woocommerce/status — check if WC credentials are configured
 router.get(
   "/admin/woocommerce/status",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     res.json({
       configured: !!(process.env.WC_CONSUMER_KEY && process.env.WC_CONSUMER_SECRET),

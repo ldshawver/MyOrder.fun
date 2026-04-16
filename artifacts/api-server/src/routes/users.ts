@@ -16,10 +16,6 @@ const router: IRouter = Router();
 // Apply auth middleware
 router.use(requireAuth, loadDbUser, requireDbUser);
 
-function normalizeRole(role: string): string {
-  if (role === "admin") return "global_admin";
-  return role;
-}
 
 // GET /api/users/me
 router.get("/users/me", async (req, res): Promise<void> => {
@@ -36,7 +32,7 @@ router.get("/users/me", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: normalizeRole(user.role),
+    role: user.role,
     tenantId: user.tenantId ?? undefined,
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
@@ -63,7 +59,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: normalizeRole(user.role),
+    role: user.role,
     tenantId: user.tenantId ?? undefined,
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
@@ -74,8 +70,8 @@ router.post("/users/sync", async (req, res): Promise<void> => {
   res.json(data);
 });
 
-// GET /api/users — tenant admin sees their tenant's users; global admin sees all
-router.get("/users", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+// GET /api/users — admin sees all users; supervisor sees their tenant's users
+router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
@@ -84,7 +80,7 @@ router.get("/users", requireRole("tenant_admin", "global_admin"), async (req, re
   }
 
   let rows;
-  if (actor.role === "global_admin") {
+  if (actor.role === "admin") {
     rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
   } else {
     rows = await db.select().from(usersTable)
@@ -114,7 +110,7 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/users/:id/role
-router.patch("/users/:id/role", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateUserRoleParams.safeParse({ id: parseInt(raw, 10) });
@@ -129,20 +125,14 @@ router.patch("/users/:id/role", requireRole("tenant_admin", "global_admin"), asy
     return;
   }
 
-  // Tenant admin cannot assign global_admin role
-  if (actor.role === "tenant_admin" && body.data.role === "global_admin") {
-    res.status(403).json({ error: "Cannot assign global_admin role" });
-    return;
-  }
-
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, params.data.id)).limit(1);
   if (!target) {
     res.status(404).json({ error: "User not found" });
     return;
   }
 
-  // Tenant admin can only manage users in their own tenant
-  if (actor.role === "tenant_admin" && target.tenantId !== actor.tenantId) {
+  // Supervisors can only manage users in their own tenant
+  if (actor.role === "supervisor" && target.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Cannot manage users outside your tenant" });
     return;
   }

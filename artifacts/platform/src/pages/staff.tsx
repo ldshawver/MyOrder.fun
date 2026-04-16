@@ -846,7 +846,7 @@ export default function BusinessSitterQueue() {
     }
   };
 
-  const isStaff = user?.role === "staff" || user?.role === "tenant_admin" || user?.role === "global_admin";
+  const isStaff = user?.role === "business_sitter" || user?.role === "supervisor" || user?.role === "admin";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

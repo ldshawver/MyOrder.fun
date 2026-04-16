@@ -25,7 +25,7 @@ import crypto from "crypto";
 const totp = new TOTP();
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireRole("global_admin"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireRole("admin"));
 
 // GET /api/admin/stats
 router.get("/admin/stats", async (req, res): Promise<void> => {

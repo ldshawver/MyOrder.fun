@@ -105,7 +105,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 });
 
 // POST /api/catalog
-router.post("/catalog", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = CreateCatalogItemBody.safeParse(req.body);
   if (!body.success) {
@@ -166,7 +166,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.tenantId && actor.role !== "global_admin" && row.tenantId !== actor.tenantId) {
+  if (actor.tenantId && actor.role !== "admin" && row.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -174,7 +174,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/catalog/:id
-router.patch("/catalog/:id", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
@@ -192,7 +192,7 @@ router.patch("/catalog/:id", requireRole("tenant_admin", "global_admin"), async 
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "global_admin" && existing.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && existing.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -204,7 +204,7 @@ router.patch("/catalog/:id", requireRole("tenant_admin", "global_admin"), async 
 });
 
 // DELETE /api/catalog/:id
-router.delete("/catalog/:id", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.delete("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeleteCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
@@ -217,7 +217,7 @@ router.delete("/catalog/:id", requireRole("tenant_admin", "global_admin"), async
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "global_admin" && existing.tenantId !== actor.tenantId) {
+  if (actor.role !== "admin" && existing.tenantId !== actor.tenantId) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -229,7 +229,7 @@ router.delete("/catalog/:id", requireRole("tenant_admin", "global_admin"), async
 // Returns a full diagnostic breakdown of catalog items and why some may be hidden.
 router.get(
   "/admin/catalog/debug",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     const allRows = await db.select().from(catalogItemsTable)

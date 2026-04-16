@@ -8,7 +8,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireRole("global_admin", "tenant_admin"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireRole("admin", "supervisor"));
 
 router.get("/audit", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -20,8 +20,8 @@ router.get("/audit", async (req, res): Promise<void> => {
 
   let rows = await db.select().from(auditLogsTable).orderBy(desc(auditLogsTable.createdAt));
 
-  // Tenant admins only see their tenant's audit log
-  if (actor.role === "tenant_admin" && actor.tenantId) {
+  // Supervisors only see their tenant's audit log
+  if (actor.role === "supervisor" && actor.tenantId) {
     rows = rows.filter(r => r.tenantId === actor.tenantId);
   }
 

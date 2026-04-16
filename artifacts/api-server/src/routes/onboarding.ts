@@ -51,7 +51,7 @@ router.post("/onboarding/request", async (req, res): Promise<void> => {
 });
 
 // GET /api/onboarding/requests — global admin only
-router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requireRole("global_admin"), async (req, res): Promise<void> => {
+router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
   const query = ListOnboardingRequestsQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -79,7 +79,7 @@ router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requi
 });
 
 // GET /api/onboarding/requests/:id — global admin only
-router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("global_admin"), async (req, res): Promise<void> => {
+router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetOnboardingRequestParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -95,7 +95,7 @@ router.get("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, r
 });
 
 // PATCH /api/onboarding/requests/:id — global admin only
-router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("global_admin"), async (req, res): Promise<void> => {
+router.patch("/onboarding/requests/:id", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateOnboardingRequestParams.safeParse({ id: parseInt(raw, 10) });

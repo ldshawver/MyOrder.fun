@@ -676,7 +676,7 @@ export const GetCurrentUserResponse = zod.object({
   firstName: zod.string().optional(),
   lastName: zod.string().optional(),
   contactPhone: zod.string().optional(),
-  role: zod.enum(["global_admin", "tenant_admin", "staff", "customer"]),
+  role: zod.enum(["admin", "supervisor", "business_sitter", "user"]),
   tenantId: zod.number().optional(),
   tenantName: zod.string().optional(),
   mfaEnabled: zod.boolean().optional(),
@@ -690,7 +690,7 @@ export const GetCurrentUserResponse = zod.object({
  */
 export const ListUsersQueryParams = zod.object({
   role: zod
-    .enum(["global_admin", "tenant_admin", "staff", "customer"])
+    .enum(["admin", "supervisor", "business_sitter", "user"])
     .optional(),
 });
 
@@ -702,7 +702,7 @@ export const ListUsersResponse = zod.object({
       email: zod.string().nullable().optional(),
       firstName: zod.string().nullable().optional(),
       lastName: zod.string().nullable().optional(),
-      role: zod.enum(["global_admin", "tenant_admin", "staff", "customer"]),
+      role: zod.enum(["admin", "supervisor", "business_sitter", "user"]),
       tenantId: zod.number().nullable().optional(),
       tenantName: zod.string().nullable().optional(),
       mfaEnabled: zod.boolean().nullable().optional(),
@@ -721,7 +721,7 @@ export const UpdateUserRoleParams = zod.object({
 });
 
 export const UpdateUserRoleBody = zod.object({
-  role: zod.enum(["tenant_admin", "staff", "customer"]),
+  role: zod.enum(["supervisor", "business_sitter", "user"]),
 });
 
 export const UpdateUserRoleResponse = zod.object({
@@ -730,7 +730,7 @@ export const UpdateUserRoleResponse = zod.object({
   email: zod.string().nullable().optional(),
   firstName: zod.string().optional(),
   lastName: zod.string().optional(),
-  role: zod.enum(["global_admin", "tenant_admin", "staff", "customer"]),
+  role: zod.enum(["admin", "supervisor", "business_sitter", "user"]),
   tenantId: zod.number().optional(),
   tenantName: zod.string().optional(),
   mfaEnabled: zod.boolean().optional(),

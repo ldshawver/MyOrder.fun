@@ -63,7 +63,6 @@ router.post("/webhooks/clerk", async (req, res): Promise<void> => {
             firstName: firstName ?? undefined,
             lastName: lastName ?? undefined,
             contactPhone: contactPhone ?? undefined,
-            role: "customer",
             status: "pending",
           })
           .onConflictDoUpdate({

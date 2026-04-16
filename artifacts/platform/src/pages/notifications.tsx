@@ -10,7 +10,7 @@ export default function Notifications() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
 
   const { requestPermission, permission } = usePushNotifications({
-    role: (user?.role || "customer") as "customer" | "staff" | "tenant_admin" | "global_admin",
+    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
   });
 
   const { data, isLoading } = useListNotifications(

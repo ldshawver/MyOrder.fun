@@ -284,7 +284,7 @@ function isValidUrl(s: string): boolean {
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
 router.get(
   "/admin/products/import-template",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
       "29.99", "https://example.com/img.jpg", "Midnight Recovery Complex",
@@ -305,7 +305,7 @@ router.get(
 // Optional query: ?dryRun=true to validate without writing
 router.post(
   "/admin/products/import",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   upload.single("file") as any,
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
@@ -515,7 +515,7 @@ router.post(
 // ─── GET /api/admin/products — list all products (admin only) ─────────────────
 router.get(
   "/admin/products",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }

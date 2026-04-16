@@ -35,7 +35,7 @@ async function getOrCreateSettings(tenantId: number) {
 }
 
 // GET /api/admin/settings
-router.get("/admin/settings", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.get("/admin/settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
   const s = await getOrCreateSettings(actor.tenantId);
@@ -43,7 +43,7 @@ router.get("/admin/settings", requireRole("tenant_admin", "global_admin"), async
 });
 
 // PUT /api/admin/settings
-router.put("/admin/settings", requireRole("tenant_admin", "global_admin"), async (req, res): Promise<void> => {
+router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
 

@@ -18,7 +18,7 @@ export default function NewOrder() {
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
-    role: (user?.role || "customer") as "customer" | "staff" | "tenant_admin" | "global_admin",
+    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
   });
 
   const { data: catalog } = useListCatalogItems(

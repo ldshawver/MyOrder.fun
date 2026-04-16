@@ -10,8 +10,7 @@ export default function AdminUsers() {
   const updateRoleMutation = useUpdateUserRole();
 
   const handleRoleChange = (id: number, newRole: string) => {
-    // Only allow changing to specific roles as per API type
-    if (["tenant_admin", "staff", "customer"].includes(newRole)) {
+    if (["supervisor", "business_sitter", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as any } },
         {
@@ -59,8 +58,8 @@ export default function AdminUsers() {
                   <TableCell className="font-medium text-sm">{user.firstName} {user.lastName}</TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">{user.email}</TableCell>
                   <TableCell>
-                    {user.role === 'global_admin' ? (
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-primary px-2">Global Admin</span>
+                    {user.role === 'admin' ? (
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-primary px-2">Admin</span>
                     ) : (
                       <Select 
                         value={user.role} 
@@ -71,9 +70,9 @@ export default function AdminUsers() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent className="rounded-sm">
-                          <SelectItem value="tenant_admin" className="text-xs font-mono uppercase tracking-wider">Tenant Admin</SelectItem>
-                          <SelectItem value="staff" className="text-xs font-mono uppercase tracking-wider">Staff</SelectItem>
-                          <SelectItem value="customer" className="text-xs font-mono uppercase tracking-wider">Customer</SelectItem>
+                          <SelectItem value="supervisor" className="text-xs font-mono uppercase tracking-wider">Supervisor</SelectItem>
+                          <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Business Sitter</SelectItem>
+                          <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
                         </SelectContent>
                       </Select>
                     )}

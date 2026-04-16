@@ -40,7 +40,7 @@ import {
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
 
-const adminOnly = requireRole("tenant_admin", "global_admin");
+const adminOnly = requireRole("admin", "supervisor");
 
 // ── GET /api/print/routing ─────────────────────────────────────────────────
 // Returns active operator + their printers + health status. Admin monitor page.

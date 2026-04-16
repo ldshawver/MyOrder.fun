@@ -286,7 +286,7 @@ export default function Catalog() {
   const [addOpen, setAddOpen] = useState(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const canEdit = user?.role === "global_admin" || user?.role === "tenant_admin";
+  const canEdit = user?.role === "admin" || user?.role === "supervisor";
 
   const { data: categoriesRes } = useListCatalogCategories({ query: { queryKey: ["listCatalogCategories"] } });
   const { data, isLoading } = useListCatalogItems(

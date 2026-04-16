@@ -4,7 +4,7 @@ import { db, usersTable, onboardingRequestsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
-export type Role = "global_admin" | "tenant_admin" | "staff" | "customer";
+export type Role = "admin" | "supervisor" | "business_sitter" | "user";
 
 declare global {
   namespace Express {
@@ -53,7 +53,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   try {
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "customer", contactPhone })
+      .values({ clerkId, email, firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user", contactPhone })
       .returning();
     return created;
   } catch (err) {
@@ -126,7 +126,7 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
-  if (user.role === "global_admin") {
+  if (user.role === "admin") {
     next();
     return;
   }

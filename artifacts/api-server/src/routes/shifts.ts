@@ -132,7 +132,7 @@ function enrichInventoryWithSales(
 // ─── GET /api/shifts/inventory-template ───────────────────────────────────────
 router.get(
   "/shifts/inventory-template",
-  requireRole("staff", "tenant_admin", "global_admin"),
+  requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -167,7 +167,7 @@ router.get(
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
-  requireRole("staff", "tenant_admin", "global_admin"),
+  requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
     if (!tech.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -259,7 +259,7 @@ router.post(
 // ─── POST /api/shifts/clock-out ───────────────────────────────────────────────
 router.post(
   "/shifts/clock-out",
-  requireRole("staff", "tenant_admin", "global_admin"),
+  requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -333,7 +333,7 @@ router.post(
 // ─── GET /api/shifts/current ──────────────────────────────────────────────────
 router.get(
   "/shifts/current",
-  requireRole("staff", "tenant_admin", "global_admin"),
+  requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -366,11 +366,11 @@ router.get(
 // ─── GET /api/shifts/active-techs ────────────────────────────────────────────
 router.get(
   "/shifts/active-techs",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     const condition =
-      actor.role === "global_admin"
+      actor.role === "admin"
         ? eq(labTechShiftsTable.status, "active")
         : and(
             eq(labTechShiftsTable.status, "active"),
@@ -408,7 +408,7 @@ router.get(
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireRole("staff", "tenant_admin", "global_admin"),
+  requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -439,7 +439,7 @@ router.get(
 // GET /api/admin/inventory-template
 router.get(
   "/admin/inventory-template",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -457,7 +457,7 @@ router.get(
 // PATCH /api/admin/inventory-template/:id
 router.patch(
   "/admin/inventory-template/:id",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     const id = parseInt(req.params.id, 10);
@@ -516,7 +516,7 @@ router.patch(
 // POST /api/admin/inventory-template — create a new raw-material row
 router.post(
   "/admin/inventory-template",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
@@ -565,7 +565,7 @@ router.post(
 // DELETE /api/admin/inventory-template/:id — permanently remove a row
 router.delete(
   "/admin/inventory-template/:id",
-  requireRole("tenant_admin", "global_admin"),
+  requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     const id = parseInt(req.params.id, 10);
