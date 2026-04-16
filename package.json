@@ -10,6 +10,7 @@
   },
   "private": true,
   "devDependencies": {
+    "@tanstack/react-query": "catalog:",
     "prettier": "^3.8.1",
     "tsx": "catalog:",
     "typescript": "~5.9.2"
