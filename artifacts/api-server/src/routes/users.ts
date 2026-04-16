@@ -11,6 +11,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } from "../lib/auth";
 import { sendSms, smsAccountApproved } from "../lib/sms";
+import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 
 const router: IRouter = Router();
@@ -189,9 +190,11 @@ router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promis
     const message = smsAccountApproved(updated.firstName);
 
     // Fire SMS (graceful no-op if phone missing or Twilio unconfigured)
-    sendSms(updated.contactPhone, message).catch(() => {});
+    sendSms(updated.contactPhone, message).catch((err) => {
+      logger.error({ err, userId: updated.id }, "Failed to send account approval SMS");
+    });
 
-    // Write in-app notification
+    // Write in-app notification (non-critical — don't fail the response)
     try {
       await db.insert(notificationsTable).values({
         userId: updated.id,
@@ -202,8 +205,8 @@ router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promis
         resourceType: "user",
         resourceId: updated.id,
       });
-    } catch {
-      // Non-critical — don't fail the response
+    } catch (err) {
+      logger.error({ err, userId: updated.id }, "Failed to write account approval notification");
     }
   }
 
