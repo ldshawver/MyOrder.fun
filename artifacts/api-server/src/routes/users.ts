@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, usersTable } from "@workspace/db";
+import { db, usersTable, notificationsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -10,6 +10,8 @@ import {
   UpdateUserRoleResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } from "../lib/auth";
+import { sendSms, smsAccountApproved } from "../lib/sms";
+import { z } from "zod/v4";
 
 const router: IRouter = Router();
 
@@ -135,6 +137,80 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     createdAt: updated.createdAt,
   });
   res.json(data);
+});
+
+const UpdateUserStatusBody = z.object({
+  status: z.enum(["pending", "approved", "rejected"]),
+});
+
+// PATCH /api/users/:id/status — admin only
+router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+
+  const body = UpdateUserStatusBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const previousStatus = target.status;
+  const newStatus = body.data.status;
+
+  const [updated] = await db
+    .update(usersTable)
+    .set({ status: newStatus })
+    .where(eq(usersTable.id, id))
+    .returning();
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "UPDATE_USER_STATUS",
+    resourceType: "user",
+    resourceId: String(id),
+    metadata: { newStatus, previousStatus },
+    ipAddress: req.ip,
+  });
+
+  if (newStatus === "approved" && previousStatus !== "approved") {
+    const message = smsAccountApproved(updated.firstName);
+
+    // Fire SMS (graceful no-op if phone missing or Twilio unconfigured)
+    sendSms(updated.contactPhone, message).catch(() => {});
+
+    // Write in-app notification
+    try {
+      await db.insert(notificationsTable).values({
+        userId: updated.id,
+        type: "account_approved",
+        title: "Account Approved",
+        message: "Your account has been approved. You can now sign in and start placing orders.",
+        isRead: false,
+        resourceType: "user",
+        resourceId: updated.id,
+      });
+    } catch {
+      // Non-critical — don't fail the response
+    }
+  }
+
+  res.json({
+    id: updated.id,
+    status: updated.status,
+  });
 });
 
 export default router;

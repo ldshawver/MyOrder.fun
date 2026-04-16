@@ -66,3 +66,8 @@ export function smsStatusUpdate(orderId: number, status: string): string {
 export function smsTrackingReady(orderId: number, trackingUrl: string): string {
   return `Alavont Therapeutics — Your Order #${orderId} is on its way! Track your delivery: ${trackingUrl}`;
 }
+
+export function smsAccountApproved(firstName?: string | null): string {
+  const name = firstName ? ` ${firstName}` : "";
+  return `Hi${name}! Your Lucifer Cruz account has been approved — you can now sign in and start placing orders.`;
+}
