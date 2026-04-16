@@ -40,7 +40,7 @@ RUN pnpm --filter @workspace/platform run build
 # ── Stage 2: Serve with Nginx ────────────────────────────────────────────────
 FROM nginx:alpine AS runtime
 
-COPY --from=builder /app/artifacts/platform/dist/public /usr/share/nginx/html
+COPY --from=builder /app/artifacts/platform/dist /usr/share/nginx/html
 
 COPY deploy/nginx-spa.conf /etc/nginx/conf.d/default.conf
 
