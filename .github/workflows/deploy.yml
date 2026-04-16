@@ -5,6 +5,10 @@ name: Deploy to VPS
 # The deploy action syncs that checkout (Actions runner) → VPS via rsync.
 # Nothing is built from the VPS filesystem; everything comes from git.
 #
+# Contract: every build is tied to a specific, verified commit SHA.
+# The SHA is baked into the Docker image at build time (DEPLOY_SHA build arg)
+# and surfaced at runtime via GET /api/healthz and X-Deploy-SHA response header.
+#
 # If you hotfix the VPS directly, you MUST commit and push those changes
 # to GitHub first — otherwise the next deploy will overwrite your fix.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -33,31 +37,75 @@ jobs:
         # No `ref:` override — always deploys the exact commit
         # that triggered this workflow run (the push to main).
 
-      # ── 1b. Print exact commit being deployed ──────────────────────
-      - name: Show deployed commit
+      # ── 2. Pre-deploy integrity guard ──────────────────────────────
+      # Fails the workflow immediately if:
+      #   a) The checked-out SHA does not match the triggering SHA
+      #      (should be structurally impossible with actions/checkout@v4,
+      #       but makes the guarantee explicit and auditable)
+      #   b) The working tree is dirty (any modified/untracked files)
+      #      (guards against checkout corruption or accidental modification)
+      #
+      # This enforces the source-of-truth contract: every deploy must be
+      # tied to a single, clean, verified commit — never implicit state.
+      - name: Pre-deploy integrity guard
         run: |
           echo "════════════════════════════════════════════════════════"
-          echo "  DEPLOYING COMMIT"
-          echo "  SHA:     ${{ github.sha }}"
+          echo "  PRE-DEPLOY INTEGRITY CHECK"
+          echo "════════════════════════════════════════════════════════"
+
+          # ── a) SHA match ──────────────────────────────────────────
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          EXPECTED_SHA="${{ github.sha }}"
+
+          echo "  Expected SHA : $EXPECTED_SHA"
+          echo "  Checked-out  : $CHECKED_OUT_SHA"
+
+          if [ "$CHECKED_OUT_SHA" != "$EXPECTED_SHA" ]; then
+            echo ""
+            echo "  ✗ SHA MISMATCH — aborting."
+            echo "    Checked-out SHA ($CHECKED_OUT_SHA) does not match"
+            echo "    the triggering commit ($EXPECTED_SHA)."
+            echo "    This deploy will not proceed."
+            exit 1
+          fi
+          echo "  ✓ SHA match confirmed"
+
+          # ── b) Clean working tree ─────────────────────────────────
+          DIRTY="$(git status --porcelain)"
+          if [ -n "$DIRTY" ]; then
+            echo ""
+            echo "  ✗ DIRTY WORKING TREE — aborting."
+            echo "    The following files are modified or untracked:"
+            echo "$DIRTY" | sed 's/^/    /'
+            echo ""
+            echo "    All changes must be committed and pushed to GitHub"
+            echo "    before deploying. Never deploy from implicit state."
+            exit 1
+          fi
+          echo "  ✓ Working tree clean"
+
+          echo ""
+          echo "  Deploying commit:"
+          echo "  SHA:     $EXPECTED_SHA"
           echo "  Branch:  ${{ github.ref_name }}"
           echo "  Message: $(git log -1 --pretty=%s)"
           echo "  Author:  $(git log -1 --pretty='%an <%ae>')"
           echo "  Date:    $(git log -1 --pretty=%ci)"
           echo "════════════════════════════════════════════════════════"
 
-      # ── 2. Set up SSH agent with the VPS private key ───────────────
+      # ── 3. Set up SSH agent with the VPS private key ───────────────
       - name: Set up SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
 
-      # ── 3. Trust the VPS host fingerprint ──────────────────────────
+      # ── 4. Trust the VPS host fingerprint ──────────────────────────
       - name: Add VPS to known_hosts
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      # ── 4. Rsync source code to VPS ────────────────────────────────
+      # ── 5. Rsync source code to VPS ────────────────────────────────
       # Syncs the Actions runner checkout (= the exact pushed commit) to VPS.
       # --delete removes files on VPS that are gone from source, preventing
       # stale file accumulation. deploy/.env and ssl certs are excluded so
@@ -74,7 +122,7 @@ jobs:
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "chmod +x /opt/alavont/deploy/renew-cert.sh"
 
-      # ── 4b. Remove any stale node_modules on VPS ───────────────────
+      # ── 5b. Remove any stale node_modules on VPS ───────────────────
       # rsync --delete skips excluded dirs, so old node_modules linger
       # and can corrupt the Docker build context. Remove them explicitly.
       - name: Clean stale node_modules on VPS
@@ -82,30 +130,40 @@ jobs:
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
 
-      # ── 5. Build new images ─────────────────────────────────────────
+      # ── 6. Build new images ─────────────────────────────────────────
       # Runs on the VPS using the code just rsynced from the Actions runner.
       # docker builder prune -af clears all build cache so the build always
       # reflects the current source — no stale layer reuse.
+      #
+      # DEPLOY_SHA is passed as a Docker build arg so it is baked into the
+      # image at build time. The api-server reads it at startup and surfaces
+      # it via GET /api/healthz (body) and X-Deploy-SHA (response header on
+      # every request). This makes the running commit inspectable at any time:
+      #   curl -sI https://myorder.fun/api/healthz | grep X-Deploy-SHA
+      #   curl -s  https://myorder.fun/api/healthz | jq .sha
       - name: Build images
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
             echo "Building from source synced at: $(date -u)"
-            echo "Source SHA embedded in rsync: ${{ github.sha }}"
+            echo "Baking SHA into Docker image: ${{ github.sha }}"
 
-            # Write the deployed SHA into /opt/alavont so it is visible on VPS
+            # Record the deploying SHA on the VPS filesystem (belt-and-suspenders)
             echo "${{ github.sha }}" > /opt/alavont/.deployed-sha
             echo "${{ github.ref_name }}" >> /opt/alavont/.deployed-sha
             echo "$(date -u)" >> /opt/alavont/.deployed-sha
 
             # Clear all Docker builder cache — no hidden stale layer reuse
             docker builder prune -af
+
+            # Pass DEPLOY_SHA as an env var so docker-compose picks it up
+            # as a build arg for the api service (see deploy/docker-compose.yml)
             cd /opt/alavont/deploy
-            docker compose build --pull
+            DEPLOY_SHA="${{ github.sha }}" docker compose build --pull
             echo "BUILD SUCCESS — SHA ${{ github.sha }}"
           ENDSSH
 
-      # ── 6. Stop services, renew cert if needed, then redeploy ───────
+      # ── 7. Stop services, renew cert if needed, then redeploy ───────
       - name: Deploy (with cert renewal)
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
@@ -151,5 +209,7 @@ jobs:
             echo "════════════════════════════════════════════════════════"
             echo "  DEPLOY SUCCESS — $(date -u)"
             echo "  SHA: ${{ github.sha }}"
+            echo "  Verify: curl -sI https://myorder.fun/api/healthz | grep X-Deploy-SHA"
+            echo "          curl -s  https://myorder.fun/api/healthz | jq .sha"
             echo "════════════════════════════════════════════════════════"
           ENDSSH

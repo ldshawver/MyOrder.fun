@@ -38,6 +38,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+      args:
+        DEPLOY_SHA: ${DEPLOY_SHA:-unknown}
     restart: unless-stopped
     environment:
       PORT: "8080"
