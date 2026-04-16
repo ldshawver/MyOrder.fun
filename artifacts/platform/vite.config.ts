@@ -108,6 +108,7 @@ export default defineConfig(async () => {
       host: "0.0.0.0",
       port,
       strictPort: true,
+      allowedHosts: true,
     },
     preview: {
       host: "0.0.0.0",
