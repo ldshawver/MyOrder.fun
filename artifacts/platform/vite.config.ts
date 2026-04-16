@@ -89,6 +89,7 @@ export default defineConfig(async () => {
       dedupe: [
         "react",
         "react-dom",
+        "@tanstack/react-query",
         "@radix-ui/react-tooltip",
         "@clerk/react",
         "@clerk/shared",
