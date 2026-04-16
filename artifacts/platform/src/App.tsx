@@ -174,7 +174,8 @@ function AuthenticatedApp() {
   useSessionLogger(user?.email ?? "");
 
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
-  if (isError || !user) return <Redirect to="/waitlist" />;
+  if (isError) return <LoadingScreen />;
+  if (!user) return <Redirect to="/waitlist" />;
 
   if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
     return <PendingPage status={user.status} />;

@@ -16,6 +16,17 @@ import { z } from "zod";
 
 const router: IRouter = Router();
 
+const VALID_ROLES = ["admin", "supervisor", "business_sitter", "user"] as const;
+type ValidRole = typeof VALID_ROLES[number];
+
+function normalizeRole(role: unknown): ValidRole {
+  if (typeof role === "string" && (VALID_ROLES as readonly string[]).includes(role)) {
+    return role as ValidRole;
+  }
+  logger.warn({ rawRole: role }, "Invalid role value in DB — defaulting to 'user'");
+  return "user";
+}
+
 router.use(requireAuth, loadDbUser, requireDbUser);
 
 
@@ -29,7 +40,7 @@ router.get("/users/me", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: user.role,
+    role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
@@ -48,7 +59,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
-    role: user.role,
+    role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
