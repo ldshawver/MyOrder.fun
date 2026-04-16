@@ -72,12 +72,6 @@ export default function Account() {
               <div className="text-[10px] font-mono font-medium text-muted-foreground mb-2 uppercase tracking-widest">Assigned Role</div>
               <Badge variant="secondary" className="uppercase text-[10px] tracking-widest px-2 py-0.5 rounded-sm">{user.role.replace('_', ' ')}</Badge>
             </div>
-            {user.tenantName && (
-              <div className="pt-4 border-t border-border/30">
-                <div className="text-[10px] font-mono font-medium text-muted-foreground mb-1 uppercase tracking-widest">Organization</div>
-                <div className="font-medium text-base">{user.tenantName}</div>
-              </div>
-            )}
           </CardContent>
         </Card>
 
@@ -144,7 +138,7 @@ export default function Account() {
                   </div>
                 </div>
               </div>
-              {user.role === 'global_admin' && !user.mfaEnabled && (
+              {user.role === 'admin' && !user.mfaEnabled && (
                 <Button asChild className="w-full rounded-sm font-semibold uppercase tracking-wider text-xs h-10" data-testid="button-setup-mfa">
                   <Link href="/admin/mfa">Initialize MFA Setup</Link>
                 </Button>

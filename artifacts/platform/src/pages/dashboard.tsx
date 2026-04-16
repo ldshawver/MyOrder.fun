@@ -250,36 +250,13 @@ export default function Dashboard() {
     );
   }
 
-  const tenantId = user?.tenantId;
-
-  /* No tenant yet */
-  if (!tenantId) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mb-5">
-          <FlaskConical size={28} className="text-primary" />
-        </div>
-        <h2 className="text-xl font-bold mb-2" data-testid="text-dashboard-title">Welcome to Alavont</h2>
-        <p className="text-muted-foreground max-w-sm leading-relaxed mb-6 text-sm" data-testid="text-dashboard-subtitle">
-          Your account is pending tenant assignment. Once approved, your dashboard will be fully activated.
-        </p>
-        <Link
-          href="/onboarding"
-          className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:opacity-90 transition-all"
-        >
-          Request Tenant Access <ArrowRight size={15} />
-        </Link>
-      </div>
-    );
-  }
-
-  /* Customer — primary shop experience */
-  if (user?.role === "customer") {
+  /* User — primary shop experience */
+  if (user?.role === "user") {
     return <CustomerHome user={user} />;
   }
 
-  /* Tenant admin / staff — metrics dashboard */
-  return <AdminDashboard tenantId={tenantId} />;
+  /* Supervisor / business_sitter — metrics dashboard */
+  return <AdminDashboard />;
 }
 
 /* ─── Customer shopping home ────────────────────────────── */
@@ -343,10 +320,11 @@ function CustomerHome({ user }: { user: any }) {
 }
 
 /* ─── Admin / Staff metrics dashboard ───────────────────── */
-function AdminDashboard({ tenantId }: { tenantId: number }) {
+const HOUSE_TENANT_ID = 1;
+function AdminDashboard() {
   const { data: summary, isLoading: isLoadingSummary } = useGetTenantSummary(
-    tenantId,
-    { query: { queryKey: ["getTenantSummary", tenantId] } }
+    HOUSE_TENANT_ID,
+    { query: { queryKey: ["getTenantSummary", HOUSE_TENANT_ID] } }
   );
   const { data: recentOrders, isLoading: isLoadingOrders } = useGetRecentOrders(
     { limit: 5 },
@@ -372,7 +350,7 @@ function AdminDashboard({ tenantId }: { tenantId: number }) {
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest mb-1">{summary?.tenantName}</div>
+          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest mb-1">Lucifer Cruz</div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Overview</h1>
           <p className="text-muted-foreground text-sm mt-1" data-testid="text-dashboard-subtitle">Real-time performance metrics</p>
         </div>

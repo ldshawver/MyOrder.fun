@@ -38,16 +38,10 @@ router.get("/tenants", requireRole("admin"), async (_req, res): Promise<void> =>
 
 // GET /api/tenants/:id
 router.get("/tenants/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
-    return;
-  }
-  // Tenant admin can only view their own tenant
-  if (actor.role === "supervisor" && params.data.id !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
     return;
   }
   const [row] = await db.select().from(tenantsTable).where(eq(tenantsTable.id, params.data.id)).limit(1);
@@ -93,7 +87,6 @@ router.patch("/tenants/:id", requireRole("admin"), async (req, res): Promise<voi
 
 // GET /api/tenants/:id/summary
 router.get("/tenants/:id/summary", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantSummaryParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -101,12 +94,7 @@ router.get("/tenants/:id/summary", requireRole("admin", "supervisor", "business_
     return;
   }
   const tenantId = params.data.id;
-  if (actor.role !== "admin" && actor.tenantId !== tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
-
-  const orders = await db.select().from(ordersTable).where(eq(ordersTable.tenantId, tenantId));
+  const orders = await db.select().from(ordersTable);
   const totalOrders = orders.length;
   const pendingOrders = orders.filter(o => o.status === "pending").length;
   const totalRevenue = orders.reduce((sum, o) => sum + parseFloat(o.total as string), 0);
@@ -117,13 +105,12 @@ router.get("/tenants/:id/summary", requireRole("admin", "supervisor", "business_
     .filter(o => new Date(o.createdAt) >= startOfMonth)
     .reduce((s, o) => s + parseFloat(o.total as string), 0);
 
-  const [{ count: productCount }] = await db.select({ count: count() }).from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId));
-  const [{ count: customerCount }] = await db.select({ count: count() }).from(usersTable).where(eq(usersTable.tenantId, tenantId));
+  const [{ count: productCount }] = await db.select({ count: count() }).from(catalogItemsTable);
+  const [{ count: customerCount }] = await db.select({ count: count() }).from(usersTable);
 
   // Top 5 products by order count
   const items = await db.select().from(orderItemsTable)
-    .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-    .where(eq(ordersTable.tenantId, tenantId));
+    .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id));
 
   const productMap = new Map<number, { id: number; name: string; orderCount: number; revenue: number }>();
   for (const item of items) {

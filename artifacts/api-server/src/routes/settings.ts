@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -9,7 +10,6 @@ router.use(requireAuth, loadDbUser, requireDbUser);
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
   return {
     id: s.id,
-    tenantId: s.tenantId,
     menuImportEnabled: s.menuImportEnabled,
     showOutOfStock: s.showOutOfStock,
     enabledProcessors: s.enabledProcessors,
@@ -26,27 +26,23 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
   };
 }
 
-async function getOrCreateSettings(tenantId: number) {
-  const [existing] = await db.select().from(adminSettingsTable)
-    .where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+// Single-tenant: use the one global settings row, creating it if absent
+async function getOrCreateSettings() {
+  const [existing] = await db.select().from(adminSettingsTable).limit(1);
   if (existing) return existing;
+  const tenantId = await getHouseTenantId();
   const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
   return created;
 }
 
 // GET /api/admin/settings
-router.get("/admin/settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-  const s = await getOrCreateSettings(actor.tenantId);
+router.get("/admin/settings", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
   res.json(mapSettings(s));
 });
 
 // PUT /api/admin/settings
 router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
   const allowed = [
     "menuImportEnabled", "showOutOfStock", "enabledProcessors",
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
@@ -58,7 +54,7 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
     if (req.body[k] !== undefined) update[k] = req.body[k];
   }
 
-  const existing = await getOrCreateSettings(actor.tenantId);
+  const existing = await getOrCreateSettings();
   const [updated] = await db.update(adminSettingsTable)
     .set(update)
     .where(eq(adminSettingsTable.id, existing.id))

@@ -76,12 +76,8 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
   }
 
   // Fetch live catalog data for context
-  let catalog: typeof catalogItemsTable.$inferSelect[] = [];
-  if (actor.tenantId) {
-    catalog = await db.select().from(catalogItemsTable)
-      .where(eq(catalogItemsTable.tenantId, actor.tenantId))
-      .orderBy(asc(catalogItemsTable.name));
-  }
+  const catalog = await db.select().from(catalogItemsTable)
+    .orderBy(asc(catalogItemsTable.name));
 
   const catalogContext = catalog
     .filter(i => i.isAvailable)
@@ -130,20 +126,13 @@ Guidelines:
 
 // POST /api/ai/upsell
 router.post("/ai/upsell", async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const body = AiUpsellSuggestionsBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
   }
 
-  if (!actor.tenantId) {
-    res.json(AiUpsellSuggestionsResponse.parse({ suggestions: [], reasoning: "No tenant context" }));
-    return;
-  }
-
   const catalog = await db.select().from(catalogItemsTable)
-    .where(eq(catalogItemsTable.tenantId, actor.tenantId))
     .orderBy(asc(catalogItemsTable.name));
 
   // Get current cart items

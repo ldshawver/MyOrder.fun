@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -309,8 +310,7 @@ router.post(
   upload.single("file") as any,
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
+    const houseTenantId = await getHouseTenantId();
     const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
 
     if (!req.file?.buffer) {
@@ -409,7 +409,7 @@ router.post(
       const alavontId = row.alavont_id?.trim() || null;
 
       const values = {
-        tenantId: actor.tenantId,
+        tenantId: houseTenantId,
         name: alavontName,
         description: row.alavont_description?.trim() || null,
         category: alavontCategory,
@@ -452,10 +452,7 @@ router.post(
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
-            .where(and(
-              eq(catalogItemsTable.tenantId, actor.tenantId),
-              eq((catalogItemsTable as any).alavontId, alavontId),
-            ))
+            .where(eq((catalogItemsTable as any).alavontId, alavontId))
             .limit(1);
           existingId = existing?.id;
         }
@@ -478,7 +475,6 @@ router.post(
     if (!dryRun) {
       try {
         await db.insert(auditLogsTable).values({
-          tenantId: actor.tenantId,
           actorId: actor.id,
           actorEmail: actor.email,
           actorRole: actor.role,
@@ -517,10 +513,7 @@ router.get(
   "/admin/products",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-    const rows = await db.select().from(catalogItemsTable)
-      .where(eq(catalogItemsTable.tenantId, actor.tenantId));
+    const rows = await db.select().from(catalogItemsTable);
     res.json({ products: rows });
   }
 );

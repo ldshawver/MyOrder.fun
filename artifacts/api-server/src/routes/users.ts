@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
-import { db, usersTable, tenantsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { db, usersTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -13,18 +13,12 @@ import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } fr
 
 const router: IRouter = Router();
 
-// Apply auth middleware
 router.use(requireAuth, loadDbUser, requireDbUser);
 
 
 // GET /api/users/me
 router.get("/users/me", async (req, res): Promise<void> => {
   const user = req.dbUser!;
-  let tenantName: string | undefined;
-  if (user.tenantId) {
-    const [tenant] = await db.select({ name: tenantsTable.name }).from(tenantsTable).where(eq(tenantsTable.id, user.tenantId)).limit(1);
-    tenantName = tenant?.name;
-  }
   const data = GetCurrentUserResponse.parse({
     id: user.id,
     clerkId: user.clerkId,
@@ -33,8 +27,6 @@ router.get("/users/me", async (req, res): Promise<void> => {
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
     role: user.role,
-    tenantId: user.tenantId ?? undefined,
-    tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
@@ -44,14 +36,8 @@ router.get("/users/me", async (req, res): Promise<void> => {
 });
 
 // POST /api/users/sync — called after Clerk sign-in to ensure user record exists
-// This is the same as GET /api/users/me but via POST so it can be called on first-sign-in
 router.post("/users/sync", async (req, res): Promise<void> => {
   const user = req.dbUser!;
-  let tenantName: string | undefined;
-  if (user.tenantId) {
-    const [tenant] = await db.select({ name: tenantsTable.name }).from(tenantsTable).where(eq(tenantsTable.id, user.tenantId)).limit(1);
-    tenantName = tenant?.name;
-  }
   const data = GetCurrentUserResponse.parse({
     id: user.id,
     clerkId: user.clerkId,
@@ -60,8 +46,6 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
     role: user.role,
-    tenantId: user.tenantId ?? undefined,
-    tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
@@ -70,23 +54,15 @@ router.post("/users/sync", async (req, res): Promise<void> => {
   res.json(data);
 });
 
-// GET /api/users — admin sees all users; supervisor sees their tenant's users
+// GET /api/users — admin and supervisor see all users
 router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
     return;
   }
 
-  let rows;
-  if (actor.role === "admin") {
-    rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
-  } else {
-    rows = await db.select().from(usersTable)
-      .where(eq(usersTable.tenantId, actor.tenantId!))
-      .orderBy(usersTable.createdAt);
-  }
+  let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
 
   if (query.data.role) {
     rows = rows.filter(u => u.role === query.data.role);
@@ -131,12 +107,6 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     return;
   }
 
-  // Supervisors can only manage users in their own tenant
-  if (actor.role === "supervisor" && target.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Cannot manage users outside your tenant" });
-    return;
-  }
-
   const [updated] = await db.update(usersTable)
     .set({ role: body.data.role })
     .where(eq(usersTable.id, params.data.id))
@@ -147,7 +117,6 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     actorEmail: actor.email,
     actorRole: actor.role,
     action: "UPDATE_USER_ROLE",
-    tenantId: actor.tenantId,
     resourceType: "user",
     resourceId: String(params.data.id),
     metadata: { newRole: body.data.role, previousRole: target.role },
@@ -161,7 +130,6 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     firstName: updated.firstName ?? undefined,
     lastName: updated.lastName ?? undefined,
     role: updated.role,
-    tenantId: updated.tenantId,
     mfaEnabled: updated.mfaEnabled,
     isActive: updated.isActive,
     createdAt: updated.createdAt,

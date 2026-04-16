@@ -77,12 +77,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               </div>
             </div>
           </Link>
-          {user.tenantName && (
-            <div className="mt-3 px-1">
-              <div className="text-[10px] text-muted-foreground uppercase tracking-widest font-medium">Organization</div>
-              <div className="text-sm font-medium truncate mt-0.5" data-testid="text-sidebar-tenant">{user.tenantName}</div>
-            </div>
-          )}
         </div>
 
         {/* Nav */}

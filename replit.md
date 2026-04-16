@@ -1,8 +1,8 @@
-# Alavont Therapeutics — OrderFlow Platform
+# Lucifer Cruz / OrderFlow Platform
 
 ## Overview
 
-Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ordering platform for clinical supply chain management. Built as a pnpm workspace monorepo with TypeScript throughout.
+OrderFlow is a production-ready, single-tenant adult boutique ordering platform for Lucifer Cruz. Built as a pnpm workspace monorepo with TypeScript throughout. Deployed to VPS at myorder.fun. Single shared environment — all approved users share one global catalog, orders, and settings.
 
 **Company:** Alavont Therapeutics  
 **Logo:** `artifacts/platform/public/alavont-logo.png`  
@@ -18,9 +18,9 @@ Alavont Therapeutics is a production-ready, security-first multi-tenant SaaS ord
 - **AI Concierge** (`/ai-concierge`): Full-page "high-end electric therapeutic lounge" experience — animated floating ConciergeAvatar orb (Framer Motion, blink/float/pulse), FirstTimeWelcomeModal 4-step onboarding (localStorage key `hasSeenConciergeIntro_v2`), side panel with Quick Actions + AI-suggested product tiles, and electric chat bubbles. Signed-in users land here by default (HomeRedirect).
 - **Lab Tech Shift Management**: Staff (Business Sitters) clock in using a structured seeded inventory template (8 sections: Premium Smoke Collection, Intimate Gel Collection, AquaSilk, Crimson Brick Condoms, Obsidian Edge Collection, Accessories, Pharmacy, Petty Cash). Supports G (grams) and # (count) unit types. Active shift shows live grouped inventory with flagging for negative ending quantities. Admin can edit template defaults via Inventory → Shift Template tab. Orders auto-assigned to active shift.
 - **Clerk Webhook User Sync**: `POST /api/webhooks/clerk` handles `user.created`, `user.updated`, and `user.deleted` events from Clerk. New users are inserted with `status = 'pending'`; updates sync email/name/phone; deletes remove the record. Verified via svix signature. Requires `CLERK_WEBHOOK_SECRET` env var (set in Clerk Dashboard → Webhooks).
-- **User Approval Gate**: Users table has a `status` column (`pending | approved | rejected`, default `pending`). New sign-ups land on `/pending` (a branded "awaiting approval" page) until an admin sets their status to `approved`. `global_admin` role bypasses the gate. `requireApproved` middleware in `auth.ts` can be added to individual API routes. Existing users were backfilled to `approved`.
-- **Hardened RBAC**: 4 roles — `global_admin`, `tenant_admin`, `staff`, `customer`
-- **Tenant Onboarding**: Formal approval workflow (`submitted → pending_review → approved → rejected → invited → activated`), with global admin gating
+- **User Approval Gate**: Users table has a `status` column (`pending | approved | rejected`, default `pending`). New sign-ups land on `/pending` (a branded "awaiting approval" page) until an admin sets their status to `approved`. `admin` role bypasses the gate. `requireApproved` middleware in `auth.ts` can be added to individual API routes.
+- **Hardened RBAC**: 4 roles — `admin`, `supervisor`, `business_sitter`, `user`
+- **Single Tenant**: House tenant ID=1 "Lucifer Cruz". `getHouseTenantId()` in `lib/singleTenant.ts` caches this. All DB inserts requiring a NOT NULL tenantId FK use this. No per-user tenant assignment.
 - **Customer Ordering UI**: Catalog browsing, cart, checkout, order tracking with animated hourglass while pending
 - **Staff/Admin Dashboards**: Order queues, user management, catalog CRUD
 - **Tokenized Payments**: Stripe PaymentIntent integration (sandbox-safe fallback without keys)
@@ -61,9 +61,9 @@ Set `VITE_WOOCOMMERCE_URL=https://your-store.com` in environment variables to en
 - Rate limiting on all `/api` routes (15 min/300 req global, 1 min/10 req MFA, 1 hr/5 req onboarding)
 - Security headers: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Permissions-Policy`
 - RBAC middleware enforced in every route via `requireRole()`
-- Tenant isolation: every DB query filters by `actor.tenantId`; `global_admin` bypasses
+- No tenant isolation — single tenant, all queries are global
 - Audit log on all privileged actions
-- TOTP MFA for `global_admin` (via `otplib`)
+- TOTP MFA for `admin` (via `otplib`)
 - `app.set("trust proxy", 1)` for rate-limiter behind Replit proxy
 
 ## Structure

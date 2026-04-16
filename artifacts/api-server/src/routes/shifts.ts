@@ -10,6 +10,7 @@ import {
   usersTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -134,18 +135,10 @@ router.get(
   "/shifts/inventory-template",
   requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
     const rows = await db
       .select()
       .from(inventoryTemplatesTable)
-      .where(
-        and(
-          eq(inventoryTemplatesTable.tenantId, actor.tenantId),
-          eq(inventoryTemplatesTable.isActive, true),
-        )
-      )
+      .where(eq(inventoryTemplatesTable.isActive, true))
       .orderBy(asc(inventoryTemplatesTable.displayOrder));
 
     res.json({
@@ -170,7 +163,6 @@ router.post(
   requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
-    if (!tech.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
 
     const existing = await db
       .select()
@@ -189,9 +181,10 @@ router.post(
     }
 
     const ip = getClientIp(req);
+    const houseTenantId = await getHouseTenantId();
     const [shift] = await db
       .insert(labTechShiftsTable)
-      .values({ tenantId: tech.tenantId, techId: tech.id, status: "active", ipAddress: ip })
+      .values({ tenantId: houseTenantId, techId: tech.id, status: "active", ipAddress: ip })
       .returning();
 
     const { inventorySnapshot, inventory: legacyInventory = [] } = req.body as {
@@ -204,12 +197,7 @@ router.post(
       const templateRows = await db
         .select()
         .from(inventoryTemplatesTable)
-        .where(
-          and(
-            eq(inventoryTemplatesTable.tenantId, tech.tenantId!),
-            eq(inventoryTemplatesTable.isActive, true),
-          )
-        )
+        .where(eq(inventoryTemplatesTable.isActive, true))
         .orderBy(asc(inventoryTemplatesTable.displayOrder));
 
       const qtyByTemplateId = new Map<number, number>(
@@ -368,19 +356,10 @@ router.get(
   "/shifts/active-techs",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const condition =
-      actor.role === "admin"
-        ? eq(labTechShiftsTable.status, "active")
-        : and(
-            eq(labTechShiftsTable.status, "active"),
-            eq(labTechShiftsTable.tenantId, actor.tenantId!),
-          );
-
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
-      .where(condition)
+      .where(eq(labTechShiftsTable.status, "active"))
       .orderBy(desc(labTechShiftsTable.clockedInAt));
 
     const result = await Promise.all(
@@ -441,13 +420,9 @@ router.get(
   "/admin/inventory-template",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
     const rows = await db
       .select()
       .from(inventoryTemplatesTable)
-      .where(eq(inventoryTemplatesTable.tenantId, actor.tenantId))
       .orderBy(asc(inventoryTemplatesTable.displayOrder));
 
     res.json({ template: rows });
@@ -500,12 +475,7 @@ router.patch(
     const [updated] = await db
       .update(inventoryTemplatesTable)
       .set(update)
-      .where(
-        and(
-          eq(inventoryTemplatesTable.id, id),
-          eq(inventoryTemplatesTable.tenantId, actor.tenantId!),
-        )
-      )
+      .where(eq(inventoryTemplatesTable.id, id))
       .returning();
 
     if (!updated) { res.status(404).json({ error: "Template item not found" }); return; }
@@ -518,9 +488,6 @@ router.post(
   "/admin/inventory-template",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
     const {
       itemName = "New Item",
       sectionName,
@@ -541,10 +508,11 @@ router.post(
       deductionQuantityPerSale?: number;
     };
 
+    const houseTenantId = await getHouseTenantId();
     const [created] = await db
       .insert(inventoryTemplatesTable)
       .values({
-        tenantId: actor.tenantId,
+        tenantId: houseTenantId,
         itemName,
         sectionName: sectionName ?? null,
         rowType,
@@ -573,12 +541,7 @@ router.delete(
 
     const [deleted] = await db
       .delete(inventoryTemplatesTable)
-      .where(
-        and(
-          eq(inventoryTemplatesTable.id, id),
-          eq(inventoryTemplatesTable.tenantId, actor.tenantId!),
-        )
-      )
+      .where(eq(inventoryTemplatesTable.id, id))
       .returning();
 
     if (!deleted) { res.status(404).json({ error: "Not found" }); return; }

@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -58,9 +59,7 @@ router.post(
   "/admin/woocommerce/sync",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
+    const houseTenantId = await getHouseTenantId();
     const {
       storeUrl = process.env.WC_STORE_URL ?? "https://lucifercruz.com",
       consumerKey = process.env.WC_CONSUMER_KEY ?? "",
@@ -101,7 +100,7 @@ router.post(
         if (!lcName || regularPrice === 0) { skipped++; continue; }
 
         const values = {
-          tenantId: actor.tenantId,
+          tenantId: houseTenantId,
           name: lcName,
           description: shortDesc || description || null,
           category,
@@ -133,10 +132,7 @@ router.post(
         const [existing] = await db
           .select({ id: catalogItemsTable.id })
           .from(catalogItemsTable)
-          .where(and(
-            eq(catalogItemsTable.tenantId, actor.tenantId),
-            eq(catalogItemsTable.alavontId, `wc_${wcId}`),
-          ))
+          .where(eq(catalogItemsTable.alavontId, `wc_${wcId}`))
           .limit(1);
 
         if (existing) {

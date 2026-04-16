@@ -1,6 +1,6 @@
 import { getAuth } from "@clerk/express";
 import type { Request, Response, NextFunction } from "express";
-import { db, usersTable, onboardingRequestsTable } from "@workspace/db";
+import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -10,7 +10,6 @@ declare global {
   namespace Express {
     interface Request {
       dbUser?: typeof usersTable.$inferSelect;
-      tenantId?: number;
     }
   }
 }
@@ -37,23 +36,10 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   // Store null instead of empty string to avoid unique constraint conflicts
   const email = rawEmail || null;
 
-  // Look up phone from onboarding request if available
-  let contactPhone: string | undefined;
-  if (email) {
-    try {
-      const [obReq] = await db
-        .select({ contactPhone: onboardingRequestsTable.contactPhone })
-        .from(onboardingRequestsTable)
-        .where(eq(onboardingRequestsTable.contactEmail, email))
-        .limit(1);
-      contactPhone = obReq?.contactPhone ?? undefined;
-    } catch { /* non-critical */ }
-  }
-
   try {
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user", contactPhone })
+      .values({ clerkId, email, firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user" })
       .returning();
     return created;
   } catch (err) {
@@ -142,7 +128,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
   const user = await getOrCreateDbUser(req);
   if (user) {
     req.dbUser = user;
-    req.tenantId = user.tenantId ?? undefined;
   }
   next();
 }

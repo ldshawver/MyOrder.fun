@@ -14,6 +14,7 @@ import {
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -62,9 +63,6 @@ router.get("/catalog", async (req, res): Promise<void> => {
   }
 
   let rows = await db.select().from(catalogItemsTable)
-    .where(actor.tenantId
-      ? eq(catalogItemsTable.tenantId, actor.tenantId)
-      : undefined)
     .orderBy(asc(catalogItemsTable.name));
 
   const totalBeforeFilters = rows.length;
@@ -96,7 +94,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const paged = rows.slice((page - 1) * limit, page * limit);
 
   console.log(
-    `[catalog] tenant=${actor.tenantId} totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
+    `[catalog] totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
     (query.data.category ? ` category="${query.data.category}"` : "") +
     (query.data.search ? ` search="${query.data.search}"` : "")
   );
@@ -112,13 +110,10 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
     res.status(400).json({ error: body.error.message });
     return;
   }
-  if (!actor.tenantId) {
-    res.status(400).json({ error: "Actor has no tenant" });
-    return;
-  }
+  const tenantId = await getHouseTenantId();
   const [row] = await db.insert(catalogItemsTable).values({
     ...body.data,
-    tenantId: actor.tenantId,
+    tenantId,
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null,
     isAvailable: body.data.isAvailable ?? true,
@@ -136,8 +131,7 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
       alavontCategory: catalogItemsTable.alavontCategory,
       category: catalogItemsTable.category,
     })
-    .from(catalogItemsTable)
-    .where(actor.tenantId ? eq(catalogItemsTable.tenantId, actor.tenantId) : undefined);
+    .from(catalogItemsTable);
 
   const seen = new Set<string>();
   const categories: string[] = [];
@@ -166,10 +160,6 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.tenantId && actor.role !== "admin" && row.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
   res.json(GetCatalogItemResponse.parse(mapItem(row)));
 });
 
@@ -190,10 +180,6 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
   const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
-    return;
-  }
-  if (actor.role !== "admin" && existing.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
     return;
   }
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = { ...body.data };
@@ -217,10 +203,6 @@ router.delete("/catalog/:id", requireRole("admin", "supervisor"), async (req, re
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "admin" && existing.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
   await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id));
   res.sendStatus(204);
 });
@@ -233,7 +215,6 @@ router.get(
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
     const allRows = await db.select().from(catalogItemsTable)
-      .where(actor.tenantId ? eq(catalogItemsTable.tenantId, actor.tenantId) : undefined)
       .orderBy(asc(catalogItemsTable.id));
 
     const analyzed = allRows.map(r => {
@@ -300,7 +281,7 @@ router.get(
       ).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
     };
 
-    console.log(`[catalog/debug] tenant=${actor.tenantId} total=${allRows.length} visibleAlavont=${summary.visibleAlavont} visibleLC=${summary.visibleLC}`);
+    console.log(`[catalog/debug] total=${allRows.length} visibleAlavont=${summary.visibleAlavont} visibleLC=${summary.visibleLC}`);
 
     res.json({ summary, items: analyzed });
   }

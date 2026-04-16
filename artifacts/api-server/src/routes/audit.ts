@@ -11,7 +11,6 @@ const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireRole("admin", "supervisor"));
 
 router.get("/audit", async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const query = ListAuditLogsQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -20,14 +19,8 @@ router.get("/audit", async (req, res): Promise<void> => {
 
   let rows = await db.select().from(auditLogsTable).orderBy(desc(auditLogsTable.createdAt));
 
-  // Supervisors only see their tenant's audit log
-  if (actor.role === "supervisor" && actor.tenantId) {
-    rows = rows.filter(r => r.tenantId === actor.tenantId);
-  }
-
   if (query.data.action) rows = rows.filter(r => r.action === query.data.action);
   if (query.data.actorId) rows = rows.filter(r => r.actorId === query.data.actorId);
-  if (query.data.tenantId) rows = rows.filter(r => r.tenantId === query.data.tenantId);
 
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 50;
