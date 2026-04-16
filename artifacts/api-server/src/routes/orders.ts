@@ -31,6 +31,8 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { normalizeCheckoutCart, buildMerchantPayloadLines, type NormalizedCartLine } from "../lib/checkoutNormalizer";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -122,6 +124,16 @@ router.post("/orders", async (req, res): Promise<void> => {
     resolvedItems.push({ catalogItem: ci, quantity: item.quantity });
   }
 
+  // Dual-brand normalization: validates merchant fields, classifies local_mapped vs woo,
+  // and guarantees Alavont names never appear in processor payloads
+  let normalizedLines: NormalizedCartLine[];
+  try {
+    normalizedLines = await normalizeCheckoutCart(body.data.items);
+  } catch (normErr: any) {
+    res.status(400).json({ error: normErr?.message ?? "Cart validation failed" });
+    return;
+  }
+
   const tax = subtotal * 0.08; // 8% tax
   const total = subtotal + tax;
 
@@ -163,43 +175,55 @@ router.post("/orders", async (req, res): Promise<void> => {
     assignedShiftId,
   }).returning();
 
-  // Build dual-brand cart snapshot for checkout conversion
-  const alavontCartSnapshot = resolvedItems.map(r => ({
-    catalogItemId: r.catalogItem.id,
-    alavontName: r.catalogItem.alavontName ?? r.catalogItem.name,
-    alavontDescription: r.catalogItem.alavontDescription ?? r.catalogItem.description,
-    alavontImageUrl: r.catalogItem.alavontImageUrl ?? r.catalogItem.imageUrl,
-    quantity: r.quantity,
-    unitPrice: parseFloat(r.catalogItem.price as string),
+  // Persist dual-brand snapshots on the order for auditability
+  const alavontCartSnapshot = normalizedLines.map(l => ({
+    catalogItemId: l.catalog_item_id,
+    alavontName: l.receipt_alavont_name,
+    quantity: l.quantity,
+    unitPrice: l.unit_price,
   }));
-  const luciferCheckoutSnapshot = resolvedItems.map(r => ({
-    catalogItemId: r.catalogItem.id,
-    luciferCruzName: r.catalogItem.luciferCruzName ?? r.catalogItem.name,
-    luciferCruzDescription: r.catalogItem.luciferCruzDescription ?? r.catalogItem.description,
-    luciferCruzImageUrl: r.catalogItem.luciferCruzImageUrl ?? r.catalogItem.imageUrl,
-    quantity: r.quantity,
-    unitPrice: parseFloat(r.catalogItem.price as string),
+  const luciferCheckoutSnapshot = normalizedLines.map(l => ({
+    catalogItemId: l.catalog_item_id,
+    luciferCruzName: l.merchant_name,
+    sourceType: l.source_type,
+    wooProductId: l.woo_product_id,
+    wooVariationId: l.woo_variation_id,
+    quantity: l.quantity,
+    unitPrice: l.unit_price,
   }));
 
   await db.update(ordersTable).set({ alavontCartSnapshot, luciferCheckoutSnapshot }).where(eq(ordersTable.id, order.id));
 
-  for (const { catalogItem: ci, quantity } of resolvedItems) {
-    const unitPrice = parseFloat(ci.price as string);
+  // Insert order items using normalized line data
+  // catalogItemName = Alavont display name (internal), luciferCruzName = LC merchant name (processor)
+  for (const line of normalizedLines) {
     await db.insert(orderItemsTable).values({
       orderId: order.id,
-      catalogItemId: ci.id,
-      catalogItemName: ci.alavontName ?? ci.name,
-      quantity,
-      unitPrice: String(unitPrice.toFixed(2)),
-      totalPrice: String((unitPrice * quantity).toFixed(2)),
-      // Dual-brand snapshot
-      alavontName: ci.alavontName ?? ci.name,
-      luciferCruzName: ci.luciferCruzName ?? ci.name,
-      receiptName: ci.receiptName ?? ci.luciferCruzName ?? ci.name,
-      labelName: ci.labelName ?? ci.luciferCruzName ?? ci.name,
-      labName: ci.labName ?? ci.alavontName ?? ci.name,
+      catalogItemId: line.catalog_item_id,
+      catalogItemName: line.catalog_display_name,        // Alavont name for internal records
+      quantity: line.quantity,
+      unitPrice: String(line.unit_price.toFixed(2)),
+      totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
+      // Dual-brand snapshot columns
+      alavontName: line.receipt_alavont_name,
+      luciferCruzName: line.merchant_name,               // LC merchant name — never Alavont
+      receiptName: line.receipt_name ?? line.merchant_name,
+      labelName: line.label_name ?? line.merchant_name,
+      labName: line.lab_name ?? line.receipt_alavont_name,
+      // CJ Dropshipping linkage — persisted so post-payment dispatch can use stored values
+      wooProductId: line.woo_product_id ?? null,
+      wooVariationId: line.woo_variation_id ?? null,
     });
   }
+
+  // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
+  try {
+    const merchantLines = buildMerchantPayloadLines(normalizedLines);
+    logger.info(
+      { orderId: order.id, merchantLines, actorId: actor.id },
+      "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present"
+    );
+  } catch { /* non-critical audit log */ }
 
   await writeAuditLog({
     actorId: actor.id,
@@ -208,7 +232,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     action: "CREATE_ORDER",
     resourceType: "order",
     resourceId: String(order.id),
-    metadata: { total, itemCount: resolvedItems.length },
+    metadata: { total, itemCount: normalizedLines.length },
     ipAddress: req.ip,
   });
 
@@ -218,7 +242,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     const [customer] = await db.select({ contactPhone: usersTable.contactPhone, firstName: usersTable.firstName, lastName: usersTable.lastName })
       .from(usersTable).where(eq(usersTable.id, actor.id)).limit(1);
     const customerPhone = customer?.contactPhone;
-    const itemCount = resolvedItems.reduce((s, r) => s + r.quantity, 0);
+    const itemCount = normalizedLines.reduce((s, l) => s + l.quantity, 0);
     customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
     await sendSms(customerPhone, smsOrderConfirmation(order.id, total, itemCount));
 
@@ -241,11 +265,13 @@ router.post("/orders", async (req, res): Promise<void> => {
       total: order.total as string,
       createdAt: order.createdAt,
       customerName,
-      items: resolvedItems.map(r => ({
-        quantity: r.quantity,
-        catalogItemName: r.catalogItem.name,
-        unitPrice: r.catalogItem.price as string,
-        totalPrice: String((parseFloat(r.catalogItem.price as string) * r.quantity).toFixed(2)),
+      items: normalizedLines.map(l => ({
+        quantity: l.quantity,
+        catalogItemName: l.catalog_display_name,  // Alavont display name (internal)
+        alavontName: l.receipt_alavont_name,
+        luciferCruzName: l.merchant_name,          // LC merchant name for receipt mode
+        unitPrice: String(l.unit_price.toFixed(2)),
+        totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
       })),
     });
   } catch { /* non-critical */ }

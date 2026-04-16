@@ -19,7 +19,7 @@ import { getHouseTenantId } from "../lib/singleTenant";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
 
-function mapItem(i: typeof catalogItemsTable.$inferSelect) {
+function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) {
   // Prefer alavont_image_url for the primary imageUrl; fall back to image_url
   const resolvedImageUrl = i.alavontImageUrl ?? i.imageUrl ?? undefined;
   return {
@@ -38,18 +38,26 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect) {
     metadata: i.metadata,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
-    // Dual-brand fields
+    // Dual-brand fields — LC merchant names suppressed in Alavont-only mode
     alavontName: i.alavontName ?? null,
     alavontCategory: i.alavontCategory ?? null,
     alavontImageUrl: i.alavontImageUrl ?? null,
     alavontInStock: i.alavontInStock ?? null,
-    luciferCruzName: i.luciferCruzName ?? null,
-    luciferCruzImageUrl: i.luciferCruzImageUrl ?? null,
-    luciferCruzDescription: i.luciferCruzDescription ?? null,
+    luciferCruzName: alavontOnly ? null : (i.luciferCruzName ?? null),
+    luciferCruzImageUrl: alavontOnly ? null : (i.luciferCruzImageUrl ?? null),
+    luciferCruzDescription: alavontOnly ? null : (i.luciferCruzDescription ?? null),
+    luciferCruzCategory: alavontOnly ? null : (i.luciferCruzCategory ?? null),
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
     receiptName: i.receiptName ?? null,
     labName: i.labName ?? null,
+    // Merchant routing fields — suppressed in Alavont-only (storefront) mode
+    merchantProcessingMode: alavontOnly ? null : (i.merchantProcessingMode ?? null),
+    merchantProductSource: alavontOnly ? null : (i.merchantProductSource ?? null),
+    isWooManaged: alavontOnly ? false : (i.isWooManaged ?? false),
+    isLocalAlavont: i.isLocalAlavont ?? true,
+    wooProductId: alavontOnly ? null : (i.wooProductId ?? null),
+    wooVariationId: alavontOnly ? null : (i.wooVariationId ?? null),
   };
 }
 
@@ -61,6 +69,15 @@ router.get("/catalog", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
+
+  const catalogMode = query.data.mode ?? "alavont";
+  const isLuciferMode = catalogMode === "lucifer";
+  // Admin and supervisor users always receive full routing fields (isWooManaged, wooProductId,
+  // merchantProcessingMode, luciferCruzName, etc.) regardless of mode — suppression is for
+  // storefront/end-customer views only. This prevents catalog edits from accidentally
+  // overwriting live routing config with suppressed null/false defaults.
+  const isAdminActor = actor.role === "admin" || actor.role === "supervisor";
+  const alavontOnly = !isLuciferMode && !isAdminActor;
 
   let rows = await db.select().from(catalogItemsTable)
     .orderBy(asc(catalogItemsTable.name));
@@ -90,16 +107,22 @@ router.get("/catalog", async (req, res): Promise<void> => {
 
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 20;
+
+  // In Lucifer mode: only show items with a luciferCruzName or that are woo-managed
+  if (isLuciferMode) {
+    rows = rows.filter(r => !!r.luciferCruzName?.trim() || r.isWooManaged);
+  }
+
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
   console.log(
-    `[catalog] totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
+    `[catalog] mode=${catalogMode} totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
     (query.data.category ? ` category="${query.data.category}"` : "") +
     (query.data.search ? ` search="${query.data.search}"` : "")
   );
 
-  res.json(ListCatalogItemsResponse.parse({ items: paged.map(mapItem), total, page, limit }));
+  res.json(ListCatalogItemsResponse.parse({ items: paged.map(i => mapItem(i, alavontOnly)), total, page, limit }));
 });
 
 // POST /api/catalog
@@ -182,9 +205,51 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     res.status(404).json({ error: "Not found" });
     return;
   }
+  // Compute merged state for conditional validation.
+  // When null is sent for LC/Woo fields (common from Alavont-mode UI which suppresses them),
+  // fall back to the existing DB value so validation doesn't reject standard catalog edits.
+  const mergedMode = body.data.merchantProcessingMode ?? existing.merchantProcessingMode ?? "mapped_lucifer";
+  const mergedLcName = (body.data.luciferCruzName != null) ? body.data.luciferCruzName : existing.luciferCruzName;
+  const mergedIsWoo = body.data.isWooManaged ?? existing.isWooManaged;
+  const mergedWooProductId = (body.data.wooProductId != null) ? body.data.wooProductId : existing.wooProductId;
+
+  if (mergedMode === "mapped_lucifer" && !mergedLcName) {
+    res.status(400).json({
+      error: "merchantProcessingMode=mapped_lucifer requires a luciferCruzName. Set a Lucifer Cruz merchant name before saving.",
+    });
+    return;
+  }
+  if (mergedIsWoo && !mergedWooProductId) {
+    res.status(400).json({
+      error: "isWooManaged=true requires a wooProductId. Set the WooCommerce product ID before enabling Woo-managed mode.",
+    });
+    return;
+  }
+
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = { ...body.data };
   if (body.data.price !== undefined) updateData.price = String(body.data.price);
   if (body.data.compareAtPrice !== undefined) updateData.compareAtPrice = body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null;
+  // Protect LC/Woo routing fields from null/false-overwrite.
+  // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
+  // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.
+  if (body.data.luciferCruzName === null && existing.luciferCruzName) delete updateData.luciferCruzName;
+  if (body.data.luciferCruzImageUrl === null && existing.luciferCruzImageUrl) delete updateData.luciferCruzImageUrl;
+  if (body.data.luciferCruzDescription === null && existing.luciferCruzDescription) delete updateData.luciferCruzDescription;
+  if (body.data.luciferCruzCategory === null && existing.luciferCruzCategory) delete updateData.luciferCruzCategory;
+  if (body.data.wooProductId === null && existing.wooProductId) delete updateData.wooProductId;
+  if (body.data.wooVariationId === null && existing.wooVariationId) delete updateData.wooVariationId;
+  if (body.data.merchantProcessingMode === null && existing.merchantProcessingMode) delete updateData.merchantProcessingMode;
+  if (body.data.merchantProductSource === null && existing.merchantProductSource) delete updateData.merchantProductSource;
+  // Prevent accidental isWooManaged downgrade: false in body when existing is true
+  // requires an explicit merchantProcessingMode change in the same request to signal intent.
+  if (body.data.isWooManaged === false && existing.isWooManaged === true) {
+    if (!body.data.merchantProcessingMode || body.data.merchantProcessingMode === existing.merchantProcessingMode) {
+      res.status(400).json({
+        error: "Cannot disable isWooManaged without explicitly setting a new merchantProcessingMode. Provide both fields together to change routing mode.",
+      });
+      return;
+    }
+  }
   const [updated] = await db.update(catalogItemsTable).set(updateData).where(eq(catalogItemsTable.id, params.data.id)).returning();
   res.json(UpdateCatalogItemResponse.parse(mapItem(updated)));
 });
@@ -248,7 +313,12 @@ router.get(
         alavontCategory: r.alavontCategory ?? r.category,
         alavontInStock: r.alavontInStock,
         luciferCruzName: r.luciferCruzName,
-        luciferCruzCategory: (r.metadata as any)?.luciferCruzCategory ?? null,
+        luciferCruzCategory: r.luciferCruzCategory ?? (r.metadata as any)?.luciferCruzCategory ?? null,
+        merchantProcessingMode: r.merchantProcessingMode ?? null,
+        merchantProductSource: r.merchantProductSource ?? null,
+        isWooManaged: r.isWooManaged,
+        isLocalAlavont: r.isLocalAlavont,
+        wooProductId: r.wooProductId ?? null,
         labName: r.labName,
         isAvailable: r.isAvailable,
         hasImage,
@@ -284,6 +354,124 @@ router.get(
     console.log(`[catalog/debug] total=${allRows.length} visibleAlavont=${summary.visibleAlavont} visibleLC=${summary.visibleLC}`);
 
     res.json({ summary, items: analyzed });
+  }
+);
+
+// ─── POST /api/admin/checkout/normalize-preview ───────────────────────────────
+// Admin-only: Preview normalized cart from raw catalog item IDs
+router.post(
+  "/admin/checkout/normalize-preview",
+  requireRole("admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    try {
+      const { normalizeCheckoutCart } = await import("../lib/checkoutNormalizer");
+      const { items } = req.body as { items?: Array<{ catalogItemId: number; quantity: number }> };
+      if (!Array.isArray(items) || items.length === 0) {
+        res.status(400).json({ error: "items array required" });
+        return;
+      }
+      const normalized = await normalizeCheckoutCart(items);
+      res.json({ normalized });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message ?? "Normalization failed" });
+    }
+  }
+);
+
+// ─── POST /api/admin/checkout/merchant-payload-preview ────────────────────────
+// Admin-only: Preview the merchant payload that would be sent to the processor
+router.post(
+  "/admin/checkout/merchant-payload-preview",
+  requireRole("admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    try {
+      const { normalizeCheckoutCart, buildMerchantPayloadLines } = await import("../lib/checkoutNormalizer");
+      const { getOrCreateSettings } = await import("./settings");
+      const { items } = req.body as { items?: Array<{ catalogItemId: number; quantity: number }> };
+      if (!Array.isArray(items) || items.length === 0) {
+        res.status(400).json({ error: "items array required" });
+        return;
+      }
+      const settings = await getOrCreateSettings();
+      const normalized = await normalizeCheckoutCart(items);
+      const merchantLines = buildMerchantPayloadLines(normalized, settings.merchantImageEnabled);
+
+      const alavontNamesInPayload = merchantLines.filter(l =>
+        normalized.some(n => n.receipt_alavont_name === l.name && n.receipt_alavont_name !== n.receipt_lucifer_name)
+      );
+
+      res.json({
+        merchant_lines: merchantLines,
+        alavont_name_leak_detected: alavontNamesInPayload.length > 0,
+        alavont_name_leaks: alavontNamesInPayload.map(l => l.name),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message ?? "Preview failed" });
+    }
+  }
+);
+
+// ─── GET /api/admin/receipts/preview ─────────────────────────────────────────
+// Admin-only: Preview a rendered receipt in a specific name mode.
+// Returns the actual receipt text output (plain-text, 80-column formatted)
+// so operators can see exactly what prints in each mode.
+router.get(
+  "/admin/receipts/preview",
+  requireRole("admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const mode = (req.query.mode as string) ?? "lucifer_only";
+    if (!["alavont_only", "lucifer_only", "both"].includes(mode)) {
+      res.status(400).json({ error: "mode must be alavont_only, lucifer_only, or both" });
+      return;
+    }
+    const typedMode = mode as "alavont_only" | "lucifer_only" | "both";
+
+    const { renderCustomerReceipt } = await import("../lib/receiptRenderer");
+
+    // Sample order with dual-brand items covering both local_mapped and woo sources
+    const sampleOrder = {
+      id: 0,
+      orderNumber: "PREVIEW-001",
+      customerName: "Preview Customer",
+      fulfillmentType: "Pickup",
+      paymentStatus: "paid",
+      subtotal: 79.98,
+      tax: 6.40,
+      total: 86.38,
+      createdAt: new Date().toISOString(),
+      receiptLineNameMode: typedMode,
+      dualBrandName: "Alavont / Lucifer Cruz",
+      footerMessage: "Thank you for your order!",
+      showDiscreetNotice: false,
+      showOperatorName: true,
+      operatorName: "Preview Operator",
+      items: [
+        {
+          quantity: 2,
+          name: "Sample Alavont Product",
+          alavontName: "Sample Alavont Product",
+          luciferCruzName: "Sample Lucifer Cruz Product",
+          unitPrice: 29.99,
+          totalPrice: 59.98,
+        },
+        {
+          quantity: 1,
+          name: "Woo Alavont Name",
+          alavontName: "Woo Alavont Name",
+          luciferCruzName: "Woo LC Merchant Name",
+          unitPrice: 19.99,
+          totalPrice: 19.99,
+        },
+      ],
+    };
+
+    const rendered = renderCustomerReceipt(sampleOrder);
+
+    res.json({
+      mode: typedMode,
+      rendered_receipt: rendered,
+      description: `Receipt preview in '${typedMode}' mode — this is the exact text sent to the printer`,
+    });
   }
 );
 

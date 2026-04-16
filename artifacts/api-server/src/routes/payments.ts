@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import Stripe from "stripe";
-import { db, ordersTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
@@ -10,9 +10,38 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, writeAuditLog } from "../lib/auth";
 import { logger } from "../lib/logger";
+import { normalizeCheckoutCart, buildMerchantPayloadLines } from "../lib/checkoutNormalizer";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
+
+// Dispatches WooCommerce-managed line items to WooCommerce (CJ Dropshipping sync)
+// after payment is confirmed. Fire-and-forget — errors logged, never block response.
+async function dispatchWooItemsAfterPayment(orderId: number): Promise<void> {
+  try {
+    const items = await db
+      .select()
+      .from(orderItemsTable)
+      .where(eq(orderItemsTable.orderId, orderId));
+
+    const wooItems = items.filter(i => !!i.wooProductId);
+    if (wooItems.length === 0) return;
+
+    const { createWooOrder } = await import("../lib/wooClient");
+    await createWooOrder({
+      orderId,
+      lines: wooItems.map(i => ({
+        product_id: i.wooProductId!,
+        variation_id: i.wooVariationId ?? undefined,
+        name: i.luciferCruzName ?? i.catalogItemName,
+        quantity: i.quantity,
+        unit_price: parseFloat(i.unitPrice as string),
+      })),
+    });
+  } catch (wooErr) {
+    logger.warn({ wooErr, orderId }, "WooCommerce order dispatch failed after payment (non-critical)");
+  }
+}
 
 function getStripeClient(): Stripe | null {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -47,6 +76,36 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
+  // Normalize cart from order items → builds merchant-safe LC-only payload.
+  // normalizeCheckoutCart() enforces that Alavont names never appear in processor-facing
+  // payloads. Hard-fails with 422 if merchant routing data is invalid — payment cannot
+  // proceed with unvalidated merchant information.
+  let stripeLinesSummary = "";
+  const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+  const cartLines = orderItems
+    .filter(i => i.catalogItemId != null)
+    .map(i => ({ catalogItemId: i.catalogItemId as number, quantity: i.quantity }));
+  if (cartLines.length > 0) {
+    let normalizedLines;
+    try {
+      normalizedLines = await normalizeCheckoutCart(cartLines);
+    } catch (normalizeErr) {
+      logger.error({ normalizeErr, orderId: order.id }, "Merchant routing validation failed — blocking payment tokenize");
+      res.status(422).json({ error: "Merchant routing validation failed. Contact support." });
+      return;
+    }
+    const merchantLines = buildMerchantPayloadLines(normalizedLines);
+    // Build a compact summary for Stripe metadata (max 500 chars per key)
+    stripeLinesSummary = merchantLines
+      .map(l => `${l.name} x${l.quantity}`)
+      .join(", ")
+      .slice(0, 490);
+    logger.info(
+      { orderId: order.id, merchantLines, actorId: actor.id },
+      "MERCHANT_PAYLOAD_AUDIT: Stripe tokenize — LC names for processor (no Alavont names)"
+    );
+  }
+
   const stripe = getStripeClient();
 
   // Sandbox mode — Stripe keys not configured
@@ -68,7 +127,7 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
-  // Real Stripe
+  // Real Stripe — merchant line items included in metadata for audit trail
   try {
     const amountCents = Math.round(body.data.amount * 100);
     const currency = body.data.currency ?? "usd";
@@ -76,7 +135,11 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     const intent = await stripe.paymentIntents.create({
       amount: amountCents,
       currency,
-      metadata: { orderId: String(order.id) },
+      metadata: {
+        orderId: String(order.id),
+        // LC-only merchant names — Alavont brand names never stored in Stripe
+        merchantLines: stripeLinesSummary,
+      },
     });
 
     await db
@@ -157,7 +220,10 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
       ipAddress: req.ip,
     });
 
-    const { orderItemsTable, usersTable } = await import("@workspace/db");
+    // Dispatch woo-managed items AFTER payment is confirmed (fire-and-forget)
+    void dispatchWooItemsAfterPayment(updated.id);
+
+    const { usersTable } = await import("@workspace/db");
     const items = await db
       .select()
       .from(orderItemsTable)
@@ -221,6 +287,9 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
       metadata: { paymentIntentId: body.data.paymentIntentId },
       ipAddress: req.ip,
     });
+
+    // Dispatch woo-managed items AFTER payment is confirmed (fire-and-forget)
+    void dispatchWooItemsAfterPayment(updated.id);
 
     res.json({ ...updated, paymentStatus: "paid" });
   } catch (err) {

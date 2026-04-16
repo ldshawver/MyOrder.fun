@@ -18,6 +18,7 @@ import {
   printJobsTable,
   printJobAttemptsTable,
   printSettingsTable,
+  adminSettingsTable,
 } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
@@ -397,7 +398,15 @@ export async function enqueueOrderPrintJobs(order: {
   tax: string;
   total: string;
   createdAt: Date;
-  items: { quantity: number; catalogItemName: string; unitPrice: string; totalPrice: string; notes?: string | null }[];
+  items: {
+    quantity: number;
+    catalogItemName: string;
+    unitPrice: string;
+    totalPrice: string;
+    notes?: string | null;
+    alavontName?: string | null;
+    luciferCruzName?: string | null;
+  }[];
   customerName?: string;
   fulfillmentType?: string;
   tenantId?: number | null;
@@ -405,6 +414,17 @@ export async function enqueueOrderPrintJobs(order: {
 }) {
   const settings = await getSettings();
   if (!settings.autoPrintOrders) return;
+
+  // Load receiptLineNameMode from admin settings (dual-brand receipt control)
+  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
+  try {
+    const [adminSettings] = await db.select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
+      .from(adminSettingsTable)
+      .limit(1);
+    if (adminSettings?.receiptLineNameMode) {
+      receiptLineNameMode = adminSettings.receiptLineNameMode as typeof receiptLineNameMode;
+    }
+  } catch { /* non-critical — use default */ }
 
   // Resolve operator
   const operator = await selectActiveOperator();
@@ -415,9 +435,12 @@ export async function enqueueOrderPrintJobs(order: {
     customerName: order.customerName,
     fulfillmentType: order.fulfillmentType,
     notes: order.notes ?? undefined,
+    receiptLineNameMode,
     items: order.items.map(i => ({
       quantity: i.quantity,
       name: i.catalogItemName,
+      alavontName: i.alavontName ?? i.catalogItemName,
+      luciferCruzName: i.luciferCruzName ?? i.catalogItemName,
       notes: i.notes ?? undefined,
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),

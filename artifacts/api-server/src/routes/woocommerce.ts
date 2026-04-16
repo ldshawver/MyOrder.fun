@@ -123,9 +123,16 @@ router.post(
           luciferCruzName: lcName,
           luciferCruzImageUrl: imageUrl,
           luciferCruzDescription: description,
+          luciferCruzCategory: category,
           receiptName: lcName,
           labelName: lcName,
           labName: lcName,
+          // Merchant routing — WooCommerce-backed items
+          isWooManaged: true,
+          isLocalAlavont: false,
+          merchantProcessingMode: "woo_native",
+          merchantProductSource: "woo",
+          wooProductId: wcId,
         };
 
         // Dedup by alavont_id = "wc_{product_id}"

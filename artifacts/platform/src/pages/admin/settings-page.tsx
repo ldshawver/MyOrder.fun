@@ -21,6 +21,7 @@ type AdminSettings = {
   purgeDelayHours: number;
   keepAuditToken: boolean;
   keepFailedPaymentLogs: boolean;
+  receiptLineNameMode: string;
 };
 
 const DEFAULTS: AdminSettings = {
@@ -36,6 +37,7 @@ const DEFAULTS: AdminSettings = {
   purgeDelayHours: 72,
   keepAuditToken: true,
   keepFailedPaymentLogs: true,
+  receiptLineNameMode: "lucifer_only",
 };
 
 export default function AdminSettingsPage() {
@@ -212,6 +214,19 @@ export default function AdminSettingsPage() {
                   <SelectItem value="standard">Standard</SelectItem>
                   <SelectItem value="minimal">Minimal</SelectItem>
                   <SelectItem value="full">Full Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>
+
+            <SettingRow label="Receipt Line Item Name Mode" description="Controls which product name appears on customer receipts. 'Both' prints Alavont name + LC secondary line.">
+              <Select value={settings.receiptLineNameMode} onValueChange={v => set("receiptLineNameMode", v)}>
+                <SelectTrigger className="w-40 h-8 text-xs rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="alavont_only">Alavont Only</SelectItem>
+                  <SelectItem value="lucifer_only">Lucifer Cruz Only</SelectItem>
+                  <SelectItem value="both">Both (Dual Line)</SelectItem>
                 </SelectContent>
               </Select>
             </SettingRow>

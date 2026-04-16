@@ -22,6 +22,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     purgeDelayHours: s.purgeDelayHours,
     keepAuditToken: s.keepAuditToken,
     keepFailedPaymentLogs: s.keepFailedPaymentLogs,
+    receiptLineNameMode: s.receiptLineNameMode ?? "lucifer_only",
     updatedAt: s.updatedAt,
   };
 }
@@ -48,6 +49,7 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
     "receiptTemplateStyle", "labelTemplateStyle", "purgeMode",
     "purgeDelayHours", "keepAuditToken", "keepFailedPaymentLogs",
+    "receiptLineNameMode",
   ];
   const update: Record<string, unknown> = {};
   for (const k of allowed) {

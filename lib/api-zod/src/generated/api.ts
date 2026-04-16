@@ -261,6 +261,7 @@ export const ListCatalogItemsQueryParams = zod.object({
   available: zod.coerce.boolean().optional(),
   page: zod.coerce.number().default(listCatalogItemsQueryPageDefault),
   limit: zod.coerce.number().default(listCatalogItemsQueryLimitDefault),
+  mode: zod.enum(["alavont", "lucifer"]).default("alavont"),
 });
 
 export const ListCatalogItemsResponse = zod.object({
@@ -286,12 +287,20 @@ export const ListCatalogItemsResponse = zod.object({
       luciferCruzName: zod.string().nullable().optional(),
       luciferCruzImageUrl: zod.string().nullable().optional(),
       luciferCruzDescription: zod.string().nullable().optional(),
+      luciferCruzCategory: zod.string().nullable().optional(),
       regularPrice: zod.number().nullable().optional(),
       homiePrice: zod.number().nullable().optional(),
       receiptName: zod.string().nullable().optional(),
       labName: zod.string().nullable().optional(),
       alavontInStock: zod.boolean().nullable().optional(),
       alavontCategory: zod.string().nullable().optional(),
+      // Merchant routing fields
+      merchantProcessingMode: zod.string().nullable().optional(),
+      merchantProductSource: zod.string().nullable().optional(),
+      isWooManaged: zod.boolean().nullable().optional(),
+      isLocalAlavont: zod.boolean().nullable().optional(),
+      wooProductId: zod.string().nullable().optional(),
+      wooVariationId: zod.string().nullable().optional(),
     }),
   ),
   total: zod.number(),
@@ -342,12 +351,19 @@ export const GetCatalogItemResponse = zod.object({
   luciferCruzName: zod.string().nullable().optional(),
   luciferCruzImageUrl: zod.string().nullable().optional(),
   luciferCruzDescription: zod.string().nullable().optional(),
+  luciferCruzCategory: zod.string().nullable().optional(),
   regularPrice: zod.number().nullable().optional(),
   homiePrice: zod.number().nullable().optional(),
   receiptName: zod.string().nullable().optional(),
   labName: zod.string().nullable().optional(),
   alavontInStock: zod.boolean().nullable().optional(),
   alavontCategory: zod.string().nullable().optional(),
+  merchantProcessingMode: zod.string().nullable().optional(),
+  merchantProductSource: zod.string().nullable().optional(),
+  isWooManaged: zod.boolean().nullable().optional(),
+  isLocalAlavont: zod.boolean().nullable().optional(),
+  wooProductId: zod.string().nullable().optional(),
+  wooVariationId: zod.string().nullable().optional(),
 });
 
 /**
@@ -368,6 +384,48 @@ export const UpdateCatalogItemBody = zod.object({
   isAvailable: zod.boolean().optional(),
   imageUrl: zod.string().optional(),
   tags: zod.array(zod.string()).optional(),
+  // Alavont display fields
+  alavontName: zod.string().optional(),
+  alavontDescription: zod.string().optional(),
+  alavontCategory: zod.string().optional(),
+  alavontImageUrl: zod.string().optional(),
+  alavontInStock: zod.boolean().optional(),
+  // Lucifer Cruz merchant fields
+  luciferCruzName: zod.string().nullable().optional(),
+  luciferCruzDescription: zod.string().nullable().optional(),
+  luciferCruzImageUrl: zod.string().nullable().optional(),
+  luciferCruzCategory: zod.string().nullable().optional(),
+  // Merchant routing
+  merchantProcessingMode: zod.string().optional(),
+  merchantProductSource: zod.string().optional(),
+  isWooManaged: zod.boolean().optional(),
+  isLocalAlavont: zod.boolean().optional(),
+  wooProductId: zod.string().nullable().optional(),
+  wooVariationId: zod.string().nullable().optional(),
+  // Names
+  receiptName: zod.string().nullable().optional(),
+  labelName: zod.string().nullable().optional(),
+  labName: zod.string().nullable().optional(),
+  regularPrice: zod.number().nullable().optional(),
+  homiePrice: zod.number().nullable().optional(),
+}).superRefine((data, ctx) => {
+  // Dual-brand routing validation: when explicitly setting mapped_lucifer mode,
+  // luciferCruzName must be present (non-null) in the same request.
+  if (data.merchantProcessingMode === "mapped_lucifer" && "luciferCruzName" in data && data.luciferCruzName === null) {
+    ctx.addIssue({
+      code: zod.ZodIssueCode.custom,
+      path: ["luciferCruzName"],
+      message: "merchantProcessingMode=mapped_lucifer requires a non-null luciferCruzName",
+    });
+  }
+  // When explicitly enabling WooCommerce management, wooProductId must be present.
+  if (data.isWooManaged === true && "wooProductId" in data && data.wooProductId === null) {
+    ctx.addIssue({
+      code: zod.ZodIssueCode.custom,
+      path: ["wooProductId"],
+      message: "isWooManaged=true requires a non-null wooProductId",
+    });
+  }
 });
 
 export const UpdateCatalogItemResponse = zod.object({
@@ -390,12 +448,19 @@ export const UpdateCatalogItemResponse = zod.object({
   luciferCruzName: zod.string().nullable().optional(),
   luciferCruzImageUrl: zod.string().nullable().optional(),
   luciferCruzDescription: zod.string().nullable().optional(),
+  luciferCruzCategory: zod.string().nullable().optional(),
   regularPrice: zod.number().nullable().optional(),
   homiePrice: zod.number().nullable().optional(),
   receiptName: zod.string().nullable().optional(),
   labName: zod.string().nullable().optional(),
   alavontInStock: zod.boolean().nullable().optional(),
   alavontCategory: zod.string().nullable().optional(),
+  merchantProcessingMode: zod.string().nullable().optional(),
+  merchantProductSource: zod.string().nullable().optional(),
+  isWooManaged: zod.boolean().nullable().optional(),
+  isLocalAlavont: zod.boolean().nullable().optional(),
+  wooProductId: zod.string().nullable().optional(),
+  wooVariationId: zod.string().nullable().optional(),
 });
 
 /**

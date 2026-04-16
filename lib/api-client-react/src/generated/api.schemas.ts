@@ -181,6 +181,30 @@ export interface UpdateCatalogItemBody {
   isAvailable?: boolean;
   imageUrl?: string;
   tags?: string[];
+  // Alavont display fields
+  alavontName?: string;
+  alavontDescription?: string;
+  alavontCategory?: string;
+  alavontImageUrl?: string;
+  alavontInStock?: boolean;
+  // Lucifer Cruz merchant fields
+  luciferCruzName?: string | null;
+  luciferCruzDescription?: string | null;
+  luciferCruzImageUrl?: string | null;
+  luciferCruzCategory?: string | null;
+  // Merchant routing
+  merchantProcessingMode?: string;
+  merchantProductSource?: string;
+  isWooManaged?: boolean;
+  isLocalAlavont?: boolean;
+  wooProductId?: string | null;
+  wooVariationId?: string | null;
+  // Names
+  receiptName?: string | null;
+  labelName?: string | null;
+  labName?: string | null;
+  regularPrice?: number | null;
+  homiePrice?: number | null;
 }
 
 export interface CatalogItemListResponse {
@@ -505,12 +529,15 @@ export const ListOnboardingRequestsStatus = {
   activated: "activated",
 } as const;
 
+export type ListCatalogItemsMode = "alavont" | "lucifer";
+
 export type ListCatalogItemsParams = {
   category?: string;
   search?: string;
   available?: boolean;
   page?: number;
   limit?: number;
+  mode?: ListCatalogItemsMode;
 };
 
 export type ListOrdersParams = {

@@ -29,6 +29,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   keepAuditToken: boolean("keep_audit_token").notNull().default(true),
   keepFailedPaymentLogs: boolean("keep_failed_payment_logs").notNull().default(true),
   pettyCash: numeric("petty_cash", { precision: 10, scale: 2 }).default("0"),
+  receiptLineNameMode: text("receipt_line_name_mode").notNull().default("lucifer_only"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

@@ -45,6 +45,14 @@ export const catalogItemsTable = pgTable("catalog_items", {
   luciferCruzName: text("lucifer_cruz_name"),
   luciferCruzImageUrl: text("lucifer_cruz_image_url"),
   luciferCruzDescription: text("lucifer_cruz_description"),
+  luciferCruzCategory: text("lucifer_cruz_category"),
+  // Merchant routing / dual-brand processing
+  merchantProcessingMode: text("merchant_processing_mode").default("mapped_lucifer"),
+  merchantProductSource: text("merchant_product_source").default("local_mapped"),
+  isWooManaged: boolean("is_woo_managed").notNull().default(false),
+  isLocalAlavont: boolean("is_local_alavont").notNull().default(true),
+  wooProductId: text("woo_product_id"),
+  wooVariationId: text("woo_variation_id"),
   // Print/queue names
   receiptName: text("receipt_name"),
   labelName: text("label_name"),

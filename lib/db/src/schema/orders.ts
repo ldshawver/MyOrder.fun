@@ -52,6 +52,9 @@ export const orderItemsTable = pgTable("order_items", {
   receiptName: text("receipt_name"),
   labelName: text("label_name"),
   labName: text("lab_name"),
+  // WooCommerce / CJ Dropshipping linkage — persisted at order time for post-payment dispatch
+  wooProductId: text("woo_product_id"),
+  wooVariationId: text("woo_variation_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -161,7 +161,85 @@ function ItemFormFields({ form, setForm }: { form: any; setForm: (updater: (prev
   );
 }
 
+function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: (prev: any) => any) => void }) {
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400 pt-1">Alavont Display Fields</div>
+      {[
+        { label: "Alavont Name", key: "alavontName" },
+        { label: "Alavont Category", key: "alavontCategory" },
+        { label: "Alavont Image URL", key: "alavontImageUrl" },
+      ].map(({ label, key }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+        </div>
+      ))}
+      <div>
+        <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Alavont Description</label>
+        <textarea value={form.alavontDescription ?? ""} onChange={e => setForm((p: any) => ({ ...p, alavontDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+      </div>
+      <div className="flex items-center gap-3 pt-1">
+        <span className="text-xs text-muted-foreground">Alavont In Stock</span>
+        <button onClick={() => setForm((p: any) => ({ ...p, alavontInStock: !p.alavontInStock }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.alavontInStock !== false ? "bg-primary" : "bg-muted"}`}>
+          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.alavontInStock !== false ? "left-5" : "left-0.5"}`} />
+        </button>
+      </div>
+
+      <div className="text-[10px] font-bold uppercase tracking-widest text-red-400 pt-2">Lucifer Cruz Merchant Fields</div>
+      {[
+        { label: "Lucifer Cruz Name", key: "luciferCruzName" },
+        { label: "Lucifer Cruz Category", key: "luciferCruzCategory" },
+        { label: "Lucifer Cruz Image URL", key: "luciferCruzImageUrl" },
+      ].map(({ label, key }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+        </div>
+      ))}
+      <div>
+        <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Lucifer Cruz Description</label>
+        <textarea value={form.luciferCruzDescription ?? ""} onChange={e => setForm((p: any) => ({ ...p, luciferCruzDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+      </div>
+
+      <div className="text-[10px] font-bold uppercase tracking-widest text-amber-400 pt-2">Merchant Routing</div>
+      <div>
+        <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Processing Mode</label>
+        <select value={form.merchantProcessingMode ?? "mapped_lucifer"} onChange={e => setForm((p: any) => ({ ...p, merchantProcessingMode: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 h-9 focus:outline-none">
+          <option value="mapped_lucifer">Mapped to Lucifer Cruz</option>
+          <option value="woo_native">WooCommerce Native</option>
+        </select>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-muted-foreground">WooCommerce Managed</span>
+        <button onClick={() => setForm((p: any) => ({ ...p, isWooManaged: !p.isWooManaged }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.isWooManaged ? "bg-amber-500" : "bg-muted"}`}>
+          <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isWooManaged ? "left-5" : "left-0.5"}`} />
+        </button>
+      </div>
+      {[
+        { label: "WooCommerce Product ID", key: "wooProductId" },
+        { label: "WooCommerce Variation ID", key: "wooVariationId" },
+      ].map(({ label, key }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value || null }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+        </div>
+      ))}
+      {[
+        { label: "Lab Name", key: "labName" },
+        { label: "Receipt Name", key: "receiptName" },
+      ].map(({ label, key }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value || null }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EditItemDialog({ item, open, onClose }: { item: any | null; open: boolean; onClose: () => void }) {
+  const [showDualBrand, setShowDualBrand] = useState(false);
   const [form, setForm] = useState({
     name: item?.name || "",
     description: item?.description || "",
@@ -171,6 +249,21 @@ function EditItemDialog({ item, open, onClose }: { item: any | null; open: boole
     imageUrl: item?.imageUrl || "",
     stockQuantity: item?.stockQuantity?.toString() || "0",
     isAvailable: item?.isAvailable ?? true,
+    alavontName: item?.alavontName || "",
+    alavontDescription: item?.alavontDescription || "",
+    alavontCategory: item?.alavontCategory || "",
+    alavontImageUrl: item?.alavontImageUrl || "",
+    alavontInStock: item?.alavontInStock ?? true,
+    luciferCruzName: item?.luciferCruzName || "",
+    luciferCruzDescription: item?.luciferCruzDescription || "",
+    luciferCruzImageUrl: item?.luciferCruzImageUrl || "",
+    luciferCruzCategory: item?.luciferCruzCategory || "",
+    merchantProcessingMode: item?.merchantProcessingMode || "mapped_lucifer",
+    isWooManaged: item?.isWooManaged || false,
+    wooProductId: item?.wooProductId || "",
+    wooVariationId: item?.wooVariationId || "",
+    labName: item?.labName || "",
+    receiptName: item?.receiptName || "",
   });
   const updateMutation = useUpdateCatalogItem();
   const queryClient = useQueryClient();
@@ -189,6 +282,21 @@ function EditItemDialog({ item, open, onClose }: { item: any | null; open: boole
           imageUrl: form.imageUrl || undefined,
           stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: form.isAvailable,
+          alavontName: form.alavontName || undefined,
+          alavontDescription: form.alavontDescription || undefined,
+          alavontCategory: form.alavontCategory || undefined,
+          alavontImageUrl: form.alavontImageUrl || undefined,
+          alavontInStock: form.alavontInStock,
+          luciferCruzName: form.luciferCruzName || null,
+          luciferCruzDescription: form.luciferCruzDescription || null,
+          luciferCruzImageUrl: form.luciferCruzImageUrl || null,
+          luciferCruzCategory: form.luciferCruzCategory || null,
+          merchantProcessingMode: form.merchantProcessingMode,
+          isWooManaged: form.isWooManaged,
+          wooProductId: form.wooProductId || null,
+          wooVariationId: form.wooVariationId || null,
+          labName: form.labName || null,
+          receiptName: form.receiptName || null,
         },
       },
       {
@@ -217,6 +325,13 @@ function EditItemDialog({ item, open, onClose }: { item: any | null; open: boole
               <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isAvailable ? "left-5" : "left-0.5"}`} />
             </button>
           </div>
+          <button
+            onClick={() => setShowDualBrand(v => !v)}
+            className="w-full text-xs font-semibold py-2 rounded-xl border border-border/40 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showDualBrand ? "Hide" : "Show"} Dual-Brand & Merchant Fields
+          </button>
+          {showDualBrand && <DualBrandFormFields form={form} setForm={setForm} />}
           <Button className="w-full rounded-xl" onClick={handleSave} disabled={updateMutation.isPending}>
             {updateMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>
@@ -290,18 +405,16 @@ export default function Catalog() {
 
   const { data: categoriesRes } = useListCatalogCategories({ query: { queryKey: ["listCatalogCategories"] } });
   const { data, isLoading } = useListCatalogItems(
-    { search, category: category !== "all" ? category : undefined, limit: 200 },
-    { query: { queryKey: ["listCatalogItems", search, category] } }
+    { search, category: category !== "all" ? category : undefined, limit: 200, mode: menuMode === "lucifer" ? "lucifer" : "alavont" },
+    { query: { queryKey: ["listCatalogItems", search, category, menuMode] } }
   );
 
   const isLC = menuMode === "lucifer";
 
   const allItems = data?.items ?? [];
 
-  // In LC mode, only show items that have a luciferCruzName set
-  const displayItems = isLC
-    ? allItems.filter((item: any) => item.luciferCruzName)
-    : allItems;
+  // In LC mode the API already filters to only items with luciferCruzName or woo-managed
+  const displayItems = allItems;
 
   // Determine empty-state reason for better messaging
   const hasItemsInResponse = allItems.length > 0;
