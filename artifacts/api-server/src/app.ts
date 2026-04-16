@@ -71,6 +71,9 @@ app.use((_req, res, next) => {
 // ── CORS ────────────────────────────────────────────────────────────────────
 app.use(cors({ credentials: true, origin: true }));
 
+// ── Raw body for Clerk webhooks (must precede the JSON parser) ───────────────
+app.use("/api/webhooks/clerk", express.raw({ type: "application/json" }));
+
 // ── Body parsers ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));

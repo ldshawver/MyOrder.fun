@@ -10,6 +10,7 @@ import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
 
 import NotFound from "@/pages/not-found";
+import PendingPage from "@/pages/pending";
 import Home from "@/pages/home";
 import WaitlistPage from "@/pages/waitlist";
 import Terms from "@/pages/terms";
@@ -175,6 +176,12 @@ function AuthenticatedApp() {
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
   if (isError || !user) return <Redirect to="/waitlist" />;
 
+  if (user.status === "pending" || user.status === "rejected") {
+    if (user.role !== "global_admin") {
+      return <Redirect to="/pending" />;
+    }
+  }
+
   return (
     <>
       {!ndaAccepted && (
@@ -245,6 +252,14 @@ function Router() {
       <Route path="/waitlist/*?" component={WaitlistPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
+      </Route>
+      <Route path="/pending">
+        <Show when="signed-in">
+          <PendingPage />
+        </Show>
+        <Show when="signed-out">
+          <Redirect to="/waitlist" />
+        </Show>
       </Route>
       <Route>
         <Show when="signed-in">

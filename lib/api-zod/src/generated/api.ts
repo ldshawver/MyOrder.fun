@@ -681,6 +681,7 @@ export const GetCurrentUserResponse = zod.object({
   tenantName: zod.string().optional(),
   mfaEnabled: zod.boolean().optional(),
   isActive: zod.boolean(),
+  status: zod.enum(["pending", "approved", "rejected"]).optional(),
   createdAt: zod.coerce.date(),
 });
 

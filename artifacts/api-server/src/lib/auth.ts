@@ -120,6 +120,23 @@ export function requireRole(...roles: Role[]) {
   };
 }
 
+export function requireApproved(req: Request, res: Response, next: NextFunction): void {
+  const user = req.dbUser;
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (user.role === "global_admin") {
+    next();
+    return;
+  }
+  if (user.status !== "approved") {
+    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    return;
+  }
+  next();
+}
+
 // Middleware that loads the DB user into req.dbUser
 export async function loadDbUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const user = await getOrCreateDbUser(req);

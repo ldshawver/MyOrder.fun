@@ -41,6 +41,7 @@ router.get("/users/me", async (req, res): Promise<void> => {
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
+    status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
     createdAt: user.createdAt,
   });
   res.json(data);
@@ -67,6 +68,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
     tenantName,
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
+    status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
     createdAt: user.createdAt,
   });
   res.json(data);
