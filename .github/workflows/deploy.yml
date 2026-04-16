@@ -1,5 +1,14 @@
 name: Deploy to VPS
 
+# ── Source of truth ──────────────────────────────────────────────────────────
+# This workflow checks out the EXACT commit that was pushed to `main`.
+# The deploy action syncs that checkout (Actions runner) → VPS via rsync.
+# Nothing is built from the VPS filesystem; everything comes from git.
+#
+# If you hotfix the VPS directly, you MUST commit and push those changes
+# to GitHub first — otherwise the next deploy will overwrite your fix.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   push:
     branches:
@@ -21,6 +30,20 @@ jobs:
       # ── 1. Check out the code on the Actions runner ────────────────
       - name: Checkout code
         uses: actions/checkout@v4
+        # No `ref:` override — always deploys the exact commit
+        # that triggered this workflow run (the push to main).
+
+      # ── 1b. Print exact commit being deployed ──────────────────────
+      - name: Show deployed commit
+        run: |
+          echo "════════════════════════════════════════════════════════"
+          echo "  DEPLOYING COMMIT"
+          echo "  SHA:     ${{ github.sha }}"
+          echo "  Branch:  ${{ github.ref_name }}"
+          echo "  Message: $(git log -1 --pretty=%s)"
+          echo "  Author:  $(git log -1 --pretty='%an <%ae>')"
+          echo "  Date:    $(git log -1 --pretty=%ci)"
+          echo "════════════════════════════════════════════════════════"
 
       # ── 2. Set up SSH agent with the VPS private key ───────────────
       - name: Set up SSH agent
@@ -34,7 +57,11 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      # ── 4. Rsync source code to VPS (skip .env and ssl certs) ──────
+      # ── 4. Rsync source code to VPS ────────────────────────────────
+      # Syncs the Actions runner checkout (= the exact pushed commit) to VPS.
+      # --delete removes files on VPS that are gone from source, preventing
+      # stale file accumulation. deploy/.env and ssl certs are excluded so
+      # production secrets are never overwritten.
       - name: Sync code to VPS
         run: |
           rsync -az --delete \
@@ -47,23 +74,35 @@ jobs:
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "chmod +x /opt/alavont/deploy/renew-cert.sh"
 
-      # ── 4b. Remove any stale node_modules on VPS (rsync --delete skips
-      #        excluded dirs, so old ones linger and corrupt Docker context)
+      # ── 4b. Remove any stale node_modules on VPS ───────────────────
+      # rsync --delete skips excluded dirs, so old node_modules linger
+      # and can corrupt the Docker build context. Remove them explicitly.
       - name: Clean stale node_modules on VPS
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
 
       # ── 5. Build new images ─────────────────────────────────────────
+      # Runs on the VPS using the code just rsynced from the Actions runner.
+      # docker builder prune -af clears all build cache so the build always
+      # reflects the current source — no stale layer reuse.
       - name: Build images
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
-            # Clear stale Docker builder cache so old bad layers don't conflict
+            echo "Building from source synced at: $(date -u)"
+            echo "Source SHA embedded in rsync: ${{ github.sha }}"
+
+            # Write the deployed SHA into /opt/alavont so it is visible on VPS
+            echo "${{ github.sha }}" > /opt/alavont/.deployed-sha
+            echo "${{ github.ref_name }}" >> /opt/alavont/.deployed-sha
+            echo "$(date -u)" >> /opt/alavont/.deployed-sha
+
+            # Clear all Docker builder cache — no hidden stale layer reuse
             docker builder prune -af
             cd /opt/alavont/deploy
             docker compose build --pull
-            echo "BUILD SUCCESS"
+            echo "BUILD SUCCESS — SHA ${{ github.sha }}"
           ENDSSH
 
       # ── 6. Stop services, renew cert if needed, then redeploy ───────
@@ -107,10 +146,10 @@ jobs:
 
             echo "▶ Starting all services..."
             docker compose up -d
-            echo "DEPLOY SUCCESS"
             docker image prune -f
             echo ""
-            echo "════════════════════════════════════"
+            echo "════════════════════════════════════════════════════════"
             echo "  DEPLOY SUCCESS — $(date -u)"
-            echo "════════════════════════════════════"
+            echo "  SHA: ${{ github.sha }}"
+            echo "════════════════════════════════════════════════════════"
           ENDSSH
