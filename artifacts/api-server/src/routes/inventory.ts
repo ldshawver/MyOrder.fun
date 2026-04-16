@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -11,20 +12,17 @@ router.get(
   "/admin/inventory",
   requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
+    const houseTenantId = await getHouseTenantId();
     const items = await db
       .select()
       .from(catalogItemsTable)
-      .where(eq(catalogItemsTable.tenantId, actor.tenantId))
       .orderBy(catalogItemsTable.category, catalogItemsTable.name);
 
     // Get petty cash
     const [settings] = await db
       .select({ pettyCash: adminSettingsTable.pettyCash })
       .from(adminSettingsTable)
-      .where(eq(adminSettingsTable.tenantId, actor.tenantId))
+      .where(eq(adminSettingsTable.tenantId, houseTenantId))
       .limit(1);
 
     res.json({
@@ -51,9 +49,6 @@ router.patch(
   "/admin/inventory/:id",
   requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
@@ -70,7 +65,7 @@ router.patch(
     const [updated] = await db
       .update(catalogItemsTable)
       .set(patch)
-      .where(and(eq(catalogItemsTable.id, id), eq(catalogItemsTable.tenantId, actor.tenantId)))
+      .where(eq(catalogItemsTable.id, id))
       .returning({ id: catalogItemsTable.id, stockQuantity: catalogItemsTable.stockQuantity, stockUnit: catalogItemsTable.stockUnit });
 
     if (!updated) { res.status(404).json({ error: "Item not found" }); return; }
@@ -88,18 +83,16 @@ router.patch(
   "/admin/inventory/petty-cash",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    if (!actor.tenantId) { res.status(400).json({ error: "No tenant" }); return; }
-
     const { pettyCash } = req.body as { pettyCash: number };
     if (typeof pettyCash !== "number" || isNaN(pettyCash)) {
       res.status(400).json({ error: "pettyCash must be a number" }); return;
     }
 
+    const houseTenantId = await getHouseTenantId();
     await db
       .update(adminSettingsTable)
       .set({ pettyCash: String(pettyCash.toFixed(2)) })
-      .where(eq(adminSettingsTable.tenantId, actor.tenantId));
+      .where(eq(adminSettingsTable.tenantId, houseTenantId));
 
     res.json({ pettyCash });
   }

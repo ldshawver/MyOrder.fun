@@ -42,7 +42,7 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (order.customerId !== actor.id && actor.role === "customer") {
+  if (order.customerId !== actor.id && actor.role === "user") {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -129,7 +129,7 @@ router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (order.customerId !== actor.id && actor.role === "customer") {
+  if (order.customerId !== actor.id && actor.role === "user") {
     res.status(403).json({ error: "Forbidden" });
     return;
   }

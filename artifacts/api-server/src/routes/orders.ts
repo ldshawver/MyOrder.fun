@@ -30,6 +30,7 @@ import {
   AddOrderNoteBody,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, writeAuditLog } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -75,13 +76,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
-  if (!actor.tenantId) {
-    res.status(400).json({ error: "No tenant" });
-    return;
-  }
-
   let rows = await db.select().from(ordersTable)
-    .where(eq(ordersTable.tenantId, actor.tenantId))
     .orderBy(desc(ordersTable.createdAt));
 
   // Customers see only their own orders
@@ -103,10 +98,6 @@ router.get("/orders", async (req, res): Promise<void> => {
 // POST /api/orders
 router.post("/orders", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  if (!actor.tenantId) {
-    res.status(400).json({ error: "No tenant" });
-    return;
-  }
   const body = CreateOrderBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -118,8 +109,8 @@ router.post("/orders", async (req, res): Promise<void> => {
   const resolvedItems: Array<{ catalogItem: typeof catalogItemsTable.$inferSelect; quantity: number }> = [];
   for (const item of body.data.items) {
     const [ci] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, item.catalogItemId)).limit(1);
-    if (!ci || ci.tenantId !== actor.tenantId) {
-      res.status(400).json({ error: `Catalog item ${item.catalogItemId} not found in your catalog` });
+    if (!ci) {
+      res.status(400).json({ error: `Catalog item ${item.catalogItemId} not found` });
       return;
     }
     if (!ci.isAvailable) {
@@ -134,11 +125,13 @@ router.post("/orders", async (req, res): Promise<void> => {
   const tax = subtotal * 0.08; // 8% tax
   const total = subtotal + tax;
 
+  const houseTenantId = await getHouseTenantId();
+
   // Assign to active lab tech shift (or default tech if no shift active)
   const [activeShift] = await db
     .select()
     .from(labTechShiftsTable)
-    .where(and(eq(labTechShiftsTable.tenantId, actor.tenantId), eq(labTechShiftsTable.status, "active")))
+    .where(eq(labTechShiftsTable.status, "active"))
     .orderBy(desc(labTechShiftsTable.clockedInAt))
     .limit(1);
 
@@ -151,13 +144,13 @@ router.post("/orders", async (req, res): Promise<void> => {
     const [defaultTech] = await db
       .select({ id: usersTable.id })
       .from(usersTable)
-      .where(and(eq(usersTable.tenantId, actor.tenantId), eq(usersTable.isDefaultTech, true)))
+      .where(eq(usersTable.isDefaultTech, true))
       .limit(1);
     if (defaultTech) assignedTechId = defaultTech.id;
   }
 
   const [order] = await db.insert(ordersTable).values({
-    tenantId: actor.tenantId,
+    tenantId: houseTenantId,
     customerId: actor.id,
     status: "pending",
     paymentStatus: "unpaid",
@@ -213,7 +206,6 @@ router.post("/orders", async (req, res): Promise<void> => {
     actorEmail: actor.email,
     actorRole: actor.role,
     action: "CREATE_ORDER",
-    tenantId: actor.tenantId,
     resourceType: "order",
     resourceId: String(order.id),
     metadata: { total, itemCount: resolvedItems.length },
@@ -263,13 +255,8 @@ router.post("/orders", async (req, res): Promise<void> => {
 });
 
 // GET /api/orders/summary
-router.get("/orders/summary", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  if (!actor.tenantId) {
-    res.status(400).json({ error: "No tenant" });
-    return;
-  }
-  const orders = await db.select().from(ordersTable).where(eq(ordersTable.tenantId, actor.tenantId));
+router.get("/orders/summary", requireRole("admin", "supervisor", "business_sitter"), async (_req, res): Promise<void> => {
+  const orders = await db.select().from(ordersTable);
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfWeek = new Date(now);
@@ -296,11 +283,6 @@ router.get("/orders/summary", requireRole("admin", "supervisor", "business_sitte
 
 // GET /api/orders/recent
 router.get("/orders/recent", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  if (!actor.tenantId) {
-    res.status(400).json({ error: "No tenant" });
-    return;
-  }
   const query = GetRecentOrdersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -308,7 +290,6 @@ router.get("/orders/recent", requireRole("admin", "supervisor", "business_sitter
   }
   const limit = query.data.limit ?? 10;
   const orders = await db.select().from(ordersTable)
-    .where(eq(ordersTable.tenantId, actor.tenantId))
     .orderBy(desc(ordersTable.createdAt))
     .limit(limit);
   const orderObjs = await Promise.all(orders.map(buildOrderResponse));
@@ -327,10 +308,6 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
   if (!order) {
     res.status(404).json({ error: "Order not found" });
-    return;
-  }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
     return;
   }
   if (actor.role === "user" && order.customerId !== actor.id) {
@@ -360,10 +337,6 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
   const [updated] = await db.update(ordersTable)
     .set({ status: body.data.status, notes: body.data.notes ?? order.notes })
     .where(eq(ordersTable.id, params.data.id))
@@ -386,7 +359,6 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
           .from(inventoryTemplatesTable)
           .where(
             and(
-              eq(inventoryTemplatesTable.tenantId, order.tenantId),
               eq(inventoryTemplatesTable.catalogItemId, item.catalogItemId),
               eq(inventoryTemplatesTable.isActive, true),
             )
@@ -430,7 +402,6 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
     actorEmail: actor.email,
     actorRole: actor.role,
     action: "UPDATE_ORDER_STATUS",
-    tenantId: actor.tenantId,
     resourceType: "order",
     resourceId: String(order.id),
     metadata: { newStatus: body.data.status, previousStatus: order.status },
@@ -455,11 +426,6 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
-
   let notes = await db.select().from(orderNotesTable).where(eq(orderNotesTable.orderId, params.data.id)).orderBy(desc(orderNotesTable.createdAt));
   // Customers cannot see internal notes
   if (actor.role === "user") {
@@ -500,16 +466,13 @@ router.patch("/orders/:id/tracking", requireRole("business_sitter", "supervisor"
   const { trackingUrl } = req.body as { trackingUrl?: string };
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" }); return;
-  }
   const [updated] = await db.update(ordersTable)
     .set({ trackingUrl: trackingUrl ?? null })
     .where(eq(ordersTable.id, orderId))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-    action: "ORDER_TRACKING_UPDATED", tenantId: order.tenantId,
+    action: "ORDER_TRACKING_UPDATED",
     resourceType: "order", resourceId: String(orderId),
     metadata: { trackingUrl }, ipAddress: req.ip,
   });
@@ -540,9 +503,6 @@ router.post("/orders/:id/fulfillment", requireRole("business_sitter", "superviso
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" }); return;
-  }
 
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
   // Mark status as complete on certain transitions
@@ -554,7 +514,7 @@ router.post("/orders/:id/fulfillment", requireRole("business_sitter", "superviso
 
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-    action: "UPDATE_FULFILLMENT_STATUS", tenantId: order.tenantId,
+    action: "UPDATE_FULFILLMENT_STATUS",
     resourceType: "order", resourceId: String(orderId),
     metadata: { fulfillmentStatus }, ipAddress: req.ip,
   });
@@ -570,9 +530,6 @@ router.post("/orders/:id/purge", requireRole("admin", "supervisor"), async (req,
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" }); return;
-  }
 
   const { mode } = req.body as { mode?: string };
   const purgeMode = mode || "partial";
@@ -605,7 +562,7 @@ router.post("/orders/:id/purge", requireRole("admin", "supervisor"), async (req,
 
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-    action: "ORDER_PURGED", tenantId: order.tenantId,
+    action: "ORDER_PURGED",
     resourceType: "order", resourceId: String(orderId),
     metadata: { purgeMode, auditToken }, ipAddress: req.ip,
   });
@@ -632,12 +589,8 @@ router.post("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (actor.role !== "admin" && order.tenantId !== actor.tenantId) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
-  // Customers cannot add internal notes
-  const isInternal = (actor.role !== "customer") && (body.data.isInternal ?? false);
+  // Staff can add internal notes; regular users cannot
+  const isInternal = (actor.role !== "user") && (body.data.isInternal ?? false);
 
   const [note] = await db.insert(orderNotesTable).values({
     orderId: params.data.id,
