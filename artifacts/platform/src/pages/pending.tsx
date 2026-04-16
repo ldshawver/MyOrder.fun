@@ -1,8 +1,13 @@
 import { useClerk } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 
-export default function PendingPage() {
+interface PendingPageProps {
+  status?: "pending" | "rejected";
+}
+
+export default function PendingPage({ status = "pending" }: PendingPageProps) {
   const { signOut } = useClerk();
+  const isRejected = status === "rejected";
 
   return (
     <div
@@ -61,13 +66,25 @@ export default function PendingPage() {
           className="w-full rounded-lg border p-6 flex flex-col gap-4"
           style={{
             background: "rgba(20,5,5,0.9)",
-            borderColor: "rgba(139,0,0,0.3)",
+            borderColor: isRejected ? "rgba(100,0,0,0.5)" : "rgba(139,0,0,0.3)",
           }}
         >
-          <div className="flex items-center justify-center w-12 h-12 rounded-full mx-auto" style={{ background: "rgba(139,0,0,0.15)", border: "1px solid rgba(139,0,0,0.3)" }}>
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: "#8B0000" }}>
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-            </svg>
+          <div
+            className="flex items-center justify-center w-12 h-12 rounded-full mx-auto"
+            style={{
+              background: isRejected ? "rgba(100,0,0,0.2)" : "rgba(139,0,0,0.15)",
+              border: isRejected ? "1px solid rgba(100,0,0,0.5)" : "1px solid rgba(139,0,0,0.3)",
+            }}
+          >
+            {isRejected ? (
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: "#8B0000" }}>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+            ) : (
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: "#8B0000" }}>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+            )}
           </div>
 
           <div>
@@ -75,27 +92,27 @@ export default function PendingPage() {
               className="text-lg font-semibold tracking-wide mb-2"
               style={{ color: "#C0C0C0" }}
             >
-              Account Pending Approval
+              {isRejected ? "Your account was not approved" : "Your account is awaiting approval"}
             </h1>
             <p
               className="text-sm leading-relaxed"
               style={{ color: "#666" }}
             >
-              Your account has been created and is currently awaiting approval
-              from an administrator. You will be notified once your access is
-              granted.
+              {isRejected
+                ? "Your account application was not approved. If you believe this is an error, please contact us for assistance."
+                : "Your account has been created and is currently awaiting approval from an administrator. You will be notified once your access is granted."}
             </p>
           </div>
 
           <div
             className="text-xs font-mono p-3 rounded"
             style={{
-              background: "rgba(139,0,0,0.08)",
-              border: "1px solid rgba(139,0,0,0.15)",
+              background: isRejected ? "rgba(100,0,0,0.1)" : "rgba(139,0,0,0.08)",
+              border: isRejected ? "1px solid rgba(100,0,0,0.2)" : "1px solid rgba(139,0,0,0.15)",
               color: "#555",
             }}
           >
-            STATUS: PENDING REVIEW
+            {isRejected ? "STATUS: ACCESS DENIED" : "STATUS: PENDING REVIEW"}
           </div>
         </div>
 

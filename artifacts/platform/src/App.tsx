@@ -176,10 +176,8 @@ function AuthenticatedApp() {
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
   if (isError || !user) return <Redirect to="/waitlist" />;
 
-  if (user.status === "pending" || user.status === "rejected") {
-    if (user.role !== "admin") {
-      return <Redirect to="/pending" />;
-    }
+  if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
+    return <PendingPage status={user.status} />;
   }
 
   return (
