@@ -12,7 +12,7 @@ import {
 import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
-import { z } from "zod";
+import { z } from "zod/v4";
 
 const router: IRouter = Router();
 

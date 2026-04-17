@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useListUsers, useUpdateUserRole, getListUsersQueryKey } from "@workspace/api-client-react";
+import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus } from "@workspace/api-client-react";
+import type { UserProfileStatus } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -8,11 +9,23 @@ import { Button } from "@/components/ui/button";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected";
 
-const STATUS_COLORS: Record<string, string> = {
-  approved: "bg-green-500/10 text-green-500 border-transparent",
-  pending:  "bg-yellow-500/10 text-yellow-500 border-transparent",
-  rejected: "bg-red-500/10 text-red-500 border-transparent",
-};
+function StatusBadge({ status }: { status?: UserProfileStatus }) {
+  const s = status ?? "pending";
+  const colorMap: Record<UserProfileStatus, string> = {
+    pending: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+    approved: "bg-green-500/10 text-green-500 border-green-500/20",
+    rejected: "bg-red-500/10 text-red-500 border-red-500/20",
+  };
+  return (
+    <Badge
+      variant="outline"
+      className={`uppercase text-[9px] tracking-widest px-2 py-0.5 rounded-sm ${colorMap[s]}`}
+      data-testid={`badge-status-${s}`}
+    >
+      {s}
+    </Badge>
+  );
+}
 
 export default function AdminUsers() {
   const queryClient = useQueryClient();
@@ -24,6 +37,7 @@ export default function AdminUsers() {
   );
 
   const updateRoleMutation = useUpdateUserRole();
+  const updateStatusMutation = useUpdateUserStatus();
 
   const handleRoleChange = (id: number, newRole: string) => {
     if (["supervisor", "business_sitter", "user"].includes(newRole)) {
@@ -36,6 +50,17 @@ export default function AdminUsers() {
         },
       );
     }
+  };
+
+  const handleStatusChange = (id: number, newStatus: UserProfileStatus) => {
+    updateStatusMutation.mutate(
+      { id, data: { status: newStatus } },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+        },
+      },
+    );
   };
 
   const allUsers = data?.users ?? [];
@@ -85,26 +110,27 @@ export default function AdminUsers() {
               <TableHead className="font-semibold text-xs uppercase tracking-wider">User</TableHead>
               <TableHead className="font-semibold text-xs uppercase tracking-wider">Email</TableHead>
               <TableHead className="font-semibold text-xs uppercase tracking-wider">Phone</TableHead>
-              <TableHead className="font-semibold text-xs uppercase tracking-wider">Role</TableHead>
-              <TableHead className="font-semibold text-xs uppercase tracking-wider">Account</TableHead>
+              <TableHead className="font-semibold text-xs uppercase tracking-wider">Current Role</TableHead>
+              <TableHead className="font-semibold text-xs uppercase tracking-wider">Status</TableHead>
+              <TableHead className="font-semibold text-xs uppercase tracking-wider">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={5} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest">
+                <TableCell colSpan={6} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest">
                   Loading directory...
                 </TableCell>
               </TableRow>
             ) : isError ? (
               <TableRow>
-                <TableCell colSpan={5} className="h-32 text-center text-red-500 font-mono text-xs uppercase tracking-widest">
+                <TableCell colSpan={6} className="h-32 text-center text-red-500 font-mono text-xs uppercase tracking-widest">
                   Failed to load users. Check API connection.
                 </TableCell>
               </TableRow>
             ) : filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest border-dashed">
+                <TableCell colSpan={6} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest border-dashed">
                   No {statusFilter === "all" ? "" : statusFilter} users found.
                 </TableCell>
               </TableRow>
@@ -150,12 +176,47 @@ export default function AdminUsers() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Badge
-                      variant="outline"
-                      className={`uppercase text-[9px] tracking-widest px-2 py-0.5 rounded-sm ${STATUS_COLORS[user.status ?? "pending"] ?? STATUS_COLORS.pending}`}
-                    >
-                      {user.status ?? "pending"}
-                    </Badge>
+                    <StatusBadge status={user.status} />
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      {user.status !== "approved" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600"
+                          onClick={() => handleStatusChange(user.id, "approved")}
+                          disabled={updateStatusMutation.isPending}
+                          data-testid={`btn-approve-${user.id}`}
+                        >
+                          Approve
+                        </Button>
+                      )}
+                      {user.status !== "rejected" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600"
+                          onClick={() => handleStatusChange(user.id, "rejected")}
+                          disabled={updateStatusMutation.isPending}
+                          data-testid={`btn-reject-${user.id}`}
+                        >
+                          Reject
+                        </Button>
+                      )}
+                      {user.status === "approved" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-amber-500/40 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600"
+                          onClick={() => handleStatusChange(user.id, "pending")}
+                          disabled={updateStatusMutation.isPending}
+                          data-testid={`btn-revoke-${user.id}`}
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))

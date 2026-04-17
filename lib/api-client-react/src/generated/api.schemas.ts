@@ -348,6 +348,8 @@ export const UserProfileRole = {
   user: "user",
 } as const;
 
+export type UserProfileStatus = "pending" | "approved" | "rejected";
+
 export interface UserProfile {
   id: number;
   clerkId: string;
@@ -360,7 +362,7 @@ export interface UserProfile {
   tenantName?: string;
   mfaEnabled?: boolean;
   isActive: boolean;
-  status?: "pending" | "approved" | "rejected";
+  status?: UserProfileStatus;
   createdAt: string;
 }
 
