@@ -30,6 +30,10 @@ export const adminSettingsTable = pgTable("admin_settings", {
   keepFailedPaymentLogs: boolean("keep_failed_payment_logs").notNull().default(true),
   pettyCash: numeric("petty_cash", { precision: 10, scale: 2 }).default("0"),
   receiptLineNameMode: text("receipt_line_name_mode").notNull().default("lucifer_only"),
+  // WooCommerce integration credentials (stored encrypted at rest by Postgres)
+  wcStoreUrl: text("wc_store_url").default("https://lucifercruz.com"),
+  wcConsumerKey: text("wc_consumer_key"),
+  wcConsumerSecret: text("wc_consumer_secret"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

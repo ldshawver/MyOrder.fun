@@ -1,8 +1,8 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Upload, Download, FileText, CheckCircle2, AlertCircle,
-  RotateCcw, ChevronRight, RefreshCw, ShoppingBag, Eye, EyeOff,
-  FlaskConical, ArrowRight, Table2,
+  RotateCcw, ChevronRight, RefreshCw, ShoppingBag,
+  FlaskConical, ArrowRight, Table2, Settings,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -84,27 +84,33 @@ function clientRecognized(raw: string): boolean {
 }
 
 // ─── WooCommerce Sync ─────────────────────────────────────────────────────────
-const WC_STORE_URL = "https://lucifercruz.com";
+type WooStatus = { configured: boolean; storeUrl: string };
 
 function WooCommerceSync() {
   const { getToken } = useAuth();
-  const [storeUrl, setStoreUrl] = useState(WC_STORE_URL);
-  const [consumerKey, setConsumerKey] = useState("");
-  const [consumerSecret, setConsumerSecret] = useState("");
-  const [showSecret, setShowSecret] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wooStatus, setWooStatus] = useState<WooStatus | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch("/api/admin/woocommerce/status", { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) setWooStatus(await res.json());
+      } catch {}
+    })();
+  }, [getToken]);
 
   async function handleSync() {
-    if (!consumerKey || !consumerSecret) { setError("Both Consumer Key and Consumer Secret are required."); return; }
     setSyncing(true); setError(null); setResult(null);
     try {
       const token = await getToken();
       const res = await fetch("/api/admin/woocommerce/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ storeUrl, consumerKey, consumerSecret }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Sync failed"); return; }
@@ -113,6 +119,8 @@ function WooCommerceSync() {
       setError(e?.message ?? "Network error");
     } finally { setSyncing(false); }
   }
+
+  const configured = wooStatus?.configured ?? false;
 
   return (
     <div className="rounded-2xl border border-border/50 bg-card/50 overflow-hidden">
@@ -124,40 +132,26 @@ function WooCommerceSync() {
         </div>
         <div className="flex-1">
           <div className="text-sm font-bold">Lucifer Cruz · WooCommerce Sync</div>
-          <div className="text-xs text-muted-foreground">Pull all published products directly from your store</div>
+          <div className="text-xs text-muted-foreground">
+            {configured
+              ? `Credentials saved · Store: ${wooStatus?.storeUrl}`
+              : "API credentials not configured — set them in Admin Settings"}
+          </div>
         </div>
-        <a href="https://lucifercruz.com/wp-admin/admin.php?page=wc-settings&tab=advanced&section=keys"
-          target="_blank" rel="noopener noreferrer"
-          className="text-[11px] font-semibold px-3 py-1.5 rounded-lg border transition-all"
-          style={{ borderColor: "rgba(220,20,60,0.3)", color: "#DC143C" }}>
-          Get API Keys ↗
-        </a>
       </div>
       <div className="p-5 space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div>
-            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Store URL</label>
-            <Input value={storeUrl} onChange={e => setStoreUrl(e.target.value)} placeholder="https://lucifercruz.com" className="h-9 text-sm rounded-xl bg-background/50" />
+        {!configured && (
+          <div className="flex items-center gap-3 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-400 text-xs">
+            <AlertCircle size={14} className="shrink-0" />
+            <span>
+              WooCommerce credentials are not saved yet.{" "}
+              Go to <strong>Admin Settings → WooCommerce</strong> to enter and save your API key and secret.
+            </span>
+            <a href="/admin/settings" className="ml-auto shrink-0 flex items-center gap-1 font-semibold underline">
+              <Settings size={12} /> Settings
+            </a>
           </div>
-          <div>
-            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Consumer Key</label>
-            <Input value={consumerKey} onChange={e => setConsumerKey(e.target.value)} placeholder="ck_xxxxxxxxxxxxxxxxxxxx" className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs" />
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Consumer Secret</label>
-            <div className="relative">
-              <Input type={showSecret ? "text" : "password"} value={consumerSecret} onChange={e => setConsumerSecret(e.target.value)}
-                placeholder="cs_xxxxxxxxxxxxxxxxxxxx" className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs pr-9" />
-              <button type="button" onClick={() => setShowSecret(s => !s)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="text-[11px] text-muted-foreground leading-relaxed bg-muted/20 rounded-xl p-3">
-          <strong>How to get your keys:</strong> WooCommerce → Settings → Advanced → REST API → Add Key. Permissions: <strong>Read</strong>.
-        </div>
+        )}
         {error && (
           <div className="flex items-start gap-2 p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
             <AlertCircle size={14} className="shrink-0 mt-0.5" />
@@ -165,8 +159,8 @@ function WooCommerceSync() {
           </div>
         )}
         {result && !error && <ResultCards result={result} />}
-        <Button onClick={handleSync} disabled={syncing || !consumerKey || !consumerSecret} className="gap-2 rounded-xl w-full sm:w-auto"
-          style={(!syncing && consumerKey && consumerSecret) ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" } : {}}>
+        <Button onClick={handleSync} disabled={syncing || !configured} className="gap-2 rounded-xl w-full sm:w-auto"
+          style={(configured && !syncing) ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" } : {}}>
           {syncing ? <><RefreshCw size={14} className="animate-spin" /> Syncing from WooCommerce...</> : <><RefreshCw size={14} /> Sync from WooCommerce</>}
         </Button>
       </div>
