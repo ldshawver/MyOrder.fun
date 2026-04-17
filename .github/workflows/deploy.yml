@@ -196,7 +196,14 @@ jobs:
               cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem   nginx/ssl/privkey.pem
               chmod 644 nginx/ssl/fullchain.pem
               chmod 600 nginx/ssl/privkey.pem
-            else
+              - name: Verify checked-out SHA matches trigger
+              run: |
+                ACTUAL="$(git rev-parse HEAD)"
+                EXPECTED="${GITHUB_SHA}"
+                echo "Actual:   $ACTUAL"
+                echo "Expected: $EXPECTED"
+                test "$ACTUAL" = "$EXPECTED"
+                        else
               echo "  ⚠ certbot failed — using existing certs"
             fi
 
