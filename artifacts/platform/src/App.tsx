@@ -159,26 +159,65 @@ function useSessionLogger(userEmail: string) {
 }
 
 function AuthenticatedApp() {
-  const { isLoaded: clerkLoaded, isSignedIn } = useUser();
-  const { data: user, isLoading, isError } = useGetCurrentUser({
+  const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
+  const { data: user, isLoading, isError, error } = useGetCurrentUser({
     query: {
       queryKey: ["getCurrentUser"],
       enabled: clerkLoaded && isSignedIn === true,
-      retry: 3,
+      retry: (failureCount, err) => {
+        const e = err as { status?: number };
+        if (e?.status === 403) return false;
+        return failureCount < 3;
+      },
       retryDelay: 800,
     },
   });
 
+  const clerkEmail = clerkUser?.primaryEmailAddress?.emailAddress;
+
   const [ndaAccepted, setNdaAccepted] = useState(() => useNdaAccepted());
+
+  // Global interceptor: detect 403 "pending/rejected" from any API call mid-session
+  const qc = useQueryClient();
+  const [midSessionStatus, setMidSessionStatus] = useState<"pending" | "rejected" | null>(null);
+  useEffect(() => {
+    const cache = qc.getQueryCache();
+    return cache.subscribe((event) => {
+      if (event.type !== "updated") return;
+      if (event.query.state.status !== "error") return;
+      const queryKey = event.query.queryKey as unknown[];
+      if (queryKey[0] === "getCurrentUser") return;
+      const err = event.query.state.error as { status?: number; data?: { status?: string } } | null;
+      if (err?.status !== 403) return;
+      const apiStatus = err?.data?.status;
+      setMidSessionStatus(apiStatus === "rejected" ? "rejected" : "pending");
+    });
+  }, [qc]);
 
   useSessionLogger(user?.email ?? "");
 
+  if (midSessionStatus) {
+    return <PendingPage status={midSessionStatus} userEmail={user?.email ?? clerkEmail} />;
+  }
+
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
-  if (isError) return <LoadingScreen />;
+
+  if (isError) {
+    const err = error as { status?: number; data?: { status?: string } } | null;
+    if (err?.status === 403) {
+      const apiStatus = err?.data?.status;
+      if (apiStatus === "rejected") {
+        return <PendingPage status="rejected" userEmail={clerkEmail} />;
+      }
+      return <PendingPage status="pending" userEmail={clerkEmail} />;
+    }
+    return <LoadingScreen />;
+  }
+
   if (!user) return <Redirect to="/waitlist" />;
 
   if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
-    return <PendingPage status={user.status} />;
+    return <PendingPage status={user.status} userEmail={user.email} />;
   }
 
   return (
