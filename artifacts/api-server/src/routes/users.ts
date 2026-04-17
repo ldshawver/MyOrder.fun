@@ -29,8 +29,11 @@ function normalizeRole(role: unknown): ValidRole {
 
 router.use(requireAuth, loadDbUser, requireDbUser);
 
-// Approval gate — /users/me, /users/sync, and /users/me/* are exempt so the
-// frontend can read the user's status and sync auth state while pending.
+// Approval gate with explicit exemptions:
+//  - /users/me        — frontend reads status to decide which screen to show
+//  - /users/sync      — frontend calls this on load BEFORE it knows the status
+//  - /users/me/*      — e.g. /users/me/phone so pending users can add contact info
+// All other /users/* routes (list, role change, status change) require approval.
 router.use((req, res, next) => {
   if (
     req.path === "/users/me" ||
