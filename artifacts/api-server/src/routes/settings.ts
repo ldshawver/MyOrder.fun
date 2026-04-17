@@ -23,6 +23,11 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     keepAuditToken: s.keepAuditToken,
     keepFailedPaymentLogs: s.keepFailedPaymentLogs,
     receiptLineNameMode: s.receiptLineNameMode ?? "lucifer_only",
+    // WooCommerce — consumer key/secret are returned as a boolean mask only,
+    // never echoed back to the client in plaintext.
+    wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
+    wcConsumerKeySet: !!s.wcConsumerKey,
+    wcConsumerSecretSet: !!s.wcConsumerSecret,
     updatedAt: s.updatedAt,
   };
 }
@@ -54,6 +59,33 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
   const update: Record<string, unknown> = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) update[k] = req.body[k];
+  }
+
+  const existing = await getOrCreateSettings();
+  const [updated] = await db.update(adminSettingsTable)
+    .set(update)
+    .where(eq(adminSettingsTable.id, existing.id))
+    .returning();
+  res.json(mapSettings(updated));
+});
+
+// PUT /api/admin/settings/woocommerce — save WooCommerce credentials
+// Credentials are stored in the DB, never echoed back.
+router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res): Promise<void> => {
+  const { wcStoreUrl, wcConsumerKey, wcConsumerSecret } = req.body as {
+    wcStoreUrl?: string;
+    wcConsumerKey?: string;
+    wcConsumerSecret?: string;
+  };
+
+  const update: Record<string, unknown> = {};
+  if (wcStoreUrl !== undefined) update.wcStoreUrl = wcStoreUrl.trim() || "https://lucifercruz.com";
+  if (wcConsumerKey !== undefined) update.wcConsumerKey = wcConsumerKey.trim() || null;
+  if (wcConsumerSecret !== undefined) update.wcConsumerSecret = wcConsumerSecret.trim() || null;
+
+  if (Object.keys(update).length === 0) {
+    res.status(400).json({ error: "No fields provided" });
+    return;
   }
 
   const existing = await getOrCreateSettings();

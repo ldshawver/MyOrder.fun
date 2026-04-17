@@ -81,9 +81,6 @@ export default function CatalogDebug() {
   const { getToken } = useAuth();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "hidden" | "missing">("all");
-  const [wcKey, setWcKey] = useState("");
-  const [wcSecret, setWcSecret] = useState("");
-  const [wcUrl, setWcUrl] = useState("");
   const [wcResult, setWcResult] = useState<any>(null);
   const qc = useQueryClient();
 
@@ -118,10 +115,10 @@ export default function CatalogDebug() {
   });
 
   const wooSync = useMutation({
-    mutationFn: async (body: { storeUrl?: string; consumerKey: string; consumerSecret: string }) => {
+    mutationFn: async () => {
       const resp = await authFetch("/api/admin/woocommerce/sync", {
         method: "POST",
-        body: JSON.stringify(body),
+        body: JSON.stringify({}),
       });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error ?? "Sync failed");
@@ -263,44 +260,14 @@ export default function CatalogDebug() {
             </div>
             <div className="text-xs text-muted-foreground mt-0.5">
               {wooStatus?.configured
-                ? `Credentials configured. Store: ${wooStatus.storeUrl}`
-                : "No WooCommerce credentials configured. Enter keys below to sync products from the LC store into the local catalog."}
+                ? `Credentials saved · Store: ${wooStatus.storeUrl}`
+                : "No WooCommerce credentials saved — go to Admin Settings → WooCommerce to configure."}
             </div>
           </div>
-          {wooStatus?.configured && (
-            <span className="text-[10px] px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold uppercase">Credentials Set</span>
-          )}
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Store URL</label>
-            <Input
-              placeholder={wooStatus?.storeUrl ?? "https://lucifercruz.com"}
-              value={wcUrl}
-              onChange={e => setWcUrl(e.target.value)}
-              className="h-9 rounded-xl text-xs bg-background/50"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Consumer Key</label>
-            <Input
-              type="password"
-              placeholder="ck_..."
-              value={wcKey}
-              onChange={e => setWcKey(e.target.value)}
-              className="h-9 rounded-xl text-xs bg-background/50"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1 block">Consumer Secret</label>
-            <Input
-              type="password"
-              placeholder="cs_..."
-              value={wcSecret}
-              onChange={e => setWcSecret(e.target.value)}
-              className="h-9 rounded-xl text-xs bg-background/50"
-            />
-          </div>
+          {wooStatus?.configured
+            ? <span className="text-[10px] px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold uppercase">Credentials Saved</span>
+            : <a href="/admin/settings" className="text-[10px] px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold uppercase">Configure →</a>
+          }
         </div>
         {wcResult && (
           <div className="mb-3 p-3 rounded-xl bg-muted/20 border border-border/40 text-xs font-mono space-y-1">
@@ -319,16 +286,13 @@ export default function CatalogDebug() {
         <Button
           size="sm"
           className="rounded-xl text-xs h-9 gap-1.5"
-          style={{ background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff", border: "none" }}
-          disabled={wooSync.isPending || (!wcKey && !wooStatus?.configured)}
-          onClick={() => wooSync.mutate({ storeUrl: wcUrl || undefined, consumerKey: wcKey, consumerSecret: wcSecret })}
+          style={wooStatus?.configured ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff", border: "none" } : {}}
+          disabled={wooSync.isPending || !wooStatus?.configured}
+          onClick={() => wooSync.mutate()}
         >
           {wooSync.isPending ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
           {wooSync.isPending ? "Syncing..." : "Sync WooCommerce Products"}
         </Button>
-        {!wcKey && !wooStatus?.configured && (
-          <p className="text-[10px] text-muted-foreground mt-2">Enter Consumer Key and Secret to enable sync.</p>
-        )}
       </div>
 
       {/* Product Row Table */}

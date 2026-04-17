@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@clerk/react";
-import { Settings, Save, RefreshCw, CheckCircle2 } from "lucide-react";
+import { Settings, Save, RefreshCw, CheckCircle2, Eye, EyeOff, ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -22,6 +21,9 @@ type AdminSettings = {
   keepAuditToken: boolean;
   keepFailedPaymentLogs: boolean;
   receiptLineNameMode: string;
+  wcStoreUrl: string;
+  wcConsumerKeySet: boolean;
+  wcConsumerSecretSet: boolean;
 };
 
 const DEFAULTS: AdminSettings = {
@@ -38,6 +40,9 @@ const DEFAULTS: AdminSettings = {
   keepAuditToken: true,
   keepFailedPaymentLogs: true,
   receiptLineNameMode: "lucifer_only",
+  wcStoreUrl: "https://lucifercruz.com",
+  wcConsumerKeySet: false,
+  wcConsumerSecretSet: false,
 };
 
 export default function AdminSettingsPage() {
@@ -48,6 +53,15 @@ export default function AdminSettingsPage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // WooCommerce credential form state (separate from general settings)
+  const [wcStoreUrl, setWcStoreUrl] = useState("https://lucifercruz.com");
+  const [wcKey, setWcKey] = useState("");
+  const [wcSecret, setWcSecret] = useState("");
+  const [showWcSecret, setShowWcSecret] = useState(false);
+  const [wcSaving, setWcSaving] = useState(false);
+  const [wcSaved, setWcSaved] = useState(false);
+  const [wcError, setWcError] = useState<string | null>(null);
+
   useEffect(() => {
     (async () => {
       try {
@@ -56,6 +70,7 @@ export default function AdminSettingsPage() {
         if (res.ok) {
           const data = await res.json();
           setSettings({ ...DEFAULTS, ...data });
+          setWcStoreUrl(data.wcStoreUrl ?? "https://lucifercruz.com");
         }
       } catch {}
       setLoading(false);
@@ -79,6 +94,34 @@ export default function AdminSettingsPage() {
       setError(e?.message ?? "Network error");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveWooCredentials() {
+    if (!wcKey || !wcSecret) {
+      setWcError("Both Consumer Key and Consumer Secret are required.");
+      return;
+    }
+    setWcSaving(true);
+    setWcError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/settings/woocommerce", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setWcError(data.error ?? "Save failed"); return; }
+      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet }));
+      setWcKey("");
+      setWcSecret("");
+      setWcSaved(true);
+      setTimeout(() => setWcSaved(false), 3000);
+    } catch (e: any) {
+      setWcError(e?.message ?? "Network error");
+    } finally {
+      setWcSaving(false);
     }
   }
 
@@ -131,6 +174,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="checkout" className="rounded-lg text-xs">Checkout</TabsTrigger>
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
+          <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
         </TabsList>
 
         {/* Products */}
@@ -294,6 +338,119 @@ export default function AdminSettingsPage() {
                   <div className="text-muted-foreground">{desc}</div>
                 </div>
               ))}
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* WooCommerce */}
+        <TabsContent value="woocommerce">
+          <div className="space-y-4">
+            {/* Current status */}
+            <div className="glass-card rounded-2xl p-5 border border-border/40">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center"
+                  style={{ background: "linear-gradient(135deg, #DC143C, #8B0000)" }}>
+                  <ShoppingBag size={14} className="text-white" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold">WooCommerce Integration</div>
+                  <div className="text-xs text-muted-foreground">Credentials are saved to the database and used automatically for all syncs</div>
+                </div>
+              </div>
+
+              {/* Status badges */}
+              <div className="flex flex-wrap gap-2 mb-5">
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerKeySet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerKeySet ? "bg-green-400" : "bg-muted-foreground"}`} />
+                  Consumer Key: {settings.wcConsumerKeySet ? "Saved" : "Not set"}
+                </div>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerSecretSet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerSecretSet ? "bg-green-400" : "bg-muted-foreground"}`} />
+                  Consumer Secret: {settings.wcConsumerSecretSet ? "Saved" : "Not set"}
+                </div>
+                {settings.wcConsumerKeySet && settings.wcConsumerSecretSet && (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                    <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                    Store: {settings.wcStoreUrl}
+                  </div>
+                )}
+              </div>
+
+              {/* Credential form */}
+              <div className="space-y-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+                  {settings.wcConsumerKeySet && settings.wcConsumerSecretSet ? "Update Credentials" : "Set Credentials"}
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Store URL</label>
+                  <Input
+                    value={wcStoreUrl}
+                    onChange={e => setWcStoreUrl(e.target.value)}
+                    placeholder="https://lucifercruz.com"
+                    className="h-9 text-sm rounded-xl bg-background/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">
+                    Consumer Key {settings.wcConsumerKeySet && <span className="text-green-400 normal-case font-normal">(currently saved — enter new key to replace)</span>}
+                  </label>
+                  <Input
+                    value={wcKey}
+                    onChange={e => setWcKey(e.target.value)}
+                    placeholder="ck_xxxxxxxxxxxxxxxxxxxx"
+                    className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">
+                    Consumer Secret {settings.wcConsumerSecretSet && <span className="text-green-400 normal-case font-normal">(currently saved — enter new secret to replace)</span>}
+                  </label>
+                  <div className="relative">
+                    <Input
+                      type={showWcSecret ? "text" : "password"}
+                      value={wcSecret}
+                      onChange={e => setWcSecret(e.target.value)}
+                      placeholder="cs_xxxxxxxxxxxxxxxxxxxx"
+                      className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs pr-9"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowWcSecret(s => !s)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showWcSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-muted-foreground leading-relaxed bg-muted/20 rounded-xl p-3 border border-border/30">
+                  <strong>How to get your keys:</strong> WooCommerce → Settings → Advanced → REST API → Add Key. Set Permissions to <strong>Read</strong>.{" "}
+                  <a
+                    href="https://lucifercruz.com/wp-admin/admin.php?page=wc-settings&tab=advanced&section=keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline text-primary"
+                  >
+                    Open WooCommerce settings ↗
+                  </a>
+                </div>
+
+                {wcError && (
+                  <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs">{wcError}</div>
+                )}
+
+                <Button
+                  onClick={saveWooCredentials}
+                  disabled={wcSaving || !wcKey || !wcSecret}
+                  className="gap-2 rounded-xl"
+                >
+                  {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+                  {wcSaved ? "Credentials Saved!" : wcSaving ? "Saving..." : "Save WooCommerce Credentials"}
+                </Button>
+              </div>
             </div>
           </div>
         </TabsContent>

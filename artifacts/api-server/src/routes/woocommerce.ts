@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { getOrCreateSettings } from "./settings";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -55,19 +56,29 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
 }
 
 // POST /api/admin/woocommerce/sync
+// Credentials are loaded from the DB (saved via PUT /api/admin/settings/woocommerce).
+// Any values passed in the request body override the saved credentials for this
+// one sync — useful for testing new keys without overwriting the saved ones.
 router.post(
   "/admin/woocommerce/sync",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
     const houseTenantId = await getHouseTenantId();
+
+    // Load saved credentials from DB, fall back to env vars for legacy deploys
+    const savedSettings = await getOrCreateSettings();
+    const savedKey = savedSettings.wcConsumerKey ?? process.env.WC_CONSUMER_KEY ?? "";
+    const savedSecret = savedSettings.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET ?? "";
+    const savedUrl = savedSettings.wcStoreUrl ?? process.env.WC_STORE_URL ?? "https://lucifercruz.com";
+
     const {
-      storeUrl = process.env.WC_STORE_URL ?? "https://lucifercruz.com",
-      consumerKey = process.env.WC_CONSUMER_KEY ?? "",
-      consumerSecret = process.env.WC_CONSUMER_SECRET ?? "",
+      storeUrl = savedUrl,
+      consumerKey = savedKey,
+      consumerSecret = savedSecret,
     } = req.body as { storeUrl?: string; consumerKey?: string; consumerSecret?: string };
 
     if (!consumerKey || !consumerSecret) {
-      res.status(400).json({ error: "consumerKey and consumerSecret are required" });
+      res.status(400).json({ error: "No WooCommerce credentials saved. Go to Admin Settings → WooCommerce and save your API key and secret first." });
       return;
     }
 
@@ -170,10 +181,13 @@ router.post(
 router.get(
   "/admin/woocommerce/status",
   requireRole("admin", "supervisor"),
-  async (req, res): Promise<void> => {
+  async (_req, res): Promise<void> => {
+    const s = await getOrCreateSettings();
+    const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
+    const hasSecret = !!(s.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET);
     res.json({
-      configured: !!(process.env.WC_CONSUMER_KEY && process.env.WC_CONSUMER_SECRET),
-      storeUrl: process.env.WC_STORE_URL ?? "https://lucifercruz.com",
+      configured: hasKey && hasSecret,
+      storeUrl: s.wcStoreUrl ?? process.env.WC_STORE_URL ?? "https://lucifercruz.com",
     });
   }
 );
