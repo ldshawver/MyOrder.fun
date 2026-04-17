@@ -9,8 +9,30 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@clerk/react";
 
-// ─── Canonical headers (must match backend) ───────────────────────────────────
+// ─── Template headers — what the downloadable CSV uses ───────────────────────
+const TEMPLATE_HEADERS = [
+  "Menu Regular Price",
+  "Menu Image",
+  "Menu Name",
+  "Menu Description",
+  "Menu Category",
+  "Menu In Stock",
+  "Menu ID",
+  "Menu Is Upsell",
+  "Menu Is Sample",
+  "Sale Price",
+  "Merchant Name",
+  "Merchant Image",
+  "Merchant Description",
+  "Merchant Category",
+  "Lab Name",
+];
+
+// ─── All recognized header names (template names + internal canonical names) ──
 const CANONICAL_HEADERS = [
+  // Friendly names used in the template
+  ...TEMPLATE_HEADERS,
+  // Internal/legacy canonical names (still accepted on upload)
   "regular_price", "alavont_image_url", "alavont_name", "alavont_description",
   "alavont_category", "alavont_in_stock", "alavont_is_upsell", "alavont_id",
   "alavont_created_date", "alavont_updated_date", "alavont_created_by_id",
@@ -19,7 +41,7 @@ const CANONICAL_HEADERS = [
   "lucifer_cruz_category", "lab_name",
 ];
 
-const REQUIRED_COLS = ["regular_price", "alavont_name", "alavont_category", "lucifer_cruz_name", "lab_name"];
+const REQUIRED_COLS = ["Menu Regular Price", "Menu Name", "Menu Category", "Merchant Name", "Lab Name"];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type HeaderMapping = { original: string; canonical: string; recognized: boolean };
@@ -317,13 +339,23 @@ export default function AdminImport() {
 
   function downloadTemplate() {
     const sampleRow = [
-      "29.99", "https://example.com/img.jpg", "Midnight Recovery Complex",
-      "Advanced cellular recovery blend", "Dermatology", "true", "false",
-      "ALV-001", "2025-01-01", "2025-06-01", "u001", "Dr. Adams", "false",
-      "24.99", "Velvet Restore Set", "https://example.com/lc.jpg",
-      "Luxurious overnight treatment", "Skin Care", "MRC-Lab",
+      "29.99",
+      "https://example.com/menu-img.jpg",
+      "Midnight Recovery Complex",
+      "Advanced cellular recovery blend",
+      "Dermatology",
+      "true",
+      "ALV-001",
+      "false",
+      "false",
+      "24.99",
+      "Velvet Restore Set",
+      "https://example.com/merchant-img.jpg",
+      "Luxurious overnight treatment",
+      "Skin Care",
+      "MRC-Lab",
     ];
-    const csv = [CANONICAL_HEADERS.join(","), sampleRow.join(",")].join("\n");
+    const csv = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
