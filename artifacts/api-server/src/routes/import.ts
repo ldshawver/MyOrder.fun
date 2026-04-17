@@ -59,20 +59,92 @@ const REQUIRED_HEADERS: string[] = [
 // Keys are lowercase (exact or normalized), values are canonical field names.
 // Add new aliases here — no other code needs changing.
 const HEADER_ALIASES: Record<string, string> = {
-  // regular_price
+  // ── Friendly "Menu *" column names (what the template uses) ──────────────
+  "menu regular price":              "regular_price",
+  "menu_regular_price":              "regular_price",
+  "menu regu":                       "regular_price",
+  "menu price":                      "regular_price",
+  "menu_price":                      "regular_price",
+
+  "menu image":                      "alavont_image_url",
+  "menu_image":                      "alavont_image_url",
+  "menu image url":                  "alavont_image_url",
+  "menu_image_url":                  "alavont_image_url",
+  "menu imag":                       "alavont_image_url",
+
+  "menu name":                       "alavont_name",
+  "menu_name":                       "alavont_name",
+
+  "menu description":                "alavont_description",
+  "menu_description":                "alavont_description",
+  "menu desc":                       "alavont_description",
+  "menu_desc":                       "alavont_description",
+  "menu-desc":                       "alavont_description",
+
+  "menu category":                   "alavont_category",
+  "menu_category":                   "alavont_category",
+  "menu cate":                       "alavont_category",
+  "menu_cate":                       "alavont_category",
+
+  "menu in stock":                   "alavont_in_stock",
+  "menu_in_stock":                   "alavont_in_stock",
+  "menu in st":                      "alavont_in_stock",
+  "menu_in_st":                      "alavont_in_stock",
+
+  "menu id":                         "alavont_id",
+  "menu_id":                         "alavont_id",
+
+  "menu is upsell":                  "alavont_is_upsell",
+  "menu_is_upsell":                  "alavont_is_upsell",
+
+  "menu is sample":                  "alavont_is_sample",
+  "menu_is_sample":                  "alavont_is_sample",
+
+  "sale price":                      "homie_price",
+  "sale_price":                      "homie_price",
+  "sale pri":                        "homie_price",
+  "sale_pri":                        "homie_price",
+
+  // ── Friendly "Merchant *" column names ───────────────────────────────────
+  "merchant name":                   "lucifer_cruz_name",
+  "merchant_name":                   "lucifer_cruz_name",
+  "merchant- name":                  "lucifer_cruz_name",
+  "merchant-name":                   "lucifer_cruz_name",
+
+  "merchant image":                  "lucifer_cruz_image_url",
+  "merchant_image":                  "lucifer_cruz_image_url",
+  "merchant image url":              "lucifer_cruz_image_url",
+  "merchant_image_url":              "lucifer_cruz_image_url",
+  "merchant-i":                      "lucifer_cruz_image_url",
+  "merchant_i":                      "lucifer_cruz_image_url",
+
+  "merchant description":            "lucifer_cruz_description",
+  "merchant_description":            "lucifer_cruz_description",
+  "merchant-description":            "lucifer_cruz_description",
+  "merchant-idescription":           "lucifer_cruz_description",
+  "merchant_idescription":           "lucifer_cruz_description",
+
+  "merchant category":               "lucifer_cruz_category",
+  "merchant_category":               "lucifer_cruz_category",
+  "merchant-category":               "lucifer_cruz_category",
+
+  "merchant sku":                    "lab_name",
+  "merchant_sku":                    "lab_name",
+  "merchant-s":                      "lab_name",
+  "merchant_s":                      "lab_name",
+  "merchant source":                 "lab_name",
+
+  // ── Legacy / old-style aliases (kept for backward compatibility) ──────────
   "regular price":                   "regular_price",
   "price":                           "regular_price",
 
-  // alavont_image_url
   "alavont image_url":               "alavont_image_url",
   "alavont image url":               "alavont_image_url",
 
-  // alavont_name
   "alavont iname":                   "alavont_name",
   "alavont i name":                  "alavont_name",
   "alavont_i_name":                  "alavont_name",
 
-  // alavont_description
   "alavont-idescription":            "alavont_description",
   "alavont_idescription":            "alavont_description",
   "alavont i description":           "alavont_description",
@@ -80,55 +152,44 @@ const HEADER_ALIASES: Record<string, string> = {
   "alavont-description":             "alavont_description",
   "alavont idescription":            "alavont_description",
 
-  // alavont_category
   "alavont i category":              "alavont_category",
   "alavont_i_category":              "alavont_category",
   "alavont icategory":               "alavont_category",
 
-  // alavont_in_stock
   "alavont in_stock":                "alavont_in_stock",
   "alavont in stock":                "alavont_in_stock",
 
-  // alavont_is_upsell
   "alavont i is_upsell":             "alavont_is_upsell",
   "alavont_i_is_upsell":             "alavont_is_upsell",
   "alavont i isupsell":              "alavont_is_upsell",
   "alavont iisupsell":               "alavont_is_upsell",
 
-  // alavont_id
   "alavont i id":                    "alavont_id",
   "alavont_i_id":                    "alavont_id",
   "alavont iid":                     "alavont_id",
 
-  // alavont_created_date
   "alavont i created_date":          "alavont_created_date",
   "alavont_i_created_date":          "alavont_created_date",
   "alavont i created date":          "alavont_created_date",
 
-  // alavont_updated_date
   "alavont i updated_date":          "alavont_updated_date",
   "alavont_i_updated_date":          "alavont_updated_date",
   "alavont i updated date":          "alavont_updated_date",
 
-  // alavont_created_by_id
   "alavont i created_by_id":         "alavont_created_by_id",
   "alavont_i_created_by_id":         "alavont_created_by_id",
   "alavont i created by id":         "alavont_created_by_id",
 
-  // alavont_created_by
   "alavont i created_by":            "alavont_created_by",
   "alavont_i_created_by":            "alavont_created_by",
   "alavont i created by":            "alavont_created_by",
 
-  // alavont_is_sample
   "alavont i is_sample":             "alavont_is_sample",
   "alavont_i_is_sample":             "alavont_is_sample",
   "alavont i issample":              "alavont_is_sample",
 
-  // homie_price
   "homie price":                     "homie_price",
 
-  // lucifer_cruz_name — many typo variants
   "lucifr cruz- name":               "lucifer_cruz_name",
   "lucifer cruz- name":              "lucifer_cruz_name",
   "lucifer cruz name":               "lucifer_cruz_name",
@@ -139,7 +200,6 @@ const HEADER_ALIASES: Record<string, string> = {
   "lucifer name":                    "lucifer_cruz_name",
   "lucifer cruz_ name":              "lucifer_cruz_name",
 
-  // lucifer_cruz_image_url
   "lucifer-image_url":               "lucifer_cruz_image_url",
   "lucifer_image_url":               "lucifer_cruz_image_url",
   "lucifer image_url":               "lucifer_cruz_image_url",
@@ -147,7 +207,6 @@ const HEADER_ALIASES: Record<string, string> = {
   "lucifer cruz image_url":          "lucifer_cruz_image_url",
   "lucifer cruz image url":          "lucifer_cruz_image_url",
 
-  // lucifer_cruz_description
   "lucifer-idescription":            "lucifer_cruz_description",
   "lucifer_idescription":            "lucifer_cruz_description",
   "lucifer-description":             "lucifer_cruz_description",
@@ -157,13 +216,11 @@ const HEADER_ALIASES: Record<string, string> = {
   "lucifer cruz description":        "lucifer_cruz_description",
   "lucifer idescription":            "lucifer_cruz_description",
 
-  // lucifer_cruz_category
   "lucifer-category":                "lucifer_cruz_category",
   "lucifer_category":                "lucifer_cruz_category",
   "lucifer category":                "lucifer_cruz_category",
   "lucifer cruz category":           "lucifer_cruz_category",
 
-  // lab_name
   "lab name":                        "lab_name",
 };
 
@@ -282,19 +339,48 @@ function isValidUrl(s: string): boolean {
   try { new URL(s); return true; } catch { return false; }
 }
 
+// ─── Friendly template column headers ─────────────────────────────────────────
+const TEMPLATE_HEADERS = [
+  "Menu Regular Price",
+  "Menu Image",
+  "Menu Name",
+  "Menu Description",
+  "Menu Category",
+  "Menu In Stock",
+  "Menu ID",
+  "Menu Is Upsell",
+  "Menu Is Sample",
+  "Sale Price",
+  "Merchant Name",
+  "Merchant Image",
+  "Merchant Description",
+  "Merchant Category",
+  "Lab Name",
+] as const;
+
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
 router.get(
   "/admin/products/import-template",
   requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
-      "29.99", "https://example.com/img.jpg", "Midnight Recovery Complex",
-      "Advanced cellular recovery blend", "Dermatology", "true", "false",
-      "ALV-001", "2025-01-01", "2025-06-01", "u001", "Dr. Adams", "false",
-      "24.99", "Velvet Restore Set", "https://example.com/lc.jpg",
-      "Luxurious overnight treatment", "Skin Care", "MRC-Lab",
+      "29.99",
+      "https://example.com/menu-img.jpg",
+      "Midnight Recovery Complex",
+      "Advanced cellular recovery blend",
+      "Dermatology",
+      "true",
+      "ALV-001",
+      "false",
+      "false",
+      "24.99",
+      "Velvet Restore Set",
+      "https://example.com/merchant-img.jpg",
+      "Luxurious overnight treatment",
+      "Skin Care",
+      "MRC-Lab",
     ];
-    const csvContent = [CANONICAL_HEADERS.join(","), sampleRow.join(",")].join("\n");
+    const csvContent = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", 'attachment; filename="menu_import_template.csv"');
     res.send(csvContent);
