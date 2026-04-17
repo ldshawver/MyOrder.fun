@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { useCreateOrder, useListCatalogItems, useAiUpsellSuggestions, useGetCurrentUser } from "@workspace/api-client-react";
+import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,16 +10,29 @@ import { usePushNotifications } from "@/hooks/usePushNotifications";
 
 export default function NewOrder() {
   const [, setLocation] = useLocation();
+  const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<{id: number, name: string, price: number, quantity: number}[]>([]);
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const prevCartRef = useRef("");
+  const preloaded = useRef(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
     role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
   });
+
+  const { data: preItem } = useGetCatalogItem(preItemId!, {
+    query: { enabled: !!preItemId, queryKey: ["getCatalogItem", preItemId] },
+  });
+
+  useEffect(() => {
+    if (preItem && !preloaded.current) {
+      preloaded.current = true;
+      setCart([{ id: preItem.id, name: preItem.name, price: preItem.price, quantity: 1 }]);
+    }
+  }, [preItem]);
 
   const { data: catalog } = useListCatalogItems(
     { search, limit: 10, available: true },

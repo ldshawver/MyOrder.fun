@@ -10,7 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Edit, Trash, Loader2 } from "lucide-react";
+import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -179,6 +179,17 @@ export default function CatalogItemDetail() {
                       <Badge key={tag} variant="secondary" className="rounded-sm font-mono text-[10px] px-2 uppercase">{tag}</Badge>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {item.isAvailable && (
+                <div className="pt-6 border-t border-border/50">
+                  <Link href={`/orders/new?item=${id}`}>
+                    <Button className="w-full h-12 text-sm font-bold rounded-xl gap-2" data-testid="button-order-now">
+                      <ShoppingCart size={16} />
+                      Order This Item
+                    </Button>
+                  </Link>
                 </div>
               )}
             </CardContent>

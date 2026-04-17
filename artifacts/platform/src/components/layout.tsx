@@ -4,7 +4,6 @@ import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useClerk } from "@clerk/react";
 import { 
-  LayoutDashboard, 
   FlaskConical, 
   ShoppingCart, 
   MessageSquare, 
@@ -33,7 +32,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
 
   const navItems = [
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
     { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
     { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
@@ -51,7 +49,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const mobileNavItems = visibleNavItems.filter(item => item.mobileShow);
 
   function isActive(href: string) {
-    return location === href || (location.startsWith(href + "/") && href !== "/dashboard" && href !== "/global-admin");
+    return location === href || (location.startsWith(href + "/") && href !== "/global-admin");
   }
 
   return (
@@ -61,7 +59,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       <aside className="w-64 border-r border-border/50 bg-sidebar flex-col hidden md:flex shrink-0">
         {/* Logo */}
         <div className="p-5 border-b border-border/40">
-          <Link href="/dashboard" className="flex items-center gap-3 group">
+          <Link href="/catalog" className="flex items-center gap-3 group">
             <img
               src="/lc-icon.png"
               alt="Lucifer Cruz"
@@ -154,7 +152,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           />
           <div className="relative w-72 bg-sidebar border-r border-border/50 flex flex-col h-full shadow-2xl">
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
-              <Link href="/dashboard" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
+              <Link href="/catalog" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
                 <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
                 <div>
                   <div className="font-bold text-sm tracking-wide">LUCIFER CRUZ</div>
@@ -232,7 +230,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           >
             <Menu size={22} />
           </button>
-          <Link href="/dashboard" className="flex items-center gap-2">
+          <Link href="/catalog" className="flex items-center gap-2">
             <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
             <span className="font-bold text-sm tracking-wide">LUCIFER CRUZ</span>
           </Link>

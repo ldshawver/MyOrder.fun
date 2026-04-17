@@ -113,6 +113,11 @@ router.get("/catalog", async (req, res): Promise<void> => {
     rows = rows.filter(r => !!r.luciferCruzName?.trim() || r.isWooManaged);
   }
 
+  // In Alavont mode (non-admin): exclude WooCommerce-only items — they belong under Lucifer Cruz
+  if (!isLuciferMode && !isAdminActor) {
+    rows = rows.filter(r => !r.isWooManaged);
+  }
+
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 

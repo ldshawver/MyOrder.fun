@@ -85,18 +85,21 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     .map(i => `- ${i.name} (${i.category}) $${parseFloat(i.price as string).toFixed(2)}${i.description ? ": " + i.description : ""}`)
     .join("\n");
 
-  const systemPrompt = `You are OrderFlow's AI sales concierge — an expert, trustworthy assistant helping customers find exactly what they need.
+  const availableItems = catalog.filter(i => i.isAvailable);
 
-Your catalog today:
-${catalogContext || "No items available."}
+  const systemPrompt = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need and actually BUILD their order.
 
-Guidelines:
-- Be helpful, professional, and specific. Reference actual product names and prices.
-- Suggest complementary products intelligently based on what the customer mentions.
-- Never invent products that aren't in the catalog.
-- Keep responses concise (2-4 sentences unless more detail is needed).
-- If asked about something outside your catalog, politely redirect to what you do offer.
-- You are a sales assistant, so be enthusiastic about helping customers find value.`;
+CURRENT CATALOG (${availableItems.length} items available):
+${catalogContext || "No items available right now."}
+
+CORE RULES:
+- Always be warm, direct, and helpful. Skip filler phrases like "Great question!" or "Certainly!".
+- Reference real product names and prices from the catalog above. Never invent products.
+- When a customer wants to order, tell them to click "Order This Item" on any product, or go to New Order from the Orders tab.
+- If someone asks to build an order or says what they want, name 1-3 specific matching products from the catalog with prices.
+- If they ask what's popular, pick 3 items from different categories and describe them briefly with prices.
+- Keep replies to 2-5 sentences. Be conversational, not corporate.
+- If the catalog is empty, apologize and suggest they check back soon.`;
 
   let reply = "";
   let suggestedItems: typeof catalogItemsTable.$inferSelect[] = [];
@@ -105,15 +108,37 @@ Guidelines:
     reply = await callAI(systemPrompt, body.data.messages);
 
     // Extract mentioned product names from the reply to suggest
-    const mentionedNames = catalog.filter(i =>
+    const mentionedNames = availableItems.filter(i =>
       reply.toLowerCase().includes(i.name.toLowerCase())
     ).slice(0, 3);
     suggestedItems = mentionedNames;
   } catch (err) {
     logger.error({ err }, "AI chat failed");
-    // Fallback response
-    reply = `I'd be happy to help you explore our catalog! We have ${catalog.length} products available. What type of product are you looking for today?`;
-    suggestedItems = catalog.filter(i => i.isAvailable).slice(0, 3);
+
+    // Context-aware fallback — respond based on what the user actually asked
+    const lastUserMsg = [...body.data.messages].reverse().find(m => m.role === "user")?.content?.toLowerCase() ?? "";
+
+    if (availableItems.length === 0) {
+      reply = "Looks like the catalog is empty right now — check back soon and we'll have everything loaded up for you! 🛍️";
+      suggestedItems = [];
+    } else if (lastUserMsg.includes("order") || lastUserMsg.includes("buy") || lastUserMsg.includes("get") || lastUserMsg.includes("want")) {
+      const picks = availableItems.slice(0, 3);
+      reply = `Let's build your order! Here are some items to start with:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nClick any product and hit "Order This Item" to add it, or head to the Orders tab to build from scratch.`;
+      suggestedItems = picks;
+    } else if (lastUserMsg.includes("popular") || lastUserMsg.includes("best") || lastUserMsg.includes("recommend")) {
+      const picks = availableItems.slice(0, 3);
+      reply = `Here are some top picks right now:\n${picks.map(i => `• ${i.name} (${i.category}) — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
+      suggestedItems = picks;
+    } else if (lastUserMsg.includes("price") || lastUserMsg.includes("cost") || lastUserMsg.includes("cheap") || lastUserMsg.includes("afford")) {
+      const sorted = [...availableItems].sort((a, b) => parseFloat(a.price as string) - parseFloat(b.price as string));
+      const picks = sorted.slice(0, 3);
+      reply = `Here are our most affordable options:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
+      suggestedItems = picks;
+    } else {
+      const picks = availableItems.slice(0, 3);
+      reply = `We've got ${availableItems.length} items available right now. Here's a quick look:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nWhat are you looking for? I'll find the right fit.`;
+      suggestedItems = picks;
+    }
   }
 
   const conversationId = `conv_${Date.now()}`;
