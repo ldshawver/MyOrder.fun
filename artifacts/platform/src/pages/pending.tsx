@@ -1,14 +1,32 @@
+import { useState } from "react";
 import { useClerk } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 
 interface PendingPageProps {
   status?: "pending" | "rejected";
   userEmail?: string;
+  onCheckStatus?: () => Promise<void>;
 }
 
-export default function PendingPage({ status = "pending", userEmail }: PendingPageProps) {
+export default function PendingPage({ status = "pending", userEmail, onCheckStatus }: PendingPageProps) {
   const { signOut } = useClerk();
   const isRejected = status === "rejected";
+  const [isChecking, setIsChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<"still_pending" | "error" | null>(null);
+
+  async function handleCheckStatus() {
+    if (!onCheckStatus || isChecking) return;
+    setIsChecking(true);
+    setCheckResult(null);
+    try {
+      await onCheckStatus();
+      setCheckResult("still_pending");
+    } catch {
+      setCheckResult("error");
+    } finally {
+      setIsChecking(false);
+    }
+  }
 
   return (
     <div
@@ -126,6 +144,41 @@ export default function PendingPage({ status = "pending", userEmail }: PendingPa
             >
               <span className="font-mono tracking-wider uppercase" style={{ color: "#444", fontSize: "9px" }}>Registered account</span>
               <span style={{ color: "#777" }}>{userEmail}</span>
+            </div>
+          )}
+
+          {!isRejected && onCheckStatus && (
+            <div className="flex flex-col gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs font-mono tracking-widest uppercase"
+                style={{
+                  borderColor: "rgba(139,0,0,0.3)",
+                  color: "#888",
+                  background: "rgba(139,0,0,0.05)",
+                }}
+                onClick={handleCheckStatus}
+                disabled={isChecking}
+              >
+                {isChecking ? "Checking..." : "Check my status"}
+              </Button>
+              {checkResult === "still_pending" && (
+                <p
+                  className="text-[11px] font-mono text-center"
+                  style={{ color: "#555" }}
+                >
+                  Checked — still under review
+                </p>
+              )}
+              {checkResult === "error" && (
+                <p
+                  className="text-[11px] font-mono text-center"
+                  style={{ color: "#8B0000" }}
+                >
+                  Unable to check — please try again
+                </p>
+              )}
             </div>
           )}
         </div>

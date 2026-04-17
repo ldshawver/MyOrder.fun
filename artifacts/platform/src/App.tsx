@@ -196,8 +196,32 @@ function AuthenticatedApp() {
 
   useSessionLogger(user?.email ?? "");
 
+  async function refreshCurrentUser() {
+    await qc.invalidateQueries({ queryKey: ["getCurrentUser"] });
+    await qc.refetchQueries({ queryKey: ["getCurrentUser"] });
+    const state = qc.getQueryState(["getCurrentUser"]);
+    if (state?.status === "error") {
+      throw new Error("Failed to check status");
+    }
+  }
+
+  async function handleCheckStatus() {
+    await refreshCurrentUser();
+  }
+
+  async function handleMidSessionCheckStatus() {
+    setMidSessionStatus(null);
+    await refreshCurrentUser();
+  }
+
   if (midSessionStatus) {
-    return <PendingPage status={midSessionStatus} userEmail={user?.email ?? clerkEmail} />;
+    return (
+      <PendingPage
+        status={midSessionStatus}
+        userEmail={user?.email ?? clerkEmail}
+        onCheckStatus={midSessionStatus === "pending" ? handleMidSessionCheckStatus : undefined}
+      />
+    );
   }
 
   if (!clerkLoaded || isLoading) return <LoadingScreen />;
@@ -209,7 +233,7 @@ function AuthenticatedApp() {
       if (apiStatus === "rejected") {
         return <PendingPage status="rejected" userEmail={clerkEmail} />;
       }
-      return <PendingPage status="pending" userEmail={clerkEmail} />;
+      return <PendingPage status="pending" userEmail={clerkEmail} onCheckStatus={handleCheckStatus} />;
     }
     return <LoadingScreen />;
   }
@@ -217,7 +241,13 @@ function AuthenticatedApp() {
   if (!user) return <Redirect to="/waitlist" />;
 
   if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
-    return <PendingPage status={user.status} userEmail={user.email} />;
+    return (
+      <PendingPage
+        status={user.status}
+        userEmail={user.email}
+        onCheckStatus={user.status === "pending" ? handleCheckStatus : undefined}
+      />
+    );
   }
 
   return (
