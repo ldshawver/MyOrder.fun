@@ -3,9 +3,10 @@ import { Button } from "@/components/ui/button";
 
 interface PendingPageProps {
   status?: "pending" | "rejected";
+  userEmail?: string;
 }
 
-export default function PendingPage({ status = "pending" }: PendingPageProps) {
+export default function PendingPage({ status = "pending", userEmail }: PendingPageProps) {
   const { signOut } = useClerk();
   const isRejected = status === "rejected";
 
@@ -114,6 +115,19 @@ export default function PendingPage({ status = "pending" }: PendingPageProps) {
           >
             {isRejected ? "STATUS: ACCESS DENIED" : "STATUS: PENDING REVIEW"}
           </div>
+
+          {userEmail && (
+            <div
+              className="text-xs p-3 rounded flex flex-col gap-1"
+              style={{
+                background: "rgba(139,0,0,0.05)",
+                border: "1px solid rgba(139,0,0,0.12)",
+              }}
+            >
+              <span className="font-mono tracking-wider uppercase" style={{ color: "#444", fontSize: "9px" }}>Registered account</span>
+              <span style={{ color: "#777" }}>{userEmail}</span>
+            </div>
+          )}
         </div>
 
         <Button
