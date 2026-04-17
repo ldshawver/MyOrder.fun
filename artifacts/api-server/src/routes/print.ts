@@ -21,7 +21,7 @@ import {
   printAssetsTable,
   usersTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import {
   createPrintJob,
   dispatchJob,
@@ -38,7 +38,7 @@ import {
 } from "../lib/printRouter";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const adminOnly = requireRole("admin", "supervisor");
 

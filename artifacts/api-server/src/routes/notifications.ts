@@ -7,10 +7,10 @@ import {
   MarkNotificationReadParams,
   MarkNotificationReadResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 router.get("/notifications", async (req, res): Promise<void> => {
   const actor = req.dbUser!;

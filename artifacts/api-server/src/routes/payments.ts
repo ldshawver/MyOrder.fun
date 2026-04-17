@@ -8,12 +8,12 @@ import {
   ConfirmPaymentParams,
   ConfirmPaymentBody,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { normalizeCheckoutCart, buildMerchantPayloadLines } from "../lib/checkoutNormalizer";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 // Dispatches WooCommerce-managed line items to WooCommerce (CJ Dropshipping sync)
 // after payment is confirmed. Fire-and-forget — errors logged, never block response.

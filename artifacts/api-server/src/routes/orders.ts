@@ -29,13 +29,13 @@ import {
   AddOrderNoteParams,
   AddOrderNoteBody,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { normalizeCheckoutCart, buildMerchantPayloadLines, type NormalizedCartLine } from "../lib/checkoutNormalizer";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));

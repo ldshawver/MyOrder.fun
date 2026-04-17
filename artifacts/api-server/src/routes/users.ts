@@ -9,7 +9,7 @@ import {
   UpdateUserRoleBody,
   UpdateUserRoleResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod";
@@ -29,6 +29,18 @@ function normalizeRole(role: unknown): ValidRole {
 
 router.use(requireAuth, loadDbUser, requireDbUser);
 
+// Approval gate — /users/me, /users/sync, and /users/me/* are exempt so the
+// frontend can read the user's status and sync auth state while pending.
+router.use((req, res, next) => {
+  if (
+    req.path === "/users/me" ||
+    req.path === "/users/sync" ||
+    req.path.startsWith("/users/me/")
+  ) {
+    return next();
+  }
+  return requireApproved(req, res, next);
+});
 
 // GET /api/users/me
 router.get("/users/me", async (req, res): Promise<void> => {

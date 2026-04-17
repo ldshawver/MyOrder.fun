@@ -7,11 +7,11 @@ import {
   AiUpsellSuggestionsBody,
   AiUpsellSuggestionsResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
   return {

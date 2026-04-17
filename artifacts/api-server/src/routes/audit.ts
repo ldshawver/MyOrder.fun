@@ -5,10 +5,10 @@ import {
   ListAuditLogsQueryParams,
   ListAuditLogsResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireRole("admin", "supervisor"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin", "supervisor"));
 
 router.get("/audit", async (req, res): Promise<void> => {
   const query = ListAuditLogsQueryParams.safeParse(req.query);

@@ -13,11 +13,11 @@ import {
   DeleteCatalogItemParams,
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) {
   // Prefer alavont_image_url for the primary imageUrl; fall back to image_url
