@@ -18,7 +18,7 @@ export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   // mac_studio | raspberry_pi | generic
-  bridgeType: text("bridge_type").notNull().default("generic"),
+  bridgeType: text("bridge_output").notNull().default("generic"),
   bridgeUrl: text("bridge_url").notNull(),
   apiKey: text("api_key").notNull().default(""),
   isActive: boolean("is_active").notNull().default(true),
@@ -44,7 +44,7 @@ export const printPrintersTable = pgTable("print_printers", {
   name: text("name").notNull(),
   role: text("role").notNull().default("kitchen"),
   // connection type controls dispatch strategy
-  connectionType: text("connection_type").notNull().default("bridge"),
+  connectionType: text("connection_output").notNull().default("bridge"),
   // Optional link to a bridge profile (overrides bridgeUrl/apiKey when set)
   bridgeProfileId: integer("bridge_profile_id").references(() => printBridgeProfilesTable.id, { onDelete: "set null" }),
   // For ethernet_direct: IP + port for raw socket
@@ -87,7 +87,7 @@ export const printAssetsTable = pgTable("print_assets", {
   id: serial("id").primaryKey(),
   filename: text("filename").notNull(),
   originalName: text("original_name").notNull(),
-  mimeType: text("mime_type").notNull().default("image/png"),
+  mimeType: text("mime_output").notNull().default("image/png"),
   sizeBytes: integer("size_bytes").notNull().default(0),
   // Path relative to a configured asset directory on the server
   storagePath: text("storage_path").notNull(),
@@ -100,7 +100,7 @@ export const printAssetsTable = pgTable("print_assets", {
 export const printTemplatesTable = pgTable("print_templates", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
-  jobType: text("job_type").notNull().default("label"), // label | receipt | order_ticket
+  jobType: text("job_output").notNull().default("label"), // label | receipt | order_ticket
   backgroundAssetId: integer("background_asset_id").references(() => printAssetsTable.id, { onDelete: "set null" }),
   // JSON array of field definitions: [{key, x, y, fontSize, fontWeight, align, maxWidth}]
   templateJson: jsonb("template_json").notNull().default([]),
@@ -119,7 +119,7 @@ export const printJobsTable = pgTable("print_jobs", {
   printerId: integer("printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
   // which operator was active when the job was created
   operatorUserId: integer("operator_user_id").references(() => usersTable.id, { onDelete: "set null" }),
-  jobType: text("job_type").notNull().default("order_ticket"), // order_ticket | receipt | label
+  jobType: text("job_output").notNull().default("order_ticket"), // order_ticket | receipt | label
   status: text("status").notNull().default("queued"),          // queued | sending | printed | retrying | failed
   idempotencyKey: text("idempotency_key").notNull().unique(),
   renderFormat: text("render_format").notNull().default("text"), // text | png
