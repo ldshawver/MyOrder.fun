@@ -20,6 +20,9 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   ipAddress: text("ip_address"),
   clockedInAt: timestamp("clocked_in_at", { withTimezone: true }).notNull().defaultNow(),
   clockedOutAt: timestamp("clocked_out_at", { withTimezone: true }),
+  // Cash bank tracking
+  cashBankStart: numeric("cash_bank_start", { precision: 10, scale: 2 }).default("0"),
+  cashBankEnd: numeric("cash_bank_end", { precision: 10, scale: 2 }),
   summary: json("summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
@@ -67,8 +70,12 @@ export const shiftInventoryItemsTable = pgTable("shift_inventory_items", {
   unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull().default("0"),
   quantityStart: numeric("quantity_start", { precision: 10, scale: 3 }).notNull().default("0"),
   quantitySold: numeric("quantity_sold", { precision: 10, scale: 3 }).default("0"),
+  // quantityEnd = computed (start - sold); quantityEndActual = physically counted at clock-out
   quantityEnd: numeric("quantity_end", { precision: 10, scale: 3 }),
-  isFlagged: boolean("is_flagged").default(false), // negative ending inventory
+  quantityEndActual: numeric("quantity_end_actual", { precision: 10, scale: 3 }),
+  // discrepancy = quantityEnd (expected) - quantityEndActual (physical), positive = shortage
+  discrepancy: numeric("discrepancy", { precision: 10, scale: 3 }),
+  isFlagged: boolean("is_flagged").default(false), // negative ending inventory or discrepancy
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

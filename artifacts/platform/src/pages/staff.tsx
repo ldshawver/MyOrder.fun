@@ -5,6 +5,7 @@ import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
   Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
+  DollarSign, CreditCard, Banknote,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,14 +46,19 @@ type EnrichedItem = {
   quantityStart: number;
   quantitySold: number;
   quantityEnd: number | null;
+  quantityEndActual: number | null;
+  discrepancy: number | null;
   isFlagged: boolean;
 };
 
 type ShiftStats = {
   orderCount: number;
   totalRevenue: number;
+  cashSales: number;
+  cardSales: number;
+  compSales: number;
   byItem: { catalogItemId: number; name: string; qtySold: number; revenue: number }[];
-  byCustomer: { customerId: number; name: string; orderCount: number; total: number }[];
+  byCustomer: { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }[];
 };
 
 type ActiveShift = {
@@ -61,6 +67,8 @@ type ActiveShift = {
   status: string;
   ipAddress: string | null;
   clockedInAt: string;
+  cashBankStart: number;
+  runningCashBank: number;
   inventory: EnrichedItem[];
   stats: ShiftStats;
 };
@@ -90,21 +98,26 @@ function useShift(getToken: () => Promise<string | null>) {
   return { shift, setShift, loading, refetch: fetchShift };
 }
 
-// ─── Quantity display helper ───────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmtQty(n: number | null | undefined, unitType: string) {
   if (n == null) return "—";
   return unitType === "G" ? `${n.toFixed(1)} g` : String(n);
 }
 
-// ─── Template-based Clock-In Panel ───────────────────────────────────────────
+function fmtMoney(n: number) {
+  return `$${n.toFixed(2)}`;
+}
+
+// ─── Clock-In Panel ───────────────────────────────────────────────────────────
 
 function ClockInPanel({ onClockIn, getToken }: {
-  onClockIn: (snapshot: InventorySnapshot[]) => Promise<void>;
+  onClockIn: (snapshot: InventorySnapshot[], cashBankStart: number) => Promise<void>;
   getToken: () => Promise<string | null>;
 }) {
   const [template, setTemplate] = useState<TemplateRow[]>([]);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
+  const [cashBankStart, setCashBankStart] = useState("0");
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [clocking, setClocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,7 +159,7 @@ function ClockInPanel({ onClockIn, getToken }: {
           templateItemId: r.id,
           quantityStart: parseFloat(quantities[r.id] ?? "0") || 0,
         }));
-      await onClockIn(snapshot);
+      await onClockIn(snapshot, parseFloat(cashBankStart) || 0);
     } finally {
       setClocking(false);
     }
@@ -169,7 +182,6 @@ function ClockInPanel({ onClockIn, getToken }: {
     );
   }
 
-  // Group template rows by section for display
   const sections: { name: string; items: TemplateRow[] }[] = [];
   let currentSection: { name: string; items: TemplateRow[] } | null = null;
   for (const row of template) {
@@ -195,10 +207,36 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div>
           <div className="text-sm font-bold">Start Your Shift</div>
-          <div className="text-xs text-muted-foreground">Confirm starting inventory to clock in</div>
+          <div className="text-xs text-muted-foreground">Enter starting cash bank and confirm beginning inventory</div>
         </div>
       </div>
 
+      {/* Cash bank start — prominent */}
+      <div className="px-6 py-4 border-b border-border/40 bg-emerald-500/[0.03]">
+        <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+          <Banknote size={11} />
+          Starting Cash Bank
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <div className="text-xs text-muted-foreground mb-1">Count the cash in the box and enter the total</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-emerald-400">$</span>
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              value={cashBankStart}
+              onChange={e => setCashBankStart(e.target.value)}
+              className="h-9 w-28 text-right text-sm rounded-xl bg-background/50 border-emerald-500/30 font-mono font-bold text-emerald-400 focus:border-emerald-500/60"
+              placeholder="0.00"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Inventory list */}
       <div className="divide-y divide-border/20">
         {sections.map((section, si) => (
           <div key={si}>
@@ -244,36 +282,249 @@ function ClockInPanel({ onClockIn, getToken }: {
   );
 }
 
+// ─── Clock-Out Modal ──────────────────────────────────────────────────────────
+// Collects ending physical inventory counts + actual cash in box before finalizing.
+
+function ClockOutModal({ shift, onConfirm, onCancel }: {
+  shift: ActiveShift;
+  onConfirm: (data: { endingInventory: { shiftInventoryItemId: number; quantityEndActual: number }[]; cashBankEnd: number }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  // Pre-populate actual counts with computed expected values
+  const initialCounts: Record<number, string> = {};
+  for (const item of shift.inventory) {
+    if (item.rowType === "item") {
+      initialCounts[item.id] = String(item.quantityEnd ?? 0);
+    }
+  }
+
+  const expectedCash = shift.cashBankStart + (shift.stats.cashSales ?? 0);
+
+  const [actualCounts, setActualCounts] = useState<Record<number, string>>(initialCounts);
+  const [cashBankEnd, setCashBankEnd] = useState(expectedCash.toFixed(2));
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      const endingInventory = shift.inventory
+        .filter(i => i.rowType === "item")
+        .map(i => ({
+          shiftInventoryItemId: i.id,
+          quantityEndActual: parseFloat(actualCounts[i.id] ?? "0") || 0,
+        }));
+      await onConfirm({ endingInventory, cashBankEnd: parseFloat(cashBankEnd) || 0 });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Group items by section for display
+  const sections: { name: string; items: EnrichedItem[] }[] = [];
+  let currentSection: { name: string; items: EnrichedItem[] } | null = null;
+  for (const item of shift.inventory) {
+    if (item.rowType === "section") {
+      currentSection = { name: item.sectionName ?? item.itemName, items: [] };
+      sections.push(currentSection);
+    } else if (item.rowType === "spacer") {
+      currentSection = null;
+    } else if (item.rowType === "item") {
+      if (!currentSection) {
+        currentSection = { name: "", items: [] };
+        sections.push(currentSection);
+      }
+      currentSection.items.push(item);
+    }
+  }
+
+  const cashActual = parseFloat(cashBankEnd) || 0;
+  const cashDisc = expectedCash - cashActual;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="glass-card rounded-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto border border-orange-500/20">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-border/40 flex items-center justify-between sticky top-0 bg-background/90 backdrop-blur-md z-10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center">
+              <LogOut size={16} className="text-orange-400" />
+            </div>
+            <div>
+              <div className="text-sm font-bold">End of Shift — Count Inventory</div>
+              <div className="text-xs text-muted-foreground">Enter actual counts to calculate discrepancies</div>
+            </div>
+          </div>
+          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-6">
+          {/* Cash bank reconciliation */}
+          <div className="rounded-xl border border-emerald-500/20 overflow-hidden">
+            <div className="px-4 py-3 bg-emerald-500/[0.06] border-b border-emerald-500/15 flex items-center gap-2">
+              <Banknote size={13} className="text-emerald-400" />
+              <span className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Cash Bank</span>
+            </div>
+            <div className="divide-y divide-border/20">
+              <div className="grid grid-cols-3 px-4 py-3 text-xs text-muted-foreground">
+                <span>Starting Cash</span>
+                <span>+ Cash Sales</span>
+                <span className="font-bold text-emerald-400">= Expected Total</span>
+              </div>
+              <div className="grid grid-cols-3 px-4 py-3 font-mono font-bold text-sm">
+                <span>{fmtMoney(shift.cashBankStart)}</span>
+                <span className="text-emerald-400">+{fmtMoney(shift.stats.cashSales)}</span>
+                <span className="text-emerald-400">{fmtMoney(expectedCash)}</span>
+              </div>
+              <div className="px-4 py-3 flex items-center gap-4">
+                <div className="flex-1">
+                  <div className="text-xs font-semibold mb-1">Actual Cash Counted</div>
+                  <div className="text-xs text-muted-foreground">Count all cash in the box right now</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold">$</span>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cashBankEnd}
+                    onChange={e => setCashBankEnd(e.target.value)}
+                    className="h-9 w-32 text-right font-mono font-bold rounded-xl bg-background/50 border-emerald-500/30 text-emerald-400"
+                  />
+                </div>
+              </div>
+              {Math.abs(cashDisc) > 0.005 && (
+                <div className={`px-4 py-2.5 flex items-center gap-2 ${cashDisc > 0 ? "bg-red-500/5" : "bg-emerald-500/5"}`}>
+                  <AlertTriangle size={12} className={cashDisc > 0 ? "text-red-400" : "text-emerald-400"} />
+                  <span className={`text-xs font-bold ${cashDisc > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                    Cash discrepancy: {cashDisc > 0 ? `-${fmtMoney(cashDisc)}` : `+${fmtMoney(Math.abs(cashDisc))}`}
+                    {cashDisc > 0 ? " (short)" : " (over)"}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Inventory counts */}
+          <div>
+            <div className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest mb-3">
+              Ending Inventory — Enter Physical Counts
+            </div>
+            <div className="rounded-xl border border-border/30 overflow-hidden">
+              {/* Header */}
+              <div className="grid grid-cols-[1fr_72px_72px_80px] px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20">
+                <span>Item</span>
+                <span className="text-right">Start</span>
+                <span className="text-right">Sold</span>
+                <span className="text-right">Actual #</span>
+              </div>
+              {sections.map((section, si) => (
+                <div key={si}>
+                  {section.name && (
+                    <div className="px-4 py-1.5 bg-muted/20 text-[10px] font-bold text-muted-foreground uppercase tracking-wider border-t border-border/20">
+                      {section.name}
+                    </div>
+                  )}
+                  {section.items.map(item => {
+                    const expected = item.quantityEnd ?? (item.quantityStart - item.quantitySold);
+                    const actual = parseFloat(actualCounts[item.id] ?? String(expected));
+                    const disc = expected - actual;
+                    const hasDisc = Math.abs(disc) > 0.001;
+                    return (
+                      <div key={item.id} className={`grid grid-cols-[1fr_72px_72px_80px] items-center px-4 py-2.5 border-t border-border/15 ${hasDisc && disc > 0 ? "bg-red-500/5" : ""}`}>
+                        <div className="text-sm font-medium truncate pr-2 flex items-center gap-1.5">
+                          {hasDisc && disc > 0 && <AlertTriangle size={10} className="text-red-400 shrink-0" />}
+                          {item.itemName}
+                          {hasDisc && (
+                            <span className={`text-[10px] font-mono ml-1 ${disc > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                              ({disc > 0 ? `-${disc}` : `+${Math.abs(disc)}`})
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm font-mono text-right text-muted-foreground">{fmtQty(item.quantityStart, item.unitType)}</div>
+                        <div className="text-sm font-mono text-right text-orange-400">{fmtQty(item.quantitySold, item.unitType)}</div>
+                        <div className="flex justify-end">
+                          <Input
+                            type="number"
+                            min="0"
+                            step={item.unitType === "G" ? "0.1" : "1"}
+                            value={actualCounts[item.id] ?? String(expected)}
+                            onChange={e => setActualCounts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                            className={`h-7 w-20 text-right text-xs font-mono rounded-lg bg-background/50 ${hasDisc && disc > 0 ? "border-red-500/40 text-red-400" : "border-border/50"}`}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 pb-6 flex gap-3">
+          <Button variant="outline" className="flex-1 rounded-xl border-border/50" onClick={onCancel} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold shadow-lg shadow-orange-500/20"
+            onClick={handleSubmit}
+            disabled={submitting}
+            data-testid="button-clock-out"
+          >
+            <LogOut size={14} className="mr-2" />
+            {submitting ? "Clocking Out…" : "Submit & Clock Out"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Shift Summary Modal ──────────────────────────────────────────────────────
 
+type SummaryData = {
+  stats: ShiftStats;
+  cashBankStart: number;
+  cashBankEnd: number | null;
+  expectedCashBank: number;
+  cashDiscrepancy: number | null;
+  inventorySummary: {
+    itemName: string;
+    sectionName: string | null;
+    rowType: string;
+    unitType: string;
+    quantityStart: number;
+    quantitySold: number;
+    quantityEnd: number;
+    quantityEndActual: number | null;
+    discrepancy: number | null;
+    isFlagged: boolean;
+  }[];
+  clockedInAt: string;
+  clockedOutAt: string;
+};
+
 function ShiftSummaryModal({ summary, onClose }: {
-  summary: {
-    stats: ShiftStats;
-    inventorySummary: {
-      itemName: string;
-      sectionName: string | null;
-      rowType: string;
-      unitType: string;
-      quantityStart: number;
-      quantitySold: number;
-      quantityEnd: number;
-      isFlagged: boolean;
-    }[];
-    clockedInAt: string;
-    clockedOutAt: string;
-  } | null;
+  summary: SummaryData | null;
   onClose: () => void;
 }) {
   if (!summary) return null;
+
   const duration = summary.clockedOutAt && summary.clockedInAt
     ? Math.round((new Date(summary.clockedOutAt).getTime() - new Date(summary.clockedInAt).getTime()) / 60000)
     : 0;
 
   const flaggedItems = summary.inventorySummary.filter(i => i.isFlagged);
+  const hasCashDisc = summary.cashDiscrepancy != null && Math.abs(summary.cashDiscrepancy) > 0.005;
+  const hasProblems = flaggedItems.length > 0 || hasCashDisc;
+  const hasActualCounts = summary.inventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="glass-card rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto border border-emerald-500/20">
+      <div className="glass-card rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-emerald-500/20">
+        {/* Header */}
         <div className="px-6 py-5 border-b border-border/40 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
@@ -281,9 +532,7 @@ function ShiftSummaryModal({ summary, onClose }: {
             </div>
             <div>
               <div className="text-sm font-bold">Shift Complete</div>
-              <div className="text-xs text-muted-foreground">
-                {duration} min · {summary.stats.orderCount} orders
-              </div>
+              <div className="text-xs text-muted-foreground">{duration} min · {summary.stats.orderCount} orders</div>
             </div>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -292,28 +541,82 @@ function ShiftSummaryModal({ summary, onClose }: {
         </div>
 
         <div className="px-6 py-5 space-y-6">
-          {/* Flagged items warning */}
-          {flaggedItems.length > 0 && (
+          {/* Problems banner */}
+          {hasProblems && (
             <div className="flex items-start gap-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
               <AlertTriangle size={15} className="text-red-400 shrink-0 mt-0.5" />
               <div>
-                <div className="text-xs font-bold text-red-400 mb-1">Inventory Discrepancy</div>
-                <div className="text-xs text-muted-foreground">
-                  {flaggedItems.map(i => i.itemName).join(", ")} ended below zero — verify with admin.
-                </div>
+                <div className="text-xs font-bold text-red-400 mb-1">Discrepancies Found — Report to Admin</div>
+                <ul className="text-xs text-muted-foreground space-y-0.5">
+                  {hasCashDisc && (
+                    <li>
+                      Cash bank: expected {fmtMoney(summary.expectedCashBank)}, counted {fmtMoney(summary.cashBankEnd ?? 0)} ({summary.cashDiscrepancy! > 0 ? "short" : "over"} {fmtMoney(Math.abs(summary.cashDiscrepancy!))})
+                    </li>
+                  )}
+                  {flaggedItems.map(i => (
+                    <li key={i.itemName}>
+                      {i.itemName}: expected {fmtQty(i.quantityEnd, i.unitType)}{i.quantityEndActual != null ? `, counted ${fmtQty(i.quantityEndActual, i.unitType)}` : " ended below zero"}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
           )}
 
-          {/* Totals */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Revenue totals */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="glass-card rounded-xl p-3 border-emerald-500/15 bg-emerald-500/5">
-              <div className="text-[10px] font-semibold text-emerald-400 uppercase tracking-widest mb-1">Revenue</div>
-              <div className="text-xl font-bold text-emerald-400">${summary.stats.totalRevenue.toFixed(2)}</div>
+              <div className="text-[10px] font-semibold text-emerald-400 uppercase tracking-widest mb-1">Total Sales</div>
+              <div className="text-xl font-bold text-emerald-400">{fmtMoney(summary.stats.totalRevenue)}</div>
             </div>
             <div className="glass-card rounded-xl p-3">
-              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Orders Filled</div>
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><Banknote size={9} />Cash</div>
+              <div className="text-xl font-bold">{fmtMoney(summary.stats.cashSales)}</div>
+            </div>
+            <div className="glass-card rounded-xl p-3">
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><CreditCard size={9} />Card</div>
+              <div className="text-xl font-bold">{fmtMoney(summary.stats.cardSales)}</div>
+            </div>
+            <div className="glass-card rounded-xl p-3">
+              <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Orders</div>
               <div className="text-xl font-bold">{summary.stats.orderCount}</div>
+            </div>
+          </div>
+
+          {/* Cash bank reconciliation */}
+          <div className="rounded-xl border border-border/30 overflow-hidden">
+            <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
+              <Banknote size={10} />
+              Cash Bank Reconciliation
+            </div>
+            <div className="divide-y divide-border/20 text-sm">
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">Starting Cash Bank</span>
+                <span className="font-mono">{fmtMoney(summary.cashBankStart)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">+ Cash Sales</span>
+                <span className="font-mono text-emerald-400">+{fmtMoney(summary.stats.cashSales)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2.5 font-bold">
+                <span>Expected Bank Total</span>
+                <span className="font-mono text-emerald-400">{fmtMoney(summary.expectedCashBank)}</span>
+              </div>
+              {summary.cashBankEnd != null && (
+                <div className="flex justify-between px-4 py-2.5">
+                  <span className="text-muted-foreground">Actual Cash Counted</span>
+                  <span className="font-mono">{fmtMoney(summary.cashBankEnd)}</span>
+                </div>
+              )}
+              {hasCashDisc && (
+                <div className={`flex justify-between px-4 py-2.5 font-bold ${summary.cashDiscrepancy! > 0 ? "bg-red-500/5 text-red-400" : "bg-emerald-500/5 text-emerald-400"}`}>
+                  <span>Cash Discrepancy</span>
+                  <span className="font-mono">
+                    {summary.cashDiscrepancy! > 0 ? "-" : "+"}{fmtMoney(Math.abs(summary.cashDiscrepancy!))}
+                    {summary.cashDiscrepancy! > 0 ? " (short)" : " (over)"}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -327,7 +630,7 @@ function ShiftSummaryModal({ summary, onClose }: {
                     <div className="text-sm font-medium">{item.name}</div>
                     <div className="text-right">
                       <div className="text-sm font-bold font-mono">{item.qtySold} units</div>
-                      <div className="text-xs text-emerald-400">${item.revenue.toFixed(2)}</div>
+                      <div className="text-xs text-emerald-400">{fmtMoney(item.revenue)}</div>
                     </div>
                   </div>
                 ))}
@@ -344,25 +647,31 @@ function ShiftSummaryModal({ summary, onClose }: {
                   <div key={c.customerId} className="flex justify-between items-center px-4 py-3">
                     <div>
                       <div className="text-sm font-medium">{c.name}</div>
-                      <div className="text-xs text-muted-foreground">{c.orderCount} order{c.orderCount !== 1 ? "s" : ""}</div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{c.orderCount} order{c.orderCount !== 1 ? "s" : ""}</span>
+                        <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${c.paymentMethod === "card" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : c.paymentMethod === "comp" ? "bg-purple-500/10 text-purple-400 border-purple-500/20" : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"}`}>
+                          {c.paymentMethod ?? "cash"}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-sm font-bold font-mono">${c.total.toFixed(2)}</div>
+                    <div className="text-sm font-bold font-mono">{fmtMoney(c.total)}</div>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Inventory summary — grouped by section */}
-          {summary.inventorySummary.length > 0 && (
+          {/* Inventory reconciliation */}
+          {summary.inventorySummary.filter(i => i.rowType === "item" || i.rowType === "section").length > 0 && (
             <div>
-              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Inventory Update</div>
+              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Inventory Reconciliation</div>
               <div className="rounded-xl overflow-hidden border border-border/30">
-                <div className="grid grid-cols-[1fr_54px_54px_60px] gap-0 px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20">
+                <div className={`grid gap-0 px-4 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20 ${hasActualCounts ? "grid-cols-[1fr_52px_52px_60px_60px_52px]" : "grid-cols-[1fr_52px_52px_60px]"}`}>
                   <span>Item</span>
                   <span className="text-right">Start</span>
                   <span className="text-right">Sold</span>
-                  <span className="text-right">End</span>
+                  <span className="text-right">Expected</span>
+                  {hasActualCounts && <><span className="text-right">Actual</span><span className="text-right">Diff</span></>}
                 </div>
                 {summary.inventorySummary.map((item, i) => {
                   if (item.rowType === "section") {
@@ -373,21 +682,29 @@ function ShiftSummaryModal({ summary, onClose }: {
                     );
                   }
                   if (item.rowType === "spacer") return null;
+                  const disc = item.discrepancy;
+                  const hasDisc = disc != null && Math.abs(disc) > 0.001;
                   return (
-                    <div key={i} className={`grid grid-cols-[1fr_54px_54px_60px] gap-0 px-4 py-3 border-t border-border/15 ${item.isFlagged ? "bg-red-500/5" : ""}`}>
+                    <div key={i} className={`gap-0 px-4 py-3 border-t border-border/15 ${item.isFlagged ? "bg-red-500/5" : ""} ${hasActualCounts ? "grid grid-cols-[1fr_52px_52px_60px_60px_52px]" : "grid grid-cols-[1fr_52px_52px_60px]"}`}>
                       <div className="text-sm font-medium truncate pr-2 flex items-center gap-1.5">
                         {item.isFlagged && <AlertTriangle size={11} className="text-red-400 shrink-0" />}
                         {item.itemName}
                       </div>
-                      <div className="text-sm font-mono text-right text-muted-foreground">
-                        {fmtQty(item.quantityStart, item.unitType)}
-                      </div>
-                      <div className="text-sm font-mono text-right text-orange-400">
-                        {fmtQty(item.quantitySold, item.unitType)}
-                      </div>
+                      <div className="text-sm font-mono text-right text-muted-foreground">{fmtQty(item.quantityStart, item.unitType)}</div>
+                      <div className="text-sm font-mono text-right text-orange-400">{fmtQty(item.quantitySold, item.unitType)}</div>
                       <div className={`text-sm font-bold font-mono text-right ${item.isFlagged ? "text-red-400" : item.quantityEnd <= 0 ? "text-orange-400" : "text-emerald-400"}`}>
                         {fmtQty(item.quantityEnd, item.unitType)}
                       </div>
+                      {hasActualCounts && (
+                        <>
+                          <div className={`text-sm font-mono text-right ${item.quantityEndActual == null ? "text-muted-foreground/40" : hasDisc && disc! > 0 ? "text-red-400" : "text-foreground"}`}>
+                            {item.quantityEndActual != null ? fmtQty(item.quantityEndActual, item.unitType) : "—"}
+                          </div>
+                          <div className={`text-xs font-mono text-right font-bold ${!hasDisc ? "text-muted-foreground/30" : disc! > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                            {!hasDisc ? "✓" : disc! > 0 ? `-${fmtQty(Math.abs(disc!), item.unitType)}` : `+${fmtQty(Math.abs(disc!), item.unitType)}`}
+                          </div>
+                        </>
+                      )}
                     </div>
                   );
                 })}
@@ -412,7 +729,6 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
   const duration = Math.round((Date.now() - new Date(shift.clockedInAt).getTime()) / 60000);
   const [tab, setTab] = useState<"overview" | "customers" | "inventory">("overview");
 
-  // Group inventory items by section
   const sections: { name: string; items: EnrichedItem[] }[] = [];
   let currentSection: { name: string; items: EnrichedItem[] } | null = null;
   for (const item of shift.inventory) {
@@ -471,18 +787,22 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
       </div>
 
       {/* Stats bar */}
-      <div className="grid grid-cols-3 divide-x divide-border/30 border-b border-border/30">
-        <div className="px-5 py-3 text-center">
+      <div className="grid grid-cols-4 divide-x divide-border/30 border-b border-border/30">
+        <div className="px-4 py-3 text-center">
           <div className="text-lg font-bold">{shift.stats.orderCount}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Orders</div>
         </div>
-        <div className="px-5 py-3 text-center">
-          <div className="text-lg font-bold text-emerald-400">${shift.stats.totalRevenue.toFixed(2)}</div>
+        <div className="px-4 py-3 text-center">
+          <div className="text-lg font-bold text-emerald-400">{fmtMoney(shift.stats.totalRevenue)}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Revenue</div>
         </div>
-        <div className="px-5 py-3 text-center">
+        <div className="px-4 py-3 text-center">
+          <div className="text-lg font-bold text-emerald-400">{fmtMoney(shift.runningCashBank)}</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-widest flex items-center justify-center gap-0.5"><Banknote size={8} />Cash Bank</div>
+        </div>
+        <div className="px-4 py-3 text-center">
           <div className="text-lg font-bold">{shift.stats.byItem.reduce((s, i) => s + i.qtySold, 0)}</div>
-          <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Units Sold</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Units</div>
         </div>
       </div>
 
@@ -525,7 +845,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
                   <div className="text-sm font-medium">{item.name}</div>
                   <div className="flex items-center gap-4">
                     <div className="text-xs text-muted-foreground">{item.qtySold} units</div>
-                    <div className="text-sm font-bold font-mono text-emerald-400">${item.revenue.toFixed(2)}</div>
+                    <div className="text-sm font-bold font-mono text-emerald-400">{fmtMoney(item.revenue)}</div>
                   </div>
                 </div>
               ))}
@@ -541,10 +861,15 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
               {shift.stats.byCustomer.map(c => (
                 <div key={c.customerId} className="flex justify-between items-center px-6 py-3 hover:bg-white/[0.02]">
                   <div>
-                    <div className="text-sm font-medium">{c.name}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{c.name}</span>
+                      <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${c.paymentMethod === "card" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : c.paymentMethod === "comp" ? "bg-purple-500/10 text-purple-400 border-purple-500/20" : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"}`}>
+                        {c.paymentMethod ?? "cash"}
+                      </span>
+                    </div>
                     <div className="text-xs text-muted-foreground">{c.orderCount} order{c.orderCount !== 1 ? "s" : ""}</div>
                   </div>
-                  <div className="text-sm font-bold font-mono">${c.total.toFixed(2)}</div>
+                  <div className="text-sm font-bold font-mono">{fmtMoney(c.total)}</div>
                 </div>
               ))}
             </div>
@@ -556,7 +881,6 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
             <div className="flex items-center justify-center py-10 text-xs text-muted-foreground">No inventory tracked</div>
           ) : (
             <div>
-              {/* Header row */}
               <div className="grid grid-cols-[1fr_64px_64px_72px] gap-0 px-6 py-2 bg-muted/10 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest border-b border-border/20">
                 <span>Item</span>
                 <span className="text-right">Start</span>
@@ -581,12 +905,8 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
                             {item.isFlagged && <AlertTriangle size={11} className="text-red-400 shrink-0" />}
                             {item.itemName}
                           </div>
-                          <div className="text-sm font-mono text-right text-muted-foreground">
-                            {fmtQty(item.quantityStart, item.unitType)}
-                          </div>
-                          <div className="text-sm font-mono text-right text-orange-400">
-                            {fmtQty(item.quantitySold, item.unitType)}
-                          </div>
+                          <div className="text-sm font-mono text-right text-muted-foreground">{fmtQty(item.quantityStart, item.unitType)}</div>
+                          <div className="text-sm font-mono text-right text-orange-400">{fmtQty(item.quantitySold, item.unitType)}</div>
                           <div className={`text-sm font-bold font-mono text-right ${
                             item.isFlagged || isEmpty ? "text-red-400"
                               : isLow ? "text-orange-400"
@@ -667,7 +987,6 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 
   return (
     <div className="glass-card rounded-2xl border border-border/40 overflow-hidden" data-testid={`row-queue-${order.id}`}>
-      {/* Header row */}
       <div className="p-4 flex items-center gap-3">
         <div className="w-11 h-11 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
           <span className="text-xs font-mono font-bold text-primary">#{order.id}</span>
@@ -678,6 +997,11 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
             <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentStatus === "paid" ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/20" : "bg-yellow-500/15 text-yellow-400 border-yellow-500/20"}`}>
               {order.paymentStatus === "paid" ? "PAID" : order.paymentStatus?.toUpperCase()}
             </span>
+            {order.paymentMethod && (
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentMethod === "card" ? "bg-blue-500/15 text-blue-400 border-blue-500/20" : order.paymentMethod === "comp" ? "bg-purple-500/15 text-purple-400 border-purple-500/20" : "bg-green-500/15 text-green-400 border-green-500/20"}`}>
+                {order.paymentMethod.toUpperCase()}
+              </span>
+            )}
             {fulfillment && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
                 {fulfillment.replace(/_/g, " ")}
@@ -700,7 +1024,6 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         </button>
       </div>
 
-      {/* Line items */}
       {expanded && (
         <div className="border-t border-border/30 bg-muted/10 px-4 py-3 space-y-2">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Line Items</div>
@@ -724,23 +1047,12 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         </div>
       )}
 
-      {/* Print buttons */}
       <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
-        <Button
-          size="sm" variant="outline"
-          className="gap-1.5 text-xs h-7 rounded-lg border-border/50"
-          onClick={printReceipt}
-          disabled={printingReceipt}
-        >
+        <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printReceipt} disabled={printingReceipt}>
           {printingReceipt ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
           Receipt
         </Button>
-        <Button
-          size="sm" variant="outline"
-          className="gap-1.5 text-xs h-7 rounded-lg border-border/50"
-          onClick={printLabel}
-          disabled={printingLabel}
-        >
+        <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printLabel} disabled={printingLabel}>
           {printingLabel ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
           Label
         </Button>
@@ -749,7 +1061,6 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         </Link>
       </div>
 
-      {/* Fulfillment buttons */}
       <div className="border-t border-border/30 px-4 py-3">
         <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
         <div className="flex flex-wrap gap-2">
@@ -790,10 +1101,10 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function BusinessSitterQueue() {
+export default function CustomerServiceRepQueue() {
   const [activeTab, setActiveTab] = useState("pending");
-  const [summaryData, setSummaryData] = useState<any>(null);
-  const [clockingOut, setClockingOut] = useState(false);
+  const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
+  const [showClockOutModal, setShowClockOutModal] = useState(false);
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -816,33 +1127,33 @@ export default function BusinessSitterQueue() {
     return () => clearInterval(timer);
   }, [shift, refetchShift]);
 
-  const handleClockIn = async (snapshot: InventorySnapshot[]) => {
+  const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number) => {
     const token = await getToken();
     const res = await fetch("/api/shifts/clock-in", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ inventorySnapshot: snapshot }),
+      body: JSON.stringify({ inventorySnapshot: snapshot, cashBankStart }),
     });
     if (res.ok) {
       await refetchShift();
     }
   };
 
-  const handleClockOut = async () => {
-    setClockingOut(true);
-    try {
-      const token = await getToken();
-      const res = await fetch("/api/shifts/clock-out", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setShift(null);
-        setSummaryData(data.summary);
-      }
-    } finally {
-      setClockingOut(false);
+  const handleClockOutConfirm = async (data: {
+    endingInventory: { shiftInventoryItemId: number; quantityEndActual: number }[];
+    cashBankEnd: number;
+  }) => {
+    const token = await getToken();
+    const res = await fetch("/api/shifts/clock-out", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(data),
+    });
+    if (res.ok) {
+      const resData = await res.json();
+      setShift(null);
+      setShowClockOutModal(false);
+      setSummaryData(resData.summary);
     }
   };
 
@@ -854,19 +1165,13 @@ export default function BusinessSitterQueue() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-title">
-            Sitter Queue
+            Customer Service Rep
           </h1>
           <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            Business sitter fulfillment dashboard
+            Fulfillment dashboard — inventory, cash bank &amp; orders
           </p>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 rounded-xl"
-          onClick={refresh}
-          title="Refresh"
-        >
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl" onClick={refresh} title="Refresh">
           <RefreshCw size={16} />
         </Button>
       </div>
@@ -876,16 +1181,10 @@ export default function BusinessSitterQueue() {
         shiftLoading ? (
           <div className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
         ) : shift ? (
-          <ActiveShiftPanel shift={shift} onClockOut={handleClockOut} />
+          <ActiveShiftPanel shift={shift} onClockOut={() => setShowClockOutModal(true)} />
         ) : (
           <ClockInPanel onClockIn={handleClockIn} getToken={getToken} />
         )
-      )}
-
-      {clockingOut && (
-        <div className="glass-card rounded-2xl p-4 text-center text-xs text-muted-foreground animate-pulse border border-border/40">
-          Clocking out and computing shift summary…
-        </div>
       )}
 
       {/* Order queue */}
@@ -933,6 +1232,15 @@ export default function BusinessSitterQueue() {
           </div>
         )}
       </div>
+
+      {/* Clock-out modal — collects ending inventory + cash */}
+      {showClockOutModal && shift && (
+        <ClockOutModal
+          shift={shift}
+          onConfirm={handleClockOutConfirm}
+          onCancel={() => setShowClockOutModal(false)}
+        />
+      )}
 
       {/* End-of-shift summary modal */}
       {summaryData && (

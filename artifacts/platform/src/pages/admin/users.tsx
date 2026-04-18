@@ -169,7 +169,7 @@ export default function AdminUsers() {
                         </SelectTrigger>
                         <SelectContent className="rounded-sm">
                           <SelectItem value="supervisor" className="text-xs font-mono uppercase tracking-wider">Supervisor</SelectItem>
-                          <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Business Sitter</SelectItem>
+                          <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Cust. Service Rep</SelectItem>
                           <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
                         </SelectContent>
                       </Select>

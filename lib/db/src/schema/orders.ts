@@ -17,6 +17,7 @@ export const ordersTable = pgTable("orders", {
   customerId: integer("customer_id").notNull().references(() => usersTable.id),
   status: text("status").notNull().default("pending"),
   paymentStatus: text("payment_status").notNull().default("unpaid"),
+  paymentMethod: text("payment_method").default("cash"), // "cash" | "card" | "comp"
   paymentToken: text("payment_token"),
   paymentIntentId: text("payment_intent_id"),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).notNull(),
