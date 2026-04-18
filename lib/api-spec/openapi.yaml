@@ -479,7 +479,7 @@ paths:
           name: role
           schema:
             type: string
-            enum: [global_admin, tenant_admin, staff, customer]
+            enum: [admin, supervisor, business_sitter, user]
       responses:
         "200":
           description: Users
@@ -1245,13 +1245,16 @@ components:
           type: string
         role:
           type: string
-          enum: [global_admin, tenant_admin, staff, customer]
+          enum: [admin, supervisor, business_sitter, user]
         tenantId:
           type: integer
         tenantName:
           type: string
         mfaEnabled:
           type: boolean
+        status:
+          type: string
+          enum: [pending, approved, rejected]
         isActive:
           type: boolean
         createdAt:
@@ -1264,7 +1267,7 @@ components:
       properties:
         role:
           type: string
-          enum: [tenant_admin, staff, customer]
+          enum: [supervisor, business_sitter, user]
       required: [role]
 
     UserListResponse:
