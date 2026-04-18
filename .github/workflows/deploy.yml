@@ -25,10 +25,40 @@ on:
         default: "Manual re-deploy"
 
 jobs:
+  test:
+    name: Type Check & Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.26.1'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build library declarations
+        run: pnpm typecheck:libs
+
+      - name: Run API server tests
+        run: pnpm --filter @workspace/api-server test
+
   deploy:
     name: Build → Cert → Sync → Restart
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [test]
 
     steps:
      # ── 0. Add a hard verification step in the workflow────────────────
