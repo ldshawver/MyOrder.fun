@@ -175,7 +175,8 @@ function AuthenticatedApp() {
 
   const clerkEmail = clerkUser?.primaryEmailAddress?.emailAddress;
 
-  const [ndaAccepted, setNdaAccepted] = useState(() => useNdaAccepted());
+  const initialNdaAccepted = useNdaAccepted();
+  const [ndaAccepted, setNdaAccepted] = useState(initialNdaAccepted);
 
   // Global interceptor: detect 403 "pending/rejected" from any API call mid-session
   const qc = useQueryClient();
