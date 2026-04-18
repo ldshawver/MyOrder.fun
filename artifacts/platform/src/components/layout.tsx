@@ -35,7 +35,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
     { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/staff", label: "Sitter Queue", icon: ListTodo, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
     { href: "/admin/users", label: "Users", icon: Users, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },

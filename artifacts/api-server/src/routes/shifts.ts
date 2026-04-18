@@ -53,8 +53,18 @@ async function computeShiftStats(shiftId: number) {
     itemMap[item.catalogItemId].revenue += parseFloat(item.totalPrice as string);
   }
 
-  const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number }> = {};
+  const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
+  let cashSales = 0;
+  let cardSales = 0;
+  let compSales = 0;
+
   for (const order of shiftOrders) {
+    const method = (order as any).paymentMethod ?? "cash";
+    const orderTotal = parseFloat(order.total as string);
+    if (method === "card") cardSales += orderTotal;
+    else if (method === "comp") compSales += orderTotal;
+    else cashSales += orderTotal;
+
     if (!customerMap[order.customerId]) {
       const [u] = await db
         .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
@@ -66,15 +76,19 @@ async function computeShiftStats(shiftId: number) {
         name: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
         orderCount: 0,
         total: 0,
+        paymentMethod: method,
       };
     }
     customerMap[order.customerId].orderCount++;
-    customerMap[order.customerId].total += parseFloat(order.total as string);
+    customerMap[order.customerId].total += orderTotal;
   }
 
   return {
     orderCount: shiftOrders.length,
     totalRevenue: shiftOrders.reduce((s, o) => s + parseFloat(o.total as string), 0),
+    cashSales,
+    cardSales,
+    compSales,
     byItem: Object.values(itemMap),
     byCustomer: Object.values(customerMap),
   };
@@ -92,7 +106,9 @@ type EnrichedItem = {
   unitPrice: number;
   quantityStart: number;
   quantitySold: number;
-  quantityEnd: number | null;
+  quantityEnd: number | null;        // computed (start - sold)
+  quantityEndActual: number | null;  // physically counted at clock-out
+  discrepancy: number | null;        // quantityEnd - quantityEndActual
   isFlagged: boolean;
 };
 
@@ -110,7 +126,9 @@ function enrichInventoryWithSales(
     const storedEnd = item.quantityEnd != null ? parseFloat(String(item.quantityEnd)) : null;
     const computedEnd = qStart - qSold;
     const qEnd = storedEnd ?? computedEnd;
-    const flagged = item.rowType === "item" && qEnd < 0;
+    const qEndActual = item.quantityEndActual != null ? parseFloat(String(item.quantityEndActual)) : null;
+    const discrepancy = qEndActual != null ? qEnd - qEndActual : null;
+    const flagged = item.rowType === "item" && (qEnd < 0 || (discrepancy != null && discrepancy > 0));
 
     return {
       id: item.id,
@@ -125,6 +143,8 @@ function enrichInventoryWithSales(
       quantityStart: qStart,
       quantitySold: isCountable ? qSold : 0,
       quantityEnd: isCountable ? qEnd : null,
+      quantityEndActual: isCountable ? qEndActual : null,
+      discrepancy: isCountable ? discrepancy : null,
       isFlagged: flagged,
     };
   });
@@ -182,18 +202,25 @@ router.post(
 
     const ip = getClientIp(req);
     const houseTenantId = await getHouseTenantId();
-    const [shift] = await db
-      .insert(labTechShiftsTable)
-      .values({ tenantId: houseTenantId, techId: tech.id, status: "active", ipAddress: ip })
-      .returning();
 
-    const { inventorySnapshot, inventory: legacyInventory = [] } = req.body as {
+    const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart } = req.body as {
       inventorySnapshot?: { templateItemId: number; quantityStart: number }[];
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
+      cashBankStart?: number;
     };
 
+    const [shift] = await db
+      .insert(labTechShiftsTable)
+      .values({
+        tenantId: houseTenantId,
+        techId: tech.id,
+        status: "active",
+        ipAddress: ip,
+        cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
+      })
+      .returning();
+
     if (inventorySnapshot && inventorySnapshot.length > 0) {
-      // Load all active template rows to capture section/spacer structure
       const templateRows = await db
         .select()
         .from(inventoryTemplatesTable)
@@ -264,6 +291,14 @@ router.post(
 
     if (!activeShift) { res.status(404).json({ error: "No active shift" }); return; }
 
+    const {
+      endingInventory,
+      cashBankEnd,
+    } = req.body as {
+      endingInventory?: { shiftInventoryItemId: number; quantityEndActual: number }[];
+      cashBankEnd?: number;
+    };
+
     const stats = await computeShiftStats(activeShift.id);
 
     const snapshotItems = await db
@@ -274,19 +309,44 @@ router.post(
 
     const enriched = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
-    // Persist ending quantities
+    // Apply actual ending counts from form if provided
+    const actualMap = new Map<number, number>(
+      (endingInventory ?? []).map(e => [e.shiftInventoryItemId, e.quantityEndActual])
+    );
+
+    // Persist ending quantities and actual counts
     for (const item of enriched) {
       if (item.rowType === "item" || item.rowType === "cash") {
+        const actualEnd = actualMap.has(item.id) ? actualMap.get(item.id)! : null;
+        const expectedEnd = item.quantityEnd ?? (item.quantityStart - item.quantitySold);
+        const disc = actualEnd != null ? expectedEnd - actualEnd : null;
+        const flagged = item.rowType === "item" && (
+          expectedEnd < 0 || (disc != null && disc > 0)
+        );
+
         await db
           .update(shiftInventoryItemsTable)
           .set({
             quantitySold: String(item.quantitySold),
-            quantityEnd: String(item.quantityEnd ?? item.quantityStart - item.quantitySold),
-            isFlagged: item.isFlagged,
+            quantityEnd: String(expectedEnd),
+            quantityEndActual: actualEnd != null ? String(actualEnd) : null,
+            discrepancy: disc != null ? String(disc) : null,
+            isFlagged: flagged,
           })
           .where(eq(shiftInventoryItemsTable.id, item.id));
+
+        // Update enriched item for summary
+        item.quantityEnd = expectedEnd;
+        item.quantityEndActual = actualEnd;
+        item.discrepancy = disc;
+        item.isFlagged = flagged;
       }
     }
+
+    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+    const expectedCashBank = cashBankStart + stats.cashSales;
+    const cashBankEndVal = cashBankEnd ?? null;
+    const cashDiscrepancy = cashBankEndVal != null ? expectedCashBank - cashBankEndVal : null;
 
     const inventorySummary = enriched
       .filter(i => i.rowType !== "spacer")
@@ -298,23 +358,34 @@ router.post(
         quantityStart: i.quantityStart,
         quantitySold: i.quantitySold,
         quantityEnd: i.quantityEnd ?? i.quantityStart - i.quantitySold,
+        quantityEndActual: i.quantityEndActual,
+        discrepancy: i.discrepancy,
         isFlagged: i.isFlagged,
       }));
 
     const summary = {
       ...stats,
       inventorySummary,
+      cashBankStart,
+      cashBankEnd: cashBankEndVal,
+      expectedCashBank,
+      cashDiscrepancy,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
     };
 
-    const [updated] = await db
+    await db
       .update(labTechShiftsTable)
-      .set({ status: "completed", clockedOutAt: new Date(), summary })
+      .set({
+        status: "completed",
+        clockedOutAt: new Date(),
+        cashBankEnd: cashBankEndVal != null ? String(cashBankEndVal) : null,
+        summary,
+      })
       .where(eq(labTechShiftsTable.id, activeShift.id))
       .returning();
 
-    res.json({ shift: updated, summary });
+    res.json({ summary });
   }
 );
 
@@ -347,7 +418,18 @@ router.get(
     const stats = await computeShiftStats(activeShift.id);
     const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
-    res.json({ shift: { ...activeShift, inventory, stats } });
+    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+    const runningCashBank = cashBankStart + stats.cashSales;
+
+    res.json({
+      shift: {
+        ...activeShift,
+        cashBankStart,
+        runningCashBank,
+        inventory,
+        stats,
+      },
+    });
   }
 );
 
@@ -376,6 +458,7 @@ router.get(
           techEmail: u?.email ?? "",
           ipAddress: shift.ipAddress,
           clockedInAt: shift.clockedInAt,
+          cashBankStart: parseFloat(String(shift.cashBankStart ?? 0)),
         };
       })
     );
@@ -434,7 +517,6 @@ router.patch(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
@@ -535,7 +617,6 @@ router.delete(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
