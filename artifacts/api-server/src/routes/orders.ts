@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, gte, sql } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -129,8 +129,8 @@ router.post("/orders", async (req, res): Promise<void> => {
   let normalizedLines: NormalizedCartLine[];
   try {
     normalizedLines = await normalizeCheckoutCart(body.data.items);
-  } catch (normErr: any) {
-    res.status(400).json({ error: normErr?.message ?? "Cart validation failed" });
+  } catch (normErr) {
+    res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
     return;
   }
 

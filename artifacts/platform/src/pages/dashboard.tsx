@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { useGetCurrentUser, useGetTenantSummary, useGetRecentOrders, useListCatalogItems, useAiConciergeChat, AiChatMessage } from "@workspace/api-client-react";
+import { useGetCurrentUser, useGetTenantSummary, useGetRecentOrders, useListCatalogItems, useAiConciergeChat, AiChatMessage, type UserProfile, type CatalogItem } from "@workspace/api-client-react";
 import { Link } from "wouter";
 import { TrendingUp, Clock, Package, Users, ArrowRight, FlaskConical, Bot, User, Send, ShoppingCart, ImageOff, Sparkles } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -45,7 +45,7 @@ function MiniAssistant() {
   const [messages, setMessages] = useState<AiChatMessage[]>([
     { role: "assistant", content: "Hi! I'm your Alavont shopping assistant. Ask me about our products, pricing, or anything else — I'll help you find exactly what you need." }
   ]);
-  const [suggested, setSuggested] = useState<any[]>([]);
+  const [suggested, setSuggested] = useState<CatalogItem[]>([]);
   const chatMutation = useAiConciergeChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -260,7 +260,7 @@ export default function Dashboard() {
 }
 
 /* ─── Customer shopping home ────────────────────────────── */
-function CustomerHome({ user }: { user: any }) {
+function CustomerHome({ user }: { user: UserProfile }) {
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
       {/* Hero header */}
@@ -276,7 +276,7 @@ function CustomerHome({ user }: { user: any }) {
           <div>
             <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Welcome back</div>
             <h1 className="text-2xl font-bold tracking-tight" data-testid="text-dashboard-title">
-              {user?.firstName || user?.contactName || "Valued Client"}
+              {user?.firstName || (user as UserProfile & { contactName?: string })?.contactName || "Valued Client"}
             </h1>
             <div className="text-xs text-primary/80 font-medium tracking-wide mt-0.5">Lucifer Cruz · Adult Boutique</div>
           </div>

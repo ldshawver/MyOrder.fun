@@ -6,7 +6,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { useAuth } from "@clerk/react";
 
 // ─── Template headers — what the downloadable CSV uses ───────────────────────
@@ -94,7 +93,7 @@ function parseCsvPreview(text: string): { rawHeaders: string[]; rows: Record<str
 // Client-side header normalizer (mirrors backend logic for preview only)
 function clientNormalize(raw: string): string {
   const lower = raw.toLowerCase().trim();
-  const norm = lower.replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "").replace(/_+/g, "_").replace(/^_|_$/g, "");
+  const norm = lower.replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, "").replace(/_+/g, "_").replace(/^_|_$/g, "");
   return CANONICAL_HEADERS.includes(norm) ? norm : norm;
 }
 
@@ -121,7 +120,7 @@ function WooCommerceSync() {
         const token = await getToken();
         const res = await fetch("/api/admin/woocommerce/status", { headers: { Authorization: `Bearer ${token}` } });
         if (res.ok) setWooStatus(await res.json());
-      } catch {}
+      } catch { /* ignore fetch errors */ }
     })();
   }, [getToken]);
 
@@ -137,8 +136,8 @@ function WooCommerceSync() {
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Sync failed"); return; }
       setResult(data);
-    } catch (e: any) {
-      setError(e?.message ?? "Network error");
+    } catch (e) {
+      setError((e as Error)?.message ?? "Network error");
     } finally { setSyncing(false); }
   }
 
@@ -332,8 +331,8 @@ export default function AdminImport() {
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Import failed"); return; }
       setResult(data);
-    } catch (e: any) {
-      setError(e?.message ?? "Network error");
+    } catch (e) {
+      setError((e as Error)?.message ?? "Network error");
     } finally { setImporting(false); }
   }
 

@@ -229,8 +229,8 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
 
       const cycleLen = 250;
       const phase = (t % cycleLen) / cycleLen;
-      let rotation = 0;
-      let sandFraction = phase;
+      let rotation: number;
+      let sandFraction: number;
 
       if (phase < 0.45) {
         rotation = 0;
