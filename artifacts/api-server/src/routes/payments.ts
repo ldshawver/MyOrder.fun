@@ -46,7 +46,7 @@ async function dispatchWooItemsAfterPayment(orderId: number): Promise<void> {
 function getStripeClient(): Stripe | null {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) return null;
-  return new Stripe(key, { apiVersion: "2025-01-27.acacia" });
+  return new Stripe(key, { apiVersion: "2026-03-25.dahlia" });
 }
 
 // POST /api/payments/tokenize

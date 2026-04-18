@@ -21,8 +21,8 @@ router.post("/session/log", requireAuth, loadDbUser, async (req, res): Promise<v
   try {
     await db.insert(auditLogsTable).values({
       tenantId: user.tenantId,
-      actorId: String(user.id),
-      actorEmail: user.email,
+      actorId: user.id,
+      actorEmail: user.email ?? "",
       actorRole: user.role,
       action: action ?? "page_view",
       resourceType: "page",

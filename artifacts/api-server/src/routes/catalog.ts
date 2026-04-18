@@ -145,7 +145,7 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null,
     isAvailable: body.data.isAvailable ?? true,
-    stockQuantity: body.data.stockQuantity ?? 0,
+    stockQuantity: String(body.data.stockQuantity ?? 0),
   }).returning();
   res.status(201).json(mapItem(row));
 });
@@ -231,9 +231,13 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     return;
   }
 
-  const updateData: Partial<typeof catalogItemsTable.$inferInsert> = { ...body.data };
-  if (body.data.price !== undefined) updateData.price = String(body.data.price);
-  if (body.data.compareAtPrice !== undefined) updateData.compareAtPrice = body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, ...restBodyData } = body.data;
+  const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
+  if (price !== undefined) updateData.price = String(price);
+  if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
+  if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
+  if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
+  if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.

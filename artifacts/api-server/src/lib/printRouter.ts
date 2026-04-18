@@ -57,7 +57,7 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
     const profile = await getOperatorProfile(tech.techId);
     return {
       userId: tech.techId,
-      email: tech.email,
+      email: tech.email ?? "",
       firstName: tech.firstName ?? null,
       lastName: tech.lastName ?? null,
       role: tech.role,
@@ -87,7 +87,7 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
   const profile = await getOperatorProfile(admin.id);
   return {
     userId: admin.id,
-    email: admin.email,
+    email: admin.email ?? "",
     firstName: admin.firstName ?? null,
     lastName: admin.lastName ?? null,
     role: admin.role,

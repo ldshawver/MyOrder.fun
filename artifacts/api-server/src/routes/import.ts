@@ -562,7 +562,7 @@ router.post(
       try {
         await db.insert(auditLogsTable).values({
           actorId: actor.id,
-          actorEmail: actor.email,
+          actorEmail: actor.email ?? "",
           actorRole: actor.role,
           action: "menu_import",
           resourceType: "catalog_item",
