@@ -36,14 +36,14 @@ export const inventoryTemplatesTable = pgTable("inventory_templates", {
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   sectionName: text("section_name"),
   itemName: text("item_name"),
-  rowType: text("row_type").notNull().default("item"), // "section" | "item" | "spacer" | "cash"
-  unitType: text("unit_type").default("#"),            // "G" | "#"
+  rowType: text("row_output").notNull().default("item"), // "section" | "item" | "spacer" | "cash"
+  unitType: text("unit_output").default("#"),            // "G" | "#"
   startingQuantityDefault: numeric("starting_quantity_default", { precision: 10, scale: 3 }).default("0"),
   displayOrder: integer("display_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   catalogItemId: integer("catalog_item_id").references(() => catalogItemsTable.id),
   alavontId: text("alavont_id"),
-  deductionUnitType: text("deduction_unit_type").default("#"),
+  deductionUnitType: text("deduction_unit_output").default("#"),
   deductionQuantityPerSale: numeric("deduction_quantity_per_sale", { precision: 10, scale: 3 }).default("1"),
   // Live running stock — decremented automatically when linked catalog items are sold
   currentStock: numeric("current_stock", { precision: 10, scale: 3 }),
@@ -60,8 +60,8 @@ export const shiftInventoryItemsTable = pgTable("shift_inventory_items", {
   templateItemId: integer("template_item_id").references(() => inventoryTemplatesTable.id),
   // Display structure
   sectionName: text("section_name"),
-  rowType: text("row_type").default("item"),    // "section" | "item" | "spacer" | "cash"
-  unitType: text("unit_type").default("#"),     // "G" | "#"
+  rowType: text("row_output").default("item"),    // "section" | "item" | "spacer" | "cash"
+  unitType: text("unit_output").default("#"),     // "G" | "#"
   displayOrder: integer("display_order").default(0),
   // Product linkage
   catalogItemId: integer("catalog_item_id").references(() => catalogItemsTable.id),
