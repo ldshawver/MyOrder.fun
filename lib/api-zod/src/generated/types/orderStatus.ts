@@ -12,6 +12,7 @@ export const OrderStatus = {
   pending: "pending",
   confirmed: "confirmed",
   processing: "processing",
+  ready: "ready",
   shipped: "shipped",
   delivered: "delivered",
   cancelled: "cancelled",

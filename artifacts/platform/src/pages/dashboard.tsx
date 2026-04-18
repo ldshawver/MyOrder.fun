@@ -137,7 +137,7 @@ function MiniAssistant() {
                   <div className="text-xs font-semibold truncate">{item.name}</div>
                   <div className="text-[10px] text-muted-foreground">{item.category}</div>
                 </div>
-                <div className="text-xs font-bold text-primary shrink-0">${parseFloat(item.price).toFixed(2)}</div>
+                <div className="text-xs font-bold text-primary shrink-0">${Number(item.price).toFixed(2)}</div>
               </Link>
             ))}
           </div>
@@ -212,7 +212,7 @@ function FeaturedItems() {
             <div className="p-3">
               <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-widest mb-0.5">{item.category}</div>
               <div className="text-xs font-bold leading-snug line-clamp-1">{item.name}</div>
-              <div className="text-xs font-bold text-primary mt-1">${parseFloat(item.price).toFixed(2)}</div>
+              <div className="text-xs font-bold text-primary mt-1">${Number(item.price).toFixed(2)}</div>
             </div>
           </Link>
         ))}

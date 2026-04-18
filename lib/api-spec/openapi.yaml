@@ -341,7 +341,7 @@ paths:
           name: status
           schema:
             type: string
-            enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+            enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
         - in: query
           name: customerId
           schema:
@@ -1090,7 +1090,7 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+          enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
         paymentStatus:
           type: string
           enum: [unpaid, pending, paid, refunded, failed]
@@ -1142,7 +1142,7 @@ components:
       properties:
         status:
           type: string
-          enum: [pending, confirmed, processing, shipped, delivered, cancelled]
+          enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
         notes:
           type: string
       required: [status]
