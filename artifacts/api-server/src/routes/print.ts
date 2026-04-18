@@ -142,7 +142,7 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
 
 // ── PATCH /api/print/printers/:id ─────────────────────────────────────────
 router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -167,7 +167,7 @@ router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> =
 
 // ── DELETE /api/print/printers/:id ────────────────────────────────────────
 router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   await db.delete(printPrintersTable).where(eq(printPrintersTable.id, id));
   res.json({ ok: true });
 });
@@ -175,7 +175,7 @@ router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> 
 // ── POST /api/print/printers/:id/test ────────────────────────────────────
 // Synchronous — awaits dispatch and returns the real pass/fail result.
 router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, id)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
@@ -226,7 +226,7 @@ router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<voi
 
 // ── POST /api/print/printers/:id/probe ───────────────────────────────────
 router.post("/print/printers/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, id)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
@@ -284,7 +284,7 @@ router.post("/print/profiles", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.delete("/print/profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   await db.delete(operatorPrintProfilesTable).where(eq(operatorPrintProfilesTable.id, id));
   res.json({ ok: true });
 });
@@ -312,7 +312,7 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.patch("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -331,7 +331,7 @@ router.patch("/print/templates/:id", adminOnly, async (req, res): Promise<void> 
 });
 
 router.delete("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id));
   res.json({ ok: true });
 });
@@ -348,7 +348,7 @@ router.get("/print/jobs", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.get("/print/jobs/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -359,7 +359,7 @@ router.get("/print/jobs/:id", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.post("/print/jobs/:id/retry", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -379,7 +379,7 @@ router.post("/print/jobs/:id/retry", adminOnly, async (req, res): Promise<void> 
 });
 
 router.post("/print/jobs/:id/reprint", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -641,7 +641,7 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
 
 /** POST /api/print/orders/:id/receipt — reprint/trigger receipt for an order */
 router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
-  const orderId = parseInt(req.params.id, 10);
+  const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -736,7 +736,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
-  const orderId = parseInt(req.params.id, 10);
+  const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -919,7 +919,7 @@ router.post("/print/bridge-profiles", adminOnly, async (req, res): Promise<void>
 
 /** PATCH /api/print/bridge-profiles/:id — update a bridge profile */
 router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const b = req.body ?? {};
   const updates: Partial<typeof printBridgeProfilesTable.$inferInsert> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -938,14 +938,14 @@ router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<
 
 /** DELETE /api/print/bridge-profiles/:id */
 router.delete("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   await db.delete(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id));
   res.json({ success: true });
 });
 
 /** POST /api/print/bridge-profiles/:id/probe — health check a bridge profile */
 router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
   const profile = rows[0];
   if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
@@ -980,7 +980,7 @@ router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Pro
 
 /** POST /api/print/bridge-profiles/:id/list-printers — list CUPS printers on a bridge */
 router.post("/print/bridge-profiles/:id/list-printers", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(req.params.id as string, 10);
   const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
   const profile = rows[0];
   if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }

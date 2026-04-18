@@ -143,6 +143,7 @@ describe("checkoutNormalizer", () => {
     it("uses lucifer_cruz_name (merchant_name) for local_mapped items — Alavont name never appears", () => {
       const normalized = [
         {
+          catalog_item_id: 1,
           source_type: "local_mapped" as const,
           catalog_display_name: "Alavont Display Name",
           merchant_name: "Lucifer Cruz Merchant Name",
@@ -155,6 +156,8 @@ describe("checkoutNormalizer", () => {
           woo_product_id: null,
           woo_variation_id: null,
           lab_name: "Lab A",
+          receipt_name: null,
+          label_name: null,
         },
       ];
       const lines = buildMerchantPayloadLines(normalized, true);
@@ -165,6 +168,7 @@ describe("checkoutNormalizer", () => {
     it("does not include Alavont name in merchant payload for mapped products", () => {
       const normalized = [
         {
+          catalog_item_id: 2,
           source_type: "local_mapped" as const,
           catalog_display_name: "Alavont Only Name",
           merchant_name: "LC Only Name",
@@ -177,6 +181,8 @@ describe("checkoutNormalizer", () => {
           woo_product_id: null,
           woo_variation_id: null,
           lab_name: null,
+          receipt_name: null,
+          label_name: null,
         },
       ];
       const lines = buildMerchantPayloadLines(normalized, false);
@@ -188,6 +194,7 @@ describe("checkoutNormalizer", () => {
   describe("buildReceiptLines", () => {
     const lines = [
       {
+        catalog_item_id: 1,
         source_type: "local_mapped" as const,
         catalog_display_name: "Alavont Product",
         merchant_name: "LC Product",
@@ -200,6 +207,8 @@ describe("checkoutNormalizer", () => {
         woo_product_id: null,
         woo_variation_id: null,
         lab_name: "Lab X",
+        receipt_name: null,
+        label_name: null,
       },
     ];
 

@@ -472,7 +472,7 @@ router.get(
   "/shifts/:id/summary",
   requireRole("business_sitter", "supervisor", "admin"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const [shift] = await db
@@ -517,7 +517,7 @@ router.patch(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const {
@@ -617,7 +617,7 @@ router.delete(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id, 10);
+    const id = parseInt(req.params.id as string, 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const [deleted] = await db
