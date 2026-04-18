@@ -20,6 +20,9 @@ import {
   printTemplatesTable,
   printAssetsTable,
   usersTable,
+  ordersTable,
+  orderItemsTable,
+  adminSettingsTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import {
@@ -632,6 +635,169 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
     error: finalJob?.status === "printed"
       ? undefined
       : (finalJob?.errorMessage ?? "Job did not complete"),
+  });
+});
+
+// ── Per-order print triggers (any approved user) ──────────────────────────
+// Called from the staff CSR queue when a rep manually hits "Print Receipt"
+// or "Print Label". Does NOT require adminOnly — business_sitter / CSR role
+// is enough (router-level middleware already requires auth + approved).
+
+/** POST /api/print/orders/:id/receipt — reprint/trigger receipt for an order */
+router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
+  const orderId = parseInt(req.params.id, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+
+  const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, orderId));
+
+  const [customer] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
+    .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
+  const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
+
+  const operator = await selectActiveOperator();
+  const { primary: receiptPrinter } = await resolveReceiptPrinters(operator?.profile ?? null);
+  if (!receiptPrinter) {
+    res.status(503).json({ error: "No receipt printer configured or available" });
+    return;
+  }
+
+  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
+  try {
+    const [adminSettings] = await db.select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
+      .from(adminSettingsTable).limit(1);
+    if (adminSettings?.receiptLineNameMode) {
+      receiptLineNameMode = adminSettings.receiptLineNameMode as typeof receiptLineNameMode;
+    }
+  } catch { /* non-critical */ }
+
+  const settings = await getSettings();
+  const s = settings as Record<string, unknown>;
+  const width = charWidth(s.paperWidth as string ?? "80mm");
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+  const operatorName = operator
+    ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email
+    : undefined;
+
+  const printOrder = {
+    id: order.id,
+    customerName,
+    notes: order.notes ?? undefined,
+    receiptLineNameMode,
+    items: items.map(i => ({
+      quantity: i.quantity,
+      name: i.catalogItemName,
+      alavontName: i.alavontName ?? i.catalogItemName,
+      luciferCruzName: i.luciferCruzName ?? i.catalogItemName,
+      unitPrice: parseFloat(i.unitPrice as string),
+      totalPrice: parseFloat(i.totalPrice as string),
+    })),
+    subtotal: parseFloat(order.subtotal as string),
+    tax: parseFloat((order.tax as string) ?? "0"),
+    total: parseFloat(order.total as string),
+    paymentStatus: order.paymentStatus,
+    createdAt: order.createdAt,
+    logoLines,
+    dualBrandName: s.brandName as string | undefined,
+    footerMessage: s.footerMessage as string | undefined,
+    showDiscreetNotice: Boolean(s.showDiscreetNotice),
+    showOperatorName: s.includeOperatorName !== false,
+    operatorName,
+  };
+
+  const { renderCustomerReceipt } = await import("../lib/receiptRenderer.js");
+  const renderedText = renderCustomerReceipt(printOrder);
+
+  // Always create a fresh job for reprints (unique key per timestamp)
+  const iKey = makeIdempotencyKey(orderId, receiptPrinter.id, `receipt:reprint:${Date.now()}`);
+  const [job] = await db.insert(printJobsTable).values({
+    orderId,
+    printerId: receiptPrinter.id,
+    jobType: "receipt",
+    status: "queued",
+    idempotencyKey: iKey,
+    renderFormat: "text",
+    payloadJson: printOrder as object,
+    renderedText,
+    operatorUserId: operator?.userId ?? null,
+  }).returning();
+
+  await dispatchReceiptJob(job, receiptPrinter).catch(() => {});
+
+  const [finalJob] = await db.select().from(printJobsTable).where(eq(printJobsTable.id, job.id)).limit(1);
+  const ok = finalJob?.status === "printed";
+
+  res.json({
+    ok,
+    jobId: job.id,
+    status: finalJob?.status ?? "unknown",
+    printerName: receiptPrinter.name,
+    error: ok ? undefined : (finalJob?.errorMessage ?? "Receipt print did not complete"),
+  });
+});
+
+/** POST /api/print/orders/:id/label — print delivery label with customer name */
+router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
+  const orderId = parseInt(req.params.id, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+
+  const [customer] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
+    .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
+  const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "Customer";
+  const firstName = customer?.firstName?.trim() || customerName;
+
+  const operator = await selectActiveOperator();
+  const labelPrinter = await resolveLabelPrinter(operator?.profile ?? null);
+  if (!labelPrinter) {
+    res.status(503).json({ error: "No label printer configured" });
+    return;
+  }
+
+  const settings = await getSettings();
+  const s = settings as Record<string, unknown>;
+  // Labels default to 58mm paper
+  const width = charWidth((s.paperWidth as string ?? "58mm"));
+
+  // Delivery label: customer first name is the headline, order details below
+  const blocks = buildLabelBlocks({
+    title: firstName.toUpperCase(),
+    line1: `Order #${orderId}`,
+    line2: order.shippingAddress ?? undefined,
+    line3: `Total: $${parseFloat(order.total as string).toFixed(2)}`,
+    footer: new Date(order.createdAt).toLocaleTimeString(),
+  });
+  const renderedText = renderBlocks(blocks, width);
+
+  const iKey = makeIdempotencyKey(orderId, labelPrinter.id, `label:reprint:${Date.now()}`);
+  const [job] = await db.insert(printJobsTable).values({
+    orderId,
+    printerId: labelPrinter.id,
+    jobType: "label",
+    status: "queued",
+    idempotencyKey: iKey,
+    renderFormat: "text",
+    payloadJson: { orderId, customerName, firstName, shippingAddress: order.shippingAddress ?? null },
+    renderedText,
+    operatorUserId: operator?.userId ?? null,
+  }).returning();
+
+  await dispatchLabelJob(job, labelPrinter).catch(() => {});
+
+  const [finalJob] = await db.select().from(printJobsTable).where(eq(printJobsTable.id, job.id)).limit(1);
+  const ok = finalJob?.status === "printed";
+
+  res.json({
+    ok,
+    jobId: job.id,
+    status: finalJob?.status ?? "unknown",
+    printerName: labelPrinter.name,
+    customerName,
+    error: ok ? undefined : (finalJob?.errorMessage ?? "Label print did not complete"),
   });
 });
 

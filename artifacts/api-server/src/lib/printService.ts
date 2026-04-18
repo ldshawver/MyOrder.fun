@@ -516,6 +516,36 @@ export async function enqueueOrderPrintJobs(order: {
     }
   }
 
+  // ── Expo ticket ───────────────────────────────────────────────────────────
+  // Expo printers get the same kitchen ticket as a bump-screen / pass station.
+  const expoPrinters = await db.select().from(printPrintersTable)
+    .where(and(
+      eq(printPrintersTable.isActive, true),
+      eq(printPrintersTable.role, "expo"),
+    )).limit(3);
+
+  for (const ep of expoPrinters) {
+    const renderedText = renderKitchenTicket(printOrder);
+    const key = makeIdempotencyKey(order.id, ep.id, "order_ticket");
+    const existing = await db.select().from(printJobsTable)
+      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+
+    if (!existing.length) {
+      const [job] = await db.insert(printJobsTable).values({
+        orderId: order.id,
+        printerId: ep.id,
+        jobType: "order_ticket",
+        status: "queued",
+        idempotencyKey: key,
+        renderFormat: "text",
+        payloadJson: printOrder,
+        renderedText,
+        operatorUserId: operator?.userId ?? null,
+      }).returning();
+      dispatchJob(job, ep).catch(() => {});
+    }
+  }
+
   // ── Label ─────────────────────────────────────────────────────────────────
   if (settings.autoPrintLabels) {
     const { resolveRoutingDecision, shouldPrintLabel } = await import("./printRoutingResolver.js");
