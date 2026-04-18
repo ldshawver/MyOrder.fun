@@ -8,6 +8,7 @@
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "lint": "pnpm -r --if-present run lint",
+    "lint:ratchet": "pnpm --filter @workspace/scripts lint:ratchet",
     "test": "pnpm --filter @workspace/api-server test"
   },
   "private": true,
