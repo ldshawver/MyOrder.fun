@@ -87,7 +87,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
       const timer = setTimeout(() => requestPermission(), 3000);
       return () => clearTimeout(timer);
     }
-    return undefined;
+    return;
   }, [requestPermission]);
 
   return {
