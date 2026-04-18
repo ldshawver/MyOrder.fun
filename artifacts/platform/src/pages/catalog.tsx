@@ -62,6 +62,10 @@ interface CatalogItemForm {
   receiptName: string;
 }
 
+type StringFormKey = {
+  [K in keyof CatalogItemForm]: CatalogItemForm[K] extends string ? K : never;
+}[keyof CatalogItemForm];
+
 function CatalogItemCard({
   item,
   canEdit,
@@ -167,7 +171,7 @@ function CatalogItemCard({
 }
 
 function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
-  const fields = [
+  const fields: Array<{ label: string; key: StringFormKey; type: string; placeholder?: string }> = [
     { label: "Name *", key: "name", type: "text" },
     { label: "Category *", key: "category", type: "text" },
     { label: "Price ($) *", key: "price", type: "number" },
@@ -182,8 +186,8 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
           <Input
             type={type}
-            value={((form as unknown as Record<string, unknown>)[key] ?? "") as string}
-            onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }) as CatalogItemForm)}
+            value={form[key]}
+            onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
             placeholder={placeholder}
             className="rounded-xl h-9 text-sm bg-background/50"
           />
@@ -207,17 +211,31 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
 }
 
 function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
+  const alavontStringFields: Array<{ label: string; key: StringFormKey }> = [
+    { label: "Alavont Name", key: "alavontName" },
+    { label: "Alavont Category", key: "alavontCategory" },
+    { label: "Alavont Image URL", key: "alavontImageUrl" },
+  ];
+  const luciferStringFields: Array<{ label: string; key: StringFormKey }> = [
+    { label: "Lucifer Cruz Name", key: "luciferCruzName" },
+    { label: "Lucifer Cruz Category", key: "luciferCruzCategory" },
+    { label: "Lucifer Cruz Image URL", key: "luciferCruzImageUrl" },
+  ];
+  const wooStringFields: Array<{ label: string; key: StringFormKey }> = [
+    { label: "WooCommerce Product ID", key: "wooProductId" },
+    { label: "WooCommerce Variation ID", key: "wooVariationId" },
+  ];
+  const metaStringFields: Array<{ label: string; key: StringFormKey }> = [
+    { label: "Lab Name", key: "labName" },
+    { label: "Receipt Name", key: "receiptName" },
+  ];
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400 pt-1">Alavont Display Fields</div>
-      {[
-        { label: "Alavont Name", key: "alavontName" },
-        { label: "Alavont Category", key: "alavontCategory" },
-        { label: "Alavont Image URL", key: "alavontImageUrl" },
-      ].map(({ label, key }) => (
+      {alavontStringFields.map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" />
+          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
         </div>
       ))}
       <div>
@@ -232,14 +250,10 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
       </div>
 
       <div className="text-[10px] font-bold uppercase tracking-widest text-red-400 pt-2">Lucifer Cruz Merchant Fields</div>
-      {[
-        { label: "Lucifer Cruz Name", key: "luciferCruzName" },
-        { label: "Lucifer Cruz Category", key: "luciferCruzCategory" },
-        { label: "Lucifer Cruz Image URL", key: "luciferCruzImageUrl" },
-      ].map(({ label, key }) => (
+      {luciferStringFields.map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" />
+          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
         </div>
       ))}
       <div>
@@ -261,22 +275,16 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
           <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isWooManaged ? "left-5" : "left-0.5"}`} />
         </button>
       </div>
-      {[
-        { label: "WooCommerce Product ID", key: "wooProductId" },
-        { label: "WooCommerce Variation ID", key: "wooVariationId" },
-      ].map(({ label, key }) => (
+      {wooStringFields.map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value || null }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
         </div>
       ))}
-      {[
-        { label: "Lab Name", key: "labName" },
-        { label: "Receipt Name", key: "receiptName" },
-      ].map(({ label, key }) => (
+      {metaStringFields.map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value || null }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
         </div>
       ))}
     </div>
