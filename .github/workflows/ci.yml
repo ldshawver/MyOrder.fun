@@ -31,5 +31,8 @@ jobs:
       - name: Build library declarations
         run: pnpm typecheck:libs
 
+      - name: Full TypeScript check
+        run: pnpm typecheck
+
       - name: Run tests
         run: pnpm test
