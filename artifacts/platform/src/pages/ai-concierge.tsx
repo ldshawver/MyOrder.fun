@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import { useAiConciergeChat, AiChatMessage } from "@workspace/api-client-react";
+import { useAiConciergeChat, AiChatMessage, type CatalogItem } from "@workspace/api-client-react";
 import { Input } from "@/components/ui/input";
-import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, Zap, RotateCcw } from "lucide-react";
+import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw } from "lucide-react";
 import { Link } from "wouter";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
@@ -340,7 +340,7 @@ export default function AiConcierge() {
   const [messages, setMessages] = useState<AiChatMessage[]>([
     { role: "assistant", content: INITIAL_MSG },
   ]);
-  const [suggestedItems, setSuggestedItems] = useState<any[]>([]);
+  const [suggestedItems, setSuggestedItems] = useState<CatalogItem[]>([]);
   const [showIntro, setShowIntro] = useState(() => { try { return !localStorage.getItem(INTRO_KEY); } catch { return false; } });
   const [sendFlash, setSendFlash] = useState(false);
   const [zappyMood, setZappyMood] = useState<ZappyMood>("idle");
@@ -645,7 +645,7 @@ export default function AiConcierge() {
                             <div className="flex-1 min-w-0">
                               <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">{item.category}</div>
                               <div className="text-xs font-bold truncate mt-0.5">{item.name}</div>
-                              <div className="text-xs font-black mt-0.5" style={{ color: "#60A5FA" }}>${parseFloat(item.price).toFixed(2)}</div>
+                              <div className="text-xs font-black mt-0.5" style={{ color: "#60A5FA" }}>${(+item.price).toFixed(2)}</div>
                             </div>
                           </Link>
                         </motion.div>

@@ -17,7 +17,7 @@ export function markNdaAccepted() {
   try {
     localStorage.setItem(STORAGE_KEY, "true");
     localStorage.setItem(`nda_accepted_at`, new Date().toISOString());
-  } catch {}
+  } catch { /* ignore storage errors */ }
 }
 
 interface NdaModalProps {

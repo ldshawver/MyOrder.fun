@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "@clerk/react";
 import { useGetAdminStats, useListOnboardingRequests } from "@workspace/api-client-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
@@ -27,8 +26,8 @@ function EmergencyKillSwitch() {
       if (!res.ok) throw new Error(data.error ?? "Purge failed");
       setResult(data);
       setStep("done");
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError((e as Error).message);
       setStep("confirm");
     }
   };

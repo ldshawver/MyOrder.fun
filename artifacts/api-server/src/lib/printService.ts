@@ -27,8 +27,6 @@ import {
   selectActiveOperator,
   resolveReceiptPrinters,
   resolveLabelPrinter,
-  probeEthernet,
-  probeBridge,
 } from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
 import { logger as _logger } from "./logger";
@@ -142,11 +140,6 @@ async function dispatchBridge(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const printerName = printer.bridgePrinterName ?? printer.name;
-
-    // Sanitize the payload for PNG jobs — don't log full base64
-    const payloadForLog = job.renderFormat === "png"
-      ? { ...((job.payloadJson as object) ?? {}), imageData: "[base64 omitted]" }
-      : job.payloadJson;
 
     pLog.info({
       event: "bridge_dispatch",
@@ -460,7 +453,7 @@ export async function enqueueOrderPrintJobs(order: {
   };
 
   // ── Receipt ───────────────────────────────────────────────────────────────
-  const { primary: receiptPrinter, fallback: piFallback } = await resolveReceiptPrinters(profile);
+  const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
 
   if (receiptPrinter) {
     const renderedText = renderCustomerReceipt(printOrder);
@@ -634,7 +627,7 @@ export function startPrintWorker() {
           await dispatchJob(job, printer).catch(() => {});
         }
       }
-    } catch (_) {}
+    } catch { /* intentionally empty */ }
 
     setTimeout(tick, 15_000);
   }

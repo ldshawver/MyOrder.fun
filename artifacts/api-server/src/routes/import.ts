@@ -246,7 +246,7 @@ export function normalizeHeader(raw: string): HeaderMapping {
 
   // 3. Normalize: spaces/dashes → _, strip non-alnum/_, collapse/trim underscores
   const norm = lower
-    .replace(/[\s\u2013\u2014\-]+/g, "_")
+    .replace(/[\s\u2013\u2014-]+/g, "_")
     .replace(/[^a-z0-9_]/g, "")
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "");
@@ -393,6 +393,7 @@ router.get(
 router.post(
   "/admin/products/import",
   requireRole("admin", "supervisor"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("file") as any,
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
@@ -410,8 +411,8 @@ router.post(
     let parsed: ParseResult;
     try {
       parsed = parseBuffer(req.file.buffer, fileExt);
-    } catch (e: any) {
-      res.status(400).json({ error: `Could not parse file: ${e?.message ?? "unknown error"}` });
+    } catch (e) {
+      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown error"}` });
       return;
     }
 
@@ -538,7 +539,8 @@ router.post(
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
-            .where(eq((catalogItemsTable as any).alavontId, alavontId))
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .where(eq((catalogItemsTable as any).alavontId, alavontId))
             .limit(1);
           existingId = existing?.id;
         }
@@ -550,8 +552,8 @@ router.post(
           await db.insert(catalogItemsTable).values(values);
           inserted++;
         }
-      } catch (err: any) {
-        errors.push(`Row ${rowNum}: database error — ${err?.message ?? "unknown"}`);
+      } catch (err) {
+        errors.push(`Row ${rowNum}: database error — ${(err as Error)?.message ?? "unknown"}`);
         failed++;
         skipped++;
       }

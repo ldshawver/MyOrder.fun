@@ -39,7 +39,7 @@ function BulletList({ items }: { items: string[] }) {
   );
 }
 
-function AlertBox({ icon: Icon, color, title, children }: { icon: any; color: string; title: string; children: React.ReactNode }) {
+function AlertBox({ icon: Icon, color, title, children }: { icon: React.ElementType; color: string; title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border p-5 my-6" style={{ borderColor: `${color}40`, background: `${color}08` }}>
       <div className="flex items-start gap-3">

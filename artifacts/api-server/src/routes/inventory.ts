@@ -57,7 +57,7 @@ router.patch(
       stockUnit?: string;
     };
 
-    const patch: Record<string, any> = {};
+    const patch: Record<string, unknown> = {};
     if (stockQuantity !== undefined) patch.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
     if (stockUnit !== undefined) patch.stockUnit = stockUnit;
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }

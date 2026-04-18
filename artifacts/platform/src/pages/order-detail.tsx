@@ -11,8 +11,10 @@ import {
   getGetOrderNotesQueryKey,
   OrderPaymentStatus,
   OrderStatus,
-  useGetCurrentUser
+  useGetCurrentUser,
+  type Order,
 } from "@workspace/api-client-react";
+
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,8 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+
+type OrderWithTracking = Order & { trackingUrl?: string };
 
 function StatusBadge({ status }: { status: string }) {
   const cls = `status-${status.toLowerCase()}`;
@@ -123,8 +127,8 @@ export default function OrderDetail() {
 
   // Sync tracking input when order loads
   useEffect(() => {
-    if (order && (order as any).trackingUrl) {
-      setTrackingInput((order as any).trackingUrl || "");
+    if (order && (order as OrderWithTracking).trackingUrl) {
+      setTrackingInput((order as OrderWithTracking).trackingUrl || "");
     }
   }, [order]);
 
@@ -423,9 +427,9 @@ export default function OrderDetail() {
               )}
 
               {/* Customer: Track My Delivery button */}
-              {isCustomer && (order as any).trackingUrl ? (
+              {isCustomer && (order as OrderWithTracking).trackingUrl ? (
                 <a
-                  href={(order as any).trackingUrl}
+                  href={(order as OrderWithTracking).trackingUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex w-full items-center justify-center gap-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl transition-all shadow-lg shadow-emerald-500/20"
@@ -442,9 +446,9 @@ export default function OrderDetail() {
               ) : null}
 
               {/* Staff: show current link if set */}
-              {canEditStatus && (order as any).trackingUrl && (
+              {canEditStatus && (order as OrderWithTracking).trackingUrl && (
                 <a
-                  href={(order as any).trackingUrl}
+                  href={(order as OrderWithTracking).trackingUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-xs text-primary hover:underline"

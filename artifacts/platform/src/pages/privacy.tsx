@@ -3,7 +3,7 @@ import { ArrowLeft, Shield, AlertTriangle, Eye, Trash2, Lock, FileText } from "l
 
 const EFFECTIVE_DATE = "April 8, 2026";
 
-function Section({ number, title, icon: Icon, children }: { number: string; title: string; icon?: any; children: React.ReactNode }) {
+function Section({ number, title, icon: Icon, children }: { number: string; title: string; icon?: React.ElementType; children: React.ReactNode }) {
   return (
     <section className="mb-10">
       <h2 className="text-sm font-bold tracking-[0.15em] uppercase mb-4 flex items-center gap-2" style={{ color: "#C0C0C0" }}>
@@ -40,7 +40,7 @@ function BulletList({ items }: { items: string[] }) {
   );
 }
 
-function AlertBox({ icon: Icon, color, title, children }: { icon: any; color: string; title: string; children: React.ReactNode }) {
+function AlertBox({ icon: Icon, color, title, children }: { icon: React.ElementType; color: string; title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border p-5 my-6" style={{ borderColor: `${color}40`, background: `${color}08` }}>
       <div className="flex items-start gap-3">
@@ -54,7 +54,7 @@ function AlertBox({ icon: Icon, color, title, children }: { icon: any; color: st
   );
 }
 
-function PrincipleCard({ icon: Icon, title, body }: { icon: any; title: string; body: string }) {
+function PrincipleCard({ icon: Icon, title, body }: { icon: React.ElementType; title: string; body: string }) {
   return (
     <div className="flex items-start gap-3 p-4 rounded-xl border" style={{ borderColor: "rgba(220,20,60,0.12)", background: "rgba(220,20,60,0.03)" }}>
       <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(220,20,60,0.1)", border: "1px solid rgba(220,20,60,0.2)" }}>

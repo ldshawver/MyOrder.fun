@@ -1,16 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
-import { useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
+import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+
 import { Link } from "wouter";
 import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
   Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
-  DollarSign, CreditCard, Banknote,
+  CreditCard, Banknote,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
+
+type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
+type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 
 const STATUS_TABS = [
   { value: "pending", label: "Incoming" },
@@ -89,7 +93,7 @@ function useShift(getToken: () => Promise<string | null>) {
         const data = await res.json();
         setShift(data.shift);
       }
-    } catch {}
+    } catch { /* ignore fetch errors */ }
     setLoading(false);
   }, [getToken]);
 
@@ -938,7 +942,7 @@ const FULFILLMENT_STEPS = [
 ];
 
 function FulfillmentCard({ order, onRefresh, getToken }: {
-  order: any;
+  order: ExtendedOrder;
   onRefresh: () => void;
   getToken: () => Promise<string | null>;
 }) {
@@ -958,7 +962,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         body: JSON.stringify({ fulfillmentStatus: status }),
       });
       onRefresh();
-    } catch {} finally { setLoading(null); }
+    } catch { /* ignore fetch errors */ } finally { setLoading(null); }
   }
 
   async function printReceipt() {
@@ -969,7 +973,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
-    } catch {} finally { setPrintingReceipt(false); }
+    } catch { /* ignore fetch errors */ } finally { setPrintingReceipt(false); }
   }
 
   async function printLabel() {
@@ -980,7 +984,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
-    } catch {} finally { setPrintingLabel(false); }
+    } catch { /* ignore fetch errors */ } finally { setPrintingLabel(false); }
   }
 
   const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === fulfillment);
@@ -1027,7 +1031,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
       {expanded && (
         <div className="border-t border-border/30 bg-muted/10 px-4 py-3 space-y-2">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Line Items</div>
-          {order.items.map((item: any, i: number) => (
+          {(order.items as ExtendedOrderItem[]).map((item, i) => (
             <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-border/20 last:border-0">
               <div className="flex-1">
                 <div className="font-semibold">{item.labName || item.catalogItemName}</div>
@@ -1112,7 +1116,7 @@ export default function CustomerServiceRepQueue() {
   const { shift, setShift, loading: shiftLoading, refetch: refetchShift } = useShift(getToken);
 
   const { data, isLoading } = useListOrders(
-    { status: activeTab as any, limit: 50 },
+    { status: activeTab as ListOrdersStatus, limit: 50 },
     { query: { queryKey: ["listOrders", activeTab] } }
   );
 
@@ -1224,7 +1228,7 @@ export default function CustomerServiceRepQueue() {
             {data?.orders?.map((order) => (
               <FulfillmentCard
                 key={order.id}
-                order={order}
+                order={order as ExtendedOrder}
                 onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
                 getToken={getToken}
               />

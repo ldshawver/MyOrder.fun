@@ -6,6 +6,7 @@ import {
   useUpdateCatalogItem,
   useGetCurrentUser,
   getListCatalogItemsQueryKey,
+  type CatalogItem,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
@@ -14,8 +15,52 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
 import { Link } from "wouter";
 
-
 type MenuMode = "alavont" | "lucifer";
+
+type ExtendedCatalogItem = CatalogItem & {
+  luciferCruzName?: string;
+  luciferCruzCategory?: string;
+  luciferCruzImageUrl?: string;
+  luciferCruzDescription?: string;
+  alavontName?: string;
+  alavontCategory?: string;
+  alavontImageUrl?: string;
+  alavontDescription?: string;
+  alavontInStock?: boolean;
+  merchantProcessingMode?: string;
+  isWooManaged?: boolean;
+  wooProductId?: string | null;
+  wooVariationId?: string | null;
+  labName?: string | null;
+  receiptName?: string | null;
+  regularPrice?: string;
+};
+
+interface CatalogItemForm {
+  name: string;
+  description: string;
+  price: string;
+  category: string;
+  sku: string;
+  imageUrl: string;
+  stockQuantity: string;
+  isAvailable: boolean;
+  alavontName: string;
+  alavontDescription: string;
+  alavontCategory: string;
+  alavontImageUrl: string;
+  alavontInStock: boolean;
+  luciferCruzName: string;
+  luciferCruzDescription: string;
+  luciferCruzImageUrl: string;
+  luciferCruzCategory: string;
+  merchantProcessingMode: string;
+  isWooManaged: boolean;
+  wooProductId: string;
+  wooVariationId: string;
+  labName: string;
+  receiptName: string;
+}
 
 function CatalogItemCard({
   item,
@@ -23,9 +68,9 @@ function CatalogItemCard({
   onEdit,
   menuMode,
 }: {
-  item: any;
+  item: ExtendedCatalogItem;
   canEdit: boolean;
-  onEdit: (item: any) => void;
+  onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
 }) {
   const isLC = menuMode === "lucifer";
@@ -53,7 +98,7 @@ function CatalogItemCard({
             <ImageOff size={28} className="text-muted-foreground/30" />
           </div>
         )}
-        {item.compareAtPrice && parseFloat(item.compareAtPrice) > parseFloat(item.price) && (
+        {item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price) && (
           <div className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-white tracking-wide">
             SALE
           </div>
@@ -95,7 +140,7 @@ function CatalogItemCard({
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(isLC && item.regularPrice ? item.regularPrice : item.price).toFixed(2)}
+              ${parseFloat(isLC && item.regularPrice ? item.regularPrice : String(item.price)).toFixed(2)}
             </span>
           </div>
           {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
@@ -121,7 +166,7 @@ function CatalogItemCard({
   );
 }
 
-function ItemFormFields({ form, setForm }: { form: any; setForm: (updater: (prev: any) => any) => void }) {
+function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
   const fields = [
     { label: "Name *", key: "name", type: "text" },
     { label: "Category *", key: "category", type: "text" },
@@ -137,8 +182,8 @@ function ItemFormFields({ form, setForm }: { form: any; setForm: (updater: (prev
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
           <Input
             type={type}
-            value={form[key] ?? ""}
-            onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
+            value={((form as unknown as Record<string, unknown>)[key] ?? "") as string}
+            onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }) as CatalogItemForm)}
             placeholder={placeholder}
             className="rounded-xl h-9 text-sm bg-background/50"
           />
@@ -161,7 +206,7 @@ function ItemFormFields({ form, setForm }: { form: any; setForm: (updater: (prev
   );
 }
 
-function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: (prev: any) => any) => void }) {
+function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-bold uppercase tracking-widest text-blue-400 pt-1">Alavont Display Fields</div>
@@ -172,16 +217,16 @@ function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: 
       ].map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" />
         </div>
       ))}
       <div>
         <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Alavont Description</label>
-        <textarea value={form.alavontDescription ?? ""} onChange={e => setForm((p: any) => ({ ...p, alavontDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+        <textarea value={form.alavontDescription ?? ""} onChange={e => setForm(p => ({ ...p, alavontDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
       </div>
       <div className="flex items-center gap-3 pt-1">
         <span className="text-xs text-muted-foreground">Alavont In Stock</span>
-        <button onClick={() => setForm((p: any) => ({ ...p, alavontInStock: !p.alavontInStock }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.alavontInStock !== false ? "bg-primary" : "bg-muted"}`}>
+        <button onClick={() => setForm(p => ({ ...p, alavontInStock: !p.alavontInStock }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.alavontInStock !== false ? "bg-primary" : "bg-muted"}`}>
           <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.alavontInStock !== false ? "left-5" : "left-0.5"}`} />
         </button>
       </div>
@@ -194,25 +239,25 @@ function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: 
       ].map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
+          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" />
         </div>
       ))}
       <div>
         <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Lucifer Cruz Description</label>
-        <textarea value={form.luciferCruzDescription ?? ""} onChange={e => setForm((p: any) => ({ ...p, luciferCruzDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+        <textarea value={form.luciferCruzDescription ?? ""} onChange={e => setForm(p => ({ ...p, luciferCruzDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
       </div>
 
       <div className="text-[10px] font-bold uppercase tracking-widest text-amber-400 pt-2">Merchant Routing</div>
       <div>
         <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Processing Mode</label>
-        <select value={form.merchantProcessingMode ?? "mapped_lucifer"} onChange={e => setForm((p: any) => ({ ...p, merchantProcessingMode: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 h-9 focus:outline-none">
+        <select value={form.merchantProcessingMode ?? "mapped_lucifer"} onChange={e => setForm(p => ({ ...p, merchantProcessingMode: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 h-9 focus:outline-none">
           <option value="mapped_lucifer">Mapped to Lucifer Cruz</option>
           <option value="woo_native">WooCommerce Native</option>
         </select>
       </div>
       <div className="flex items-center gap-3">
         <span className="text-xs text-muted-foreground">WooCommerce Managed</span>
-        <button onClick={() => setForm((p: any) => ({ ...p, isWooManaged: !p.isWooManaged }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.isWooManaged ? "bg-amber-500" : "bg-muted"}`}>
+        <button onClick={() => setForm(p => ({ ...p, isWooManaged: !p.isWooManaged }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.isWooManaged ? "bg-amber-500" : "bg-muted"}`}>
           <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isWooManaged ? "left-5" : "left-0.5"}`} />
         </button>
       </div>
@@ -222,7 +267,7 @@ function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: 
       ].map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value || null }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value || null }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
         </div>
       ))}
       {[
@@ -231,14 +276,14 @@ function DualBrandFormFields({ form, setForm }: { form: any; setForm: (updater: 
       ].map(({ label, key }) => (
         <div key={key}>
           <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
-          <Input value={form[key] ?? ""} onChange={e => setForm((p: any) => ({ ...p, [key]: e.target.value || null }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
+          <Input value={((form as unknown as Record<string, unknown>)[key] ?? "") as string} onChange={e => setForm(p => ({ ...p, [key]: e.target.value || null }) as CatalogItemForm)} className="rounded-xl h-9 text-sm bg-background/50" placeholder="Optional" />
         </div>
       ))}
     </div>
   );
 }
 
-function EditItemDialog({ item, open, onClose }: { item: any | null; open: boolean; onClose: () => void }) {
+function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | null; open: boolean; onClose: () => void }) {
   const [showDualBrand, setShowDualBrand] = useState(false);
   const [form, setForm] = useState({
     name: item?.name || "",
@@ -342,8 +387,14 @@ function EditItemDialog({ item, open, onClose }: { item: any | null; open: boole
 }
 
 function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const emptyForm = { name: "", description: "", price: "", category: "", sku: "", imageUrl: "", stockQuantity: "0" };
-  const [form, setForm] = useState(emptyForm);
+  const emptyForm: CatalogItemForm = {
+    name: "", description: "", price: "", category: "", sku: "", imageUrl: "", stockQuantity: "0",
+    isAvailable: true, alavontName: "", alavontDescription: "", alavontCategory: "", alavontImageUrl: "",
+    alavontInStock: true, luciferCruzName: "", luciferCruzDescription: "", luciferCruzImageUrl: "",
+    luciferCruzCategory: "", merchantProcessingMode: "mapped_lucifer", isWooManaged: false,
+    wooProductId: "", wooVariationId: "", labName: "", receiptName: "",
+  };
+  const [form, setForm] = useState<CatalogItemForm>(emptyForm);
   const createMutation = useCreateCatalogItem();
   const queryClient = useQueryClient();
 
@@ -397,7 +448,7 @@ export default function Catalog() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [menuMode, setMenuMode] = useState<MenuMode>("alavont");
-  const [editItem, setEditItem] = useState<any | null>(null);
+  const [editItem, setEditItem] = useState<ExtendedCatalogItem | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -578,7 +629,7 @@ export default function Catalog() {
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-          {displayItems.map((item: any) => (
+          {displayItems.map((item) => (
             <CatalogItemCard
               key={item.id}
               item={item}
