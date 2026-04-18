@@ -153,7 +153,7 @@ pnpm --filter @workspace/api-spec run codegen
 pnpm run typecheck
 
 # Run tests (api-server vitest suite — 66 tests)
-pnpm --filter @workspace/api-server test
+pnpm test
 
 # Build API server
 pnpm --filter @workspace/api-server run build
@@ -161,17 +161,15 @@ pnpm --filter @workspace/api-server run build
 
 ## CI / GitHub Actions
 
-Two workflows run automatically on every push:
-
 | Workflow | File | Triggers | What it does |
 |----------|------|----------|--------------|
-| **CI** | `.github/workflows/ci.yml` | Every push, every PR | Installs deps → builds lib declarations → runs all API server tests |
-| **Deploy** | `.github/workflows/deploy.yml` | Push to `main`, manual | Runs the same test job first (`needs: [test]`), then deploys to VPS |
+| **CI** | `.github/workflows/ci.yml` | Every push (all branches), every PR | Installs deps → builds lib declarations → runs all API server tests |
+| **Deploy** | `.github/workflows/deploy.yml` | Push to `main` only, plus manual dispatch | Runs the same test job first (`needs: [test]`), then deploys to VPS |
 
 **The deploy is blocked if tests fail.** Any push to `main` that breaks the approval-gate tests will not reach the VPS.
 
 Test suite location: `artifacts/api-server/src/routes/__tests__/`  
-Test runner: Vitest (`pnpm --filter @workspace/api-server test`)
+Test runner: `pnpm test` (delegates to `pnpm --filter @workspace/api-server test` via root script)
 
 ## TypeScript & Composite Projects
 

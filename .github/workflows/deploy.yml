@@ -51,8 +51,8 @@ jobs:
       - name: Build library declarations
         run: pnpm typecheck:libs
 
-      - name: Run API server tests
-        run: pnpm --filter @workspace/api-server test
+      - name: Run tests
+        run: pnpm test
 
   deploy:
     name: Build → Cert → Sync → Restart
