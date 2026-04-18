@@ -2,8 +2,8 @@
  * Approval-gate integration tests
  *
  * These tests verify that the requireApproved middleware is correctly wired
- * into the catalog, orders, and AI routers, and that the /users/me and
- * /users/sync routes remain accessible to pending users.
+ * into all 14 protected routers, and that the /users/me and /users/sync
+ * routes remain accessible to pending users.
  *
  * Strategy:
  *  - Mock @clerk/express so getAuth returns a fake authenticated session.
@@ -67,6 +67,20 @@ vi.mock("@workspace/db", () => {
   const labTechShiftsTable = {};
   const inventoryTemplatesTable = {};
 
+  // Additional tables used by the 10 new routers under test
+  const adminSettingsTable = {};
+  const auditLogsTable = {};
+  const shiftInventoryItemsTable = {};
+  const tenantsTable = {};
+  const printPrintersTable = {};
+  const printBridgeProfilesTable = {};
+  const printJobsTable = {};
+  const printJobAttemptsTable = {};
+  const printSettingsTable = {};
+  const operatorPrintProfilesTable = {};
+  const printTemplatesTable = {};
+  const printAssetsTable = {};
+
   const db = {
     select: vi.fn(),
     insert: vi.fn(),
@@ -85,6 +99,18 @@ vi.mock("@workspace/db", () => {
     labTechShiftsTable,
     inventoryTemplatesTable,
     usersTableSelect,
+    adminSettingsTable,
+    auditLogsTable,
+    shiftInventoryItemsTable,
+    tenantsTable,
+    printPrintersTable,
+    printBridgeProfilesTable,
+    printJobsTable,
+    printJobAttemptsTable,
+    printSettingsTable,
+    operatorPrintProfilesTable,
+    printTemplatesTable,
+    printAssetsTable,
   };
 });
 
@@ -122,6 +148,13 @@ vi.mock("../../lib/logger", () => ({
 }));
 
 vi.mock("../../lib/printService", () => ({}));
+
+vi.mock("../../lib/printRouter", () => ({
+  selectActiveOperator: vi.fn().mockResolvedValue(null),
+  probePrinter: vi.fn().mockResolvedValue(false),
+  resolveReceiptPrinters: vi.fn().mockResolvedValue([]),
+  resolveLabelPrinter: vi.fn().mockResolvedValue(null),
+}));
 
 // ---------------------------------------------------------------------------
 // Import mocked db so we can configure it per test
@@ -173,6 +206,16 @@ import catalogRouter from "../catalog";
 import ordersRouter from "../orders";
 import aiRouter from "../ai";
 import usersRouter from "../users";
+import inventoryRouter from "../inventory";
+import paymentsRouter from "../payments";
+import shiftsRouter from "../shifts";
+import printRouter from "../print";
+import adminRouter from "../admin";
+import auditRouter from "../audit";
+import settingsRouter from "../settings";
+import tenantsRouter from "../tenants";
+import woocommerceRouter from "../woocommerce";
+import importRouter from "../import";
 
 function buildApp(...routers: express.Router[]) {
   const app = express();
@@ -317,5 +360,235 @@ describe("Approval gate — users exempted routes", () => {
     const res = await supertest(app).get("/api/users/me");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
+  });
+});
+
+describe("Approval gate — inventory endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(inventoryRouter);
+    const res = await supertest(app).get("/api/admin/inventory");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(inventoryRouter);
+    const res = await supertest(app).get("/api/admin/inventory");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — payments endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(paymentsRouter);
+    const res = await supertest(app).post("/api/payments/tokenize").send({});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(paymentsRouter);
+    const res = await supertest(app).post("/api/payments/tokenize").send({});
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — shifts endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(shiftsRouter);
+    const res = await supertest(app).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(shiftsRouter);
+    const res = await supertest(app).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — print endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(printRouter);
+    const res = await supertest(app).get("/api/print/routing");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(printRouter);
+    const res = await supertest(app).get("/api/print/routing");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — admin endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(adminRouter);
+    const res = await supertest(app).get("/api/admin/stats");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(adminRouter);
+    const res = await supertest(app).get("/api/admin/stats");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — audit endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(auditRouter);
+    const res = await supertest(app).get("/api/audit");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(auditRouter);
+    const res = await supertest(app).get("/api/audit");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — settings endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(settingsRouter);
+    const res = await supertest(app).get("/api/admin/settings");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(settingsRouter);
+    const res = await supertest(app).get("/api/admin/settings");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — tenants endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(tenantsRouter);
+    const res = await supertest(app).get("/api/tenants");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(tenantsRouter);
+    const res = await supertest(app).get("/api/tenants");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — woocommerce endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(woocommerceRouter);
+    const res = await supertest(app).get("/api/admin/woocommerce/status");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(woocommerceRouter);
+    const res = await supertest(app).get("/api/admin/woocommerce/status");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Approval gate — import endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUserId = "test-clerk-id";
+  });
+
+  it("blocks a pending user with HTTP 403", async () => {
+    configureDbForUser(makePendingUser());
+    const app = buildApp(importRouter);
+    const res = await supertest(app).get("/api/admin/products/import-template");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/pending approval/i);
+  });
+
+  it("rejects unauthenticated requests with 401", async () => {
+    mockUserId = null;
+    configureDbForUser(null);
+    const app = buildApp(importRouter);
+    const res = await supertest(app).get("/api/admin/products/import-template");
+    expect(res.status).toBe(401);
   });
 });
