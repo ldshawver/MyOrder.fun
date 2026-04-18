@@ -107,7 +107,8 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
     return;
   }
 
-  const isValid = verifySync({ token: body.data.token, secret: actor.mfaSecret as string }).valid;
+  const mfaSecret = actor.mfaSecret;
+  const isValid = verifySync({ token: body.data.token, secret: mfaSecret }).valid;
   if (!isValid) {
     // Check backup codes
     const backupCodes: string[] = actor.mfaBackupCodes ? JSON.parse(actor.mfaBackupCodes) : [];
