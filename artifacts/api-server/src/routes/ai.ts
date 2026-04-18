@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, asc } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import {
   AiConciergeChatBody,
@@ -68,7 +68,6 @@ async function callAI(systemPrompt: string, messages: Array<{ role: string; cont
 
 // POST /api/ai/chat
 router.post("/ai/chat", async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const body = AiConciergeChatBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -102,7 +101,7 @@ CORE RULES:
 - If the catalog is empty, apologize and suggest they check back soon.`;
 
   let reply = "";
-  let suggestedItems: typeof catalogItemsTable.$inferSelect[] = [];
+  let suggestedItems: typeof catalogItemsTable.$inferSelect[];
 
   try {
     reply = await callAI(systemPrompt, body.data.messages);
@@ -167,7 +166,7 @@ router.post("/ai/upsell", async (req, res): Promise<void> => {
   const cartContext = cartItems.map(i => `${i.name} (${i.category})`).join(", ");
   const otherContext = otherItems.slice(0, 20).map(i => `${i.name} (${i.category}) $${parseFloat(i.price as string).toFixed(2)}`).join("\n");
 
-  let reasoning = "";
+  let reasoning: string;
   let suggestedIds: number[] = [];
 
   try {

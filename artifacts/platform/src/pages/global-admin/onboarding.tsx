@@ -3,7 +3,8 @@ import {
   useListOnboardingRequests, 
   useUpdateOnboardingRequest, 
   getListOnboardingRequestsQueryKey,
-  UpdateOnboardingRequestBodyStatus
+  UpdateOnboardingRequestBodyStatus,
+  type ListOnboardingRequestsStatus,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -16,13 +17,13 @@ import { Textarea } from "@/components/ui/textarea";
 export default function GlobalAdminOnboarding() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [rejectNotes, setRejectNotes] = useState("");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [, setSelectedId] = useState<number | null>(null);
   
   const queryClient = useQueryClient();
   const updateMutation = useUpdateOnboardingRequest();
 
   const { data, isLoading } = useListOnboardingRequests(
-    statusFilter === "all" ? {} : { status: statusFilter as any },
+    statusFilter === "all" ? {} : { status: statusFilter as ListOnboardingRequestsStatus },
     { query: { queryKey: ["listOnboardingRequests", statusFilter] } }
   );
 

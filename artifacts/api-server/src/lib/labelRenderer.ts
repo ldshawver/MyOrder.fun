@@ -68,7 +68,7 @@ export async function renderPngLabel(
   template: LabelTemplate,
   data: LabelData
 ): Promise<Buffer | null> {
-  let sharp: typeof import("sharp") | null = null;
+  let sharp: typeof import("sharp");
   try {
     sharp = (await import("sharp")).default;
   } catch {

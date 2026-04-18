@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser } from "@workspace/api-client-react";
+import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, type CatalogItem } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,7 +50,7 @@ export default function NewOrder() {
     }
   }, [cart, upsellMutation]);
 
-  const addToCart = (item: any) => {
+  const addToCart = (item: CatalogItem) => {
     setCart(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
@@ -92,7 +92,7 @@ export default function NewOrder() {
           try {
             const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
             sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
-          } catch {}
+          } catch { /* ignore storage errors */ }
           setLocation(`/orders/${order.id}`);
         }
       }

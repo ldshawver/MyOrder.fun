@@ -59,7 +59,7 @@ async function computeShiftStats(shiftId: number) {
   let compSales = 0;
 
   for (const order of shiftOrders) {
-    const method = (order as any).paymentMethod ?? "cash";
+    const method = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const orderTotal = parseFloat(order.total as string);
     if (method === "card") cardSales += orderTotal;
     else if (method === "comp") compSales += orderTotal;

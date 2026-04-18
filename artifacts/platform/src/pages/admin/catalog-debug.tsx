@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Search, RefreshCw, CheckCircle, AlertTriangle, XCircle, Eye, EyeOff,
-  Database, Package, Flame, FlaskConical, Image, Tag, Link2, Loader2
+  Database, Flame, FlaskConical, Image, Tag, Link2, Loader2
 } from "lucide-react";
 
 type DebugSummary = {
@@ -49,7 +49,7 @@ type DebugResponse = { summary: DebugSummary; items: DebugItem[] };
 
 type WooStatus = { configured: boolean; storeUrl: string };
 
-function StatCard({ label, value, icon: Icon, color }: { label: string; value: number; icon: any; color: string }) {
+function StatCard({ label, value, icon: Icon, color }: { label: string; value: number; icon: React.ElementType; color: string }) {
   return (
     <div className="glass-card rounded-xl p-4 flex items-center gap-3">
       <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${color}`}>
@@ -81,7 +81,7 @@ export default function CatalogDebug() {
   const { getToken } = useAuth();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "hidden" | "missing">("all");
-  const [wcResult, setWcResult] = useState<any>(null);
+  const [wcResult, setWcResult] = useState<unknown>(null);
   const qc = useQueryClient();
 
   const authFetch = useCallback(async (path: string, init?: RequestInit) => {
@@ -269,13 +269,20 @@ export default function CatalogDebug() {
             : <a href="/admin/settings" className="text-[10px] px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold uppercase">Configure →</a>
           }
         </div>
-        {wcResult && (
+        {!!wcResult && (
           <div className="mb-3 p-3 rounded-xl bg-muted/20 border border-border/40 text-xs font-mono space-y-1">
             <div className="text-emerald-400 font-bold">Sync complete</div>
-            <div>Inserted: {wcResult.inserted} | Updated: {wcResult.updated} | Skipped: {wcResult.skipped} | Total: {wcResult.total}</div>
-            {wcResult.errors?.length > 0 && (
-              <div className="text-red-400">Errors: {wcResult.errors.slice(0, 5).join("; ")}</div>
-            )}
+            {(() => {
+              const r = wcResult as { inserted?: number; updated?: number; skipped?: number; total?: number; errors?: string[] };
+              return (
+                <>
+                  <div>Inserted: {r.inserted} | Updated: {r.updated} | Skipped: {r.skipped} | Total: {r.total}</div>
+                  {(r.errors?.length ?? 0) > 0 && (
+                    <div className="text-red-400">Errors: {r.errors?.slice(0, 5).join("; ")}</div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
         {wooSync.error && (

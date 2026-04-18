@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, desc } from "drizzle-orm";
-import { db, onboardingRequestsTable, tenantsTable, usersTable } from "@workspace/db";
+import { db, onboardingRequestsTable, tenantsTable } from "@workspace/db";
 import {
   SubmitOnboardingRequestBody,
   ListOnboardingRequestsQueryParams,

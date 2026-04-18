@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, count, sum, desc } from "drizzle-orm";
+import { eq, count, desc } from "drizzle-orm";
 import { db, tenantsTable, ordersTable, catalogItemsTable, usersTable, orderItemsTable } from "@workspace/db";
 import {
   ListTenantsResponse,

@@ -77,8 +77,6 @@ export function buildInventoryEndBlocks(data: InventoryEndData): PrintBlock[] {
     const end = item.quantityEnd !== null && item.quantityEnd !== undefined
       ? Number(item.quantityEnd)
       : start - sold;
-    const unit = item.unitType ?? "#";
-
     const fmt = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1);
 
     const name = item.itemName.length > 20

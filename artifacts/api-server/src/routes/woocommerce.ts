@@ -24,7 +24,7 @@ function stripHtml(html: string): string {
 async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consumerSecret: string) {
   const base = storeUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-  const allProducts: any[] = [];
+  const allProducts: Record<string, unknown>[] = [];
   let page = 1;
   const perPage = 100;
 
@@ -42,7 +42,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
       throw new Error(`WooCommerce API error (page ${page}): ${res.status} ${text.substring(0, 200)}`);
     }
 
-    const products = await res.json() as any[];
+    const products = await res.json() as Record<string, unknown>[];
     if (!Array.isArray(products) || products.length === 0) break;
     allProducts.push(...products);
 
@@ -82,11 +82,11 @@ router.post(
       return;
     }
 
-    let products: any[];
+    let products: Record<string, unknown>[];
     try {
       products = await fetchAllWooProducts(storeUrl, consumerKey, consumerSecret);
-    } catch (err: any) {
-      res.status(502).json({ error: err?.message ?? "Failed to reach WooCommerce store" });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error)?.message ?? "Failed to reach WooCommerce store" });
       return;
     }
 
@@ -160,8 +160,8 @@ router.post(
           await db.insert(catalogItemsTable).values(values);
           inserted++;
         }
-      } catch (err: any) {
-        errors.push(`Product "${product.name ?? product.id}": ${err?.message ?? "DB error"}`);
+      } catch (err) {
+        errors.push(`Product "${String(product.name ?? product.id)}": ${(err as Error)?.message ?? "DB error"}`);
         skipped++;
       }
     }
