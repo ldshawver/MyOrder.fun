@@ -137,11 +137,11 @@ async function dispatchBridge(
     return { success: false, error: "API key missing — add it to this printer's settings in Admin → Print → Printers" };
   }
 
+  const printerName = printer.bridgePrinterName ?? printer.name;
+
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const printerName = printer.bridgePrinterName ?? printer.name;
 
     // Sanitize the payload for PNG jobs — don't log full base64
     const payloadForLog = job.renderFormat === "png"
@@ -192,12 +192,12 @@ async function dispatchBridge(
     }
     if (res.status === 404) {
       let body: { error?: string } = {};
-      try { body = await res.json(); } catch { /* ignore */ }
+      try { body = await res.json() as { error?: string }; } catch { /* ignore */ }
       return { success: false, error: `Printer "${printerName}" not found on bridge — check the Printer Name on Bridge setting. Bridge says: ${body.error ?? "not found"}` };
     }
     if (!res.ok) {
       let body: { error?: string } = {};
-      try { body = await res.json(); } catch { /* ignore */ }
+      try { body = await res.json() as { error?: string }; } catch { /* ignore */ }
       return { success: false, error: `Bridge returned HTTP ${res.status}: ${body.error ?? res.statusText}` };
     }
 

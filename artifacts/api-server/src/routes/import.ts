@@ -562,7 +562,7 @@ router.post(
       try {
         await db.insert(auditLogsTable).values({
           actorId: actor.id,
-          actorEmail: actor.email,
+          actorEmail: actor.email ?? "",
           actorRole: actor.role,
           action: "menu_import",
           resourceType: "catalog_item",
@@ -576,7 +576,7 @@ router.post(
             failed,
             errorCount: errors.length,
           },
-          ipAddress: req.ip ?? null,
+          ipAddress: req.ip ?? undefined,
         });
       } catch { /* audit failure is non-fatal */ }
     }

@@ -49,8 +49,7 @@ router.patch(
   "/admin/inventory/:id",
   requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+    const id = parseInt(req.params.id as string, 10);
 
     const { stockQuantity, stockUnit } = req.body as {
       stockQuantity?: number | null;

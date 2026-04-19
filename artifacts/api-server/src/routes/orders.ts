@@ -370,8 +370,8 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
 
   // Auto-deduct raw material inventory when order is fulfilled/completed
   if (
-    (body.data.status === "fulfilled" || body.data.status === "completed") &&
-    order.status !== "fulfilled" && order.status !== "completed"
+    ((body.data.status as string) === "fulfilled" || (body.data.status as string) === "completed") &&
+    (order.status as string) !== "fulfilled" && (order.status as string) !== "completed"
   ) {
     try {
       const orderItems = await db
