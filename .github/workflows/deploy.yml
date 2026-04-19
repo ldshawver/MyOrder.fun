@@ -76,6 +76,14 @@ jobs:
         # No `ref:` override — always deploys the exact commit
         # that triggered this workflow run (the push to main).
 
+      # ── 0. Show commit being deployed ─────────────────────────────
+      - name: Show commit being deployed
+        run: |
+          echo "GITHUB_SHA=${GITHUB_SHA}"
+          git rev-parse HEAD
+          git log --oneline -n 1
+          git status --short
+
       # ── 2. Pre-deploy integrity guard ──────────────────────────────
       # Fails the workflow immediately if:
       #   a) The checked-out SHA does not match the triggering SHA
