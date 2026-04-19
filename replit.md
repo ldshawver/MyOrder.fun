@@ -157,16 +157,33 @@ pnpm test
 
 # Build API server
 pnpm --filter @workspace/api-server run build
+
+# Lint all packages (fails on any warning — 0 warnings enforced)
+pnpm lint
+
+# Run lint warning ratchet (enforces per-package warning ceilings)
+pnpm lint:ratchet
+
+# Update the ratchet baseline after fixing warnings
+pnpm lint:ratchet --update
 ```
 
 ## CI / GitHub Actions
 
 | Workflow | File | Triggers | What it does |
 |----------|------|----------|--------------|
-| **CI** | `.github/workflows/ci.yml` | Every push (all branches), every PR | Installs deps → builds lib declarations → runs all API server tests |
-| **Deploy** | `.github/workflows/deploy.yml` | Push to `main` only, plus manual dispatch | Runs the same test job first (`needs: [test]`), then deploys to VPS |
+| **CI** | `.github/workflows/ci.yml` | Every push (all branches), every PR | Installs deps → typecheck → lint (errors on any warning) → lint ratchet → tests |
+| **Deploy** | `.github/workflows/deploy.yml` | Push to `main` only, plus manual dispatch | Runs the same full check job first (`needs: [test]`), then deploys to VPS |
 
-**The deploy is blocked if tests fail.** Any push to `main` that breaks the approval-gate tests will not reach the VPS.
+**The deploy is blocked if tests or lint fail.** Any push to `main` that introduces warnings or breaks tests will not reach the VPS.
+
+### Lint Gate
+
+- `artifacts/api-server/package.json` and `artifacts/platform/package.json` both run `eslint src --max-warnings 0`
+- Any ESLint warning causes the lint step to exit non-zero, blocking CI
+- `.lint-threshold` stores per-package warning ceilings used by the ratchet (`api-server: 0`, `platform: 0`, `mockup-sandbox: 1`)
+- The ratchet script (`scripts/src/lint-ratchet.ts`) additionally enforces that warning counts never regress above their stored threshold
+- To update the baseline after fixing warnings: `pnpm lint:ratchet --update` then commit `.lint-threshold`
 
 Test suite location: `artifacts/api-server/src/routes/__tests__/`  
 Test runner: `pnpm test` (delegates to `pnpm --filter @workspace/api-server test` via root script)
