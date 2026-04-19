@@ -143,9 +143,9 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
     ...body.data,
     tenantId,
     price: String(body.data.price),
-    compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null,
+    compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     isAvailable: body.data.isAvailable ?? true,
-    stockQuantity: body.data.stockQuantity ?? 0,
+    stockQuantity: String(body.data.stockQuantity ?? 0),
   }).returning();
   res.status(201).json(mapItem(row));
 });
@@ -231,7 +231,7 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     return;
   }
 
-  const updateData: Partial<typeof catalogItemsTable.$inferInsert> = { ...body.data };
+  const updateData: Record<string, unknown> = { ...body.data };
   if (body.data.price !== undefined) updateData.price = String(body.data.price);
   if (body.data.compareAtPrice !== undefined) updateData.compareAtPrice = body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null;
   // Protect LC/Woo routing fields from null/false-overwrite.
