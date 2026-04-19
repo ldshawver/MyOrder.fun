@@ -24,7 +24,8 @@ function stripHtml(html: string): string {
 async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consumerSecret: string) {
   const base = storeUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-  const allProducts: Record<string, unknown>[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const allProducts: any[] = [];
   let page = 1;
   const perPage = 100;
 
