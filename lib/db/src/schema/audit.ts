@@ -18,7 +18,7 @@ export const auditLogsTable = pgTable("audit_logs", {
   actorEmail: text("actor_email").notNull(),
   actorRole: text("actor_role").notNull(),
   action: text("action").notNull(),
-  resourceType: text("resource_type"),
+  resourceType: text("resource_output"),
   resourceId: text("resource_id"),
   metadata: jsonb("metadata").default({}),
   ipAddress: text("ip_address"),
@@ -26,5 +26,5 @@ export const auditLogsTable = pgTable("audit_logs", {
 });
 
 export const insertAuditLogSchema = createInsertSchema(auditLogsTable).omit({ id: true, createdAt: true });
-export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type InsertAuditLog = typeof insertAuditLogSchema._output;
 export type AuditLog = typeof auditLogsTable.$inferSelect;

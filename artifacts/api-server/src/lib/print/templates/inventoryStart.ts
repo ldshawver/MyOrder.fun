@@ -44,7 +44,7 @@ export function buildInventoryStartBlocks(data: InventoryStartData): PrintBlock[
   blocks.push({ type: "divider", char: "-" });
 
   // ── Inventory Rows ────────────────────────────────────────────────────────────
-  let currentSection = "";
+  let currentSection: string;
   for (const item of data.items ?? []) {
     if (item.rowType === "section") {
       currentSection = item.sectionName ?? item.itemName;

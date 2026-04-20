@@ -24,14 +24,15 @@ vi.mock("../logger", () => ({
 import { normalizeCheckoutCart, buildMerchantPayloadLines, buildReceiptLines } from "../checkoutNormalizer";
 import { db } from "@workspace/db";
 
-function makeDbMock(item: any) {
+function makeDbMock(item: Record<string, unknown> | null) {
   const limit = vi.fn().mockResolvedValue([item]);
   const where = vi.fn(() => ({ limit }));
   const from = vi.fn(() => ({ where }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (db.select as any).mockReturnValue({ from });
 }
 
-function makeSampleLocalMappedItem(overrides: Record<string, any> = {}) {
+function makeSampleLocalMappedItem(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
     tenantId: 1,
@@ -57,7 +58,7 @@ function makeSampleLocalMappedItem(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeSampleWooItem(overrides: Record<string, any> = {}) {
+function makeSampleWooItem(overrides: Record<string, unknown> = {}) {
   return {
     id: 2,
     tenantId: 1,
@@ -130,6 +131,7 @@ describe("checkoutNormalizer", () => {
       const limit = vi.fn().mockResolvedValue([]);
       const where = vi.fn(() => ({ limit }));
       const from = vi.fn(() => ({ where }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (db.select as any).mockReturnValue({ from });
       await expect(normalizeCheckoutCart([{ catalogItemId: 999, quantity: 1 }])).rejects.toThrow(
         /not found/
@@ -192,7 +194,7 @@ describe("checkoutNormalizer", () => {
   describe("buildReceiptLines", () => {
     const lines = [
       {
-        catalog_item_id: 3,
+        catalog_item_id: 1,
         source_type: "local_mapped" as const,
         catalog_display_name: "Alavont Product",
         merchant_name: "LC Product",
@@ -245,6 +247,7 @@ describe("checkoutNormalizer", () => {
       const limit1 = vi.fn().mockResolvedValueOnce([localItem]).mockResolvedValueOnce([wooItem]);
       const where1 = vi.fn(() => ({ limit: limit1 }));
       const from1 = vi.fn(() => ({ where: where1 }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (db.select as any).mockReturnValue({ from: from1 });
 
       const result = await normalizeCheckoutCart([

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, ilike, asc, desc, sql } from "drizzle-orm";
+import { eq, asc } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
@@ -87,7 +87,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   if (query.data.category) {
     const cat = query.data.category;
     rows = rows.filter(r => {
-      const lcCat = (r.metadata as any)?.luciferCruzCategory;
+      const lcCat = (r.metadata as Record<string, unknown>)?.luciferCruzCategory;
       return r.alavontCategory === cat || r.category === cat || lcCat === cat;
     });
   }
@@ -132,7 +132,6 @@ router.get("/catalog", async (req, res): Promise<void> => {
 
 // POST /api/catalog
 router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const body = CreateCatalogItemBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -152,7 +151,6 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
 
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   // Collect distinct categories from both alavont_category and category columns
   const rows = await db
     .select({
@@ -176,7 +174,6 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
 
 // GET /api/catalog/:id
 router.get("/catalog/:id", async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -193,7 +190,6 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
 
 // PATCH /api/catalog/:id
 router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -231,9 +227,13 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     return;
   }
 
-  const updateData: Record<string, unknown> = { ...body.data };
-  if (body.data.price !== undefined) updateData.price = String(body.data.price);
-  if (body.data.compareAtPrice !== undefined) updateData.compareAtPrice = body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, ...restBodyData } = body.data;
+  const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
+  if (price !== undefined) updateData.price = String(price);
+  if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
+  if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
+  if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
+  if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.
@@ -261,7 +261,6 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
 
 // DELETE /api/catalog/:id
 router.delete("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeleteCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -283,7 +282,6 @@ router.get(
   "/admin/catalog/debug",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
     const allRows = await db.select().from(catalogItemsTable)
       .orderBy(asc(catalogItemsTable.id));
 
@@ -318,7 +316,7 @@ router.get(
         alavontCategory: r.alavontCategory ?? r.category,
         alavontInStock: r.alavontInStock,
         luciferCruzName: r.luciferCruzName,
-        luciferCruzCategory: r.luciferCruzCategory ?? (r.metadata as any)?.luciferCruzCategory ?? null,
+        luciferCruzCategory: r.luciferCruzCategory ?? (r.metadata as Record<string, unknown>)?.luciferCruzCategory ?? null,
         merchantProcessingMode: r.merchantProcessingMode ?? null,
         merchantProductSource: r.merchantProductSource ?? null,
         isWooManaged: r.isWooManaged,
@@ -377,8 +375,8 @@ router.post(
       }
       const normalized = await normalizeCheckoutCart(items);
       res.json({ normalized });
-    } catch (err: any) {
-      res.status(400).json({ error: err?.message ?? "Normalization failed" });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error)?.message ?? "Normalization failed" });
     }
   }
 );
@@ -410,8 +408,8 @@ router.post(
         alavont_name_leak_detected: alavontNamesInPayload.length > 0,
         alavont_name_leaks: alavontNamesInPayload.map(l => l.name),
       });
-    } catch (err: any) {
-      res.status(400).json({ error: err?.message ?? "Preview failed" });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error)?.message ?? "Preview failed" });
     }
   }
 );

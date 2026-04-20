@@ -72,7 +72,7 @@ export default function AdminSettingsPage() {
           setSettings({ ...DEFAULTS, ...data });
           setWcStoreUrl(data.wcStoreUrl ?? "https://lucifercruz.com");
         }
-      } catch {}
+      } catch { /* ignore fetch errors */ }
       setLoading(false);
     })();
   }, [getToken]);
@@ -90,8 +90,8 @@ export default function AdminSettingsPage() {
       if (!res.ok) { const d = await res.json(); setError(d.error ?? "Save failed"); return; }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (e: any) {
-      setError(e?.message ?? "Network error");
+    } catch (e) {
+      setError((e as Error)?.message ?? "Network error");
     } finally {
       setSaving(false);
     }
@@ -118,8 +118,8 @@ export default function AdminSettingsPage() {
       setWcSecret("");
       setWcSaved(true);
       setTimeout(() => setWcSaved(false), 3000);
-    } catch (e: any) {
-      setWcError(e?.message ?? "Network error");
+    } catch (e) {
+      setWcError((e as Error)?.message ?? "Network error");
     } finally {
       setWcSaving(false);
     }

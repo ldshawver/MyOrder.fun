@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, inArray, and } from "drizzle-orm";
+import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
@@ -18,7 +18,6 @@ import {
   printSettingsTable,
   operatorPrintProfilesTable,
   printTemplatesTable,
-  printAssetsTable,
   usersTable,
   ordersTable,
   orderItemsTable,
@@ -26,7 +25,6 @@ import {
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import {
-  createPrintJob,
   dispatchJob,
   dispatchReceiptJob,
   dispatchLabelJob,
@@ -480,7 +478,6 @@ router.post("/print/preview/inventory-start", adminOnly, async (req, res): Promi
   const settings = await getSettings();
   const s = settings as Record<string, unknown>;
   const width = charWidth(s.paperWidth as string ?? "80mm");
-  const dualBrandName = s.brandName as string | undefined;
   const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const body = req.body ?? {};
   const blocks = buildInventoryStartBlocks({
@@ -502,7 +499,6 @@ router.post("/print/preview/inventory-end", adminOnly, async (req, res): Promise
   const settings = await getSettings();
   const s = settings as Record<string, unknown>;
   const width = charWidth(s.paperWidth as string ?? "80mm");
-  const dualBrandName = s.brandName as string | undefined;
   const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const body = req.body ?? {};
   const blocks = buildInventoryEndBlocks({
@@ -808,17 +804,10 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
 /** GET /api/print/bridge/health?printerId=<id>  — or defaults to first active bridge printer */
 router.get("/print/bridge/health", adminOnly, async (req, res): Promise<void> => {
   const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
-  let printer: typeof printPrintersTable.$inferSelect | null = null;
-
-  if (pid) {
-    const rows = await db.select().from(printPrintersTable)
-      .where(eq(printPrintersTable.id, pid)).limit(1);
-    printer = rows[0] ?? null;
-  } else {
-    const rows = await db.select().from(printPrintersTable)
-      .where(eq(printPrintersTable.isActive, true)).limit(1);
-    printer = rows[0] ?? null;
-  }
+  const printerRows = pid
+    ? await db.select().from(printPrintersTable).where(eq(printPrintersTable.id, pid)).limit(1)
+    : await db.select().from(printPrintersTable).where(eq(printPrintersTable.isActive, true)).limit(1);
+  const printer: typeof printPrintersTable.$inferSelect | null = printerRows[0] ?? null;
 
   if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
 
@@ -865,17 +854,10 @@ router.get("/print/bridge/health", adminOnly, async (req, res): Promise<void> =>
 /** GET /api/print/bridge/printers?printerId=<id>  — list bridge's known printer queues */
 router.get("/print/bridge/printers", adminOnly, async (req, res): Promise<void> => {
   const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
-  let printer: typeof printPrintersTable.$inferSelect | null = null;
-
-  if (pid) {
-    const rows = await db.select().from(printPrintersTable)
-      .where(eq(printPrintersTable.id, pid)).limit(1);
-    printer = rows[0] ?? null;
-  } else {
-    const rows = await db.select().from(printPrintersTable)
-      .where(eq(printPrintersTable.isActive, true)).limit(1);
-    printer = rows[0] ?? null;
-  }
+  const printerRows = pid
+    ? await db.select().from(printPrintersTable).where(eq(printPrintersTable.id, pid)).limit(1)
+    : await db.select().from(printPrintersTable).where(eq(printPrintersTable.isActive, true)).limit(1);
+  const printer: typeof printPrintersTable.$inferSelect | null = printerRows[0] ?? null;
 
   if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
 

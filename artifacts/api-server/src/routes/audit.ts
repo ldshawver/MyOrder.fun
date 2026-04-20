@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, and } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import { db, auditLogsTable } from "@workspace/db";
 import {
   ListAuditLogsQueryParams,

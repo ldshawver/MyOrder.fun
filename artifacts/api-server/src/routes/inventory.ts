@@ -50,13 +50,14 @@ router.patch(
   requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
     const id = parseInt(req.params.id as string, 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
     const { stockQuantity, stockUnit } = req.body as {
       stockQuantity?: number | null;
       stockUnit?: string;
     };
 
-    const patch: Record<string, any> = {};
+    const patch: Record<string, unknown> = {};
     if (stockQuantity !== undefined) patch.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
     if (stockUnit !== undefined) patch.stockUnit = stockUnit;
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }

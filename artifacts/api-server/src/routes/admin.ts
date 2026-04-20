@@ -18,12 +18,9 @@ import {
   VerifyMfaResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
-import { TOTP, generateSecret, generateURI } from "otplib";
-// @ts-ignore
+import { generateSecret, generateURI, verifySync } from "otplib";
 import qrcode from "qrcode";
 import crypto from "crypto";
-
-const totp = new TOTP();
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin"));
@@ -72,7 +69,7 @@ router.get("/admin/stats", async (req, res): Promise<void> => {
 router.post("/admin/mfa/setup", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const secret = generateSecret();
-  const otpauth = generateURI({ label: actor.email ?? "", issuer: "OrderFlow Admin", secret });
+  const otpauth = generateURI({ issuer: "OrderFlow Admin", label: actor.email ?? "", secret });
   const qrCodeUrl = await qrcode.toDataURL(otpauth);
 
   // Generate 10 backup codes
@@ -110,8 +107,8 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
     return;
   }
 
-  const result = await totp.verify(body.data.token, { secret: actor.mfaSecret });
-  const isValid = result.valid;
+  const mfaSecret = actor.mfaSecret;
+  const isValid = verifySync({ token: body.data.token, secret: mfaSecret }).valid;
   if (!isValid) {
     // Check backup codes
     const backupCodes: string[] = actor.mfaBackupCodes ? JSON.parse(actor.mfaBackupCodes) : [];

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, gte, sql } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -129,8 +129,8 @@ router.post("/orders", async (req, res): Promise<void> => {
   let normalizedLines: NormalizedCartLine[];
   try {
     normalizedLines = await normalizeCheckoutCart(body.data.items);
-  } catch (normErr: any) {
-    res.status(400).json({ error: normErr?.message ?? "Cart validation failed" });
+  } catch (normErr) {
+    res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
     return;
   }
 
@@ -368,10 +368,10 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
     .where(eq(ordersTable.id, params.data.id))
     .returning();
 
-  // Auto-deduct raw material inventory when order is fulfilled/completed
+  // Auto-deduct raw material inventory when order is delivered
   if (
-    ((body.data.status as string) === "fulfilled" || (body.data.status as string) === "completed") &&
-    (order.status as string) !== "fulfilled" && (order.status as string) !== "completed"
+    body.data.status === "delivered" &&
+    order.status !== "delivered"
   ) {
     try {
       const orderItems = await db

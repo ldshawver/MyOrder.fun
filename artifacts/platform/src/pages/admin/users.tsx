@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus } from "@workspace/api-client-react";
-import type { UserProfileStatus } from "@workspace/api-client-react";
+import type { UserProfileStatus, UpdateUserRoleBodyRole } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -42,7 +42,7 @@ export default function AdminUsers() {
   const handleRoleChange = (id: number, newRole: string) => {
     if (["supervisor", "business_sitter", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
-        { id, data: { role: newRole as any } },
+        { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
           onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
