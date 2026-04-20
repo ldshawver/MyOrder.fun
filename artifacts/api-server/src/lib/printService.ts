@@ -135,18 +135,25 @@ async function dispatchBridge(
     return { success: false, error: "API key missing — add it to this printer's settings in Admin → Print → Printers" };
   }
 
+<<<<<<< HEAD
+=======
+  // Resolve printer name before the try block so it's accessible in catch
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   const printerName = printer.bridgePrinterName ?? printer.name;
 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+<<<<<<< HEAD
     // Sanitize the payload for PNG jobs — don't log full base64
     const payloadForLog = job.renderFormat === "png"
       ? { ...((job.payloadJson as object) ?? {}), imageData: "[base64 omitted]" }
       : job.payloadJson;
     const printerName = printer.bridgePrinterName ?? printer.name;
 
+=======
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
     pLog.info({
       event: "bridge_dispatch",
       jobId: job.id,

@@ -368,10 +368,19 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
     .where(eq(ordersTable.id, params.data.id))
     .returning();
 
+<<<<<<< HEAD
   // Auto-deduct raw material inventory when order is delivered
   if (
     body.data.status === "delivered" &&
     order.status !== "delivered"
+=======
+  // Auto-deduct raw material inventory when order is fulfilled/completed
+  // NOTE: "fulfilled" and "completed" are legacy status values kept here for future use
+  const newStatus = body.data.status as string;
+  if (
+    (newStatus === "fulfilled" || newStatus === "completed") &&
+    (order.status as string) !== "fulfilled" && (order.status as string) !== "completed"
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   ) {
     try {
       const orderItems = await db
