@@ -8,6 +8,21 @@ import { getOrCreateSettings } from "./settings";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+interface WooProduct {
+  id?: number | string;
+  name?: string;
+  regular_price?: string;
+  sale_price?: string;
+  categories?: Array<{ name?: string }>;
+  images?: Array<{ src?: string }>;
+  description?: string;
+  short_description?: string;
+  stock_status?: string;
+  sku?: string;
+  date_created?: string | null;
+  date_modified?: string | null;
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<[^>]+>/g, " ")
@@ -24,8 +39,12 @@ function stripHtml(html: string): string {
 async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consumerSecret: string) {
   const base = storeUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
+<<<<<<< HEAD
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const allProducts: any[] = [];
+=======
+  const allProducts: WooProduct[] = [];
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   let page = 1;
   const perPage = 100;
 
@@ -43,7 +62,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
       throw new Error(`WooCommerce API error (page ${page}): ${res.status} ${text.substring(0, 200)}`);
     }
 
-    const products = await res.json() as Record<string, unknown>[];
+    const products = await res.json() as WooProduct[];
     if (!Array.isArray(products) || products.length === 0) break;
     allProducts.push(...products);
 
@@ -83,8 +102,12 @@ router.post(
       return;
     }
 
+<<<<<<< HEAD
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let products: any[];
+=======
+    let products: WooProduct[];
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
     try {
       products = await fetchAllWooProducts(storeUrl, consumerKey, consumerSecret);
     } catch (err) {
@@ -101,7 +124,7 @@ router.post(
 
         const wcId = String(product.id);
         const lcName: string = product.name?.trim() || "";
-        const regularPrice = parseFloat(product.regular_price) || 0;
+        const regularPrice = parseFloat(product.regular_price ?? "0") || 0;
         const salePrice = product.sale_price ? parseFloat(product.sale_price) : null;
         const category = product.categories?.[0]?.name?.trim() || "Uncategorized";
         const imageUrl = product.images?.[0]?.src?.trim() || null;

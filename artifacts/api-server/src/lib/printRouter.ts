@@ -23,7 +23,7 @@ import type { PrintPrinter, OperatorPrintProfile } from "@workspace/db";
 
 export type ActiveOperator = {
   userId: number;
-  email: string;
+  email: string | null;
   firstName: string | null;
   lastName: string | null;
   role: string;

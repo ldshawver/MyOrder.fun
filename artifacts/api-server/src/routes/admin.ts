@@ -19,6 +19,10 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { generateSecret, generateURI, verifySync } from "otplib";
+<<<<<<< HEAD
+=======
+// @ts-expect-error — no @types/qrcode package available
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
 import qrcode from "qrcode";
 import crypto from "crypto";
 
@@ -69,7 +73,11 @@ router.get("/admin/stats", async (req, res): Promise<void> => {
 router.post("/admin/mfa/setup", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const secret = generateSecret();
+<<<<<<< HEAD
   const otpauth = generateURI({ issuer: "OrderFlow Admin", label: actor.email ?? "", secret });
+=======
+  const otpauth = generateURI({ label: actor.email ?? "unknown", issuer: "OrderFlow Admin", secret });
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   const qrCodeUrl = await qrcode.toDataURL(otpauth);
 
   // Generate 10 backup codes
@@ -107,8 +115,12 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
     return;
   }
 
+<<<<<<< HEAD
   const mfaSecret = actor.mfaSecret;
   const isValid = verifySync({ token: body.data.token, secret: mfaSecret }).valid;
+=======
+  const isValid = verifySync({ token: body.data.token, secret: actor.mfaSecret });
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   if (!isValid) {
     // Check backup codes
     const backupCodes: string[] = actor.mfaBackupCodes ? JSON.parse(actor.mfaBackupCodes) : [];

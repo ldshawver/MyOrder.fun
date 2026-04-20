@@ -49,7 +49,11 @@ router.patch(
   "/admin/inventory/:id",
   requireRole("admin", "supervisor", "business_sitter"),
   async (req, res): Promise<void> => {
+<<<<<<< HEAD
     const id = parseInt(req.params.id as string, 10);
+=======
+    const id = parseInt(String(req.params.id), 10);
+>>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
     if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
     const { stockQuantity, stockUnit } = req.body as {
