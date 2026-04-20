@@ -142,7 +142,7 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
     ...body.data,
     tenantId,
     price: String(body.data.price),
-    compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null,
+    compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     isAvailable: body.data.isAvailable ?? true,
     stockQuantity: String(body.data.stockQuantity ?? 0),
   }).returning();

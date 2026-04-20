@@ -578,7 +578,7 @@ router.post(
             failed,
             errorCount: errors.length,
           },
-          ipAddress: req.ip ?? null,
+          ipAddress: req.ip ?? undefined,
         });
       } catch { /* audit failure is non-fatal */ }
     }

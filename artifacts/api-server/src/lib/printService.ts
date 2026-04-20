@@ -157,7 +157,7 @@ async function dispatchBridge(
       bridgeUrl: printer.bridgeUrl,
       hasApiKey: Boolean(apiKey),
       timeoutMs,
-      payloadKeys: Object.keys((job.payloadJson as object) ?? {}),
+      payloadKeys: Object.keys((payloadForLog as object) ?? {}),
     }, "dispatching to bridge");
 
     // For PNG jobs, pull the base64 image out of payloadJson.imageData and send
