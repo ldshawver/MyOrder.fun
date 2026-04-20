@@ -1,0 +1,12 @@
+#!/bin/sh
+echo "Running lint ratchet — checking ESLint warning count..."
+pnpm lint:ratchet
+status=$?
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "Commit blocked: ESLint warnings exceed the allowed threshold."
+  echo "Run 'pnpm lint:ratchet' to see the details."
+  echo "Fix the warnings or, if intentional, update the threshold with:"
+  echo "  pnpm --filter @workspace/scripts lint:ratchet -- --update"
+  exit 1
+fi

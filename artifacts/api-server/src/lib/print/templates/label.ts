@@ -1,5 +1,4 @@
 import type { PrintBlock } from "../renderer";
-import { centerText, divider } from "../formatter";
 
 export interface LabelData {
   title?: string | null;

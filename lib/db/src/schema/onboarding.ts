@@ -16,7 +16,7 @@ export const onboardingRequestsTable = pgTable("onboarding_requests", {
   contactName: text("contact_name").notNull(),
   contactEmail: text("contact_email").notNull(),
   contactPhone: text("contact_phone"),
-  businessType: text("business_type").notNull(),
+  businessType: text("business_output").notNull(),
   website: text("website"),
   description: text("description"),
   expectedOrderVolume: text("expected_order_volume"),
@@ -31,5 +31,5 @@ export const onboardingRequestsTable = pgTable("onboarding_requests", {
 export const insertOnboardingRequestSchema = createInsertSchema(onboardingRequestsTable).omit({
   id: true, createdAt: true, updatedAt: true, reviewedBy: true, tenantId: true,
 });
-export type InsertOnboardingRequest = z.infer<typeof insertOnboardingRequestSchema>;
+export type InsertOnboardingRequest = typeof insertOnboardingRequestSchema._output;
 export type OnboardingRequest = typeof onboardingRequestsTable.$inferSelect;

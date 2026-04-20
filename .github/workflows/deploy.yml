@@ -57,6 +57,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Lint warning ratchet
+        run: pnpm lint:ratchet
+
       - name: Run tests
         run: pnpm test
 

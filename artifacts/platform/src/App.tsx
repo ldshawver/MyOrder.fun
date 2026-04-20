@@ -138,7 +138,7 @@ const LoadingScreen = () => (
 
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-function useSessionLogger(userEmail: string) {
+function useSessionLogger(_userEmail: string) {
   const [location] = useLocation();
   const { getToken } = useAuth();
   const lastPageRef = useRef<string>("");

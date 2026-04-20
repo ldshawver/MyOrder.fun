@@ -21,7 +21,6 @@ import supertest from "supertest";
 // Shared mock state — tests mutate these to switch between user profiles.
 // ---------------------------------------------------------------------------
 let mockUserId: string | null = "test-clerk-id";
-let mockDbUser: Record<string, unknown> | null = null;
 
 // ---------------------------------------------------------------------------
 // Mock @clerk/express — control which Clerk user is "authenticated"
@@ -190,7 +189,6 @@ function makeApprovedUser() {
  * the given user, and subsequent calls (data queries) resolve with [].
  */
 function configureDbForUser(user: Record<string, unknown> | null) {
-  mockDbUser = user;
   let callCount = 0;
   (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
     callCount++;

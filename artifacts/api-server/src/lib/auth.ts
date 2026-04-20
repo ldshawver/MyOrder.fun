@@ -7,6 +7,7 @@ import { logger } from "./logger";
 export type Role = "admin" | "supervisor" | "business_sitter" | "user";
 
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       dbUser?: typeof usersTable.$inferSelect;
