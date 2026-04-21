@@ -16,6 +16,7 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   techId: integer("tech_id").notNull().references(() => usersTable.id),
+  // status: active | clocked_out | supervisor_pending | finalized
   status: text("status").notNull().default("active"),
   ipAddress: text("ip_address"),
   clockedInAt: timestamp("clocked_in_at", { withTimezone: true }).notNull().defaultNow(),
@@ -23,6 +24,17 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   // Cash bank tracking
   cashBankStart: numeric("cash_bank_start", { precision: 10, scale: 2 }).default("0"),
   cashBankEnd: numeric("cash_bank_end", { precision: 10, scale: 2 }),
+  // Rep-reported ending cash bank (separate from system-computed)
+  cashBankEndReported: numeric("cash_bank_end_reported", { precision: 10, scale: 2 }),
+  // Supervisor checkout fields
+  tipPercentSelected: numeric("tip_percent_selected", { precision: 5, scale: 2 }),
+  tipAmount: numeric("tip_amount", { precision: 10, scale: 2 }),
+  differenceAmount: numeric("difference_amount", { precision: 10, scale: 2 }).default("0"),
+  depositAmount: numeric("deposit_amount", { precision: 10, scale: 2 }),
+  supervisorId: integer("supervisor_id").references(() => usersTable.id),
+  supervisorConfirmedAt: timestamp("supervisor_confirmed_at", { withTimezone: true }),
+  // Payment method breakdown: { cash, card, cashapp, paypal, venmo, comp, other }
+  paymentTotalsJson: json("payment_totals_json"),
   summary: json("summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
@@ -45,6 +57,9 @@ export const inventoryTemplatesTable = pgTable("inventory_templates", {
   alavontId: text("alavont_id"),
   deductionUnitType: text("deduction_unit_output").default("#"),
   deductionQuantityPerSale: numeric("deduction_quantity_per_sale", { precision: 10, scale: 3 }).default("1"),
+  // Pricing from the CSR cash box spreadsheet
+  menuPrice: numeric("menu_price", { precision: 10, scale: 2 }),    // customer-facing price
+  payoutPrice: numeric("payout_price", { precision: 10, scale: 2 }), // rep payout / commission price
   // Live running stock — decremented automatically when linked catalog items are sold
   currentStock: numeric("current_stock", { precision: 10, scale: 3 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

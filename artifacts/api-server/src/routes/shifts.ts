@@ -54,16 +54,18 @@ async function computeShiftStats(shiftId: number) {
   }
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
-  let cashSales = 0;
-  let cardSales = 0;
-  let compSales = 0;
+  const paymentTotals: Record<string, number> = {
+    cash: 0, card: 0, cashapp: 0, paypal: 0, venmo: 0, comp: 0, other: 0,
+  };
 
   for (const order of shiftOrders) {
     const method = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const orderTotal = parseFloat(order.total as string);
-    if (method === "card") cardSales += orderTotal;
-    else if (method === "comp") compSales += orderTotal;
-    else cashSales += orderTotal;
+    if (method in paymentTotals) {
+      paymentTotals[method] += orderTotal;
+    } else {
+      paymentTotals.other += orderTotal;
+    }
 
     if (!customerMap[order.customerId]) {
       const [u] = await db
@@ -86,9 +88,10 @@ async function computeShiftStats(shiftId: number) {
   return {
     orderCount: shiftOrders.length,
     totalRevenue: shiftOrders.reduce((s, o) => s + parseFloat(o.total as string), 0),
-    cashSales,
-    cardSales,
-    compSales,
+    cashSales: paymentTotals.cash,
+    cardSales: paymentTotals.card,
+    compSales: paymentTotals.comp,
+    paymentTotals,
     byItem: Object.values(itemMap),
     byCustomer: Object.values(customerMap),
   };
@@ -296,7 +299,7 @@ router.post(
       cashBankEnd,
     } = req.body as {
       endingInventory?: { shiftInventoryItemId: number; quantityEndActual: number }[];
-      cashBankEnd?: number;
+      cashBankEnd?: number; // rep-reported ending cash bank
     };
 
     const stats = await computeShiftStats(activeShift.id);
@@ -367,25 +370,27 @@ router.post(
       ...stats,
       inventorySummary,
       cashBankStart,
-      cashBankEnd: cashBankEndVal,
+      cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
     };
 
-    await db
+    const [updatedShift] = await db
       .update(labTechShiftsTable)
       .set({
-        status: "completed",
+        status: "supervisor_pending",
         clockedOutAt: new Date(),
+        cashBankEndReported: cashBankEndVal != null ? String(cashBankEndVal) : null,
         cashBankEnd: cashBankEndVal != null ? String(cashBankEndVal) : null,
+        paymentTotalsJson: stats.paymentTotals,
         summary,
       })
       .where(eq(labTechShiftsTable.id, activeShift.id))
       .returning();
 
-    res.json({ summary });
+    res.json({ summary, shift: updatedShift });
   }
 );
 
@@ -627,6 +632,216 @@ router.delete(
 
     if (!deleted) { res.status(404).json({ error: "Not found" }); return; }
     res.json({ ok: true });
+  }
+);
+
+// ─── POST /api/admin/inventory-template/seed ──────────────────────────────────
+// Seeds the canonical inventory template from the Alavont CSR cash box spreadsheet.
+// Safe to call multiple times — upserts by item name.
+const CSR_INVENTORY_SEED = [
+  { itemName: "Squirting Dildo",                                startingQty: 0,    menuPrice: 100, payoutPrice: 90  },
+  { itemName: "Real Feel Deluxe No 7 Wallbanger Vibrating Dildo", startingQty: 0, menuPrice: 80,  payoutPrice: 75  },
+  { itemName: "Realistic Foreskin Dildo",                       startingQty: 0,    menuPrice: 95,  payoutPrice: 90  },
+  { itemName: "Real Feel Deluxe 11 Inch Wall Banger Vibe in Black", startingQty: 8.5, menuPrice: 20, payoutPrice: 15 },
+  { itemName: "Silky - Intimate Gel Collection",                startingQty: 2,    menuPrice: 25,  payoutPrice: 20  },
+  { itemName: "Aqua - Intimate Gel Collection",                 startingQty: 2,    menuPrice: 40,  payoutPrice: 30  },
+  { itemName: "Crimson Brick Condoms",                          startingQty: 8,    menuPrice: 7,   payoutPrice: 6   },
+  { itemName: "Obsidian Edge Collection",                       startingQty: 17,   menuPrice: 10,  payoutPrice: 9   },
+  { itemName: "Sex Machine with Dildo",                         startingQty: 3.5,  menuPrice: 100, payoutPrice: 100 },
+  { itemName: "Vibrating Mechanical Dildo",                     startingQty: 2.32, menuPrice: 12,  payoutPrice: 12  },
+  { itemName: "Metal Cockrings",                                startingQty: 10,   menuPrice: 5,   payoutPrice: 5   },
+  { itemName: "Blue Cockring",                                  startingQty: 0,    menuPrice: 5,   payoutPrice: 5   },
+  { itemName: "Black Cockring",                                 startingQty: 1,    menuPrice: 40,  payoutPrice: 40  },
+  { itemName: "Leather Cockrings",                              startingQty: 1,    menuPrice: 25,  payoutPrice: 25  },
+  { itemName: "Silicone Cockrings",                             startingQty: 0.5,  menuPrice: 60,  payoutPrice: 60  },
+  { itemName: "1 Morning After Pill",                           startingQty: 9,    menuPrice: 20,  payoutPrice: 18  },
+  { itemName: "Glass Vase",                                     startingQty: 1,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Butane Lighter",                                 startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Oil Burning Massage Candle",                     startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Couples Dice Games",                             startingQty: 3,    menuPrice: 1,   payoutPrice: 0   },
+  { itemName: "Midnight Lace Set",                              startingQty: 15,   menuPrice: 6,   payoutPrice: 5   },
+  { itemName: "Velvet Embrace Set",                             startingQty: 2,    menuPrice: 4,   payoutPrice: 4   },
+  { itemName: "Crimson Silk Ensemble",                          startingQty: 6,    menuPrice: 3,   payoutPrice: 3   },
+  { itemName: "Obsidian Desire Set",                            startingQty: 4,    menuPrice: 9,   payoutPrice: 8   },
+  { itemName: "Euphoria Lace Collection",                       startingQty: 21,   menuPrice: 6,   payoutPrice: 5   },
+  { itemName: "Soft Touch Satin Set",                           startingQty: 114,  menuPrice: 5,   payoutPrice: 5   },
+];
+
+router.post(
+  "/admin/inventory-template/seed",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+
+    // Fetch existing by item name to avoid duplicates
+    const existing = await db
+      .select({ id: inventoryTemplatesTable.id, itemName: inventoryTemplatesTable.itemName })
+      .from(inventoryTemplatesTable)
+      .where(eq(inventoryTemplatesTable.tenantId, houseTenantId));
+
+    const existingNames = new Set(existing.map(r => r.itemName?.toLowerCase()));
+
+    const toInsert = CSR_INVENTORY_SEED
+      .filter(item => !existingNames.has(item.itemName.toLowerCase()))
+      .map((item, idx) => ({
+        tenantId: houseTenantId,
+        itemName: item.itemName,
+        rowType: "item",
+        unitType: "#",
+        startingQuantityDefault: String(item.startingQty),
+        currentStock: String(item.startingQty),
+        menuPrice: String(item.menuPrice),
+        payoutPrice: String(item.payoutPrice),
+        displayOrder: (existing.length + idx) * 10,
+        isActive: true,
+        deductionQuantityPerSale: "1",
+      }));
+
+    // Update prices for existing rows (in case they were previously seeded without prices)
+    for (const item of CSR_INVENTORY_SEED) {
+      const match = existing.find(e => e.itemName?.toLowerCase() === item.itemName.toLowerCase());
+      if (match) {
+        await db
+          .update(inventoryTemplatesTable)
+          .set({ menuPrice: String(item.menuPrice), payoutPrice: String(item.payoutPrice) })
+          .where(eq(inventoryTemplatesTable.id, match.id));
+      }
+    }
+
+    let inserted: (typeof inventoryTemplatesTable.$inferSelect)[] = [];
+    if (toInsert.length > 0) {
+      inserted = await db.insert(inventoryTemplatesTable).values(toInsert).returning();
+    }
+
+    res.json({ inserted: inserted.length, updated: CSR_INVENTORY_SEED.length - toInsert.length, total: CSR_INVENTORY_SEED.length });
+  }
+);
+
+// ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
+// Supervisor confirms ending inventory, sets tip %, calculates final amounts.
+router.post(
+  "/shifts/:id/supervisor-checkout",
+  requireRole("admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+    if (shift.status !== "supervisor_pending") {
+      res.status(409).json({ error: `Shift is not pending supervisor review (status: ${shift.status})` });
+      return;
+    }
+
+    const { tipPercent } = req.body as { tipPercent?: number };
+    if (!tipPercent || ![15, 16, 17, 18].includes(tipPercent)) {
+      res.status(400).json({ error: "tipPercent must be 15, 16, 17, or 18" });
+      return;
+    }
+
+    const supervisor = req.dbUser!;
+
+    const stats = await computeShiftStats(shiftId);
+    const snapshotItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+
+    // Tip is calculated on eligible completed sales subtotal (non-comp, non-voided)
+    const eligibleSalesBase = stats.totalRevenue - stats.compSales;
+    const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
+
+    // Inventory shortage: sum of flagged item discrepancies converted to monetary value
+    // Uses unit price from shift items
+    let differenceAmount = 0;
+    for (const item of inventory) {
+      if (item.isFlagged && item.discrepancy != null && item.discrepancy > 0) {
+        differenceAmount += item.discrepancy * item.unitPrice;
+      }
+    }
+    differenceAmount = Math.round(differenceAmount * 100) / 100;
+
+    const finalTip = Math.max(0, tipAmount - differenceAmount);
+
+    const cashBankStart = parseFloat(String(shift.cashBankStart ?? 0));
+    const cashBankEndReported = parseFloat(String(shift.cashBankEndReported ?? 0));
+    // deposit = ending cash - starting cash - final tip - difference
+    const depositAmount = Math.max(0, cashBankEndReported - cashBankStart - finalTip - differenceAmount);
+
+    const [finalized] = await db
+      .update(labTechShiftsTable)
+      .set({
+        status: "finalized",
+        tipPercentSelected: String(tipPercent),
+        tipAmount: String(finalTip),
+        differenceAmount: String(differenceAmount),
+        depositAmount: String(depositAmount),
+        supervisorId: supervisor.id,
+        supervisorConfirmedAt: new Date(),
+      })
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .returning();
+
+    res.json({
+      shift: finalized,
+      checkout: {
+        eligibleSalesBase,
+        tipPercent,
+        tipAmount,
+        differenceAmount,
+        finalTip,
+        cashBankStart,
+        cashBankEndReported,
+        depositAmount,
+        paymentTotals: stats.paymentTotals,
+        flaggedItems: inventory.filter(i => i.isFlagged),
+      },
+    });
+  }
+);
+
+// ─── GET /api/shifts/pending-supervisor ───────────────────────────────────────
+// Returns all shifts awaiting supervisor checkout.
+router.get(
+  "/shifts/pending-supervisor",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    const shifts = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "supervisor_pending"))
+      .orderBy(desc(labTechShiftsTable.clockedOutAt));
+
+    const result = await Promise.all(
+      shifts.map(async shift => {
+        const [u] = await db
+          .select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+          .from(usersTable)
+          .where(eq(usersTable.id, shift.techId))
+          .limit(1);
+        const stats = await computeShiftStats(shift.id);
+        return {
+          shiftId: shift.id,
+          techName: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
+          techEmail: u?.email ?? "",
+          clockedInAt: shift.clockedInAt,
+          clockedOutAt: shift.clockedOutAt,
+          cashBankStart: parseFloat(String(shift.cashBankStart ?? 0)),
+          cashBankEndReported: parseFloat(String(shift.cashBankEndReported ?? 0)),
+          paymentTotals: stats.paymentTotals,
+          totalRevenue: stats.totalRevenue,
+        };
+      })
+    );
+
+    res.json({ pendingShifts: result });
   }
 );
 
