@@ -132,11 +132,72 @@ docker compose up -d
 
 ---
 
+## PM2 Bare-Metal Setup (alternative to Docker Compose)
+
+If you are running the API directly under PM2 (without Docker) at `/root/alavont`:
+
+### Prerequisites
+```bash
+# Node 20+, pnpm, pm2
+node -v          # must be 20.6+ for --env-file support
+npm install -g pnpm pm2
+```
+
+### First-time setup
+```bash
+cd /root/alavont
+cp deploy/.env.example .env
+nano .env        # fill in DATABASE_URL, CLERK_SECRET_KEY, etc.
+
+# Install dependencies, push DB schema, and build everything
+bash deploy/build.sh
+
+# Start via PM2
+pm2 start deploy/ecosystem.config.cjs
+pm2 save         # auto-restart on reboot
+pm2 startup      # install pm2 system service
+```
+
+### Deploy after a git pull
+```bash
+cd /root/alavont
+git pull
+
+# Rebuild (also pushes DB schema automatically)
+bash deploy/build.sh
+
+# Reload without downtime
+pm2 reload alavont-api
+```
+
+### Nginx config (bare-metal)
+The `deploy/nginx.conf` file is ready to use. Copy it to nginx:
+```bash
+sudo cp /root/alavont/deploy/nginx.conf /etc/nginx/sites-available/myorder.fun
+sudo ln -sf /etc/nginx/sites-available/myorder.fun /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Useful PM2 commands
+```bash
+pm2 status                    # see all processes
+pm2 logs alavont-api          # tail logs
+pm2 logs alavont-api --lines 100  # last 100 log lines
+pm2 reload alavont-api        # zero-downtime restart
+pm2 restart alavont-api       # full restart
+pm2 delete alavont-api        # remove process (then re-add with pm2 start)
+```
+
+---
+
 ## Troubleshooting
 
 | Error | Fix |
 |---|---|
-| `relation "users" does not exist` | Run `docker compose run --rm migrate` |
+| `relation "users" does not exist` | Run `bash deploy/build.sh` (includes schema push) |
+| `Cannot find package 'bcrypt'` | Old stale build — run `bash deploy/build.sh` to rebuild from latest code |
+| `DATABASE_URL must be set` | `.env` file missing or not loaded — ensure `.env` exists at `/root/alavont/.env` and run `bash deploy/build.sh` |
+| `GET /` or `GET /login` returns 404 | Frontend not built or nginx root path wrong — run `bash deploy/build.sh`, then reload nginx with `deploy/nginx.conf` |
 | `Cannot find module '/app/scripts/...'` | Rebuild: `docker compose build api && docker compose up -d api` |
 | Nginx won't start | Check `deploy/nginx/ssl/` has `fullchain.pem` + `privkey.pem` |
 | GitHub Actions fails to connect | Verify `VPS_SSH_KEY` secret and that the public key is in `/root/.ssh/authorized_keys` |

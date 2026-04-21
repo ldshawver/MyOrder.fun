@@ -1,37 +1,36 @@
+/**
+ * PM2 Ecosystem Config — Alavont API Server
+ *
+ * The app lives in /root/alavont (or wherever you cloned the repo).
+ * All secrets are loaded from /root/alavont/.env via Node's --env-file flag.
+ *
+ * First-time start:
+ *   cd /root/alavont
+ *   pm2 start deploy/ecosystem.config.cjs
+ *   pm2 save
+ *
+ * Update after a pull + rebuild:
+ *   pm2 reload alavont-api
+ *
+ * If the app root is NOT /root/alavont, edit BASE_DIR below.
+ */
+
+const BASE_DIR = "/root/alavont";
+
 module.exports = {
   apps: [
     {
-      name: "orderflow-api",
+      name: "alavont-api",
+      // Node 20.6+ supports --env-file natively.
+      // All secrets (DATABASE_URL, CLERK_SECRET_KEY, etc.) must be in BASE_DIR/.env
       script: "node",
-      args: "--enable-source-maps artifacts/api-server/dist/index.mjs",
-      cwd: "/opt/orderflow",
+      args: `--env-file ${BASE_DIR}/.env --enable-source-maps artifacts/api-server/dist/index.mjs`,
       interpreter: "none",
+      cwd: BASE_DIR,
+      // Only override the two vars that should always be production regardless of .env
       env: {
         NODE_ENV: "production",
         PORT: "8080",
-
-        // --- Fill these in ---
-        DATABASE_URL: "",
-
-        CLERK_SECRET_KEY: "",
-
-        STRIPE_SECRET_KEY: "",
-        STRIPE_PUBLISHABLE_KEY: "",
-
-        OPENAI_API_KEY: "",
-
-        TWILIO_ACCOUNT_SID: "",
-        TWILIO_AUTH_TOKEN: "",
-        TWILIO_PHONE_NUMBER: "",
-        ADMIN_ALERT_PHONE: "",
-
-        PRINT_BRIDGE_API_KEY: "",
-
-        WC_STORE_URL: "",
-        WC_CONSUMER_KEY: "",
-        WC_CONSUMER_SECRET: "",
-
-        LOG_LEVEL: "info",
       },
       watch: false,
       autorestart: true,
