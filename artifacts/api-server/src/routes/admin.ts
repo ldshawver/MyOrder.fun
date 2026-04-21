@@ -19,7 +19,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { generateSecret, generateURI, verifySync } from "otplib";
-// @ts-expect-error — no @types/qrcode package available
 import qrcode from "qrcode";
 import crypto from "crypto";
 

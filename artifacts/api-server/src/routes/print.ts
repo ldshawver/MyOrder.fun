@@ -1023,19 +1023,21 @@ router.get("/print/routing/decision", adminOnly, async (req, res): Promise<void>
   res.json({ operatorIp, decision });
 });
 
-/** POST /api/print/printers/seed-defaults — upsert the two known-good Tailscale bridge printers */
+/** POST /api/print/printers/seed-defaults — upsert Pi CUPS bridge printers */
 router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promise<void> => {
   const body = req.body ?? {};
-  const bridgeUrl = String(body.bridgeUrl ?? "http://100.103.51.63:3100");
+  const piHost = process.env.PRINT_SERVER_HOST ?? "100.83.99.2";
+  const defaultBridgeUrl = `http://${piHost}:3100`;
+  const bridgeUrl = String(body.bridgeUrl ?? defaultBridgeUrl);
   const apiKey    = String(body.apiKey ?? "");
 
   const defaults = [
     {
-      name: "Reciept_POS80_Printer",
+      name: "receipt",
       role: "receipt",
       connectionType: "bridge" as const,
       bridgeUrl,
-      bridgePrinterName: "Reciept_POS80_Printer",
+      bridgePrinterName: process.env.RECEIPT_PRINTER_NAME ?? "receipt",
       apiKey: apiKey || null,
       isActive: true,
       paperWidth: "80mm",
@@ -1043,11 +1045,11 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
       copies: 1,
     },
     {
-      name: "Label_Themal_Printer",
+      name: "label",
       role: "label",
       connectionType: "bridge" as const,
       bridgeUrl,
-      bridgePrinterName: "Label_Themal_Printer",
+      bridgePrinterName: process.env.LABEL_PRINTER_NAME ?? "label",
       apiKey: apiKey || null,
       isActive: true,
       paperWidth: "58mm",
@@ -1056,14 +1058,23 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
     },
   ];
 
+  // Also clean up any old Mac-named printers for the same roles
+  const legacyNames = ["Reciept_POS80_Printer", "Label_Themal_Printer", "Receipt_Printer"];
+
   const results = [];
   for (const d of defaults) {
-    // Try to find existing by bridgePrinterName + role
+    // Find by canonical name OR any legacy name for this role
     const existing = await db.select().from(printPrintersTable)
       .where(eq(printPrintersTable.name, d.name)).limit(1);
 
-    if (existing.length) {
+    const legacyExisting = existing.length ? [] : await db.select().from(printPrintersTable)
+      .where(inArray(printPrintersTable.name, legacyNames)).limit(1);
+
+    const target = existing[0] ?? legacyExisting[0];
+
+    if (target) {
       const updates: Record<string, unknown> = {
+        name: d.name,
         role: d.role,
         connectionType: d.connectionType,
         bridgeUrl: d.bridgeUrl,
@@ -1076,7 +1087,7 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
 
       const [updated] = await db.update(printPrintersTable)
         .set(updates)
-        .where(eq(printPrintersTable.id, existing[0].id))
+        .where(eq(printPrintersTable.id, target.id))
         .returning();
       results.push({ action: "updated", id: updated.id, name: updated.name, role: updated.role });
     } else {

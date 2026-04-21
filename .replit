@@ -56,6 +56,10 @@ SMTP_USER = "luke@adiken.com"
 SMTP_HOST = "smtp.office365.com"
 SMTP_PORT = "587"
 SMTP_TLS = "true"
+RECEIPT_PRINTER_URI = "ipp://100.83.99.2:631/printers/receipt"
+RECEIPT_PRINTER_NAME = "receipt"
+PRINT_SERVER_HOST = "100.83.99.2"
+PRINT_SERVER_PORT = "631"
 
 [[ports]]
 localPort = 8080

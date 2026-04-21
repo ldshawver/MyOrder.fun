@@ -90,7 +90,11 @@ export function renderBlocks(blocks: PrintBlock[], width: number): string {
     }
   }
 
-  // Paper feed
-  lines.push("", "");
-  return lines.join("\n");
+  // ESC/POS: feed 3 lines then partial cut
+  // \x1b\x40 = ESC @ (initialize printer)  — prepended below
+  // \x1b\x64\x03 = ESC d 3 (feed 3 lines)
+  // \x1d\x56\x41\x00 = GS V A 0 (partial cut)
+  lines.push("", "", "");
+  const body = lines.join("\n");
+  return "\x1b\x40" + body + "\x1b\x64\x03\x1d\x56\x41\x00";
 }
