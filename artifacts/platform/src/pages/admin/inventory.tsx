@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, ChevronRight, Calendar,
-  Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2,
+  Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -100,6 +100,8 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
   const [error, setError] = useState<string | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<{ inserted: number; updated: number } | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -234,6 +236,27 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
     }
   }
 
+  async function seedFromCsv() {
+    setSeeding(true);
+    setSeedResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/inventory-template/seed", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Seed failed");
+      setSeedResult({ inserted: data.inserted, updated: data.updated });
+      await fetchAll();
+      setTimeout(() => setSeedResult(null), 5000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Seed failed");
+    } finally {
+      setSeeding(false);
+    }
+  }
+
   async function deleteRow(id: number) {
     if (!confirm("Delete this inventory item?")) return;
     const token = await getToken();
@@ -303,6 +326,17 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
         </div>
         <div className="flex items-center gap-2">
           <Button
+            onClick={seedFromCsv}
+            disabled={seeding}
+            size="sm"
+            variant="outline"
+            className="gap-1.5 rounded-xl border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+            title="Load all 26 products from the Alavont CSR cash box spreadsheet"
+          >
+            {seeding ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
+            {seeding ? "Seeding..." : "Seed from CSV"}
+          </Button>
+          <Button
             onClick={addRow}
             disabled={adding}
             size="sm"
@@ -323,6 +357,14 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
           </Button>
         </div>
       </div>
+
+      {/* Seed result banner */}
+      {seedResult && (
+        <div className="rounded-xl border border-green-500/30 bg-green-500/10 text-green-400 px-4 py-2.5 text-xs flex items-center gap-2">
+          <Database size={13} />
+          Seeded successfully — <strong>{seedResult.inserted}</strong> items added, <strong>{seedResult.updated}</strong> items updated with prices.
+        </div>
+      )}
 
       {/* Column header */}
       <div className={colHeader}>
