@@ -19,10 +19,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { generateSecret, generateURI, verifySync } from "otplib";
-<<<<<<< HEAD
-=======
 // @ts-expect-error — no @types/qrcode package available
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
 import qrcode from "qrcode";
 import crypto from "crypto";
 
@@ -111,12 +108,7 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
     return;
   }
 
-<<<<<<< HEAD
-  const mfaSecret = actor.mfaSecret;
-  const isValid = verifySync({ token: body.data.token, secret: mfaSecret }).valid;
-=======
   const isValid = verifySync({ token: body.data.token, secret: actor.mfaSecret });
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   if (!isValid) {
     // Check backup codes
     const backupCodes: string[] = actor.mfaBackupCodes ? JSON.parse(actor.mfaBackupCodes) : [];
