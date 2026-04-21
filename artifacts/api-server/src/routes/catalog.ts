@@ -143,16 +143,12 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
   const [row] = await db.insert(catalogItemsTable).values({
     ...(body.data as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
+    name: body.data.name,
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     isAvailable: body.data.isAvailable ?? true,
-<<<<<<< HEAD
     stockQuantity: String(body.data.stockQuantity ?? 0),
-  }).returning();
-=======
-    stockQuantity: body.data.stockQuantity ?? 0,
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   res.status(201).json(mapItem(row));
 });
 
@@ -234,7 +230,6 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     return;
   }
 
-<<<<<<< HEAD
   const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, ...restBodyData } = body.data;
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
   if (price !== undefined) updateData.price = String(price);
@@ -242,14 +237,6 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
   if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
-=======
-  // price is number in Zod schema but string in db schema; cast via unknown
-  const updateData: Partial<typeof catalogItemsTable.$inferInsert> = {
-    ...(body.data as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
-  };
-  if (body.data.price !== undefined) updateData.price = String(body.data.price);
-  if (body.data.compareAtPrice !== undefined) updateData.compareAtPrice = body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : null;
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.

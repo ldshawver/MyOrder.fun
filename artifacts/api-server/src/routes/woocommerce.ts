@@ -39,12 +39,7 @@ function stripHtml(html: string): string {
 async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consumerSecret: string) {
   const base = storeUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-<<<<<<< HEAD
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const allProducts: any[] = [];
-=======
   const allProducts: WooProduct[] = [];
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   let page = 1;
   const perPage = 100;
 
@@ -102,12 +97,7 @@ router.post(
       return;
     }
 
-<<<<<<< HEAD
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let products: any[];
-=======
     let products: WooProduct[];
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
     try {
       products = await fetchAllWooProducts(storeUrl, consumerKey, consumerSecret);
     } catch (err) {
