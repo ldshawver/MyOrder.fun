@@ -73,11 +73,7 @@ router.get("/admin/stats", async (req, res): Promise<void> => {
 router.post("/admin/mfa/setup", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const secret = generateSecret();
-<<<<<<< HEAD
-  const otpauth = generateURI({ issuer: "OrderFlow Admin", label: actor.email ?? "", secret });
-=======
   const otpauth = generateURI({ label: actor.email ?? "unknown", issuer: "OrderFlow Admin", secret });
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   const qrCodeUrl = await qrcode.toDataURL(otpauth);
 
   // Generate 10 backup codes

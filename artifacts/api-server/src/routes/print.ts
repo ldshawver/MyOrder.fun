@@ -641,11 +641,7 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
 
 /** POST /api/print/orders/:id/receipt — reprint/trigger receipt for an order */
 router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
-<<<<<<< HEAD
-  const orderId = parseInt(req.params.id as string, 10);
-=======
   const orderId = parseInt(String(req.params.id), 10);
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -740,11 +736,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
-<<<<<<< HEAD
-  const orderId = parseInt(req.params.id as string, 10);
-=======
   const orderId = parseInt(String(req.params.id), 10);
->>>>>>> 0aa2ae4 (Add TypeScript strict mode to api-server and platform tsconfigs; fix resulting errors)
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
