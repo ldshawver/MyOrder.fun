@@ -5,8 +5,8 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
 # ── Load environment ────────────────────────────────────────────────────────
-# On the VPS, keep a .env file at the repo root. build.sh sources it so
-# VITE_CLERK_PUBLISHABLE_KEY and other build-time vars are available.
+# Keep a .env file at the repo root on the VPS. build.sh sources it so
+# all build-time vars are available before the validate step below.
 if [ -f "$REPO_DIR/.env" ]; then
   echo "==> Loading .env file..."
   set -a
@@ -14,9 +14,15 @@ if [ -f "$REPO_DIR/.env" ]; then
   set +a
 fi
 
+# ── Normalise env var names ─────────────────────────────────────────────────
+# Accept either VITE_CLERK_PUBLISHABLE_KEY or the plain CLERK_PUBLISHABLE_KEY
+VITE_CLERK_PUBLISHABLE_KEY="${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:-}}"
+
+# Default proxy URL if not explicitly set
+VITE_CLERK_PROXY_URL="${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}"
+
 # ── Validate required build-time env vars ───────────────────────────────────
-: "${VITE_CLERK_PUBLISHABLE_KEY:?Need to set VITE_CLERK_PUBLISHABLE_KEY in .env}"
-: "${VITE_CLERK_PROXY_URL:?Need to set VITE_CLERK_PROXY_URL in .env}"
+: "${VITE_CLERK_PUBLISHABLE_KEY:?Set VITE_CLERK_PUBLISHABLE_KEY or CLERK_PUBLISHABLE_KEY in .env}"
 : "${DATABASE_URL:?Need to set DATABASE_URL in .env}"
 
 echo "==> Installing dependencies..."
@@ -40,10 +46,9 @@ BASE_PATH=/ PORT=3000 NODE_ENV=production \
 echo ""
 echo "Build complete."
 echo "  API:      $REPO_DIR/artifacts/api-server/dist/index.mjs"
-echo "  Frontend: $REPO_DIR/artifacts/platform/dist/public"
+echo "  Frontend: $REPO_DIR/artifacts/platform/dist"
 echo ""
-echo "Next steps:"
-echo "  1. Copy deploy/nginx.conf to /etc/nginx/sites-available/myorder.fun"
-echo "     and reload nginx: sudo nginx -t && sudo systemctl reload nginx"
-echo "  2. Restart the API process: pm2 reload alavont-api"
-echo "     (or first-time: pm2 start deploy/ecosystem.config.cjs)"
+echo "Next steps on VPS:"
+echo "  sudo cp deploy/nginx.conf /etc/nginx/sites-available/myorder.fun"
+echo "  sudo nginx -t && sudo systemctl reload nginx"
+echo "  pm2 reload alavont-api   # or: pm2 start deploy/ecosystem.config.cjs"
