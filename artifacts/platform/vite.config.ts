@@ -79,9 +79,20 @@ export default defineConfig(async () => {
   const port = getRequiredPort();
   const basePath = getRequiredBasePath();
 
+  // Replit testing uses PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY secrets.
+  // Production builds read VITE_CLERK_PUBLISHABLE_KEY from the server .env file.
+  const clerkPublishableKey =
+    process.env.PUBLIC_KEY ||
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+    process.env.VITE_CLERK_PUBLISHABLE_KEY ||
+    "";
+
   return {
     base: basePath,
     plugins: await getPlugins(),
+    define: {
+      "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(clerkPublishableKey),
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
