@@ -84,7 +84,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // ── Public health checks (must remain unauthenticated for LB/proxy probes) ──
-app.use("/", healthRouter);
+app.get("/health", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
 app.use("/api", healthRouter);
 
 // ── Clerk auth middleware ────────────────────────────────────────────────────
