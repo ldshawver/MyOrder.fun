@@ -34,6 +34,10 @@ bash deploy/setup.sh
 Installs Docker and gets a free SSL certificate for `myorder.fun`.
 
 ### 3. Create `.env` in the `deploy/` folder
+
+> **Important:** The `.env` file must live in the `deploy/` folder (next to `docker-compose.yml`).
+> Docker Compose reads `.env` from the same directory as the compose file, not the repo root.
+
 ```bash
 cd /opt/alavont/deploy
 cp .env.example .env
