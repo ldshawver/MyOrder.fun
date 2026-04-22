@@ -1,5 +1,4 @@
 import { Router, type IRouter } from "express";
-import healthRouter from "./health";
 import webhooksRouter from "./webhooks";
 import usersRouter from "./users";
 import onboardingRouter from "./onboarding";
@@ -21,7 +20,6 @@ import sessionRouter from "./session";
 
 const router: IRouter = Router();
 
-router.use(healthRouter);
 router.use(webhooksRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);

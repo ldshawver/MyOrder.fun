@@ -9,13 +9,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
 
-function getRequiredPort(): number {
+function getPort(): number {
   const rawPort = process.env.PORT;
 
   if (!rawPort) {
-    throw new Error(
-      "PORT environment variable is required but was not provided.",
-    );
+    return 5173;
   }
 
   const port = Number(rawPort);
@@ -27,13 +25,11 @@ function getRequiredPort(): number {
   return port;
 }
 
-function getRequiredBasePath(): string {
+function getBasePath(): string {
   const rawBasePath = process.env.BASE_PATH;
 
   if (!rawBasePath) {
-    throw new Error(
-      "BASE_PATH environment variable is required but was not provided.",
-    );
+    return "/";
   }
 
   const basePath = rawBasePath.trim();
@@ -76,8 +72,8 @@ async function getPlugins(): Promise<PluginOption[]> {
 }
 
 export default defineConfig(async () => {
-  const port = getRequiredPort();
-  const basePath = getRequiredBasePath();
+  const port = getPort();
+  const basePath = getBasePath();
 
   // Replit testing uses PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY secrets.
   // Production builds read VITE_CLERK_PUBLISHABLE_KEY from the server .env file.
