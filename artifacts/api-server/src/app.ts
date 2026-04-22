@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import { clerkMiddleware } from "@clerk/express";
 import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxyMiddleware";
 import router from "./routes";
+import healthRouter from "./routes/health";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -81,6 +82,15 @@ app.use("/api/webhooks/clerk", express.raw({ type: "application/json" }));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+// ── Public health checks (must remain unauthenticated for LB/proxy probes) ──
+app.get("/health", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+app.get("/healthz", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+app.use("/api", healthRouter);
 
 // ── Clerk auth middleware ────────────────────────────────────────────────────
 app.use(clerkMiddleware());
