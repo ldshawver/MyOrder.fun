@@ -70,6 +70,7 @@ services:
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
         VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
+        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
     restart: unless-stopped
     networks:
       - internal
