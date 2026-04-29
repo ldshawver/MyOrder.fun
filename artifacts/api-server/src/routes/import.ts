@@ -41,6 +41,9 @@ export const CANONICAL_HEADERS = [
   "lucifer_cruz_image_url",
   "lucifer_cruz_description",
   "lucifer_cruz_category",
+  "lucifer_cruz_price",
+  "lucifer_cruz_in_stock",
+  "lucifer_cruz_id",
   "lab_name",
 ] as const;
 
@@ -94,18 +97,26 @@ const HEADER_ALIASES: Record<string, string> = {
   "menu id":                         "alavont_id",
   "menu_id":                         "alavont_id",
 
+  // Backward-compat aliases (old names still accepted on import)
   "menu is upsell":                  "alavont_is_upsell",
   "menu_is_upsell":                  "alavont_is_upsell",
 
+  "menu amount":                     "alavont_is_sample",
+  "menu_amount":                     "alavont_is_sample",
   "menu is sample":                  "alavont_is_sample",
   "menu_is_sample":                  "alavont_is_sample",
 
+  "menu measurement":                "homie_price",
+  "menu_measurement":                "homie_price",
   "sale price":                      "homie_price",
   "sale_price":                      "homie_price",
   "sale pri":                        "homie_price",
   "sale_pri":                        "homie_price",
 
   // ── Friendly "Merchant *" column names ───────────────────────────────────
+  "merchant price":                  "lucifer_cruz_price",
+  "merchant_price":                  "lucifer_cruz_price",
+
   "merchant name":                   "lucifer_cruz_name",
   "merchant_name":                   "lucifer_cruz_name",
   "merchant- name":                  "lucifer_cruz_name",
@@ -127,6 +138,24 @@ const HEADER_ALIASES: Record<string, string> = {
   "merchant category":               "lucifer_cruz_category",
   "merchant_category":               "lucifer_cruz_category",
   "merchant-category":               "lucifer_cruz_category",
+
+  "merchant in stock":               "lucifer_cruz_in_stock",
+  "merchant_in_stock":               "lucifer_cruz_in_stock",
+
+  "merchant id":                     "lucifer_cruz_id",
+  "merchant_id":                     "lucifer_cruz_id",
+
+  "merchant created date":           "alavont_created_date",
+  "merchant_created_date":           "alavont_created_date",
+
+  "merchant updated date":           "alavont_updated_date",
+  "merchant_updated_date":           "alavont_updated_date",
+
+  "merchant created by id":          "alavont_created_by_id",
+  "merchant_created_by_id":          "alavont_created_by_id",
+
+  "merchant created by":             "alavont_created_by",
+  "merchant_created_by":             "alavont_created_by",
 
   "merchant sku":                    "lab_name",
   "merchant_sku":                    "lab_name",
@@ -341,21 +370,27 @@ function isValidUrl(s: string): boolean {
 
 // ─── Friendly template column headers ─────────────────────────────────────────
 const TEMPLATE_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
+  "Regular Price",
+  "Menu Image URL",
   "Menu Name",
   "Menu Description",
   "Menu Category",
   "Menu In Stock",
   "Menu ID",
-  "Menu Is Upsell",
-  "Menu Is Sample",
-  "Sale Price",
+  "Menu Amount",
+  "Menu Measurement",
+  "Merchant Price",
   "Merchant Name",
-  "Merchant Image",
+  "Merchant Image URL",
   "Merchant Description",
   "Merchant Category",
-  "Lab Name",
+  "Merchant In Stock",
+  "Merchant ID",
+  "Merchant Created Date",
+  "Merchant Updated Date",
+  "Merchant Created By ID",
+  "Merchant Created By",
+  "Merchant SKU",
 ] as const;
 
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
@@ -364,21 +399,27 @@ router.get(
   requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
-      "29.99",
-      "https://example.com/menu-img.jpg",
-      "Midnight Recovery Complex",
-      "Advanced cellular recovery blend",
-      "Dermatology",
-      "true",
-      "ALV-001",
-      "false",
-      "false",
-      "24.99",
-      "Velvet Restore Set",
-      "https://example.com/merchant-img.jpg",
-      "Luxurious overnight treatment",
-      "Skin Care",
-      "MRC-Lab",
+      "29.99",                                   // Regular Price
+      "https://example.com/menu-img.jpg",        // Menu Image URL
+      "Midnight Recovery Complex",               // Menu Name
+      "Advanced cellular recovery blend",        // Menu Description
+      "Dermatology",                             // Menu Category
+      "true",                                    // Menu In Stock
+      "ALV-001",                                 // Menu ID
+      "false",                                   // Menu Amount
+      "24.99",                                   // Menu Measurement
+      "",                                        // Merchant Price
+      "Velvet Restore Set",                      // Merchant Name
+      "https://example.com/merchant-img.jpg",    // Merchant Image URL
+      "Luxurious overnight treatment",           // Merchant Description
+      "Skin Care",                               // Merchant Category
+      "true",                                    // Merchant In Stock
+      "MRC-001",                                 // Merchant ID
+      "2024-01-15",                              // Merchant Created Date
+      "2024-03-20",                              // Merchant Updated Date
+      "user_123",                                // Merchant Created By ID
+      "admin",                                   // Merchant Created By
+      "MRC-Lab",                                 // Merchant SKU
     ];
     const csvContent = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");

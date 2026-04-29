@@ -10,37 +10,47 @@ import { useAuth } from "@clerk/react";
 
 // ─── Template headers — what the downloadable CSV uses ───────────────────────
 const TEMPLATE_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
+  "Regular Price",
+  "Menu Image URL",
   "Menu Name",
   "Menu Description",
   "Menu Category",
   "Menu In Stock",
   "Menu ID",
-  "Menu Is Upsell",
-  "Menu Is Sample",
-  "Sale Price",
+  "Menu Amount",
+  "Menu Measurement",
+  "Merchant Price",
   "Merchant Name",
-  "Merchant Image",
+  "Merchant Image URL",
   "Merchant Description",
   "Merchant Category",
-  "Lab Name",
+  "Merchant In Stock",
+  "Merchant ID",
+  "Merchant Created Date",
+  "Merchant Updated Date",
+  "Merchant Created By ID",
+  "Merchant Created By",
+  "Merchant SKU",
 ];
 
 // ─── All recognized header names (template names + internal canonical names) ──
 const CANONICAL_HEADERS = [
   // Friendly names used in the template
   ...TEMPLATE_HEADERS,
+  // Backward-compat friendly names (old templates still accepted)
+  "Menu Regular Price", "Menu Image", "Menu Is Upsell", "Menu Is Sample", "Sale Price",
+  "Merchant Image", "Lab Name",
   // Internal/legacy canonical names (still accepted on upload)
   "regular_price", "alavont_image_url", "alavont_name", "alavont_description",
   "alavont_category", "alavont_in_stock", "alavont_is_upsell", "alavont_id",
   "alavont_created_date", "alavont_updated_date", "alavont_created_by_id",
   "alavont_created_by", "alavont_is_sample", "homie_price",
   "lucifer_cruz_name", "lucifer_cruz_image_url", "lucifer_cruz_description",
-  "lucifer_cruz_category", "lab_name",
+  "lucifer_cruz_category", "lucifer_cruz_price", "lucifer_cruz_in_stock",
+  "lucifer_cruz_id", "lab_name",
 ];
 
-const REQUIRED_COLS = ["Menu Regular Price", "Menu Name", "Menu Category", "Merchant Name", "Lab Name"];
+const REQUIRED_COLS = ["Regular Price", "Menu Name", "Menu Category", "Merchant Name", "Merchant SKU"];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type HeaderMapping = { original: string; canonical: string; recognized: boolean };

@@ -226,7 +226,7 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
     { label: "WooCommerce Variation ID", key: "wooVariationId" },
   ];
   const metaStringFields: Array<{ label: string; key: StringFormKey }> = [
-    { label: "Lab Name", key: "labName" },
+    { label: "Merchant SKU", key: "labName" },
     { label: "Receipt Name", key: "receiptName" },
   ];
   return (
