@@ -488,14 +488,19 @@ export default function AdminImport() {
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        setParseError(`Server returned an unexpected response (HTTP ${res.status}). The server may be starting up — try again in a moment.`);
+        return;
+      }
       const data = await res.json();
       if (!res.ok) {
-        setParseError(data.error ?? "Could not parse headers");
+        setParseError(data.error ?? `Could not analyze headers (${res.status})`);
         return;
       }
       setParsedData(data as ParsedHeaders);
     } catch (e) {
-      setParseError((e as Error)?.message ?? "Network error during header analysis");
+      setParseError("Could not reach the server — check your connection and try again.");
     } finally {
       setParsePending(false);
     }
@@ -562,6 +567,13 @@ export default function AdminImport() {
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
+
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        setError(`Server returned an unexpected response (HTTP ${res.status}). The server may be restarting — please try again in a moment.`);
+        return;
+      }
+
       const data = await res.json();
       if (!res.ok) {
         // If the server returns structured mapping info (e.g. still missing required)
@@ -575,12 +587,12 @@ export default function AdminImport() {
             missingRequired: data.missingRequired ?? prev.missingRequired,
           } : null);
         }
-        setError(data.error ?? "Import failed");
+        setError(data.error ?? `Import failed (${res.status})`);
         return;
       }
       setResult(data);
     } catch (e) {
-      setError((e as Error)?.message ?? "Network error");
+      setError("Could not reach the server — check your connection and try again.");
     } finally {
       setImporting(false);
     }
@@ -720,12 +732,21 @@ export default function AdminImport() {
 
           {/* Parse error */}
           {parseError && (
-            <div className="flex items-start gap-2 p-3 rounded-xl border border-orange-500/30 bg-orange-500/10 text-orange-400 text-xs">
+            <div className="flex items-start gap-3 p-3 rounded-xl border border-orange-500/30 bg-orange-500/10 text-orange-400 text-xs">
               <AlertCircle size={13} className="shrink-0 mt-0.5" />
-              <div>
+              <div className="flex-1">
                 <span className="font-semibold">Could not analyze headers: </span>{parseError}
-                <div className="mt-1 opacity-70">You can still try importing — the server will validate headers.</div>
+                <div className="mt-1 opacity-70">You can retry the analysis, or import anyway — the server will validate headers on submit.</div>
               </div>
+              <button
+                type="button"
+                onClick={() => file && void callParseHeaders(file)}
+                disabled={parsePending}
+                className="shrink-0 flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 transition-colors"
+              >
+                {parsePending ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                Retry
+              </button>
             </div>
           )}
 
