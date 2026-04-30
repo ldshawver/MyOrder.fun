@@ -121,10 +121,10 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
-  console.log(
-    `[catalog] mode=${catalogMode} totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
-    (query.data.category ? ` category="${query.data.category}"` : "") +
-    (query.data.search ? ` search="${query.data.search}"` : "")
+  req.log.info(
+    { catalogMode, totalInDb: totalBeforeFilters, afterFilters: total, returned: paged.length,
+      category: query.data.category, search: query.data.search },
+    "catalog list"
   );
 
   res.json(ListCatalogItemsResponse.parse({ items: paged.map(i => mapItem(i, alavontOnly)), total, page, limit }));

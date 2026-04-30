@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@clerk/react";
+import { useQueryClient } from "@tanstack/react-query";
 
 // ─── Template column reference ─────────────────────────────────────────────────
 const REQUIRED_COLS = [
@@ -448,6 +449,7 @@ function ColumnMapper({ parsedData, userMapping, onMap, onUnmap }: ColumnMapperP
 // ─── Main import page ─────────────────────────────────────────────────────────
 export default function AdminImport() {
   const { getToken } = useAuth();
+  const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -591,6 +593,9 @@ export default function AdminImport() {
         return;
       }
       setResult(data);
+      if (!dryRun && data.inserted > 0) {
+        queryClient.invalidateQueries({ queryKey: ["listCatalogItems"] });
+      }
     } catch (e) {
       setError("Could not reach the server — check your connection and try again.");
     } finally {

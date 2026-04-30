@@ -156,6 +156,7 @@ function ClockInPanel({ onClockIn, getToken }: {
 
   const handleSubmit = async () => {
     setClocking(true);
+    setError(null);
     try {
       const snapshot: InventorySnapshot[] = template
         .filter(r => r.rowType === "item" || r.rowType === "cash")
@@ -164,6 +165,8 @@ function ClockInPanel({ onClockIn, getToken }: {
           quantityStart: parseFloat(quantities[r.id] ?? "0") || 0,
         }));
       await onClockIn(snapshot, parseFloat(cashBankStart) || 0);
+    } catch (err) {
+      setError((err as Error).message ?? "Clock-in failed. Please try again.");
     } finally {
       setClocking(false);
     }
@@ -1138,9 +1141,14 @@ export default function CustomerServiceRepQueue() {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ inventorySnapshot: snapshot, cashBankStart }),
     });
-    if (res.ok) {
-      await refetchShift();
+    if (!res.ok) {
+      const contentType = res.headers.get("content-type") ?? "";
+      const msg = contentType.includes("application/json")
+        ? ((await res.json()) as { error?: string }).error ?? "Clock-in failed"
+        : `Clock-in failed (${res.status})`;
+      throw new Error(msg);
     }
+    await refetchShift();
   };
 
   const handleClockOutConfirm = async (data: {

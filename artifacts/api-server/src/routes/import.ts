@@ -722,7 +722,6 @@ router.post(
       } catch (err) {
         errors.push(`Row ${rowNum}: database error — ${(err as Error)?.message ?? "unknown"}`);
         failed++;
-        skipped++;
       }
     }
 
