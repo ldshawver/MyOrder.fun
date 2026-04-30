@@ -3,6 +3,7 @@ import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
+  renderBodyOnly,
   buildCustomerReceiptBlocks,
   buildInventoryStartBlocks,
   buildInventoryEndBlocks,
@@ -10,6 +11,7 @@ import {
   getLogo,
   charWidth,
 } from "../lib/print/index";
+import { printReceiptEscPos } from "../lib/escposPrinter";
 import {
   printPrintersTable,
   printBridgeProfilesTable,
@@ -1109,6 +1111,212 @@ router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
     role: usersTable.role,
   }).from(usersTable).where(eq(usersTable.isActive, true)).orderBy(usersTable.email);
   res.json({ users: rows });
+});
+
+// ── Secure local CUPS receipt printing ────────────────────────────────────
+//
+// Receipt content is built entirely server-side from trusted DB data.
+// Clients supply only the orderId — no receipt content, no printer commands.
+// ESC/POS framing (\x1b@ reset, \x1dV1 cut) is added by escposPrinter, not here.
+
+const staffOrAbove = requireRole("admin", "supervisor", "business_sitter");
+
+/**
+ * POST /api/print/receipt/order/:orderId
+ *
+ * Fetch order from DB, render receipt body, print via `lp -d receipt`.
+ * Allowed: admin, supervisor, staff.
+ * Logs a print_jobs row for audit and reprint support.
+ */
+router.post("/print/receipt/order/:orderId", staffOrAbove, async (req, res): Promise<void> => {
+  const orderId = parseInt(String(req.params.orderId), 10);
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid orderId" });
+    return;
+  }
+
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(eq(ordersTable.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+
+  const items = await db
+    .select()
+    .from(orderItemsTable)
+    .where(eq(orderItemsTable.orderId, orderId));
+
+  const settings = await getSettings();
+  const s = settings as Record<string, unknown>;
+  const width = charWidth((s.paperWidth as string | undefined) ?? "80mm");
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+
+  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
+  try {
+    const [adminRow] = await db
+      .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
+      .from(adminSettingsTable)
+      .limit(1);
+    if (adminRow?.receiptLineNameMode) {
+      receiptLineNameMode = adminRow.receiptLineNameMode as typeof receiptLineNameMode;
+    }
+  } catch { /* no admin settings row — use default */ }
+
+  const blocks = buildCustomerReceiptBlocks({
+    orderId: order.id,
+    orderNumber: String(order.id),
+    createdAt: order.createdAt,
+    fulfillmentType: "Pickup",
+    paymentStatus: order.paymentStatus ?? undefined,
+    paymentMethod: order.paymentMethod ?? undefined,
+    notes: order.notes ?? undefined,
+    items: items.map((i) => ({
+      name: i.receiptName ?? i.catalogItemName,
+      quantity: i.quantity,
+      unitPrice: parseFloat(String(i.unitPrice)),
+      totalPrice: parseFloat(String(i.totalPrice)),
+    })),
+    subtotal: parseFloat(String(order.subtotal)),
+    tax: order.tax ? parseFloat(String(order.tax)) : undefined,
+    total: parseFloat(String(order.total)),
+    logoLines,
+    dualBrandName: (s.brandName as string | undefined) ?? undefined,
+    footerMessage: (s.footerMessage as string | undefined) ?? undefined,
+    showDiscreetNotice: Boolean(s.showDiscreetNotice),
+    showOperatorName: s.includeOperatorName !== false,
+  });
+
+  const body = renderBodyOnly(blocks, width);
+  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
+  const iKey = `lp:${orderId}:receipt:${Date.now()}`;
+
+  const [job] = await db
+    .insert(printJobsTable)
+    .values({
+      orderId: order.id,
+      printerId: null,
+      jobType: "receipt",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "escpos",
+      payloadJson: { orderId, printerName, receiptLineNameMode },
+      renderedText: body,
+      operatorUserId: req.dbUser!.id,
+    })
+    .returning();
+
+  try {
+    const { jobRef } = await printReceiptEscPos(body);
+    await db
+      .update(printJobsTable)
+      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
+      .where(eq(printJobsTable.id, job.id));
+
+    req.log.info(
+      { event: "receipt_printed", jobId: job.id, orderId, jobRef },
+      "Receipt printed via lp_cups"
+    );
+
+    res.json({ ok: true, jobId: job.id, jobRef });
+  } catch (err) {
+    const msg = (err as Error).message;
+    await db
+      .update(printJobsTable)
+      .set({ status: "failed", errorMessage: msg })
+      .where(eq(printJobsTable.id, job.id));
+
+    req.log.warn(
+      { event: "receipt_print_failed", jobId: job.id, orderId },
+      "Receipt print failed"
+    );
+
+    res.status(500).json({ ok: false, jobId: job.id, error: msg });
+  }
+});
+
+/**
+ * POST /api/print/receipt/jobs/:jobId/reprint
+ *
+ * Reprint a past receipt from its stored body text.
+ * Allowed: admin, supervisor only.
+ * Creates a new print_jobs row for audit trail.
+ */
+router.post("/print/receipt/jobs/:jobId/reprint", adminOnly, async (req, res): Promise<void> => {
+  const jobId = parseInt(String(req.params.jobId), 10);
+  if (isNaN(jobId)) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+
+  const [original] = await db
+    .select()
+    .from(printJobsTable)
+    .where(eq(printJobsTable.id, jobId))
+    .limit(1);
+
+  if (!original) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (!original.renderedText) {
+    res.status(400).json({ error: "Job has no stored receipt body — cannot reprint" });
+    return;
+  }
+  if (original.renderFormat !== "escpos") {
+    res.status(400).json({ error: "Job was not printed via lp_cups — use the standard reprint endpoint" });
+    return;
+  }
+
+  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
+  const iKey = `lp:reprint:${jobId}:${Date.now()}`;
+
+  const [newJob] = await db
+    .insert(printJobsTable)
+    .values({
+      orderId: original.orderId,
+      printerId: null,
+      jobType: "receipt",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "escpos",
+      payloadJson: { reprintOf: jobId, printerName },
+      renderedText: original.renderedText,
+      operatorUserId: req.dbUser!.id,
+    })
+    .returning();
+
+  try {
+    const { jobRef } = await printReceiptEscPos(original.renderedText);
+    await db
+      .update(printJobsTable)
+      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
+      .where(eq(printJobsTable.id, newJob.id));
+
+    req.log.info(
+      { event: "receipt_reprinted", newJobId: newJob.id, originalJobId: jobId, jobRef },
+      "Receipt reprinted via lp_cups"
+    );
+
+    res.json({ ok: true, jobId: newJob.id, jobRef });
+  } catch (err) {
+    const msg = (err as Error).message;
+    await db
+      .update(printJobsTable)
+      .set({ status: "failed", errorMessage: msg })
+      .where(eq(printJobsTable.id, newJob.id));
+
+    req.log.warn(
+      { event: "receipt_reprint_failed", newJobId: newJob.id, originalJobId: jobId },
+      "Receipt reprint failed"
+    );
+
+    res.status(500).json({ ok: false, jobId: newJob.id, error: msg });
+  }
 });
 
 export default router;
