@@ -21,6 +21,32 @@ const upload = multer({
   },
 });
 
+// ─── Friendly display names for canonical fields ──────────────────────────────
+export const FRIENDLY_NAMES: Record<string, string> = {
+  "regular_price":            "Regular Price",
+  "alavont_name":             "Menu Name",
+  "alavont_description":      "Menu Description",
+  "alavont_category":         "Menu Category",
+  "alavont_in_stock":         "Menu In Stock",
+  "alavont_is_upsell":        "Menu Is Upsell",
+  "alavont_id":               "Menu ID",
+  "alavont_created_date":     "Merchant Created Date",
+  "alavont_updated_date":     "Merchant Updated Date",
+  "alavont_created_by_id":    "Merchant Created By ID",
+  "alavont_created_by":       "Merchant Created By",
+  "alavont_is_sample":        "Menu Amount",
+  "alavont_image_url":        "Menu Image URL",
+  "homie_price":              "Menu Measurement",
+  "lucifer_cruz_name":        "Merchant Name",
+  "lucifer_cruz_image_url":   "Merchant Image URL",
+  "lucifer_cruz_description": "Merchant Description",
+  "lucifer_cruz_category":    "Merchant Category",
+  "lucifer_cruz_price":       "Merchant Price",
+  "lucifer_cruz_in_stock":    "Merchant In Stock",
+  "lucifer_cruz_id":          "Merchant ID",
+  "lab_name":                 "Merchant SKU",
+};
+
 // ─── Canonical header list (the downloadable template uses these exactly) ─────
 export const CANONICAL_HEADERS = [
   "regular_price",
@@ -321,7 +347,11 @@ type ParseResult = {
   rows: Record<string, string>[];
 };
 
-function parseBuffer(buffer: Buffer, ext: string): ParseResult {
+function parseBuffer(
+  buffer: Buffer,
+  ext: string,
+  userMapping: Record<string, string> = {}
+): ParseResult {
   let rawHeaders: string[];
   let rawRows: string[][];
 
@@ -340,7 +370,16 @@ function parseBuffer(buffer: Buffer, ext: string): ParseResult {
     rawRows = (data.slice(1) as unknown[][]).map(r => r.map(String));
   }
 
-  const headerMappings = rawHeaders.map(normalizeHeader);
+  // User-supplied mapping takes priority over auto-normalization.
+  // Keys are original column names (as they appear in the file),
+  // values are canonical field names.
+  const headerMappings = rawHeaders.map(raw => {
+    const explicit = userMapping[raw];
+    if (explicit && CANONICAL_SET.has(explicit)) {
+      return { original: raw, canonical: explicit, recognized: true };
+    }
+    return normalizeHeader(raw);
+  });
   const canonicalHeaders = headerMappings.map(m => m.canonical);
 
   const rows = rawRows.map(vals => {
@@ -428,8 +467,64 @@ router.get(
   }
 );
 
+// ─── POST /api/admin/products/parse-headers ───────────────────────────────────
+// Parse headers from a CSV/XLSX without importing.
+// Returns header mappings, required field status, and unknown column list.
+// Used by the UI to show the column mapper before the user commits to import.
+router.post(
+  "/admin/products/parse-headers",
+  requireRole("admin", "supervisor"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upload.single("file") as any,
+  (req, res): void => {
+    if (!req.file?.buffer) {
+      res.status(400).json({ error: "No file provided" });
+      return;
+    }
+
+    const ext = req.file.originalname.split(".").pop()?.toLowerCase() ?? "csv";
+    const fileExt = ["xlsx", "xls"].includes(ext) ? "xlsx" : "csv";
+
+    let parsed: ParseResult;
+    try {
+      parsed = parseBuffer(req.file.buffer, fileExt);
+    } catch (e) {
+      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown error"}` });
+      return;
+    }
+
+    const { headerMappings, canonicalHeaders } = parsed;
+    const missingRequired = REQUIRED_HEADERS.filter(h => !canonicalHeaders.includes(h));
+    const unknownHeaders = headerMappings
+      .filter(m => !m.recognized)
+      .map(m => m.original);
+
+    res.json({
+      headerMappings,
+      missingRequired,
+      unknownHeaders,
+      // Structured view of required fields for the mapper UI
+      requiredFields: REQUIRED_HEADERS.map(h => ({
+        canonical: h,
+        friendlyName: FRIENDLY_NAMES[h] ?? h,
+        found: canonicalHeaders.includes(h),
+        mappedFrom: headerMappings.find(m => m.canonical === h)?.original ?? null,
+      })),
+      // Full list of recognized canonical names (for dropdown options)
+      allCanonicals: CANONICAL_HEADERS.map(h => ({
+        canonical: h,
+        friendlyName: FRIENDLY_NAMES[h] ?? h,
+        required: REQUIRED_HEADERS.includes(h),
+      })),
+      // Original column names for the "map from" dropdowns
+      fileColumns: headerMappings.map(m => m.original),
+    });
+  }
+);
+
 // ─── POST /api/admin/products/import ─────────────────────────────────────────
 // Accepts multipart/form-data with field "file" (CSV or XLSX)
+// Optional form field "userMapping": JSON string { "Original Col": "canonical_name" }
 // Optional query: ?dryRun=true to validate without writing
 router.post(
   "/admin/products/import",
@@ -446,12 +541,27 @@ router.post(
       return;
     }
 
+    // Parse optional user-supplied column mapping
+    let userMapping: Record<string, string> = {};
+    try {
+      const rawMapping = req.body?.userMapping;
+      if (typeof rawMapping === "string" && rawMapping) {
+        userMapping = JSON.parse(rawMapping);
+      } else if (rawMapping && typeof rawMapping === "object") {
+        userMapping = rawMapping as Record<string, string>;
+      }
+      // Sanitize: only keep entries where the value is a known canonical name
+      userMapping = Object.fromEntries(
+        Object.entries(userMapping).filter(([, v]) => CANONICAL_SET.has(v))
+      );
+    } catch { /* ignore malformed mapping */ }
+
     const ext = req.file.originalname.split(".").pop()?.toLowerCase() ?? "csv";
     const fileExt = ["xlsx", "xls"].includes(ext) ? "xlsx" : "csv";
 
     let parsed: ParseResult;
     try {
-      parsed = parseBuffer(req.file.buffer, fileExt);
+      parsed = parseBuffer(req.file.buffer, fileExt, userMapping);
     } catch (e) {
       res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown error"}` });
       return;
@@ -459,12 +569,28 @@ router.post(
 
     const { headerMappings, canonicalHeaders, rows } = parsed;
 
-    // Check for required columns
+    // Identify unrecognized columns (strict mode — flag but do not block import)
+    const unknownHeaders = headerMappings
+      .filter(m => !m.recognized)
+      .map(m => m.original);
+
+    // Check for required columns — use friendly names in the error message
     const missing = REQUIRED_HEADERS.filter(h => !canonicalHeaders.includes(h));
     if (missing.length) {
+      const friendlyMissing = missing.map(h => FRIENDLY_NAMES[h] ?? h);
       res.status(400).json({
-        error: `Missing required columns: ${missing.join(", ")}`,
+        error: `Missing required columns: ${friendlyMissing.join(", ")}`,
+        missingRequired: missing,
+        missingFriendly: friendlyMissing,
         headerMappings,
+        unknownHeaders,
+        requiredFields: REQUIRED_HEADERS.map(h => ({
+          canonical: h,
+          friendlyName: FRIENDLY_NAMES[h] ?? h,
+          found: canonicalHeaders.includes(h),
+          mappedFrom: headerMappings.find(m => m.canonical === h)?.original ?? null,
+        })),
+        fileColumns: headerMappings.map(m => m.original),
       });
       return;
     }
@@ -624,6 +750,10 @@ router.post(
       } catch { /* audit failure is non-fatal */ }
     }
 
+    const warnings: string[] = unknownHeaders.map(
+      h => `Column "${h}" was not recognized and will be ignored`
+    );
+
     res.json({
       dryRun,
       total: rows.length,
@@ -633,6 +763,8 @@ router.post(
       failed,
       errors,
       headerMappings,
+      unknownHeaders,
+      warnings,
     });
   }
 );
