@@ -223,6 +223,8 @@ router.post(
       })
       .returning();
 
+    let inventoryItemsInserted = 0;
+
     if (inventorySnapshot && inventorySnapshot.length > 0) {
       const templateRows = await db
         .select()
@@ -255,22 +257,33 @@ router.post(
       if (inserts.length > 0) {
         await db.insert(shiftInventoryItemsTable).values(inserts);
       }
+      inventoryItemsInserted = inserts.length;
     } else if (legacyInventory.length > 0) {
-      await db.insert(shiftInventoryItemsTable).values(
-        legacyInventory.map(item => ({
-          shiftId: shift.id,
-          catalogItemId: item.catalogItemId ?? null,
-          itemName: item.itemName,
-          unitPrice: String(item.unitPrice ?? 0),
-          quantityStart: String(item.quantityStart),
-          rowType: "item",
-          unitType: "#",
-          displayOrder: 0,
-        }))
-      );
+      const legacyInserts = legacyInventory.map(item => ({
+        shiftId: shift.id,
+        catalogItemId: item.catalogItemId ?? null,
+        itemName: item.itemName,
+        unitPrice: String(item.unitPrice ?? 0),
+        quantityStart: String(item.quantityStart),
+        rowType: "item",
+        unitType: "#",
+        displayOrder: 0,
+      }));
+      await db.insert(shiftInventoryItemsTable).values(legacyInserts);
+      inventoryItemsInserted = legacyInserts.length;
     }
 
-    res.status(201).json({ shift });
+    res.status(201).json({
+      shift,
+      _debug: {
+        tenantId: houseTenantId,
+        techId: tech.id,
+        techClerkId: tech.clerkId,
+        techRole: tech.role,
+        shiftId: shift.id,
+        inventoryItemsInserted,
+      },
+    });
   }
 );
 

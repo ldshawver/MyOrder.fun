@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 import { Link } from "wouter";
 import {
@@ -1118,6 +1119,9 @@ export default function CustomerServiceRepQueue() {
 
   const { shift, setShift, loading: shiftLoading, refetch: refetchShift } = useShift(getToken);
 
+  const isAdmin = user?.role === "admin";
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+
   const { data, isLoading } = useListOrders(
     { status: activeTab as ListOrdersStatus, limit: 50 },
     { query: { queryKey: ["listOrders", activeTab] } }
@@ -1136,15 +1140,28 @@ export default function CustomerServiceRepQueue() {
 
   const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number) => {
     const token = await getToken();
-    const res = await fetch("/api/shifts/clock-in", {
-      method: "POST",
+    const method = "POST";
+    const endpoint = "/api/shifts/clock-in";
+    const res = await fetch(endpoint, {
+      method,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ inventorySnapshot: snapshot, cashBankStart }),
     });
+    const contentType = res.headers.get("content-type") ?? "";
+    const responseData = contentType.includes("application/json") ? (await res.json() as Record<string, unknown>) : null;
+    if (isAdmin) {
+      setDebugEntries(prev => [{
+        label: res.ok ? "Clock-in" : "Clock-in (failed)",
+        method,
+        endpoint,
+        status: res.status,
+        response: responseData,
+        timestamp: new Date().toLocaleTimeString(),
+      }, ...prev]);
+    }
     if (!res.ok) {
-      const contentType = res.headers.get("content-type") ?? "";
-      const msg = contentType.includes("application/json")
-        ? ((await res.json()) as { error?: string }).error ?? "Clock-in failed"
+      const msg = responseData
+        ? ((responseData as { error?: string }).error ?? "Clock-in failed")
         : `Clock-in failed (${res.status})`;
       throw new Error(msg);
     }
@@ -1197,6 +1214,11 @@ export default function CustomerServiceRepQueue() {
         ) : (
           <ClockInPanel onClockIn={handleClockIn} getToken={getToken} />
         )
+      )}
+
+      {/* Admin debug panel — clock-in/out calls */}
+      {isAdmin && debugEntries.length > 0 && (
+        <DebugPanel entries={debugEntries} onClear={() => setDebugEntries([])} />
       )}
 
       {/* Order queue */}

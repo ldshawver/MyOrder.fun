@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@clerk/react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useGetCurrentUser } from "@workspace/api-client-react";
+import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 // ─── Template column reference ─────────────────────────────────────────────────
 const REQUIRED_COLS = [
@@ -450,6 +452,9 @@ function ColumnMapper({ parsedData, userMapping, onMap, onUnmap }: ColumnMapperP
 export default function AdminImport() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
+  const { data: currentUser } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+  const isAdmin = currentUser?.role === "admin";
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -496,6 +501,16 @@ export default function AdminImport() {
         return;
       }
       const data = await res.json();
+      if (isAdmin) {
+        setDebugEntries(prev => [{
+          label: "Parse Headers",
+          method: "POST",
+          endpoint: "/api/admin/products/parse-headers",
+          status: res.status,
+          response: data,
+          timestamp: new Date().toLocaleTimeString(),
+        }, ...prev]);
+      }
       if (!res.ok) {
         setParseError(data.error ?? `Could not analyze headers (${res.status})`);
         return;
@@ -589,8 +604,28 @@ export default function AdminImport() {
             missingRequired: data.missingRequired ?? prev.missingRequired,
           } : null);
         }
+        if (isAdmin) {
+          setDebugEntries(prev => [{
+            label: dryRun ? "Dry Run Import (failed)" : "Live Import (failed)",
+            method: "POST",
+            endpoint: `/api/admin/products/import?dryRun=${dryRun}`,
+            status: res.status,
+            response: data,
+            timestamp: new Date().toLocaleTimeString(),
+          }, ...prev]);
+        }
         setError(data.error ?? `Import failed (${res.status})`);
         return;
+      }
+      if (isAdmin) {
+        setDebugEntries(prev => [{
+          label: dryRun ? "Dry Run Import" : "Live Import",
+          method: "POST",
+          endpoint: `/api/admin/products/import?dryRun=${dryRun}`,
+          status: res.status,
+          response: data,
+          timestamp: new Date().toLocaleTimeString(),
+        }, ...prev]);
       }
       setResult(data);
       if (!dryRun && data.inserted > 0) {
@@ -879,6 +914,11 @@ export default function AdminImport() {
             </Button>
           </div>
         </div>
+      )}
+
+      {/* Admin debug panel */}
+      {isAdmin && debugEntries.length > 0 && (
+        <DebugPanel entries={debugEntries} onClear={() => setDebugEntries([])} />
       )}
     </div>
   );

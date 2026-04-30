@@ -764,6 +764,13 @@ router.post(
       headerMappings,
       unknownHeaders,
       warnings,
+      _debug: {
+        tenantId: houseTenantId,
+        actorId: actor.id,
+        actorClerkId: actor.clerkId,
+        actorRole: actor.role,
+        rowsAffected: { inserted, updated, skipped, failed },
+      },
     });
   }
 );
