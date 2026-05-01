@@ -113,7 +113,10 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
-  if (user.role === "admin") {
+  // Elevated roles (admin, supervisor, business_sitter) are implicitly approved —
+  // having been assigned a staff role by an admin is itself the approval gate.
+  // Only end-customer "user" accounts require an explicit status check.
+  if (user.role === "admin" || user.role === "supervisor" || user.role === "business_sitter") {
     next();
     return;
   }
