@@ -595,7 +595,8 @@ router.post(
       return;
     }
 
-    let inserted = 0, updated = 0, skipped = 0, failed = 0;
+    let inserted = 0, updated = 0, failed = 0;
+    const skipped = 0;
     const errors: string[] = [];
 
     for (let i = 0; i < rows.length; i++) {

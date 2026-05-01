@@ -100,7 +100,7 @@ export function BrandProvider({ children }: { children: ReactNode }) {
 
   function setBrand(b: Brand) {
     setBrandState(b);
-    try { localStorage.setItem("orderflow_brand", b); } catch { }
+    try { localStorage.setItem("orderflow_brand", b); } catch { /* storage unavailable */ }
   }
 
   return (

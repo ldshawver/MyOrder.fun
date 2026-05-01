@@ -44,9 +44,12 @@ export default function NewOrder() {
   useEffect(() => {
     if (preItem && !preloaded.current) {
       preloaded.current = true;
-      setCart([{ id: preItem.id, name: preItem.name, price: preItem.price, quantity: 1 }]);
+      setCarts(prev => ({
+        ...prev,
+        [brand]: [{ id: preItem.id, name: preItem.name, price: preItem.price, quantity: 1 }],
+      }));
     }
-  }, [preItem]);
+  }, [preItem, brand]);
 
   const catalogMode = brand === "lucifer_cruz" ? "lucifer" : "alavont";
   const { data: catalog } = useListCatalogItems(

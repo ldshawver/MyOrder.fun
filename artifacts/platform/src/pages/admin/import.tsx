@@ -516,7 +516,7 @@ export default function AdminImport() {
         return;
       }
       setParsedData(data as ParsedHeaders);
-    } catch (e) {
+    } catch {
       setParseError("Could not reach the server — check your connection and try again.");
     } finally {
       setParsePending(false);
@@ -631,7 +631,7 @@ export default function AdminImport() {
       if (!dryRun && data.inserted > 0) {
         queryClient.invalidateQueries({ queryKey: ["listCatalogItems"] });
       }
-    } catch (e) {
+    } catch {
       setError("Could not reach the server — check your connection and try again.");
     } finally {
       setImporting(false);
