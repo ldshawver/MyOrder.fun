@@ -175,6 +175,8 @@ router.get(
         catalogItemId: r.catalogItemId,
         alavontId: r.alavontId,
         displayOrder: r.displayOrder,
+        menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
+        payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
       })),
     });
   }

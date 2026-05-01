@@ -13,6 +13,7 @@ import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, w
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
+import { clerkClient } from "@clerk/express";
 
 const router: IRouter = Router();
 
@@ -246,6 +247,55 @@ router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promis
     id: updated.id,
     status: updated.status,
   });
+});
+
+// ─── GET /api/admin/users/waitlist — list Clerk waitlist entries ─────────────
+router.get("/admin/users/waitlist", requireRole("admin"), async (req, res): Promise<void> => {
+  const query = (req.query.q as string | undefined)?.trim() || undefined;
+  try {
+    const result = await clerkClient.waitlistEntries.list({
+      limit: 100,
+      query,
+    });
+    res.json({
+      entries: result.data.map(e => ({
+        id: e.id,
+        emailAddress: e.emailAddress,
+        createdAt: e.createdAt,
+        status: e.status,
+      })),
+      total: result.totalCount,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to list Clerk waitlist entries");
+    res.status(500).json({ error: "Failed to fetch waitlist from Clerk" });
+  }
+});
+
+// ─── POST /api/admin/users/waitlist/:id/invite ────────────────────────────────
+router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!id) { res.status(400).json({ error: "Missing waitlist entry id" }); return; }
+  try {
+    const entry = await clerkClient.waitlistEntries.invite(id, { ignoreExisting: true });
+    res.json({ id: entry.id, status: entry.status });
+  } catch (err) {
+    req.log.error({ err }, "Failed to invite waitlist entry");
+    res.status(500).json({ error: "Failed to invite user from waitlist" });
+  }
+});
+
+// ─── POST /api/admin/users/waitlist/:id/reject ────────────────────────────────
+router.post("/admin/users/waitlist/:id/reject", requireRole("admin"), async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!id) { res.status(400).json({ error: "Missing waitlist entry id" }); return; }
+  try {
+    const entry = await clerkClient.waitlistEntries.reject(id);
+    res.json({ id: entry.id, status: entry.status });
+  } catch (err) {
+    req.log.error({ err }, "Failed to reject waitlist entry");
+    res.status(500).json({ error: "Failed to reject waitlist entry" });
+  }
 });
 
 export default router;

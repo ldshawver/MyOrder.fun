@@ -34,6 +34,8 @@ type TemplateRow = {
   startingQuantityDefault: number;
   catalogItemId: number | null;
   displayOrder: number;
+  menuPrice: number | null;
+  payoutPrice: number | null;
 };
 
 type InventorySnapshot = { templateItemId: number; quantityStart: number };
@@ -257,6 +259,18 @@ function ClockInPanel({ onClockIn, getToken }: {
               {section.items.map(row => (
                 <div key={row.id} className="flex items-center gap-3 px-6 py-2.5">
                   <div className="flex-1 text-sm font-medium truncate">{row.itemName}</div>
+                  {row.menuPrice != null && (
+                    <div className="text-[10px] text-muted-foreground shrink-0 text-right w-16 font-mono">
+                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Menu</span>
+                      ${row.menuPrice.toFixed(2)}
+                    </div>
+                  )}
+                  {row.payoutPrice != null && (
+                    <div className="text-[10px] text-emerald-400/80 shrink-0 text-right w-16 font-mono">
+                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Payout</span>
+                      ${row.payoutPrice.toFixed(2)}
+                    </div>
+                  )}
                   <div className="text-[10px] text-muted-foreground shrink-0 w-8 text-center">
                     {row.unitType}
                   </div>

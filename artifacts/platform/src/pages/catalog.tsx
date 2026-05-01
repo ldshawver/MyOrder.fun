@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   useListCatalogItems,
   useListCatalogCategories,
@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
+import { useBrand } from "@/contexts/BrandContext";
 import { Link } from "wouter";
 
 type MenuMode = "alavont" | "lucifer";
@@ -455,9 +456,16 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
 export default function Catalog() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
-  const [menuMode, setMenuMode] = useState<MenuMode>("alavont");
+  const { brand, setBrand } = useBrand();
+  const [menuMode, setMenuMode] = useState<MenuMode>(() =>
+    brand === "lucifer_cruz" ? "lucifer" : "alavont"
+  );
   const [editItem, setEditItem] = useState<ExtendedCatalogItem | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+
+  useEffect(() => {
+    setBrand(menuMode === "lucifer" ? "lucifer_cruz" : "alavont");
+  }, [menuMode, setBrand]);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const canEdit = user?.role === "admin" || user?.role === "supervisor";

@@ -111,6 +111,11 @@ export default function AdminSettingsPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret }),
       });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        setWcError(`Server returned an unexpected response (HTTP ${res.status}). Make sure the API server is running.`);
+        return;
+      }
       const data = await res.json();
       if (!res.ok) { setWcError(data.error ?? "Save failed"); return; }
       setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet }));

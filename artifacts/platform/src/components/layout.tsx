@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useClerk } from "@clerk/react";
+import { useBrand } from "@/contexts/BrandContext";
 import { 
   FlaskConical, 
   ShoppingCart, 
@@ -28,6 +29,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const [location] = useLocation();
   const { signOut } = useClerk();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { brand } = useBrand();
+  const isLC = brand === "lucifer_cruz";
 
   usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
 
@@ -60,18 +63,26 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         {/* Logo */}
         <div className="p-5 border-b border-border/40">
           <Link href="/catalog" className="flex items-center gap-3 group">
-            <img
-              src="/lc-icon.png"
-              alt="Lucifer Cruz"
-              className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-              style={{ filter: "invert(1) brightness(1.15)" }}
-            />
+            {isLC ? (
+              <img
+                src="/lc-icon.png"
+                alt="Lucifer Cruz"
+                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
+                style={{ filter: "invert(1) brightness(1.15)" }}
+              />
+            ) : (
+              <img
+                src="/alavont-logo-glow.png"
+                alt="Alavont"
+                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
+              />
+            )}
             <div>
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
-                LUCIFER CRUZ
+                {isLC ? "LUCIFER CRUZ" : "ALAVONT"}
               </div>
               <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                Adult Boutique
+                {isLC ? "Adult Boutique" : "Premium Platform"}
               </div>
             </div>
           </Link>
@@ -153,10 +164,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           <div className="relative w-72 bg-sidebar border-r border-border/50 flex flex-col h-full shadow-2xl">
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
               <Link href="/catalog" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
-                <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+                {isLC ? (
+                  <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+                ) : (
+                  <img src="/alavont-logo-glow.png" alt="Alavont" className="w-8 h-8 object-contain" />
+                )}
                 <div>
-                  <div className="font-bold text-sm tracking-wide">LUCIFER CRUZ</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">Adult Boutique</div>
+                  <div className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</div>
+                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Adult Boutique" : "Premium Platform"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -231,8 +246,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <Menu size={22} />
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
-            <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-            <span className="font-bold text-sm tracking-wide">LUCIFER CRUZ</span>
+            {isLC ? (
+              <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+            ) : (
+              <img src="/alavont-logo-glow.png" alt="Alavont" className="w-7 h-7 object-contain" />
+            )}
+            <span className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</span>
           </Link>
           <Link href="/notifications" className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { BrandProvider } from "@/contexts/BrandContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
@@ -373,12 +374,14 @@ function ClerkProviderWithRoutes() {
 
 function App() {
   return (
-    <TooltipProvider>
-      <WouterRouter base={basePath}>
-        <ClerkProviderWithRoutes />
-      </WouterRouter>
-      <Toaster />
-    </TooltipProvider>
+    <BrandProvider>
+      <TooltipProvider>
+        <WouterRouter base={basePath}>
+          <ClerkProviderWithRoutes />
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
+    </BrandProvider>
   );
 }
 

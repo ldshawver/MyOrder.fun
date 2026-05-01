@@ -7,12 +7,26 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { useBrand } from "@/contexts/BrandContext";
+
+type CartItem = { id: number; name: string; price: number; quantity: number };
 
 export default function NewOrder() {
   const [, setLocation] = useLocation();
+  const { brand } = useBrand();
   const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
-  const [cart, setCart] = useState<{id: number, name: string, price: number, quantity: number}[]>([]);
+  const [carts, setCarts] = useState<{ alavont: CartItem[]; lucifer_cruz: CartItem[] }>({
+    alavont: [],
+    lucifer_cruz: [],
+  });
+  const cart = carts[brand];
+  const setCart = (updater: CartItem[] | ((prev: CartItem[]) => CartItem[])) => {
+    setCarts(prev => ({
+      ...prev,
+      [brand]: typeof updater === "function" ? updater(prev[brand]) : updater,
+    }));
+  };
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
   const prevCartRef = useRef("");
@@ -34,9 +48,10 @@ export default function NewOrder() {
     }
   }, [preItem]);
 
+  const catalogMode = brand === "lucifer_cruz" ? "lucifer" : "alavont";
   const { data: catalog } = useListCatalogItems(
-    { search, limit: 10, available: true },
-    { query: { queryKey: ["listCatalogItems", search, true] } }
+    { search, limit: 10, available: true, mode: catalogMode },
+    { query: { queryKey: ["listCatalogItems", search, true, catalogMode] } }
   );
 
   const createOrderMutation = useCreateOrder();
