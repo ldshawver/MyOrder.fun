@@ -59,6 +59,8 @@ export const catalogItemsTable = pgTable("catalog_items", {
   labName: text("lab_name"),
   // Inventory tracking unit
   stockUnit: text("stock_unit").default("#"),
+  // Par level — minimum desired stock; drives restock slip generation
+  parLevel: numeric("par_level", { precision: 10, scale: 2 }).default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

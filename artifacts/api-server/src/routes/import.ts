@@ -45,6 +45,7 @@ export const FRIENDLY_NAMES: Record<string, string> = {
   "lucifer_cruz_in_stock":    "Merchant In Stock",
   "lucifer_cruz_id":          "Merchant ID",
   "lab_name":                 "Merchant SKU",
+  "par_level":                "Par Level",
 };
 
 // ─── Canonical header list (the downloadable template uses these exactly) ─────
@@ -71,6 +72,7 @@ export const CANONICAL_HEADERS = [
   "lucifer_cruz_in_stock",
   "lucifer_cruz_id",
   "lab_name",
+  "par_level",
 ] as const;
 
 const CANONICAL_SET = new Set<string>(CANONICAL_HEADERS);
@@ -188,6 +190,21 @@ const HEADER_ALIASES: Record<string, string> = {
   "merchant-s":                      "lab_name",
   "merchant_s":                      "lab_name",
   "merchant source":                 "lab_name",
+
+  // ── Par Level ─────────────────────────────────────────────────────────────
+  "par level":                       "par_level",
+  "par_level":                       "par_level",
+  "par":                             "par_level",
+  "par qty":                         "par_level",
+  "par_qty":                         "par_level",
+  "par quantity":                    "par_level",
+  "par_quantity":                    "par_level",
+  "reorder level":                   "par_level",
+  "reorder_level":                   "par_level",
+  "min stock":                       "par_level",
+  "min_stock":                       "par_level",
+  "minimum stock":                   "par_level",
+  "minimum_stock":                   "par_level",
 
   // ── Legacy / old-style aliases (kept for backward compatibility) ──────────
   "regular price":                   "regular_price",
@@ -430,6 +447,7 @@ const TEMPLATE_HEADERS = [
   "Merchant Created By ID",
   "Merchant Created By",
   "Merchant SKU",
+  "Par Level",
 ] as const;
 
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
@@ -459,6 +477,7 @@ router.get(
       "user_123",                                // Merchant Created By ID
       "admin",                                   // Merchant Created By
       "MRC-Lab",                                 // Merchant SKU
+      "5",                                       // Par Level
     ];
     const csvContent = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
@@ -692,6 +711,7 @@ router.post(
         labelName: luciferCruzName,
         labName,
         imageUrl: alavontImageUrl,
+        parLevel: row.par_level?.trim() ? String(parseFloat(row.par_level.trim()) || 0) : "0",
         metadata: {
           luciferCruzCategory: row.lucifer_cruz_category?.trim() || null,
         },
@@ -784,6 +804,29 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await db.select().from(catalogItemsTable);
     res.json({ products: rows });
+  }
+);
+
+// ─── Route aliases for /api/admin/import/... ──────────────────────────────────
+// Spec doc references /api/admin/import/catalog-template and /api/admin/import/catalog.
+// Real handlers live at /api/admin/products/import-template and /api/admin/products/import.
+// These aliases forward to the exact same handler functions.
+
+router.get(
+  "/admin/import/catalog-template",
+  requireRole("admin", "supervisor"),
+  (_req, res): void => {
+    res.redirect(307, "/api/admin/products/import-template");
+  }
+);
+
+router.post(
+  "/admin/import/catalog",
+  requireRole("admin", "supervisor"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upload.single("file") as any,
+  (req, res): void => {
+    res.redirect(307, "/api/admin/products/import");
   }
 );
 

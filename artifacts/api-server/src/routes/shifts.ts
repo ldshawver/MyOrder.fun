@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request } from "express";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, sql } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -542,7 +542,7 @@ router.patch(
 
     const {
       itemName, unitType, startingQuantityDefault, displayOrder, isActive,
-      catalogItemId, deductionQuantityPerSale, sectionName, rowType, currentStock,
+      catalogItemId, deductionQuantityPerSale, sectionName, rowType, currentStock, parLevel,
     } = req.body as {
       itemName?: string;
       unitType?: string;
@@ -554,6 +554,7 @@ router.patch(
       sectionName?: string | null;
       rowType?: string;
       currentStock?: number | null;
+      parLevel?: number | null;
     };
 
     const update: Record<string, unknown> = {};
@@ -568,6 +569,7 @@ router.patch(
     if (sectionName !== undefined) update.sectionName = sectionName;
     if (rowType !== undefined) update.rowType = rowType;
     if (currentStock !== undefined) update.currentStock = currentStock != null ? String(currentStock) : null;
+    if (parLevel !== undefined) update.parLevel = parLevel != null ? String(parLevel) : "0";
 
     if (Object.keys(update).length === 0) {
       res.status(400).json({ error: "No fields to update" });
@@ -819,6 +821,198 @@ router.post(
         flaggedItems: inventory.filter(i => i.isFlagged),
       },
     });
+  }
+);
+
+// ─── GET /api/shifts/:id/restock-slip ────────────────────────────────────────
+// Computes which items need restocking based on actual ending counts vs par level.
+// Available immediately after clock-out (quantityEndActual recorded).
+router.get(
+  "/shifts/:id/restock-slip",
+  requireRole("business_sitter", "supervisor", "admin"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+
+    const shiftItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+    // Pull par levels from inventory templates
+    const templateIds = shiftItems
+      .filter(i => i.templateItemId != null)
+      .map(i => i.templateItemId as number);
+
+    const templates = templateIds.length
+      ? await db
+          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
+          .from(inventoryTemplatesTable)
+          .where(
+            templateIds.length === 1
+              ? eq(inventoryTemplatesTable.id, templateIds[0])
+              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
+          )
+      : [];
+
+    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
+
+    const restockItems: {
+      templateItemId: number | null;
+      sectionName: string | null;
+      itemName: string;
+      unitType: string;
+      parLevel: number;
+      actualEndingQty: number;
+      restockQty: number;
+    }[] = [];
+
+    for (const item of shiftItems) {
+      if (item.rowType !== "item") continue;
+
+      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
+      if (parLevel <= 0) continue;
+
+      const actualEnding = item.quantityEndActual != null
+        ? parseFloat(String(item.quantityEndActual))
+        : null;
+
+      if (actualEnding === null) continue;
+
+      const restockQty = Math.max(0, parLevel - actualEnding);
+      if (restockQty === 0) continue;
+
+      restockItems.push({
+        templateItemId: item.templateItemId,
+        sectionName: item.sectionName,
+        itemName: item.itemName,
+        unitType: item.unitType ?? "#",
+        parLevel,
+        actualEndingQty: actualEnding,
+        restockQty: Math.round(restockQty * 1000) / 1000,
+      });
+    }
+
+    res.json({
+      shiftId,
+      generatedAt: new Date().toISOString(),
+      totalItemsNeedingRestock: restockItems.length,
+      items: restockItems,
+    });
+  }
+);
+
+// ─── POST /api/shifts/:id/restock-slip/print ─────────────────────────────────
+// Generates and prints a restock slip for the shift via CUPS.
+router.post(
+  "/shifts/:id/restock-slip/print",
+  requireRole("supervisor", "admin"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+
+    const shiftItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+    const templateIds = shiftItems
+      .filter(i => i.templateItemId != null)
+      .map(i => i.templateItemId as number);
+
+    const templates = templateIds.length
+      ? await db
+          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
+          .from(inventoryTemplatesTable)
+          .where(
+            templateIds.length === 1
+              ? eq(inventoryTemplatesTable.id, templateIds[0])
+              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
+          )
+      : [];
+
+    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
+
+    const lines: string[] = [];
+    const W = 40;
+    const divider = "=".repeat(W);
+    const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
+
+    lines.push(divider);
+    lines.push(center("RESTOCK SLIP"));
+    lines.push(divider);
+    lines.push(`Shift #: ${shiftId}`);
+    lines.push(`Printed: ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`);
+    lines.push(divider);
+
+    let needCount = 0;
+    let currentSection: string | null = null;
+
+    for (const item of shiftItems) {
+      if (item.rowType !== "item") continue;
+
+      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
+      if (parLevel <= 0) continue;
+
+      const actualEnding = item.quantityEndActual != null
+        ? parseFloat(String(item.quantityEndActual))
+        : null;
+      if (actualEnding === null) continue;
+
+      const restockQty = Math.max(0, parLevel - actualEnding);
+      if (restockQty === 0) continue;
+
+      if (item.sectionName && item.sectionName !== currentSection) {
+        currentSection = item.sectionName;
+        lines.push("");
+        lines.push(`[ ${currentSection.toUpperCase()} ]`);
+      }
+
+      const name = item.itemName.length > 26 ? item.itemName.slice(0, 23) + "..." : item.itemName;
+      const qty = `+${Math.round(restockQty * 1000) / 1000}${item.unitType ?? ""}`;
+      lines.push(`  ${name.padEnd(W - qty.length - 2)}${qty}`);
+      lines.push(`    par:${parLevel} | end:${actualEnding}`);
+      needCount++;
+    }
+
+    lines.push("");
+    lines.push(divider);
+    lines.push(center(`TOTAL: ${needCount} items need restock`));
+    lines.push(divider);
+    lines.push("");
+
+    const body = lines.join("\n");
+
+    if (needCount === 0) {
+      res.json({ ok: true, printed: false, message: "No items need restocking", shiftId });
+      return;
+    }
+
+    try {
+      const { printReceiptEscPos } = await import("../lib/escposPrinter");
+      const { jobRef } = await printReceiptEscPos(body);
+      res.json({ ok: true, printed: true, jobRef, itemCount: needCount, shiftId });
+    } catch (err) {
+      const msg = (err as Error).message;
+      req.log.warn({ shiftId, err: msg }, "Restock slip print failed");
+      res.status(500).json({ ok: false, printed: false, error: msg, shiftId });
+    }
   }
 );
 

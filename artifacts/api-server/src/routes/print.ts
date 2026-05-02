@@ -738,6 +738,10 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
+  if (process.env.LABEL_PRINT_ENABLED !== "true") {
+    res.status(503).json({ error: "Label printing is not enabled (LABEL_PRINT_ENABLED=false)" });
+    return;
+  }
   const orderId = parseInt(String(req.params.id), 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 

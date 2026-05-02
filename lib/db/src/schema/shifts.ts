@@ -62,6 +62,8 @@ export const inventoryTemplatesTable = pgTable("inventory_templates", {
   payoutPrice: numeric("payout_price", { precision: 10, scale: 2 }), // rep payout / commission price
   // Live running stock — decremented automatically when linked catalog items are sold
   currentStock: numeric("current_stock", { precision: 10, scale: 3 }),
+  // Par level — minimum desired quantity; drives restock slip generation at shift close
+  parLevel: numeric("par_level", { precision: 10, scale: 2 }).default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

@@ -37,6 +37,7 @@ router.get(
         regularPrice: item.regularPrice,
         stockQuantity: item.stockQuantity != null ? parseFloat(String(item.stockQuantity)) : null,
         stockUnit: item.stockUnit ?? "#",
+        parLevel: item.parLevel != null ? parseFloat(String(item.parLevel)) : 0,
         isAvailable: item.isAvailable,
       })),
       pettyCash: settings?.pettyCash != null ? parseFloat(String(settings.pettyCash)) : 0,
@@ -52,21 +53,23 @@ router.patch(
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
-    const { stockQuantity, stockUnit } = req.body as {
+    const { stockQuantity, stockUnit, parLevel } = req.body as {
       stockQuantity?: number | null;
       stockUnit?: string;
+      parLevel?: number | null;
     };
 
     const patch: Record<string, unknown> = {};
     if (stockQuantity !== undefined) patch.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
     if (stockUnit !== undefined) patch.stockUnit = stockUnit;
+    if (parLevel !== undefined) patch.parLevel = parLevel != null ? String(parLevel) : "0";
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
 
     const [updated] = await db
       .update(catalogItemsTable)
       .set(patch)
       .where(eq(catalogItemsTable.id, id))
-      .returning({ id: catalogItemsTable.id, stockQuantity: catalogItemsTable.stockQuantity, stockUnit: catalogItemsTable.stockUnit });
+      .returning({ id: catalogItemsTable.id, stockQuantity: catalogItemsTable.stockQuantity, stockUnit: catalogItemsTable.stockUnit, parLevel: catalogItemsTable.parLevel });
 
     if (!updated) { res.status(404).json({ error: "Item not found" }); return; }
 
@@ -74,6 +77,7 @@ router.patch(
       id: updated.id,
       stockQuantity: updated.stockQuantity != null ? parseFloat(String(updated.stockQuantity)) : null,
       stockUnit: updated.stockUnit ?? "#",
+      parLevel: updated.parLevel != null ? parseFloat(String(updated.parLevel)) : 0,
     });
   }
 );
