@@ -38,6 +38,8 @@ import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import ContractorHub from "@/pages/contractor-hub";
+import ContractorHubProposal from "@/pages/contractor-hub-proposal";
+import ContractorHubInvoice from "@/pages/contractor-hub-invoice";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -303,6 +305,18 @@ function AuthenticatedApp() {
         )}
 
         {/* Contractor Hub */}
+        <Route path="/contractor-hub/proposals/new">
+          <ContractorHubProposal user={user} />
+        </Route>
+        <Route path="/contractor-hub/proposals/:id">
+          <ContractorHubProposal user={user} />
+        </Route>
+        <Route path="/contractor-hub/invoices/new">
+          <ContractorHubInvoice user={user} />
+        </Route>
+        <Route path="/contractor-hub/invoices/:id">
+          <ContractorHubInvoice user={user} />
+        </Route>
         <Route path="/contractor-hub">
           <ContractorHub user={user} />
         </Route>

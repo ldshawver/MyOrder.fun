@@ -62,43 +62,27 @@ router.get("/contractor-hub/templates", async (req, res): Promise<void> => {
   const type = req.query.type as string | undefined;
   const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
 
-  // Build rows: platform defaults + company-specific (if company_id filter given)
-  let rows: ContractorTemplate[];
-  if (companyId !== undefined && !isNaN(companyId)) {
-    rows = await db
+  // Always include platform defaults; also include caller's tenant templates
+  const effectiveTenantId = companyId !== undefined && !isNaN(companyId)
+    ? companyId
+    : (req.dbUser?.tenantId ?? null);
+
+  const platformDefaults = await db
+    .select()
+    .from(contractorTemplatesTable)
+    .where(and(eq(contractorTemplatesTable.isActive, true), isNull(contractorTemplatesTable.companyId)))
+    .orderBy(contractorTemplatesTable.styleLevel);
+
+  let tenantRows: ContractorTemplate[] = [];
+  if (effectiveTenantId !== null) {
+    tenantRows = await db
       .select()
       .from(contractorTemplatesTable)
-      .where(
-        and(
-          eq(contractorTemplatesTable.isActive, true),
-          eq(contractorTemplatesTable.companyId, companyId),
-        )
-      )
-      .orderBy(contractorTemplatesTable.styleLevel);
-    // Also include platform defaults
-    const platformDefaults = await db
-      .select()
-      .from(contractorTemplatesTable)
-      .where(
-        and(
-          eq(contractorTemplatesTable.isActive, true),
-          isNull(contractorTemplatesTable.companyId),
-        )
-      )
-      .orderBy(contractorTemplatesTable.styleLevel);
-    rows = [...platformDefaults, ...rows];
-  } else {
-    rows = await db
-      .select()
-      .from(contractorTemplatesTable)
-      .where(
-        and(
-          eq(contractorTemplatesTable.isActive, true),
-          isNull(contractorTemplatesTable.companyId),
-        )
-      )
+      .where(and(eq(contractorTemplatesTable.isActive, true), eq(contractorTemplatesTable.companyId, effectiveTenantId)))
       .orderBy(contractorTemplatesTable.styleLevel);
   }
+
+  const rows = [...platformDefaults, ...tenantRows];
 
   let filtered = rows;
   if (type === "proposal" || type === "invoice") {
@@ -229,7 +213,7 @@ router.post(
     const [cloned] = await db
       .insert(contractorTemplatesTable)
       .values({
-        companyId: req.dbUser!.id,
+        companyId: req.dbUser!.tenantId ?? null,
         name: customName,
         templateType: source.templateType,
         styleLevel: source.styleLevel,
