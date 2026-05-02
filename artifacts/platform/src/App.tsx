@@ -37,6 +37,7 @@ import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import AdminCatalogDebug from "@/pages/admin/catalog-debug";
+import ContractorHub from "@/pages/contractor-hub";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -300,6 +301,11 @@ function AuthenticatedApp() {
         {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
           <Route path="/staff" component={StaffQueue} />
         )}
+
+        {/* Contractor Hub */}
+        <Route path="/contractor-hub">
+          <ContractorHub user={user} />
+        </Route>
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />

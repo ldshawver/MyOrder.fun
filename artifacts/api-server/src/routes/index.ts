@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import webhooksRouter from "./webhooks";
+import contractorHubRouter from "./contractor-hub";
 import usersRouter from "./users";
 import onboardingRouter from "./onboarding";
 import tenantsRouter from "./tenants";
@@ -38,5 +39,6 @@ router.use(settingsRouter);
 router.use(woocommerceRouter);
 router.use(inventoryRouter);
 router.use(sessionRouter);
+router.use(contractorHubRouter);
 
 export default router;
