@@ -8,6 +8,41 @@
       "when": 1776330000000,
       "tag": "0000_dual_brand_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776416400000,
+      "tag": "0001_contractor_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776502800000,
+      "tag": "0002_contractor_proposals_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776589200000,
+      "tag": "0003_par_level",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776675600000,
+      "tag": "0004_drop_contractor_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776762000000,
+      "tag": "0005_user_avatar",
+      "breakpoints": true
     }
   ]
 }
