@@ -35,6 +35,8 @@ import type {
   CreateOrderBody,
   GetRecentOrdersParams,
   HealthStatus,
+  InviteWaitlistEntryBody,
+  InviteWaitlistEntryResponse,
   ListAuditLogsParams,
   ListCatalogItemsParams,
   ListNotificationsParams,
@@ -62,6 +64,7 @@ import type {
   TokenizePaymentBody,
   TokenizePaymentResponse,
   UpdateCatalogItemBody,
+  UpdateCurrentUserBody,
   UpdateOnboardingRequestBody,
   UpdateOrderStatusBody,
   UpdateTenantBody,
@@ -69,7 +72,9 @@ import type {
   UpdateUserStatusBody,
   UpdateUserStatusResponse,
   UserListResponse,
-  UserProfile
+  UserProfile,
+  WaitlistActionResponse,
+  WaitlistEntryListResponse
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -1762,6 +1767,77 @@ export function useGetCurrentUser<TData = Awaited<ReturnType<typeof getCurrentUs
 
 
 /**
+ * @summary Update the current user's editable profile fields
+ */
+export const getUpdateCurrentUserUrl = () => {
+
+
+
+
+  return `/api/users/me`
+}
+
+export const updateCurrentUser = async (updateCurrentUserBody: UpdateCurrentUserBody, options?: RequestInit): Promise<UserProfile> => {
+
+  return customFetch<UserProfile>(getUpdateCurrentUserUrl(),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      updateCurrentUserBody,)
+  }
+);}
+
+
+
+
+export const getUpdateCurrentUserMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext> => {
+
+const mutationKey = ['updateCurrentUser'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateCurrentUser>>, {data: BodyType<UpdateCurrentUserBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  updateCurrentUser(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateCurrentUserMutationResult = NonNullable<Awaited<ReturnType<typeof updateCurrentUser>>>
+    export type UpdateCurrentUserMutationBody = BodyType<UpdateCurrentUserBody>
+    export type UpdateCurrentUserMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Update the current user's editable profile fields
+ */
+export const useUpdateCurrentUser = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateCurrentUser>>,
+        TError,
+        {data: BodyType<UpdateCurrentUserBody>},
+        TContext
+      > => {
+      return useMutation(getUpdateCurrentUserMutationOptions(options));
+    }
+
+/**
  * @summary List users in the tenant (admin only)
  */
 export const getListUsersUrl = (params?: ListUsersParams,) => {
@@ -1915,6 +1991,225 @@ export const useUpdateUserRole = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getUpdateUserRoleMutationOptions(options));
+    }
+
+/**
+ * @summary List waitlist entries pulled live from Clerk
+ */
+export const getListWaitlistEntriesUrl = () => {
+
+
+
+
+  return `/api/admin/users/waitlist`
+}
+
+export const listWaitlistEntries = async ( options?: RequestInit): Promise<WaitlistEntryListResponse> => {
+
+  return customFetch<WaitlistEntryListResponse>(getListWaitlistEntriesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListWaitlistEntriesQueryKey = () => {
+    return [
+    `/api/admin/users/waitlist`
+    ] as const;
+    }
+
+
+export const getListWaitlistEntriesQueryOptions = <TData = Awaited<ReturnType<typeof listWaitlistEntries>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWaitlistEntries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListWaitlistEntriesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listWaitlistEntries>>> = ({ signal }) => listWaitlistEntries({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listWaitlistEntries>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListWaitlistEntriesQueryResult = NonNullable<Awaited<ReturnType<typeof listWaitlistEntries>>>
+export type ListWaitlistEntriesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List waitlist entries pulled live from Clerk
+ */
+
+export function useListWaitlistEntries<TData = Awaited<ReturnType<typeof listWaitlistEntries>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWaitlistEntries>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListWaitlistEntriesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Invite a waitlist entry with a chosen role; pre-creates an approved users row
+ */
+export const getInviteWaitlistEntryUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/users/waitlist/${id}/invite`
+}
+
+export const inviteWaitlistEntry = async (id: string,
+    inviteWaitlistEntryBody: InviteWaitlistEntryBody, options?: RequestInit): Promise<InviteWaitlistEntryResponse> => {
+
+  return customFetch<InviteWaitlistEntryResponse>(getInviteWaitlistEntryUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      inviteWaitlistEntryBody,)
+  }
+);}
+
+
+
+
+export const getInviteWaitlistEntryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inviteWaitlistEntry>>, TError,{id: string;data: BodyType<InviteWaitlistEntryBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof inviteWaitlistEntry>>, TError,{id: string;data: BodyType<InviteWaitlistEntryBody>}, TContext> => {
+
+const mutationKey = ['inviteWaitlistEntry'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof inviteWaitlistEntry>>, {id: string;data: BodyType<InviteWaitlistEntryBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  inviteWaitlistEntry(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type InviteWaitlistEntryMutationResult = NonNullable<Awaited<ReturnType<typeof inviteWaitlistEntry>>>
+    export type InviteWaitlistEntryMutationBody = BodyType<InviteWaitlistEntryBody>
+    export type InviteWaitlistEntryMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Invite a waitlist entry with a chosen role; pre-creates an approved users row
+ */
+export const useInviteWaitlistEntry = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof inviteWaitlistEntry>>, TError,{id: string;data: BodyType<InviteWaitlistEntryBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof inviteWaitlistEntry>>,
+        TError,
+        {id: string;data: BodyType<InviteWaitlistEntryBody>},
+        TContext
+      > => {
+      return useMutation(getInviteWaitlistEntryMutationOptions(options));
+    }
+
+/**
+ * @summary Reject a waitlist entry in Clerk
+ */
+export const getRejectWaitlistEntryUrl = (id: string,) => {
+
+
+
+
+  return `/api/admin/users/waitlist/${id}/reject`
+}
+
+export const rejectWaitlistEntry = async (id: string, options?: RequestInit): Promise<WaitlistActionResponse> => {
+
+  return customFetch<WaitlistActionResponse>(getRejectWaitlistEntryUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getRejectWaitlistEntryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectWaitlistEntry>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof rejectWaitlistEntry>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['rejectWaitlistEntry'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof rejectWaitlistEntry>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  rejectWaitlistEntry(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RejectWaitlistEntryMutationResult = NonNullable<Awaited<ReturnType<typeof rejectWaitlistEntry>>>
+
+    export type RejectWaitlistEntryMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Reject a waitlist entry in Clerk
+ */
+export const useRejectWaitlistEntry = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof rejectWaitlistEntry>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof rejectWaitlistEntry>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+      return useMutation(getRejectWaitlistEntryMutationOptions(options));
     }
 
 /**

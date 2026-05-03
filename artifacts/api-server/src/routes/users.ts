@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db, usersTable, notificationsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
@@ -55,23 +55,102 @@ router.use((req, res, next) => {
   return requireApproved(req, res, next);
 });
 
-// GET /api/users/me
-router.get("/users/me", async (req, res): Promise<void> => {
-  const user = req.dbUser!;
-  const data = GetCurrentUserResponse.parse({
+function serializeCurrentUser(user: typeof usersTable.$inferSelect) {
+  return GetCurrentUserResponse.parse({
     id: user.id,
     clerkId: user.clerkId,
     email: user.email ?? undefined,
     firstName: user.firstName ?? undefined,
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
+    avatarUrl: user.avatarUrl ?? undefined,
     role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
     createdAt: user.createdAt,
   });
-  res.json(data);
+}
+
+// GET /api/users/me
+router.get("/users/me", async (req, res): Promise<void> => {
+  res.json(serializeCurrentUser(req.dbUser!));
+});
+
+// PATCH /api/users/me — current user updates their own editable profile fields
+const UpdateMeBody = z.object({
+  firstName: z.string().trim().max(100).nullish(),
+  lastName: z.string().trim().max(100).nullish(),
+  contactPhone: z
+    .string()
+    .trim()
+    .max(32)
+    .regex(/^(\+?[0-9 ()\-.]{7,32})?$/, "Invalid phone number")
+    .nullish(),
+  avatarUrl: z
+    .string()
+    .trim()
+    .max(2048)
+    .url("Avatar must be a valid URL")
+    .nullish()
+    .or(z.literal("")),
+});
+
+router.patch("/users/me", async (req, res): Promise<void> => {
+  const user = req.dbUser!;
+  const parsed = UpdateMeBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (parsed.data.firstName !== undefined)
+    patch.firstName = parsed.data.firstName?.trim() || null;
+  if (parsed.data.lastName !== undefined)
+    patch.lastName = parsed.data.lastName?.trim() || null;
+  if (parsed.data.contactPhone !== undefined)
+    patch.contactPhone = parsed.data.contactPhone?.trim() || null;
+  if (parsed.data.avatarUrl !== undefined)
+    patch.avatarUrl = (parsed.data.avatarUrl ?? "").trim() || null;
+
+  if (Object.keys(patch).length === 0) {
+    res.json(serializeCurrentUser(user));
+    return;
+  }
+
+  const [updated] = await db
+    .update(usersTable)
+    .set(patch)
+    .where(eq(usersTable.id, user.id))
+    .returning();
+
+  // Mirror display name to Clerk so other surfaces (Clerk-hosted account
+  // page, OAuth screens) reflect the change. Failures are logged but not
+  // surfaced to the user — DB is the source of truth.
+  const clerkPatch: { firstName?: string; lastName?: string } = {};
+  if ("firstName" in patch) clerkPatch.firstName = (patch.firstName as string | null) ?? "";
+  if ("lastName" in patch) clerkPatch.lastName = (patch.lastName as string | null) ?? "";
+  if (Object.keys(clerkPatch).length > 0 && updated.clerkId && !updated.clerkId.startsWith("pending_invite:")) {
+    try {
+      await clerkClient.users.updateUser(updated.clerkId, clerkPatch);
+    } catch (err) {
+      logger.error({ err, clerkId: updated.clerkId }, "Failed to mirror name to Clerk");
+    }
+  }
+
+  await writeAuditLog({
+    actorId: user.id,
+    actorEmail: user.email,
+    actorRole: normalizeRole(user.role),
+    action: "UPDATE_OWN_PROFILE",
+    tenantId: user.tenantId,
+    resourceType: "user",
+    resourceId: String(user.id),
+    metadata: { fields: Object.keys(patch) },
+  });
+
+  res.json(serializeCurrentUser(updated));
 });
 
 // POST /api/users/sync — called after Clerk sign-in to ensure user record exists
@@ -400,17 +479,148 @@ router.get("/admin/users/waitlist", requireRole("admin"), async (req, res): Prom
   }
 });
 
+const WaitlistInviteBody = z.object({
+  role: z.enum([...VALID_ROLES]).default("user"),
+  firstName: z.string().trim().max(100).optional(),
+  lastName: z.string().trim().max(100).optional(),
+});
+
+// Sentinel clerk_id used while a waitlist invite is outstanding (the real
+// Clerk user does not yet exist). The webhook for `user.created` upgrades
+// this row by matching on email and replacing the sentinel with the real id.
+function pendingInviteSentinel(waitlistEntryId: string): string {
+  return `pending_invite:${waitlistEntryId}`;
+}
+
 // ─── POST /api/admin/users/waitlist/:id/invite ────────────────────────────────
+// Body: { role, firstName?, lastName? }
+// Fully approves the user at invite time:
+//   1. Send Clerk waitlist invite (so they get the sign-up email).
+//   2. Pre-create a `users` row with status='approved' and the picked role,
+//      using a sentinel clerkId tied to the waitlist entry. The webhook for
+//      `user.created` will swap the sentinel for the real Clerk id once the
+//      person actually accepts the invite and signs up.
 router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
   const id = String(req.params.id ?? "");
   if (!id) { res.status(400).json({ error: "Missing waitlist entry id" }); return; }
-  try {
-    const entry = await clerkClient.waitlistEntries.invite(id, { ignoreExisting: true });
-    res.json({ id: entry.id, status: entry.status });
-  } catch (err) {
-    req.log.error({ err }, "Failed to invite waitlist entry");
-    res.status(500).json({ error: "Failed to invite user from waitlist" });
+
+  const body = WaitlistInviteBody.safeParse(req.body ?? {});
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
   }
+  const { role, firstName, lastName } = body.data;
+
+  let entry: { id: string; status: string; emailAddress: string };
+  try {
+    // The Clerk SDK does not expose getById for waitlist entries; the invite
+    // call returns the canonical entry shape (and is idempotent thanks to
+    // ignoreExisting), so a single call is enough to get the email + status.
+    const invited = await clerkClient.waitlistEntries.invite(id, { ignoreExisting: true });
+    entry = {
+      id: invited.id,
+      status: invited.status,
+      emailAddress: invited.emailAddress,
+    };
+  } catch (err) {
+    req.log.error({ err, waitlistId: id }, "Failed to invite waitlist entry");
+    res.status(500).json({ error: "Failed to invite user from waitlist" });
+    return;
+  }
+
+  const sentinelClerkId = pendingInviteSentinel(entry.id);
+  const email = entry.emailAddress;
+
+  // Reconcile against any existing real (non-sentinel) user row for this
+  // email. If one exists, the person already has a Clerk account — skip the
+  // sentinel and just promote that row to approved + the picked role. This
+  // prevents stale orphan sentinel rows that would never be upgraded
+  // (because no future `user.created` webhook will fire).
+  let existingReal: typeof usersTable.$inferSelect | undefined;
+  if (email) {
+    const realRows = await db
+      .select()
+      .from(usersTable)
+      .where(
+        and(
+          eq(usersTable.email, email),
+          ne(usersTable.clerkId, sentinelClerkId),
+        ),
+      );
+    existingReal = realRows.find((r) => !r.clerkId.startsWith("pending_invite:"));
+  }
+
+  let userRowCreated = false;
+  let promotedExisting = false;
+  try {
+    if (existingReal) {
+      await db
+        .update(usersTable)
+        .set({
+          role,
+          status: "approved",
+          firstName: firstName ?? existingReal.firstName ?? undefined,
+          lastName: lastName ?? existingReal.lastName ?? undefined,
+          updatedAt: new Date(),
+        })
+        .where(eq(usersTable.id, existingReal.id))
+        .returning();
+      promotedExisting = true;
+      // Also push the new state into Clerk so the existing account reflects
+      // the admin's decision immediately on next sign-in.
+      if (!existingReal.clerkId.startsWith("pending_invite:")) {
+        await syncUserToClerk(existingReal.clerkId, { status: "approved", role });
+      }
+    } else {
+      await db
+        .insert(usersTable)
+        .values({
+          clerkId: sentinelClerkId,
+          email,
+          firstName: firstName ?? undefined,
+          lastName: lastName ?? undefined,
+          role,
+          status: "approved",
+        })
+        .onConflictDoUpdate({
+          target: usersTable.clerkId,
+          set: {
+            email,
+            firstName: firstName ?? undefined,
+            lastName: lastName ?? undefined,
+            role,
+            status: "approved",
+            updatedAt: new Date(),
+          },
+        });
+      userRowCreated = true;
+    }
+  } catch (err) {
+    req.log.error({ err, waitlistId: id }, "Failed to pre-create users row for waitlist invite");
+    res.status(500).json({ error: "Invite sent but failed to create user record" });
+    return;
+  }
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "INVITE_WAITLIST_USER",
+    resourceType: "user",
+    resourceId: sentinelClerkId,
+    metadata: { waitlistEntryId: entry.id, email, role, firstName, lastName },
+    ipAddress: req.ip,
+  });
+
+  res.json({
+    id: entry.id,
+    status: entry.status,
+    email,
+    role,
+    userRowCreated,
+    promotedExisting,
+  });
 });
 
 // ─── POST /api/admin/users/waitlist/:id/reject ────────────────────────────────

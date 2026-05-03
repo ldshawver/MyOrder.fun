@@ -12,14 +12,25 @@ import { Search, Mail, CheckCircle2, XCircle, Clock } from "lucide-react";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "pending" | "waitlist";
+type RoleFilter = "all" | "supervisor" | "customer_service_rep" | "user";
 
+// Active roles surfaced in dropdowns. business_sitter and lab_tech are
+// retired job titles — folded into customer_service_rep going forward — so
+// they no longer appear here even though the backend still accepts them
+// for any historical rows that haven't been migrated.
 const APPROVAL_ROLES: { value: SetUserApprovalBodyRole; label: string }[] = [
   { value: "user", label: "User" },
   { value: "supervisor", label: "Supervisor" },
-  { value: "business_sitter", label: "Business Sitter" },
   { value: "customer_service_rep", label: "Customer Service Rep" },
   { value: "sales_rep", label: "Sales Rep" },
-  { value: "lab_tech", label: "Lab Tech" },
+];
+
+const INVITE_ROLES = APPROVAL_ROLES;
+const ROLE_TABS: { id: RoleFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "supervisor", label: "Supervisor" },
+  { id: "customer_service_rep", label: "CSR" },
+  { id: "user", label: "Plain User" },
 ];
 
 function PendingTab() {
@@ -177,12 +188,17 @@ type WaitlistEntry = {
   status: string;
 };
 
+type InviteDraft = { role: SetUserApprovalBodyRole; firstName: string; lastName: string };
+
 function WaitlistTab() {
+  const queryClient = useQueryClient();
   const { getToken } = useAuth();
   const { data: currentUser } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ id: string; msg: string; ok: boolean } | null>(null);
+  const [openInviteId, setOpenInviteId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, InviteDraft>>({});
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["clerkWaitlist", search],
@@ -198,18 +214,54 @@ function WaitlistTab() {
     enabled: currentUser?.role === "admin",
   });
 
-  async function handleAction(id: string, action: "invite" | "reject") {
+  function getDraft(id: string): InviteDraft {
+    return drafts[id] ?? { role: "user", firstName: "", lastName: "" };
+  }
+  function updateDraft(id: string, patch: Partial<InviteDraft>) {
+    setDrafts((m) => ({ ...m, [id]: { ...getDraft(id), ...patch } }));
+  }
+
+  async function handleInvite(id: string) {
+    const draft = getDraft(id);
     setActionLoading(id);
     setActionMsg(null);
     try {
       const token = await getToken();
-      const res = await fetch(`/api/admin/users/waitlist/${id}/${action}`, {
+      const res = await fetch(`/api/admin/users/waitlist/${id}/invite`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: draft.role,
+          firstName: draft.firstName.trim() || undefined,
+          lastName: draft.lastName.trim() || undefined,
+        }),
+      });
+      const body = await res.json() as { status?: string; error?: string };
+      if (!res.ok) throw new Error(body.error ?? "Invite failed");
+      setActionMsg({ id, msg: `Invited as ${draft.role}. User added to platform.`, ok: true });
+      setOpenInviteId(null);
+      refetch();
+      // Bring the new approved user into the Platform Users tab immediately.
+      queryClient.invalidateQueries({ queryKey: ["listUsers"] });
+    } catch (e) {
+      setActionMsg({ id, msg: (e as Error).message, ok: false });
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function handleReject(id: string) {
+    setActionLoading(id);
+    setActionMsg(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/users/waitlist/${id}/reject`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       });
       const body = await res.json() as { status?: string; error?: string };
-      if (!res.ok) throw new Error(body.error ?? "Action failed");
-      setActionMsg({ id, msg: action === "invite" ? "Invitation sent!" : "Entry rejected.", ok: true });
+      if (!res.ok) throw new Error(body.error ?? "Reject failed");
+      setActionMsg({ id, msg: "Entry rejected.", ok: true });
       refetch();
     } catch (e) {
       setActionMsg({ id, msg: (e as Error).message, ok: false });
@@ -267,66 +319,155 @@ function WaitlistTab() {
                 </TableCell>
               </TableRow>
             ) : (
-              entries.map(entry => (
-                <TableRow key={entry.id} className="border-border/30 hover:bg-muted/20 transition-colors">
-                  <TableCell className="font-mono text-sm text-primary/90">
-                    <div className="flex items-center gap-2">
-                      <Mail size={12} className="text-muted-foreground shrink-0" />
-                      {entry.emailAddress}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant="outline"
-                      className={`uppercase text-[9px] tracking-widest px-2 py-0.5 rounded-sm ${
-                        entry.status === "pending"
-                          ? "bg-amber-500/10 text-amber-500 border-amber-500/20"
-                          : entry.status === "invited"
-                          ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
-                          : "bg-red-500/10 text-red-400 border-red-500/20"
-                      }`}
-                    >
-                      {entry.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground font-mono text-xs">
-                    {new Date(entry.createdAt).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      {actionMsg?.id === entry.id && (
-                        <span className={`text-[10px] font-mono ${actionMsg.ok ? "text-green-500" : "text-red-500"}`}>
-                          {actionMsg.msg}
-                        </span>
-                      )}
-                      {entry.status !== "rejected" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600 gap-1"
-                          onClick={() => handleAction(entry.id, "invite")}
-                          disabled={actionLoading === entry.id}
-                        >
-                          <CheckCircle2 size={11} />
-                          {entry.status === "invited" ? "Re-Invite" : "Invite"}
-                        </Button>
-                      )}
-                      {entry.status !== "rejected" && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600 gap-1"
-                          onClick={() => handleAction(entry.id, "reject")}
-                          disabled={actionLoading === entry.id}
-                        >
-                          <XCircle size={11} />
-                          Reject
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+              entries.flatMap((entry) => {
+                const isOpen = openInviteId === entry.id;
+                const draft = getDraft(entry.id);
+                const rows = [
+                  <TableRow key={entry.id} className="border-border/30 hover:bg-muted/20 transition-colors">
+                    <TableCell className="font-mono text-sm text-primary/90">
+                      <div className="flex items-center gap-2">
+                        <Mail size={12} className="text-muted-foreground shrink-0" />
+                        {entry.emailAddress}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={`uppercase text-[9px] tracking-widest px-2 py-0.5 rounded-sm ${
+                          entry.status === "pending"
+                            ? "bg-amber-500/10 text-amber-500 border-amber-500/20"
+                            : entry.status === "invited"
+                            ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                            : "bg-red-500/10 text-red-400 border-red-500/20"
+                        }`}
+                      >
+                        {entry.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground font-mono text-xs">
+                      {new Date(entry.createdAt).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {actionMsg?.id === entry.id && !isOpen && (
+                          <span className={`text-[10px] font-mono ${actionMsg.ok ? "text-green-500" : "text-red-500"}`}>
+                            {actionMsg.msg}
+                          </span>
+                        )}
+                        {entry.status !== "rejected" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600 gap-1"
+                            onClick={() => setOpenInviteId(isOpen ? null : entry.id)}
+                            disabled={actionLoading === entry.id}
+                            data-testid={`btn-invite-toggle-${entry.id}`}
+                          >
+                            <CheckCircle2 size={11} />
+                            {entry.status === "invited" ? "Re-Invite" : "Invite"}
+                          </Button>
+                        )}
+                        {entry.status !== "rejected" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600 gap-1"
+                            onClick={() => handleReject(entry.id)}
+                            disabled={actionLoading === entry.id}
+                            data-testid={`btn-waitlist-reject-${entry.id}`}
+                          >
+                            <XCircle size={11} />
+                            Reject
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>,
+                ];
+
+                if (isOpen) {
+                  rows.push(
+                    <TableRow key={`${entry.id}-form`} className="bg-muted/5 border-border/30">
+                      <TableCell colSpan={4} className="py-4">
+                        <div className="flex flex-wrap items-end gap-3" data-testid={`form-invite-${entry.id}`}>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] uppercase tracking-widest text-muted-foreground font-mono">
+                              First Name
+                            </label>
+                            <Input
+                              value={draft.firstName}
+                              onChange={(e) => updateDraft(entry.id, { firstName: e.target.value })}
+                              className="h-8 w-40 text-xs rounded-sm bg-background border-border/50"
+                              placeholder="Optional"
+                              data-testid={`input-invite-firstName-${entry.id}`}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] uppercase tracking-widest text-muted-foreground font-mono">
+                              Last Name
+                            </label>
+                            <Input
+                              value={draft.lastName}
+                              onChange={(e) => updateDraft(entry.id, { lastName: e.target.value })}
+                              className="h-8 w-40 text-xs rounded-sm bg-background border-border/50"
+                              placeholder="Optional"
+                              data-testid={`input-invite-lastName-${entry.id}`}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[9px] uppercase tracking-widest text-muted-foreground font-mono">
+                              Role
+                            </label>
+                            <Select
+                              value={draft.role}
+                              onValueChange={(v) => updateDraft(entry.id, { role: v as SetUserApprovalBodyRole })}
+                            >
+                              <SelectTrigger
+                                className="w-[180px] h-8 rounded-sm text-xs font-mono uppercase tracking-wider bg-background border-border/50"
+                                data-testid={`select-invite-role-${entry.id}`}
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="rounded-sm">
+                                {INVITE_ROLES.map((r) => (
+                                  <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">
+                                    {r.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <Button
+                            size="sm"
+                            className="h-8 text-[10px] uppercase tracking-widest rounded-sm gap-1"
+                            onClick={() => handleInvite(entry.id)}
+                            disabled={actionLoading === entry.id}
+                            data-testid={`btn-invite-confirm-${entry.id}`}
+                          >
+                            <CheckCircle2 size={11} />
+                            {actionLoading === entry.id ? "Inviting…" : "Send Invite & Approve"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 text-[10px] uppercase tracking-widest rounded-sm"
+                            onClick={() => setOpenInviteId(null)}
+                            disabled={actionLoading === entry.id}
+                          >
+                            Cancel
+                          </Button>
+                          {actionMsg?.id === entry.id && (
+                            <span className={`text-[10px] font-mono ${actionMsg.ok ? "text-green-500" : "text-red-500"}`}>
+                              {actionMsg.msg}
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                }
+                return rows;
+              })
             )}
           </TableBody>
         </Table>
@@ -339,6 +480,7 @@ export default function AdminUsers() {
   const queryClient = useQueryClient();
   const [pageTab, setPageTab] = useState<PageTab>("users");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
 
   const { data, isLoading, isError } = useListUsers(
     {},
@@ -349,7 +491,7 @@ export default function AdminUsers() {
   const updateStatusMutation = useUpdateUserStatus();
 
   const handleRoleChange = (id: number, newRole: string) => {
-    if (["supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "user"].includes(newRole)) {
+    if (["supervisor", "customer_service_rep", "sales_rep", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
@@ -373,17 +515,34 @@ export default function AdminUsers() {
   };
 
   const allUsers = data?.users ?? [];
+  // Treat retired roles as their replacement (CSR) for the "CSR" tab.
+  const matchesRoleTab = (userRole: string | undefined, tab: RoleFilter): boolean => {
+    if (tab === "all") return true;
+    const r = userRole ?? "user";
+    if (tab === "customer_service_rep") {
+      return r === "customer_service_rep" || r === "business_sitter" || r === "lab_tech";
+    }
+    return r === tab;
+  };
+
+  const byRole = allUsers.filter((u) => matchesRoleTab(u.role, roleFilter));
   const filtered =
     statusFilter === "all"
-      ? allUsers
-      : allUsers.filter((u) => (u.status ?? "pending") === statusFilter);
+      ? byRole
+      : byRole.filter((u) => (u.status ?? "pending") === statusFilter);
 
   const counts = {
-    all:         allUsers.length,
-    approved:    allUsers.filter((u) => (u.status ?? "pending") === "approved").length,
-    pending:     allUsers.filter((u) => (u.status ?? "pending") === "pending").length,
-    rejected:    allUsers.filter((u) => (u.status ?? "pending") === "rejected").length,
-    deactivated: allUsers.filter((u) => (u.status ?? "pending") === "deactivated").length,
+    all:         byRole.length,
+    approved:    byRole.filter((u) => (u.status ?? "pending") === "approved").length,
+    pending:     byRole.filter((u) => (u.status ?? "pending") === "pending").length,
+    rejected:    byRole.filter((u) => (u.status ?? "pending") === "rejected").length,
+    deactivated: byRole.filter((u) => (u.status ?? "pending") === "deactivated").length,
+  };
+  const roleCounts: Record<RoleFilter, number> = {
+    all: allUsers.length,
+    supervisor: allUsers.filter((u) => matchesRoleTab(u.role, "supervisor")).length,
+    customer_service_rep: allUsers.filter((u) => matchesRoleTab(u.role, "customer_service_rep")).length,
+    user: allUsers.filter((u) => matchesRoleTab(u.role, "user")).length,
   };
 
   return (
@@ -425,6 +584,25 @@ export default function AdminUsers() {
         <PendingTab />
       ) : (
         <>
+          {/* Role sub-tabs */}
+          <div className="flex items-center gap-1 border-b border-border/30 pb-0">
+            {ROLE_TABS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setRoleFilter(t.id)}
+                className={`px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors border-b-2 -mb-px ${
+                  roleFilter === t.id
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+                data-testid={`tab-role-${t.id}`}
+              >
+                {t.label}
+                <span className="ml-1.5 opacity-60">({roleCounts[t.id]})</span>
+              </button>
+            ))}
+          </div>
+
           {/* Status filter tabs */}
           <div className="flex items-center gap-2 flex-wrap">
             {(["all", "approved", "pending", "rejected", "deactivated"] as StatusFilter[]).map((s) => (
@@ -507,11 +685,15 @@ export default function AdminUsers() {
                             </SelectTrigger>
                             <SelectContent className="rounded-sm">
                               <SelectItem value="supervisor" className="text-xs font-mono uppercase tracking-wider">Supervisor</SelectItem>
-                              <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Business Sitter</SelectItem>
                               <SelectItem value="customer_service_rep" className="text-xs font-mono uppercase tracking-wider">Customer Service Rep</SelectItem>
                               <SelectItem value="sales_rep" className="text-xs font-mono uppercase tracking-wider">Sales Rep</SelectItem>
-                              <SelectItem value="lab_tech" className="text-xs font-mono uppercase tracking-wider">Lab Tech</SelectItem>
                               <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
+                              {/* Legacy roles kept for users still on retired titles */}
+                              {(user.role === "business_sitter" || user.role === "lab_tech") && (
+                                <SelectItem value={user.role} className="text-xs font-mono uppercase tracking-wider opacity-60">
+                                  {user.role === "business_sitter" ? "Business Sitter (legacy)" : "Lab Tech (legacy)"}
+                                </SelectItem>
+                              )}
                             </SelectContent>
                           </Select>
                         )}

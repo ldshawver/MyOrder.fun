@@ -21,5 +21,6 @@ export interface UserProfile {
   status?: UserProfileStatus;
   isActive: boolean;
   contactPhone?: string | null;
+  avatarUrl?: string | null;
   createdAt: Date;
 }

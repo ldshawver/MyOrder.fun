@@ -392,6 +392,7 @@ export interface UserProfile {
   status?: UserProfileStatus;
   isActive: boolean;
   contactPhone?: string | null;
+  avatarUrl?: string | null;
   createdAt: string;
 }
 
@@ -409,6 +410,62 @@ export const UpdateUserRoleBodyRole = {
 
 export interface UpdateUserRoleBody {
   role: UpdateUserRoleBodyRole;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  emailAddress: string;
+  status: string;
+  createdAt?: string | null;
+}
+
+export interface WaitlistEntryListResponse {
+  entries: WaitlistEntry[];
+  total: number;
+}
+
+export type InviteWaitlistEntryBodyRole = typeof InviteWaitlistEntryBodyRole[keyof typeof InviteWaitlistEntryBodyRole];
+
+
+export const InviteWaitlistEntryBodyRole = {
+  admin: 'admin',
+  supervisor: 'supervisor',
+  customer_service_rep: 'customer_service_rep',
+  sales_rep: 'sales_rep',
+  user: 'user',
+} as const;
+
+export interface InviteWaitlistEntryBody {
+  role?: InviteWaitlistEntryBodyRole;
+  /** @maxLength 100 */
+  firstName?: string;
+  /** @maxLength 100 */
+  lastName?: string;
+}
+
+export interface InviteWaitlistEntryResponse {
+  id: string;
+  status: string;
+  email: string;
+  role: string;
+  userRowCreated?: boolean;
+  promotedExisting?: boolean;
+}
+
+export interface WaitlistActionResponse {
+  id: string;
+  status: string;
+}
+
+export interface UpdateCurrentUserBody {
+  /** @maxLength 100 */
+  firstName?: string | null;
+  /** @maxLength 100 */
+  lastName?: string | null;
+  /** @maxLength 32 */
+  contactPhone?: string | null;
+  /** @maxLength 2048 */
+  avatarUrl?: string | null;
 }
 
 export type UpdateUserStatusBodyStatus = typeof UpdateUserStatusBodyStatus[keyof typeof UpdateUserStatusBodyStatus];

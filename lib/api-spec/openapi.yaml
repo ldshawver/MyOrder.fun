@@ -472,6 +472,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserProfile"
+    patch:
+      operationId: updateCurrentUser
+      tags: [users]
+      summary: Update the current user's editable profile fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCurrentUserBody"
+      responses:
+        "200":
+          description: Updated current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
 
   /users:
     get:
@@ -516,6 +533,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserProfile"
+
+  /admin/users/waitlist:
+    get:
+      operationId: listWaitlistEntries
+      tags: [admin]
+      summary: List waitlist entries pulled live from Clerk
+      responses:
+        "200":
+          description: Waitlist entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WaitlistEntryListResponse"
+
+  /admin/users/waitlist/{id}/invite:
+    post:
+      operationId: inviteWaitlistEntry
+      tags: [admin]
+      summary: Invite a waitlist entry with a chosen role; pre-creates an approved users row
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteWaitlistEntryBody"
+      responses:
+        "200":
+          description: Invite result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InviteWaitlistEntryResponse"
+
+  /admin/users/waitlist/{id}/reject:
+    post:
+      operationId: rejectWaitlistEntry
+      tags: [admin]
+      summary: Reject a waitlist entry in Clerk
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Reject result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WaitlistActionResponse"
 
   /admin/users/pending:
     get:
@@ -1462,6 +1536,9 @@ components:
         contactPhone:
           type: string
           nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -1474,6 +1551,91 @@ components:
           type: string
           enum: [supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
       required: [role]
+
+    WaitlistEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        emailAddress:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, emailAddress, status]
+
+    WaitlistEntryListResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/WaitlistEntry"
+        total:
+          type: integer
+      required: [entries, total]
+
+    InviteWaitlistEntryBody:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [admin, supervisor, customer_service_rep, sales_rep, user]
+        firstName:
+          type: string
+          maxLength: 100
+        lastName:
+          type: string
+          maxLength: 100
+
+    InviteWaitlistEntryResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+        userRowCreated:
+          type: boolean
+        promotedExisting:
+          type: boolean
+      required: [id, status, email, role]
+
+    WaitlistActionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+      required: [id, status]
+
+    UpdateCurrentUserBody:
+      type: object
+      properties:
+        firstName:
+          type: string
+          maxLength: 100
+          nullable: true
+        lastName:
+          type: string
+          maxLength: 100
+          nullable: true
+        contactPhone:
+          type: string
+          maxLength: 32
+          nullable: true
+        avatarUrl:
+          type: string
+          maxLength: 2048
+          nullable: true
 
     UpdateUserStatusBody:
       type: object

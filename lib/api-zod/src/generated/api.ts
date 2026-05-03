@@ -593,6 +593,45 @@ export const GetCurrentUserResponse = zod.object({
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Update the current user's editable profile fields
+ */
+export const updateCurrentUserBodyFirstNameMax = 100;
+
+export const updateCurrentUserBodyLastNameMax = 100;
+
+export const updateCurrentUserBodyContactPhoneMax = 32;
+
+export const updateCurrentUserBodyAvatarUrlMax = 2048;
+
+
+
+export const UpdateCurrentUserBody = zod.object({
+  "firstName": zod.string().max(updateCurrentUserBodyFirstNameMax).nullish(),
+  "lastName": zod.string().max(updateCurrentUserBodyLastNameMax).nullish(),
+  "contactPhone": zod.string().max(updateCurrentUserBodyContactPhoneMax).nullish(),
+  "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
+})
+
+export const UpdateCurrentUserResponse = zod.object({
+  "id": zod.number(),
+  "clerkId": zod.string(),
+  "email": zod.string(),
+  "firstName": zod.string().optional(),
+  "lastName": zod.string().optional(),
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "tenantId": zod.number().optional(),
+  "tenantName": zod.string().optional(),
+  "mfaEnabled": zod.boolean().optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
+  "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })
 
@@ -618,6 +657,7 @@ export const ListUsersResponse = zod.object({
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })),
   "total": zod.number()
@@ -648,7 +688,64 @@ export const UpdateUserRoleResponse = zod.object({
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
   "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary List waitlist entries pulled live from Clerk
+ */
+export const ListWaitlistEntriesResponse = zod.object({
+  "entries": zod.array(zod.object({
+  "id": zod.string(),
+  "emailAddress": zod.string(),
+  "status": zod.string(),
+  "createdAt": zod.coerce.date().nullish()
+})),
+  "total": zod.number()
+})
+
+
+/**
+ * @summary Invite a waitlist entry with a chosen role; pre-creates an approved users row
+ */
+export const InviteWaitlistEntryParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const inviteWaitlistEntryBodyFirstNameMax = 100;
+
+export const inviteWaitlistEntryBodyLastNameMax = 100;
+
+
+
+export const InviteWaitlistEntryBody = zod.object({
+  "role": zod.enum(['admin', 'supervisor', 'customer_service_rep', 'sales_rep', 'user']).optional(),
+  "firstName": zod.string().max(inviteWaitlistEntryBodyFirstNameMax).optional(),
+  "lastName": zod.string().max(inviteWaitlistEntryBodyLastNameMax).optional()
+})
+
+export const InviteWaitlistEntryResponse = zod.object({
+  "id": zod.string(),
+  "status": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "userRowCreated": zod.boolean().optional(),
+  "promotedExisting": zod.boolean().optional()
+})
+
+
+/**
+ * @summary Reject a waitlist entry in Clerk
+ */
+export const RejectWaitlistEntryParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const RejectWaitlistEntryResponse = zod.object({
+  "id": zod.string(),
+  "status": zod.string()
 })
 
 
@@ -669,6 +766,7 @@ export const ListPendingUsersResponse = zod.object({
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })),
   "total": zod.number()
@@ -718,6 +816,7 @@ export const AdminUpdateUserRoleResponse = zod.object({
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
+  "avatarUrl": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })
 
