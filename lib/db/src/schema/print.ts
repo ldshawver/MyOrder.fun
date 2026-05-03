@@ -169,6 +169,19 @@ export const printSettingsTable = pgTable("print_settings", {
   paperWidth: text("paper_width").notNull().default("80mm"),
   brandName: text("brand_name"),
   footerMessage: text("footer_message"),
+  // ── Simplified printer settings (Task #9) ─────────────────────────────────
+  // The new simplified UI exposes only the eight fields below. Receipts and
+  // labels each have an enabled flag, a method (local CUPS or Tailscale
+  // Print Bridge), and a queue / printer name. autoPrintReceipts (above) and
+  // lastTestResult round out the eight.
+  receiptEnabled: boolean("receipt_enabled").notNull().default(true),
+  receiptMethod: text("receipt_method").notNull().default("local_cups"),
+  receiptPrinterName: text("receipt_printer_name").notNull().default("receipt"),
+  labelEnabled: boolean("label_enabled").notNull().default(true),
+  labelMethod: text("label_method").notNull().default("local_cups"),
+  labelPrinterName: text("label_printer_name").notNull().default("label"),
+  // Last test summary: { ts, role, mode, ok, message }
+  lastTestResult: jsonb("last_test_result"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

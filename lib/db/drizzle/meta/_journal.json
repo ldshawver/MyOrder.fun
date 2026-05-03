@@ -50,6 +50,13 @@
       "when": 1777366800000,
       "tag": "0006_wc_enabled",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777971600000,
+      "tag": "0007_simple_printer_settings",
+      "breakpoints": true
     }
   ]
 }
