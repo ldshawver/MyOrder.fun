@@ -8,6 +8,3 @@ export * from "./notifications";
 export * from "./shifts";
 export * from "./print";
 export * from "./settings";
-export * from "./contractor-hub";
-export * from "./contractor-proposals";
-export * from "./contractor-invoices";

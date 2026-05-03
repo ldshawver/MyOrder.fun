@@ -21,8 +21,7 @@ import {
   Upload,
   Settings,
   ClipboardList,
-  Bug,
-  FileText
+  Bug
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
@@ -50,7 +49,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/print", label: "Print", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/contractor-hub", label: "Contractor Hub", icon: FileText, roles: ALL_ROLES, mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
 
