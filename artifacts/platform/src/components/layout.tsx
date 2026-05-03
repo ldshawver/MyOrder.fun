@@ -11,7 +11,6 @@ import {
   ShieldAlert, 
   LogOut,
   Bell,
-  Users,
   User,
   ListTodo,
   Menu,
@@ -21,7 +20,12 @@ import {
   Upload,
   Settings,
   ClipboardList,
-  Bug
+  Bug,
+  Sparkles,
+  ReceiptText,
+  BookOpen,
+  ClipboardCheck,
+  UserCheck
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 
@@ -43,12 +47,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
     { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
-    { href: "/admin/users", label: "Users", icon: Users, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/admin/users", label: "User Approvals", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/catalog", label: "Catalogue Editor", icon: BookOpen, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/global-admin/onboarding", label: "AI Onboarding", icon: Sparkles, roles: ["admin"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/print", label: "Print", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
 
