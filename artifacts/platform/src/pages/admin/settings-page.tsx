@@ -24,6 +24,7 @@ type AdminSettings = {
   wcStoreUrl: string;
   wcConsumerKeySet: boolean;
   wcConsumerSecretSet: boolean;
+  wcEnabled: boolean;
 };
 
 const DEFAULTS: AdminSettings = {
@@ -43,6 +44,7 @@ const DEFAULTS: AdminSettings = {
   wcStoreUrl: "https://lucifercruz.com",
   wcConsumerKeySet: false,
   wcConsumerSecretSet: false,
+  wcEnabled: true,
 };
 
 export default function AdminSettingsPage() {
@@ -61,17 +63,31 @@ export default function AdminSettingsPage() {
   const [wcSaving, setWcSaving] = useState(false);
   const [wcSaved, setWcSaved] = useState(false);
   const [wcError, setWcError] = useState<string | null>(null);
+  const [wcTesting, setWcTesting] = useState(false);
+  const [wcTestResult, setWcTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        const res = await fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } });
-        if (res.ok) {
-          const data = await res.json();
-          setSettings({ ...DEFAULTS, ...data });
-          setWcStoreUrl(data.wcStoreUrl ?? "https://lucifercruz.com");
+        const [genRes, wcRes] = await Promise.all([
+          fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        let merged: Partial<AdminSettings> = {};
+        if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
+        if (wcRes.ok) {
+          const wc = await wcRes.json();
+          merged = {
+            ...merged,
+            wcStoreUrl: wc.wcStoreUrl ?? wc.wc_store_url ?? "https://lucifercruz.com",
+            wcConsumerKeySet: !!(wc.wcConsumerKeySet ?? wc.hasConsumerKey),
+            wcConsumerSecretSet: !!(wc.wcConsumerSecretSet ?? wc.hasConsumerSecret),
+            wcEnabled: wc.wcEnabled ?? wc.enabled ?? true,
+          };
+          setWcStoreUrl(merged.wcStoreUrl ?? "https://lucifercruz.com");
         }
+        setSettings(s => ({ ...s, ...merged }));
       } catch { /* ignore fetch errors */ }
       setLoading(false);
     })();
@@ -109,7 +125,7 @@ export default function AdminSettingsPage() {
       const res = await fetch("/api/admin/settings/woocommerce", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret }),
+        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret, enabled: settings.wcEnabled }),
       });
       const contentType = res.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) {
@@ -118,7 +134,7 @@ export default function AdminSettingsPage() {
       }
       const data = await res.json();
       if (!res.ok) { setWcError(data.error ?? "Save failed"); return; }
-      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet }));
+      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet, wcEnabled: data.wcEnabled ?? s.wcEnabled }));
       setWcKey("");
       setWcSecret("");
       setWcSaved(true);
@@ -127,6 +143,41 @@ export default function AdminSettingsPage() {
       setWcError((e as Error)?.message ?? "Network error");
     } finally {
       setWcSaving(false);
+    }
+  }
+
+  async function toggleWooEnabled(enabled: boolean) {
+    setSettings(s => ({ ...s, wcEnabled: enabled }));
+    try {
+      const token = await getToken();
+      await fetch("/api/admin/settings/woocommerce", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ enabled }),
+      });
+    } catch { /* ignore */ }
+  }
+
+  async function testWooConnection() {
+    setWcTesting(true);
+    setWcTestResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/woocommerce/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setWcTestResult({ ok: true, message: `Connected${data.wcVersion ? ` — WooCommerce ${data.wcVersion}` : ""}` });
+      } else {
+        setWcTestResult({ ok: false, message: data.message ?? data.error ?? `HTTP ${res.status}` });
+      }
+    } catch (e) {
+      setWcTestResult({ ok: false, message: (e as Error)?.message ?? "Network error" });
+    } finally {
+      setWcTesting(false);
     }
   }
 
@@ -447,14 +498,40 @@ export default function AdminSettingsPage() {
                   <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs">{wcError}</div>
                 )}
 
-                <Button
-                  onClick={saveWooCredentials}
-                  disabled={wcSaving || !wcKey || !wcSecret}
-                  className="gap-2 rounded-xl"
-                >
-                  {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
-                  {wcSaved ? "Credentials Saved!" : wcSaving ? "Saving..." : "Save WooCommerce Credentials"}
-                </Button>
+                {wcTestResult && (
+                  <div className={`p-3 rounded-xl text-xs ${wcTestResult.ok ? "border border-green-500/30 bg-green-500/10 text-green-400" : "border border-red-500/30 bg-red-500/10 text-red-400"}`}>
+                    {wcTestResult.ok ? "✓ " : "✗ "}{wcTestResult.message}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button
+                    onClick={saveWooCredentials}
+                    disabled={wcSaving || !wcKey || !wcSecret}
+                    className="gap-2 rounded-xl"
+                  >
+                    {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+                    {wcSaved ? "Credentials Saved!" : wcSaving ? "Saving..." : "Save WooCommerce Credentials"}
+                  </Button>
+
+                  <Button
+                    onClick={testWooConnection}
+                    disabled={wcTesting || (!settings.wcConsumerKeySet && !wcKey)}
+                    variant="outline"
+                    className="gap-2 rounded-xl"
+                  >
+                    {wcTesting ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    {wcTesting ? "Testing..." : "Test Connection"}
+                  </Button>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <span className="text-xs text-muted-foreground">Enabled</span>
+                    <Switch
+                      checked={settings.wcEnabled}
+                      onCheckedChange={v => void toggleWooEnabled(v)}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>

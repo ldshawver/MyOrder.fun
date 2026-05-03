@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { getOrCreateSettings } from "./settings";
+import { getOrCreateSettings, getDecryptedWooCreds } from "./settings";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -70,30 +70,23 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
   return allProducts;
 }
 
-// POST /api/admin/woocommerce/sync
-// Credentials are loaded from the DB (saved via PUT /api/admin/settings/woocommerce).
-// Any values passed in the request body override the saved credentials for this
-// one sync — useful for testing new keys without overwriting the saved ones.
-router.post(
-  "/admin/woocommerce/sync",
-  requireRole("admin", "supervisor"),
-  async (req, res): Promise<void> => {
+// Sync handler — credentials are always loaded (decrypted) from the DB
+// via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
+// accepted, to avoid an admin-gated SSRF surface.
+async function syncHandler(_req: import("express").Request, res: import("express").Response): Promise<void> {
     const houseTenantId = await getHouseTenantId();
 
-    // Load saved credentials from DB, fall back to env vars for legacy deploys
-    const savedSettings = await getOrCreateSettings();
-    const savedKey = savedSettings.wcConsumerKey ?? process.env.WC_CONSUMER_KEY ?? "";
-    const savedSecret = savedSettings.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET ?? "";
-    const savedUrl = savedSettings.wcStoreUrl ?? process.env.WC_STORE_URL ?? "https://lucifercruz.com";
-
-    const {
-      storeUrl = savedUrl,
-      consumerKey = savedKey,
-      consumerSecret = savedSecret,
-    } = req.body as { storeUrl?: string; consumerKey?: string; consumerSecret?: string };
+    // Always use the saved (and decrypted) credentials. Request-body
+    // overrides are intentionally not accepted to avoid SSRF, and env
+    // fallbacks are intentionally not accepted so missing persisted
+    // config reliably surfaces as a JSON 412.
+    const saved = await getDecryptedWooCreds();
+    const consumerKey = saved.consumerKey ?? "";
+    const consumerSecret = saved.consumerSecret ?? "";
+    const storeUrl = saved.storeUrl || "https://lucifercruz.com";
 
     if (!consumerKey || !consumerSecret) {
-      res.status(400).json({ error: "No WooCommerce credentials saved. Go to Admin Settings → WooCommerce and save your API key and secret first." });
+      res.status(412).json({ error: "No WooCommerce credentials saved. Go to Admin Settings → WooCommerce and save your API key and secret first." });
       return;
     }
 
@@ -189,8 +182,13 @@ router.post(
       total: products.length,
       storeUrl,
     });
-  }
-);
+}
+
+// Both URLs are mounted on the SAME shared handler (no internal req.url
+// rewrites). The newer `/sync-products` name is preferred; `/sync` is kept
+// for back-compat with already-deployed clients.
+router.post("/admin/woocommerce/sync", requireRole("admin", "supervisor"), syncHandler);
+router.post("/admin/woocommerce/sync-products", requireRole("admin", "supervisor"), syncHandler);
 
 // GET /api/admin/woocommerce/status — check if WC credentials are configured
 router.get(
@@ -202,9 +200,79 @@ router.get(
     const hasSecret = !!(s.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET);
     res.json({
       configured: hasKey && hasSecret,
+      enabled: s.wcEnabled ?? true,
       storeUrl: s.wcStoreUrl ?? process.env.WC_STORE_URL ?? "https://lucifercruz.com",
     });
   }
+);
+
+/**
+ * POST /api/admin/woocommerce/test
+ * Issues GET /wp-json/wc/v3/system_status against the configured store with
+ * the saved credentials and returns a structured JSON result. Lets admins
+ * verify creds without running a full sync.
+ *
+ * Always returns JSON. 200 on reachable store, 412 if creds missing,
+ * 502 with { ok:false, status, message } on auth/network failure.
+ */
+router.post(
+  "/admin/woocommerce/test",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    // Test only the SAVED credentials. We deliberately do not honor
+    // request-body overrides (admin-gated SSRF) and we deliberately do
+    // not fall back to env vars (so missing persisted config surfaces
+    // as a clear 412 instead of silently passing).
+    const saved = await getDecryptedWooCreds();
+    const storeUrl = saved.storeUrl ?? "https://lucifercruz.com";
+    const consumerKey = saved.consumerKey ?? "";
+    const consumerSecret = saved.consumerSecret ?? "";
+
+    if (!consumerKey || !consumerSecret) {
+      res.status(412).json({
+        ok: false,
+        status: 412,
+        message: "No WooCommerce credentials saved.",
+      });
+      return;
+    }
+
+    const base = storeUrl.replace(/\/$/, "");
+    const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
+    const url = `${base}/wp-json/wc/v3/system_status`;
+
+    try {
+      const r = await fetch(url, {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        res.status(502).json({
+          ok: false,
+          status: r.status,
+          message: `WooCommerce returned ${r.status}: ${text.substring(0, 200)}`,
+        });
+        return;
+      }
+      // Parse minimally to confirm it really is the WC system_status payload.
+      const data = await r.json().catch(() => null) as { environment?: { version?: string } } | null;
+      res.json({
+        ok: true,
+        status: r.status,
+        storeUrl: base,
+        wcVersion: data?.environment?.version ?? null,
+      });
+    } catch (err) {
+      res.status(502).json({
+        ok: false,
+        status: 0,
+        message: (err as Error)?.message ?? "Network error reaching WooCommerce store",
+      });
+    }
+  },
 );
 
 export default router;
