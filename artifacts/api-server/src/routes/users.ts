@@ -14,7 +14,33 @@ import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
-import { syncUserToClerk } from "../lib/clerkSync";
+import { syncUserToClerk, syncProfileToClerk, syncAvatarToClerk } from "../lib/clerkSync";
+
+// E.164-ish: optional leading +, then digits/spaces/dashes, total 7–20 chars.
+const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
+
+// Unknown fields are stripped by Zod (the schema is not `.strict()`),
+// so callers may send extra keys (e.g. legacy form fields) without the
+// request failing — only the allowed fields below are ever persisted.
+const UpdateCurrentUserBody = z.object({
+  firstName: z.string().trim().max(100).nullish(),
+  lastName: z.string().trim().max(100).nullish(),
+  contactPhone: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || PHONE_REGEX.test(v), {
+      message: "Invalid phone number — use E.164 or +? digits/spaces/dashes (7–20 chars)",
+    })
+    .nullish(),
+  avatarUrl: z
+    .string()
+    .trim()
+    .max(2048)
+    .refine((v) => v === "" || /^https?:\/\//i.test(v), {
+      message: "avatarUrl must be an http(s) URL",
+    })
+    .nullish(),
+});
 
 const router: IRouter = Router();
 
@@ -55,7 +81,7 @@ router.use((req, res, next) => {
   return requireApproved(req, res, next);
 });
 
-function serializeCurrentUser(user: typeof usersTable.$inferSelect) {
+function serializeUser(user: typeof usersTable.$inferSelect) {
   return GetCurrentUserResponse.parse({
     id: user.id,
     clerkId: user.clerkId,
@@ -74,69 +100,69 @@ function serializeCurrentUser(user: typeof usersTable.$inferSelect) {
 
 // GET /api/users/me
 router.get("/users/me", async (req, res): Promise<void> => {
-  res.json(serializeCurrentUser(req.dbUser!));
+  res.json(serializeUser(req.dbUser!));
 });
 
-// PATCH /api/users/me — current user updates their own editable profile fields
-const UpdateMeBody = z.object({
-  firstName: z.string().trim().max(100).nullish(),
-  lastName: z.string().trim().max(100).nullish(),
-  contactPhone: z
-    .string()
-    .trim()
-    .max(32)
-    .regex(/^(\+?[0-9 ()\-.]{7,32})?$/, "Invalid phone number")
-    .nullish(),
-  avatarUrl: z
-    .string()
-    .trim()
-    .max(2048)
-    .url("Avatar must be a valid URL")
-    .nullish()
-    .or(z.literal("")),
-});
-
+// PATCH /api/users/me — current user updates their own profile
 router.patch("/users/me", async (req, res): Promise<void> => {
   const user = req.dbUser!;
-  const parsed = UpdateMeBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
+  const body = UpdateCurrentUserBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
     return;
   }
 
-  const patch: Record<string, unknown> = {};
-  if (parsed.data.firstName !== undefined)
-    patch.firstName = parsed.data.firstName?.trim() || null;
-  if (parsed.data.lastName !== undefined)
-    patch.lastName = parsed.data.lastName?.trim() || null;
-  if (parsed.data.contactPhone !== undefined)
-    patch.contactPhone = parsed.data.contactPhone?.trim() || null;
-  if (parsed.data.avatarUrl !== undefined)
-    patch.avatarUrl = (parsed.data.avatarUrl ?? "").trim() || null;
+  // Build the DB update set ONLY from fields the client actually sent. This
+  // ignores unknown fields (Zod .strict already rejected them above) and
+  // avoids clobbering values the user did not intend to change.
+  const updates: Partial<typeof usersTable.$inferInsert> = {};
+  if ("firstName" in body.data) {
+    const v = body.data.firstName;
+    updates.firstName = v == null || v === "" ? null : v;
+  }
+  if ("lastName" in body.data) {
+    const v = body.data.lastName;
+    updates.lastName = v == null || v === "" ? null : v;
+  }
+  if ("contactPhone" in body.data) {
+    const v = body.data.contactPhone;
+    updates.contactPhone = v == null || v === "" ? null : v;
+  }
+  if ("avatarUrl" in body.data) {
+    const v = body.data.avatarUrl;
+    updates.avatarUrl = v == null || v === "" ? null : v;
+  }
 
-  if (Object.keys(patch).length === 0) {
-    res.json(serializeCurrentUser(user));
+  if (Object.keys(updates).length === 0) {
+    res.json(serializeUser(user));
     return;
   }
 
   const [updated] = await db
     .update(usersTable)
-    .set(patch)
+    .set(updates)
     .where(eq(usersTable.id, user.id))
     .returning();
 
-  // Mirror display name to Clerk so other surfaces (Clerk-hosted account
-  // page, OAuth screens) reflect the change. Failures are logged but not
-  // surfaced to the user — DB is the source of truth.
-  const clerkPatch: { firstName?: string; lastName?: string } = {};
-  if ("firstName" in patch) clerkPatch.firstName = (patch.firstName as string | null) ?? "";
-  if ("lastName" in patch) clerkPatch.lastName = (patch.lastName as string | null) ?? "";
-  if (Object.keys(clerkPatch).length > 0 && updated.clerkId && !updated.clerkId.startsWith("pending_invite:")) {
-    try {
-      await clerkClient.users.updateUser(updated.clerkId, clerkPatch);
-    } catch (err) {
-      logger.error({ err, clerkId: updated.clerkId }, "Failed to mirror name to Clerk");
-    }
+  // Mirror name + phone to Clerk so the two systems agree (best-effort).
+  // Skip the call entirely for the `pending_invite:*` sentinel clerkIds —
+  // those rows are placeholders for waitlisted users and have no real
+  // Clerk account yet.
+  const hasRealClerkId = !!updated.clerkId && !updated.clerkId.startsWith("pending_invite:");
+  if (
+    ("firstName" in updates || "lastName" in updates || "contactPhone" in updates) &&
+    hasRealClerkId
+  ) {
+    await syncProfileToClerk(updated.clerkId, {
+      firstName: "firstName" in updates ? (updates.firstName ?? null) : undefined,
+      lastName: "lastName" in updates ? (updates.lastName ?? null) : undefined,
+      phoneNumber: "contactPhone" in updates ? (updates.contactPhone ?? null) : undefined,
+    });
+  }
+
+  // Mirror avatar to Clerk via updateUserProfileImage when it changes.
+  if ("avatarUrl" in updates && hasRealClerkId) {
+    await syncAvatarToClerk(updated.clerkId, updates.avatarUrl ?? null);
   }
 
   await writeAuditLog({
@@ -147,29 +173,15 @@ router.patch("/users/me", async (req, res): Promise<void> => {
     tenantId: user.tenantId,
     resourceType: "user",
     resourceId: String(user.id),
-    metadata: { fields: Object.keys(patch) },
+    metadata: { fields: Object.keys(updates) },
   });
 
-  res.json(serializeCurrentUser(updated));
+  res.json(serializeUser(updated));
 });
 
 // POST /api/users/sync — called after Clerk sign-in to ensure user record exists
 router.post("/users/sync", async (req, res): Promise<void> => {
-  const user = req.dbUser!;
-  const data = GetCurrentUserResponse.parse({
-    id: user.id,
-    clerkId: user.clerkId,
-    email: user.email ?? undefined,
-    firstName: user.firstName ?? undefined,
-    lastName: user.lastName ?? undefined,
-    contactPhone: user.contactPhone ?? undefined,
-    role: normalizeRole(user.role),
-    mfaEnabled: user.mfaEnabled ?? undefined,
-    isActive: user.isActive,
-    status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
-    createdAt: user.createdAt,
-  });
-  res.json(data);
+  res.json(serializeUser(req.dbUser!));
 });
 
 // GET /api/users — admin and supervisor see all users

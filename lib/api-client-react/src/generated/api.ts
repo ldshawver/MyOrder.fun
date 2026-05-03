@@ -64,6 +64,7 @@ import type {
   TokenizePaymentBody,
   TokenizePaymentResponse,
   UpdateCatalogItemBody,
+  UpdateCurrentUser400,
   UpdateCurrentUserBody,
   UpdateOnboardingRequestBody,
   UpdateOrderStatusBody,
@@ -1767,7 +1768,7 @@ export function useGetCurrentUser<TData = Awaited<ReturnType<typeof getCurrentUs
 
 
 /**
- * @summary Update the current user's editable profile fields
+ * @summary Update the current user's profile (name, phone, avatar)
  */
 export const getUpdateCurrentUserUrl = () => {
 
@@ -1792,7 +1793,7 @@ export const updateCurrentUser = async (updateCurrentUserBody: UpdateCurrentUser
 
 
 
-export const getUpdateCurrentUserMutationOptions = <TError = ErrorType<unknown>,
+export const getUpdateCurrentUserMutationOptions = <TError = ErrorType<UpdateCurrentUser400>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
 ): UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext> => {
 
@@ -1821,12 +1822,12 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
     export type UpdateCurrentUserMutationResult = NonNullable<Awaited<ReturnType<typeof updateCurrentUser>>>
     export type UpdateCurrentUserMutationBody = BodyType<UpdateCurrentUserBody>
-    export type UpdateCurrentUserMutationError = ErrorType<unknown>
+    export type UpdateCurrentUserMutationError = ErrorType<UpdateCurrentUser400>
 
     /**
- * @summary Update the current user's editable profile fields
+ * @summary Update the current user's profile (name, phone, avatar)
  */
-export const useUpdateCurrentUser = <TError = ErrorType<unknown>,
+export const useUpdateCurrentUser = <TError = ErrorType<UpdateCurrentUser400>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateCurrentUser>>, TError,{data: BodyType<UpdateCurrentUserBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
         Awaited<ReturnType<typeof updateCurrentUser>>,

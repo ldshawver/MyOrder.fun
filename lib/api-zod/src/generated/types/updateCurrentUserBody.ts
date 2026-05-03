@@ -11,7 +11,6 @@ export interface UpdateCurrentUserBody {
   firstName?: string | null;
   /** @maxLength 100 */
   lastName?: string | null;
-  /** @maxLength 32 */
   contactPhone?: string | null;
   /** @maxLength 2048 */
   avatarUrl?: string | null;

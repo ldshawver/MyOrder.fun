@@ -599,13 +599,11 @@ export const GetCurrentUserResponse = zod.object({
 
 
 /**
- * @summary Update the current user's editable profile fields
+ * @summary Update the current user's profile (name, phone, avatar)
  */
 export const updateCurrentUserBodyFirstNameMax = 100;
 
 export const updateCurrentUserBodyLastNameMax = 100;
-
-export const updateCurrentUserBodyContactPhoneMax = 32;
 
 export const updateCurrentUserBodyAvatarUrlMax = 2048;
 
@@ -614,7 +612,7 @@ export const updateCurrentUserBodyAvatarUrlMax = 2048;
 export const UpdateCurrentUserBody = zod.object({
   "firstName": zod.string().max(updateCurrentUserBodyFirstNameMax).nullish(),
   "lastName": zod.string().max(updateCurrentUserBodyLastNameMax).nullish(),
-  "contactPhone": zod.string().max(updateCurrentUserBodyContactPhoneMax).nullish(),
+  "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
 })
 

@@ -131,12 +131,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <span>Notifications</span>
           </Link>
           <Link
-            href="/account"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group"
-            data-testid="link-account"
+            href="/profile"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group hover:bg-sidebar-accent/60"
+            data-testid="link-profile"
           >
-            <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 border border-primary/30">
-              <User size={14} />
+            <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 border border-primary/30 overflow-hidden">
+              {user.avatarUrl ? (
+                <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" data-testid="img-user-avatar" />
+              ) : (
+                <User size={14} />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium truncate" data-testid="text-user-name">
@@ -146,6 +150,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 {user.role.replace(/_/g, " ")}
               </div>
             </div>
+          </Link>
+          <Link
+            href="/account"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground transition-all"
+            data-testid="link-account"
+          >
+            <Settings size={16} />
+            <span>Account</span>
           </Link>
           <button
             onClick={() => signOut()}
@@ -214,12 +226,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
 
             <div className="p-3 border-t border-border/40 space-y-1">
               <Link
-                href="/account"
+                href="/profile"
                 onClick={() => setMobileMenuOpen(false)}
                 className="flex items-center gap-3 px-4 py-3 rounded-xl"
               >
-                <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center border border-primary/30">
-                  <User size={15} />
+                <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center border border-primary/30 overflow-hidden">
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <User size={15} />
+                  )}
                 </div>
                 <div>
                   <div className="text-sm font-medium">{user.firstName || "User"} {user.lastName}</div>

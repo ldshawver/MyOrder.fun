@@ -396,6 +396,16 @@ export interface UserProfile {
   createdAt: string;
 }
 
+export interface UpdateCurrentUserBody {
+  /** @maxLength 100 */
+  firstName?: string | null;
+  /** @maxLength 100 */
+  lastName?: string | null;
+  contactPhone?: string | null;
+  /** @maxLength 2048 */
+  avatarUrl?: string | null;
+}
+
 export type UpdateUserRoleBodyRole = typeof UpdateUserRoleBodyRole[keyof typeof UpdateUserRoleBodyRole];
 
 
@@ -455,17 +465,6 @@ export interface InviteWaitlistEntryResponse {
 export interface WaitlistActionResponse {
   id: string;
   status: string;
-}
-
-export interface UpdateCurrentUserBody {
-  /** @maxLength 100 */
-  firstName?: string | null;
-  /** @maxLength 100 */
-  lastName?: string | null;
-  /** @maxLength 32 */
-  contactPhone?: string | null;
-  /** @maxLength 2048 */
-  avatarUrl?: string | null;
 }
 
 export type UpdateUserStatusBodyStatus = typeof UpdateUserStatusBodyStatus[keyof typeof UpdateUserStatusBodyStatus];
@@ -728,6 +727,10 @@ export const ListOrdersStatus = {
 
 export type GetRecentOrdersParams = {
 limit?: number;
+};
+
+export type UpdateCurrentUser400 = {
+  error: string;
 };
 
 export type ListUsersParams = {

@@ -475,7 +475,7 @@ paths:
     patch:
       operationId: updateCurrentUser
       tags: [users]
-      summary: Update the current user's editable profile fields
+      summary: Update the current user's profile (name, phone, avatar)
       requestBody:
         required: true
         content:
@@ -484,11 +484,21 @@ paths:
               $ref: "#/components/schemas/UpdateCurrentUserBody"
       responses:
         "200":
-          description: Updated current user
+          description: Updated user
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/UserProfile"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required: [error]
 
   /users:
     get:
@@ -1544,6 +1554,25 @@ components:
           format: date-time
       required: [id, clerkId, email, role, isActive, createdAt]
 
+    UpdateCurrentUserBody:
+      type: object
+      properties:
+        firstName:
+          type: string
+          nullable: true
+          maxLength: 100
+        lastName:
+          type: string
+          nullable: true
+          maxLength: 100
+        contactPhone:
+          type: string
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
+          maxLength: 2048
+
     UpdateUserRoleBody:
       type: object
       properties:
@@ -1616,26 +1645,6 @@ components:
         status:
           type: string
       required: [id, status]
-
-    UpdateCurrentUserBody:
-      type: object
-      properties:
-        firstName:
-          type: string
-          maxLength: 100
-          nullable: true
-        lastName:
-          type: string
-          maxLength: 100
-          nullable: true
-        contactPhone:
-          type: string
-          maxLength: 32
-          nullable: true
-        avatarUrl:
-          type: string
-          maxLength: 2048
-          nullable: true
 
     UpdateUserStatusBody:
       type: object

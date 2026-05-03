@@ -30,6 +30,7 @@ import GlobalAdminAudit from "@/pages/global-admin/audit";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
+import Profile from "@/pages/profile";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -304,6 +305,7 @@ function AuthenticatedApp() {
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
         <Route path="/account" component={Account} />
+        <Route path="/profile" component={Profile} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
