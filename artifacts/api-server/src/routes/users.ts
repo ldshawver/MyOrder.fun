@@ -14,6 +14,7 @@ import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
+import { syncUserToClerk } from "../lib/clerkSync";
 
 const router: IRouter = Router();
 
@@ -129,8 +130,12 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
   res.json({ contactPhone: updated.contactPhone ?? null });
 });
 
-// PATCH /api/users/:id/role
-router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+// PATCH /api/users/:id/role — supervisors and admins (legacy path)
+// PATCH /api/admin/users/:id/role — admin-only namespace
+router.patch("/admin/users/:id/role", requireRole("admin"), updateUserRoleHandler);
+router.patch("/users/:id/role", requireRole("admin", "supervisor"), updateUserRoleHandler);
+
+async function updateUserRoleHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateUserRoleParams.safeParse({ id: parseInt(raw, 10) });
@@ -156,6 +161,9 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     .where(eq(usersTable.id, params.data.id))
     .returning();
 
+  // Mirror role into Clerk publicMetadata so subsequent sign-ins agree.
+  await syncUserToClerk(updated.clerkId, { role: body.data.role });
+
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -179,14 +187,14 @@ router.patch("/users/:id/role", requireRole("admin", "supervisor"), async (req, 
     createdAt: updated.createdAt,
   });
   res.json(data);
-});
+}
 
 const UpdateUserStatusBody = z.object({
-  status: z.enum(["pending", "approved", "rejected"]),
+  status: z.enum(["pending", "approved", "rejected", "deactivated"]),
 });
 
-// PATCH /api/users/:id/status — admin only
-router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promise<void> => {
+// PATCH /api/users/:id/status — admin only (alias also exposed at /api/admin/users/:id/status)
+router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -215,6 +223,9 @@ router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promis
     .set({ status: newStatus })
     .where(eq(usersTable.id, id))
     .returning();
+
+  // Mirror status into Clerk publicMetadata so subsequent sign-ins agree.
+  await syncUserToClerk(updated.clerkId, { status: newStatus });
 
   await writeAuditLog({
     actorId: actor.id,
@@ -254,6 +265,115 @@ router.patch("/users/:id/status", requireRole("admin"), async (req, res): Promis
   res.json({
     id: updated.id,
     status: updated.status,
+  });
+});
+
+// ─── GET /api/admin/users/pending — list app users with status='pending' ────
+router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Promise<void> => {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.status, "pending"))
+    .orderBy(usersTable.createdAt);
+  res.json({
+    users: rows.map((u) => ({
+      id: u.id,
+      clerkId: u.clerkId,
+      email: u.email ?? undefined,
+      firstName: u.firstName ?? undefined,
+      lastName: u.lastName ?? undefined,
+      contactPhone: u.contactPhone ?? null,
+      role: normalizeRole(u.role),
+      status: u.status,
+      mfaEnabled: u.mfaEnabled,
+      isActive: u.isActive,
+      createdAt: u.createdAt,
+    })),
+    total: rows.length,
+  });
+});
+
+const ApprovalBody = z.object({
+  approve: z.boolean(),
+  role: z.enum([...VALID_ROLES]).optional(),
+});
+
+// ─── PATCH /api/admin/users/:id/approval — single approval flow ─────────────
+// approve=true sets status='approved' (+ optional role) and pushes to Clerk.
+// approve=false sets status='rejected' and pushes to Clerk.
+router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = parseInt(raw, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+
+  const body = ApprovalBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
+  const newRole = body.data.approve && body.data.role ? body.data.role : undefined;
+
+  const updateSet: Partial<typeof usersTable.$inferInsert> = { status: newStatus };
+  if (newRole) updateSet.role = newRole;
+
+  const [updated] = await db
+    .update(usersTable)
+    .set(updateSet)
+    .where(eq(usersTable.id, id))
+    .returning();
+
+  // Push to Clerk publicMetadata so the next sign-in does not re-pend the user.
+  await syncUserToClerk(updated.clerkId, {
+    status: newStatus,
+    role: newRole ?? normalizeRole(updated.role),
+  });
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: body.data.approve ? "APPROVE_USER" : "REJECT_USER",
+    resourceType: "user",
+    resourceId: String(id),
+    metadata: { newStatus, newRole, previousStatus: target.status, previousRole: target.role },
+    ipAddress: req.ip,
+  });
+
+  if (newStatus === "approved" && target.status !== "approved") {
+    sendSms(updated.contactPhone, smsAccountApproved(updated.firstName)).catch((err) => {
+      logger.error({ err, userId: updated.id }, "Failed to send account approval SMS");
+    });
+    try {
+      await db.insert(notificationsTable).values({
+        userId: updated.id,
+        type: "account_approved",
+        title: "Account Approved",
+        message: "Your account has been approved. You can now sign in and start placing orders.",
+        isRead: false,
+        resourceType: "user",
+        resourceId: updated.id,
+      });
+    } catch (err) {
+      logger.error({ err, userId: updated.id }, "Failed to write account approval notification");
+    }
+  }
+
+  res.json({
+    id: updated.id,
+    status: updated.status,
+    role: normalizeRole(updated.role),
   });
 });
 

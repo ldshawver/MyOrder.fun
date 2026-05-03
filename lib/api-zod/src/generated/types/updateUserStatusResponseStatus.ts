@@ -6,10 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type UserProfileStatus = typeof UserProfileStatus[keyof typeof UserProfileStatus];
+export type UpdateUserStatusResponseStatus = typeof UpdateUserStatusResponseStatus[keyof typeof UpdateUserStatusResponseStatus];
 
 
-export const UserProfileStatus = {
+export const UpdateUserStatusResponseStatus = {
   pending: 'pending',
   approved: 'approved',
   rejected: 'rejected',

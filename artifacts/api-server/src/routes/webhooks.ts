@@ -3,6 +3,7 @@ import { Webhook } from "svix";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger";
+import { syncUserToClerk } from "../lib/clerkSync";
 
 const router: IRouter = Router();
 
@@ -76,6 +77,9 @@ router.post("/webhooks/clerk", async (req, res): Promise<void> => {
             },
           });
         logger.info({ clerkId }, "User created/upserted via webhook");
+        // Push initial pending status into Clerk publicMetadata so the
+        // dashboard and DB agree from minute zero. Failure is non-fatal.
+        await syncUserToClerk(clerkId, { status: "pending", role: "user" });
       } else {
         await db
           .update(usersTable)

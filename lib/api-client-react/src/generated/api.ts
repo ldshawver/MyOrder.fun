@@ -54,6 +54,8 @@ import type {
   OrderNote,
   OrderNotesResponse,
   OrderSummary,
+  SetUserApprovalBody,
+  SetUserApprovalResponse,
   Tenant,
   TenantListResponse,
   TenantSummary,
@@ -64,6 +66,8 @@ import type {
   UpdateOrderStatusBody,
   UpdateTenantBody,
   UpdateUserRoleBody,
+  UpdateUserStatusBody,
+  UpdateUserStatusResponse,
   UserListResponse,
   UserProfile
 } from './api.schemas';
@@ -1911,6 +1915,299 @@ export const useUpdateUserRole = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getUpdateUserRoleMutationOptions(options));
+    }
+
+/**
+ * @summary List app users awaiting approval (status = 'pending')
+ */
+export const getListPendingUsersUrl = () => {
+
+
+
+
+  return `/api/admin/users/pending`
+}
+
+export const listPendingUsers = async ( options?: RequestInit): Promise<UserListResponse> => {
+
+  return customFetch<UserListResponse>(getListPendingUsersUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListPendingUsersQueryKey = () => {
+    return [
+    `/api/admin/users/pending`
+    ] as const;
+    }
+
+
+export const getListPendingUsersQueryOptions = <TData = Awaited<ReturnType<typeof listPendingUsers>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPendingUsers>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListPendingUsersQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPendingUsers>>> = ({ signal }) => listPendingUsers({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPendingUsers>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListPendingUsersQueryResult = NonNullable<Awaited<ReturnType<typeof listPendingUsers>>>
+export type ListPendingUsersQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List app users awaiting approval (status = 'pending')
+ */
+
+export function useListPendingUsers<TData = Awaited<ReturnType<typeof listPendingUsers>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPendingUsers>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListPendingUsersQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Approve or reject a pending user (also pushes to Clerk publicMetadata)
+ */
+export const getSetUserApprovalUrl = (id: number,) => {
+
+
+
+
+  return `/api/admin/users/${id}/approval`
+}
+
+export const setUserApproval = async (id: number,
+    setUserApprovalBody: SetUserApprovalBody, options?: RequestInit): Promise<SetUserApprovalResponse> => {
+
+  return customFetch<SetUserApprovalResponse>(getSetUserApprovalUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      setUserApprovalBody,)
+  }
+);}
+
+
+
+
+export const getSetUserApprovalMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setUserApproval>>, TError,{id: number;data: BodyType<SetUserApprovalBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof setUserApproval>>, TError,{id: number;data: BodyType<SetUserApprovalBody>}, TContext> => {
+
+const mutationKey = ['setUserApproval'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setUserApproval>>, {id: number;data: BodyType<SetUserApprovalBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  setUserApproval(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SetUserApprovalMutationResult = NonNullable<Awaited<ReturnType<typeof setUserApproval>>>
+    export type SetUserApprovalMutationBody = BodyType<SetUserApprovalBody>
+    export type SetUserApprovalMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Approve or reject a pending user (also pushes to Clerk publicMetadata)
+ */
+export const useSetUserApproval = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setUserApproval>>, TError,{id: number;data: BodyType<SetUserApprovalBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof setUserApproval>>,
+        TError,
+        {id: number;data: BodyType<SetUserApprovalBody>},
+        TContext
+      > => {
+      return useMutation(getSetUserApprovalMutationOptions(options));
+    }
+
+/**
+ * @summary Admin alias for updating a user's role
+ */
+export const getAdminUpdateUserRoleUrl = (id: number,) => {
+
+
+
+
+  return `/api/admin/users/${id}/role`
+}
+
+export const adminUpdateUserRole = async (id: number,
+    updateUserRoleBody: UpdateUserRoleBody, options?: RequestInit): Promise<UserProfile> => {
+
+  return customFetch<UserProfile>(getAdminUpdateUserRoleUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      updateUserRoleBody,)
+  }
+);}
+
+
+
+
+export const getAdminUpdateUserRoleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserRole>>, TError,{id: number;data: BodyType<UpdateUserRoleBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserRole>>, TError,{id: number;data: BodyType<UpdateUserRoleBody>}, TContext> => {
+
+const mutationKey = ['adminUpdateUserRole'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof adminUpdateUserRole>>, {id: number;data: BodyType<UpdateUserRoleBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  adminUpdateUserRole(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AdminUpdateUserRoleMutationResult = NonNullable<Awaited<ReturnType<typeof adminUpdateUserRole>>>
+    export type AdminUpdateUserRoleMutationBody = BodyType<UpdateUserRoleBody>
+    export type AdminUpdateUserRoleMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Admin alias for updating a user's role
+ */
+export const useAdminUpdateUserRole = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserRole>>, TError,{id: number;data: BodyType<UpdateUserRoleBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof adminUpdateUserRole>>,
+        TError,
+        {id: number;data: BodyType<UpdateUserRoleBody>},
+        TContext
+      > => {
+      return useMutation(getAdminUpdateUserRoleMutationOptions(options));
+    }
+
+/**
+ * @summary Admin alias for updating a user's status (approved/rejected/deactivated/pending)
+ */
+export const getAdminUpdateUserStatusUrl = (id: number,) => {
+
+
+
+
+  return `/api/admin/users/${id}/status`
+}
+
+export const adminUpdateUserStatus = async (id: number,
+    updateUserStatusBody: UpdateUserStatusBody, options?: RequestInit): Promise<UpdateUserStatusResponse> => {
+
+  return customFetch<UpdateUserStatusResponse>(getAdminUpdateUserStatusUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      updateUserStatusBody,)
+  }
+);}
+
+
+
+
+export const getAdminUpdateUserStatusMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserStatus>>, TError,{id: number;data: BodyType<UpdateUserStatusBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserStatus>>, TError,{id: number;data: BodyType<UpdateUserStatusBody>}, TContext> => {
+
+const mutationKey = ['adminUpdateUserStatus'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof adminUpdateUserStatus>>, {id: number;data: BodyType<UpdateUserStatusBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  adminUpdateUserStatus(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AdminUpdateUserStatusMutationResult = NonNullable<Awaited<ReturnType<typeof adminUpdateUserStatus>>>
+    export type AdminUpdateUserStatusMutationBody = BodyType<UpdateUserStatusBody>
+    export type AdminUpdateUserStatusMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Admin alias for updating a user's status (approved/rejected/deactivated/pending)
+ */
+export const useAdminUpdateUserStatus = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adminUpdateUserStatus>>, TError,{id: number;data: BodyType<UpdateUserStatusBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof adminUpdateUserStatus>>,
+        TError,
+        {id: number;data: BodyType<UpdateUserStatusBody>},
+        TContext
+      > => {
+      return useMutation(getAdminUpdateUserStatusMutationOptions(options));
     }
 
 /**

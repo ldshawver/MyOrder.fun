@@ -590,7 +590,7 @@ export const GetCurrentUserResponse = zod.object({
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
-  "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
@@ -615,7 +615,7 @@ export const ListUsersResponse = zod.object({
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
-  "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
@@ -645,10 +645,97 @@ export const UpdateUserRoleResponse = zod.object({
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
-  "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary List app users awaiting approval (status = 'pending')
+ */
+export const ListPendingUsersResponse = zod.object({
+  "users": zod.array(zod.object({
+  "id": zod.number(),
+  "clerkId": zod.string(),
+  "email": zod.string(),
+  "firstName": zod.string().optional(),
+  "lastName": zod.string().optional(),
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "tenantId": zod.number().optional(),
+  "tenantName": zod.string().optional(),
+  "mfaEnabled": zod.boolean().optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
+  "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})),
+  "total": zod.number()
+})
+
+
+/**
+ * @summary Approve or reject a pending user (also pushes to Clerk publicMetadata)
+ */
+export const SetUserApprovalParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const SetUserApprovalBody = zod.object({
+  "approve": zod.boolean(),
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']).optional()
+})
+
+export const SetUserApprovalResponse = zod.object({
+  "id": zod.number(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']),
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user'])
+})
+
+
+/**
+ * @summary Admin alias for updating a user's role
+ */
+export const AdminUpdateUserRoleParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AdminUpdateUserRoleBody = zod.object({
+  "role": zod.enum(['supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user'])
+})
+
+export const AdminUpdateUserRoleResponse = zod.object({
+  "id": zod.number(),
+  "clerkId": zod.string(),
+  "email": zod.string(),
+  "firstName": zod.string().optional(),
+  "lastName": zod.string().optional(),
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "tenantId": zod.number().optional(),
+  "tenantName": zod.string().optional(),
+  "mfaEnabled": zod.boolean().optional(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
+  "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Admin alias for updating a user's status (approved/rejected/deactivated/pending)
+ */
+export const AdminUpdateUserStatusParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AdminUpdateUserStatusBody = zod.object({
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated'])
+})
+
+export const AdminUpdateUserStatusResponse = zod.object({
+  "id": zod.number(),
+  "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated'])
 })
 
 

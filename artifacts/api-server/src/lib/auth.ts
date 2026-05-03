@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
+import { readClerkPublicMetadata } from "./clerkSync";
 
 export type Role =
   | "admin"
@@ -146,11 +147,40 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
   next();
 }
 
-// Middleware that loads the DB user into req.dbUser
+// Middleware that loads the DB user into req.dbUser.
+//
+// Sync-on-read: Clerk's publicMetadata is the source of truth for status/role
+// at sign-in time. If the JWT carries a status/role that differs from the DB
+// row, reconcile the DB to match Clerk so manual dashboard changes propagate.
 export async function loadDbUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const user = await getOrCreateDbUser(req);
   if (user) {
-    req.dbUser = user;
+    const auth = getAuth(req);
+    const meta = readClerkPublicMetadata(
+      auth?.sessionClaims as Record<string, unknown> | undefined,
+    );
+    const updates: Partial<typeof usersTable.$inferInsert> = {};
+    if (meta.status && meta.status !== user.status) {
+      updates.status = meta.status;
+    }
+    if (meta.role && meta.role !== user.role) {
+      updates.role = meta.role;
+    }
+    if (Object.keys(updates).length > 0) {
+      try {
+        const [reconciled] = await db
+          .update(usersTable)
+          .set(updates)
+          .where(eq(usersTable.id, user.id))
+          .returning();
+        req.dbUser = reconciled ?? user;
+      } catch (err) {
+        logger.error({ err, userId: user.id, updates }, "Failed to reconcile DB user from Clerk metadata");
+        req.dbUser = user;
+      }
+    } else {
+      req.dbUser = user;
+    }
   }
   next();
 }

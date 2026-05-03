@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus, useGetCurrentUser } from "@workspace/api-client-react";
-import type { UserProfileStatus, UpdateUserRoleBodyRole } from "@workspace/api-client-react";
+import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus, useGetCurrentUser, useListPendingUsers, useSetUserApproval, getListPendingUsersQueryKey } from "@workspace/api-client-react";
+import type { UserProfileStatus, UpdateUserRoleBodyRole, SetUserApprovalBodyRole } from "@workspace/api-client-react";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -10,8 +10,146 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, Mail, CheckCircle2, XCircle, Clock } from "lucide-react";
 
-type StatusFilter = "all" | "pending" | "approved" | "rejected";
-type PageTab = "users" | "waitlist";
+type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
+type PageTab = "users" | "pending" | "waitlist";
+
+const APPROVAL_ROLES: { value: SetUserApprovalBodyRole; label: string }[] = [
+  { value: "user", label: "User" },
+  { value: "supervisor", label: "Supervisor" },
+  { value: "business_sitter", label: "Business Sitter" },
+  { value: "customer_service_rep", label: "Customer Service Rep" },
+  { value: "sales_rep", label: "Sales Rep" },
+  { value: "lab_tech", label: "Lab Tech" },
+];
+
+function PendingTab() {
+  const queryClient = useQueryClient();
+  const { data, isLoading, isError } = useListPendingUsers({
+    query: { queryKey: getListPendingUsersQueryKey() },
+  });
+  const approval = useSetUserApproval();
+  const [roleById, setRoleById] = useState<Record<number, SetUserApprovalBodyRole>>({});
+
+  const users = data?.users ?? [];
+
+  const handleApprove = (id: number) => {
+    const role = roleById[id] ?? "user";
+    approval.mutate(
+      { id, data: { approve: true, role } },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListPendingUsersQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+        },
+      },
+    );
+  };
+
+  const handleReject = (id: number) => {
+    approval.mutate(
+      { id, data: { approve: false } },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListPendingUsersQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+        },
+      },
+    );
+  };
+
+  return (
+    <div className="bg-card border border-border/50 rounded-sm shadow-sm overflow-hidden">
+      <Table>
+        <TableHeader className="bg-muted/10">
+          <TableRow className="border-border/50">
+            <TableHead className="font-semibold text-xs uppercase tracking-wider">User</TableHead>
+            <TableHead className="font-semibold text-xs uppercase tracking-wider">Email</TableHead>
+            <TableHead className="font-semibold text-xs uppercase tracking-wider">Phone</TableHead>
+            <TableHead className="font-semibold text-xs uppercase tracking-wider">Assign Role</TableHead>
+            <TableHead className="font-semibold text-xs uppercase tracking-wider">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {isLoading ? (
+            <TableRow>
+              <TableCell colSpan={5} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest">
+                Loading pending users…
+              </TableCell>
+            </TableRow>
+          ) : isError ? (
+            <TableRow>
+              <TableCell colSpan={5} className="h-32 text-center text-red-500 font-mono text-xs uppercase tracking-widest">
+                Failed to load pending users.
+              </TableCell>
+            </TableRow>
+          ) : users.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={5} className="h-32 text-center text-muted-foreground font-mono text-xs uppercase tracking-widest border-dashed">
+                No users awaiting approval.
+              </TableCell>
+            </TableRow>
+          ) : (
+            users.map((u) => (
+              <TableRow key={u.id} className="border-border/30 hover:bg-muted/20 transition-colors" data-testid={`row-pending-${u.id}`}>
+                <TableCell className="font-medium text-sm">
+                  {u.firstName} {u.lastName}
+                </TableCell>
+                <TableCell className="text-muted-foreground font-mono text-xs">{u.email}</TableCell>
+                <TableCell className="text-muted-foreground font-mono text-xs">
+                  {u.contactPhone ?? <span className="opacity-30">—</span>}
+                </TableCell>
+                <TableCell>
+                  <Select
+                    value={roleById[u.id] ?? "user"}
+                    onValueChange={(v) => setRoleById((m) => ({ ...m, [u.id]: v as SetUserApprovalBodyRole }))}
+                  >
+                    <SelectTrigger
+                      className="w-[160px] h-8 rounded-sm text-xs font-mono uppercase tracking-wider bg-background border-border/50"
+                      data-testid={`select-pending-role-${u.id}`}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-sm">
+                      {APPROVAL_ROLES.map((r) => (
+                        <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">
+                          {r.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600"
+                      onClick={() => handleApprove(u.id)}
+                      disabled={approval.isPending}
+                      data-testid={`btn-approve-pending-${u.id}`}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600"
+                      onClick={() => handleReject(u.id)}
+                      disabled={approval.isPending}
+                      data-testid={`btn-reject-pending-${u.id}`}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status?: UserProfileStatus }) {
   const s = status ?? "pending";
@@ -19,6 +157,7 @@ function StatusBadge({ status }: { status?: UserProfileStatus }) {
     pending: "bg-amber-500/10 text-amber-500 border-amber-500/20",
     approved: "bg-green-500/10 text-green-500 border-green-500/20",
     rejected: "bg-red-500/10 text-red-500 border-red-500/20",
+    deactivated: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
   };
   return (
     <Badge
@@ -240,10 +379,11 @@ export default function AdminUsers() {
       : allUsers.filter((u) => (u.status ?? "pending") === statusFilter);
 
   const counts = {
-    all:      allUsers.length,
-    approved: allUsers.filter((u) => (u.status ?? "pending") === "approved").length,
-    pending:  allUsers.filter((u) => (u.status ?? "pending") === "pending").length,
-    rejected: allUsers.filter((u) => (u.status ?? "pending") === "rejected").length,
+    all:         allUsers.length,
+    approved:    allUsers.filter((u) => (u.status ?? "pending") === "approved").length,
+    pending:     allUsers.filter((u) => (u.status ?? "pending") === "pending").length,
+    rejected:    allUsers.filter((u) => (u.status ?? "pending") === "rejected").length,
+    deactivated: allUsers.filter((u) => (u.status ?? "pending") === "deactivated").length,
   };
 
   return (
@@ -261,6 +401,7 @@ export default function AdminUsers() {
       <div className="flex items-center gap-1 border-b border-border/40 pb-0">
         {([
           { id: "users" as PageTab, label: "Platform Users", count: allUsers.length },
+          { id: "pending" as PageTab, label: "Pending Approval", count: counts.pending },
           { id: "waitlist" as PageTab, label: "Waitlist (Clerk)", count: null, icon: Clock },
         ]).map(tab => (
           <button
@@ -280,11 +421,13 @@ export default function AdminUsers() {
 
       {pageTab === "waitlist" ? (
         <WaitlistTab />
+      ) : pageTab === "pending" ? (
+        <PendingTab />
       ) : (
         <>
           {/* Status filter tabs */}
           <div className="flex items-center gap-2 flex-wrap">
-            {(["all", "approved", "pending", "rejected"] as StatusFilter[]).map((s) => (
+            {(["all", "approved", "pending", "rejected", "deactivated"] as StatusFilter[]).map((s) => (
               <Button
                 key={s}
                 variant={statusFilter === s ? "default" : "outline"}

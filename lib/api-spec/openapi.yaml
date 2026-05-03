@@ -517,6 +517,94 @@ paths:
               schema:
                 $ref: "#/components/schemas/UserProfile"
 
+  /admin/users/pending:
+    get:
+      operationId: listPendingUsers
+      tags: [admin]
+      summary: List app users awaiting approval (status = 'pending')
+      responses:
+        "200":
+          description: Pending users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+
+  /admin/users/{id}/approval:
+    patch:
+      operationId: setUserApproval
+      tags: [admin]
+      summary: Approve or reject a pending user (also pushes to Clerk publicMetadata)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetUserApprovalBody"
+      responses:
+        "200":
+          description: Approval result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SetUserApprovalResponse"
+
+  /admin/users/{id}/role:
+    patch:
+      operationId: adminUpdateUserRole
+      tags: [admin]
+      summary: Admin alias for updating a user's role
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRoleBody"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /admin/users/{id}/status:
+    patch:
+      operationId: adminUpdateUserStatus
+      tags: [admin]
+      summary: Admin alias for updating a user's status (approved/rejected/deactivated/pending)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserStatusBody"
+      responses:
+        "200":
+          description: Updated status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateUserStatusResponse"
+
   # ─────────────── AUDIT LOG ───────────────
   /audit:
     get:
@@ -1368,7 +1456,7 @@ components:
           type: boolean
         status:
           type: string
-          enum: [pending, approved, rejected]
+          enum: [pending, approved, rejected, deactivated]
         isActive:
           type: boolean
         contactPhone:
@@ -1386,6 +1474,47 @@ components:
           type: string
           enum: [supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
       required: [role]
+
+    UpdateUserStatusBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, approved, rejected, deactivated]
+      required: [status]
+
+    UpdateUserStatusResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [pending, approved, rejected, deactivated]
+      required: [id, status]
+
+    SetUserApprovalBody:
+      type: object
+      properties:
+        approve:
+          type: boolean
+        role:
+          type: string
+          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+      required: [approve]
+
+    SetUserApprovalResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [pending, approved, rejected, deactivated]
+        role:
+          type: string
+          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+      required: [id, status, role]
 
     UserListResponse:
       type: object

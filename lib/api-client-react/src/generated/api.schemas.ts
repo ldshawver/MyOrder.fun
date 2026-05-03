@@ -376,6 +376,7 @@ export const UserProfileStatus = {
   pending: 'pending',
   approved: 'approved',
   rejected: 'rejected',
+  deactivated: 'deactivated',
 } as const;
 
 export interface UserProfile {
@@ -408,6 +409,82 @@ export const UpdateUserRoleBodyRole = {
 
 export interface UpdateUserRoleBody {
   role: UpdateUserRoleBodyRole;
+}
+
+export type UpdateUserStatusBodyStatus = typeof UpdateUserStatusBodyStatus[keyof typeof UpdateUserStatusBodyStatus];
+
+
+export const UpdateUserStatusBodyStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+  deactivated: 'deactivated',
+} as const;
+
+export interface UpdateUserStatusBody {
+  status: UpdateUserStatusBodyStatus;
+}
+
+export type UpdateUserStatusResponseStatus = typeof UpdateUserStatusResponseStatus[keyof typeof UpdateUserStatusResponseStatus];
+
+
+export const UpdateUserStatusResponseStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+  deactivated: 'deactivated',
+} as const;
+
+export interface UpdateUserStatusResponse {
+  id: number;
+  status: UpdateUserStatusResponseStatus;
+}
+
+export type SetUserApprovalBodyRole = typeof SetUserApprovalBodyRole[keyof typeof SetUserApprovalBodyRole];
+
+
+export const SetUserApprovalBodyRole = {
+  admin: 'admin',
+  supervisor: 'supervisor',
+  business_sitter: 'business_sitter',
+  customer_service_rep: 'customer_service_rep',
+  sales_rep: 'sales_rep',
+  lab_tech: 'lab_tech',
+  user: 'user',
+} as const;
+
+export interface SetUserApprovalBody {
+  approve: boolean;
+  role?: SetUserApprovalBodyRole;
+}
+
+export type SetUserApprovalResponseStatus = typeof SetUserApprovalResponseStatus[keyof typeof SetUserApprovalResponseStatus];
+
+
+export const SetUserApprovalResponseStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+  deactivated: 'deactivated',
+} as const;
+
+export type SetUserApprovalResponseRole = typeof SetUserApprovalResponseRole[keyof typeof SetUserApprovalResponseRole];
+
+
+export const SetUserApprovalResponseRole = {
+  admin: 'admin',
+  supervisor: 'supervisor',
+  business_sitter: 'business_sitter',
+  customer_service_rep: 'customer_service_rep',
+  sales_rep: 'sales_rep',
+  lab_tech: 'lab_tech',
+  user: 'user',
+} as const;
+
+export interface SetUserApprovalResponse {
+  id: number;
+  status: SetUserApprovalResponseStatus;
+  role: SetUserApprovalResponseRole;
 }
 
 export interface UserListResponse {
