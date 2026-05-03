@@ -12,33 +12,27 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-// ─── Template column reference ─────────────────────────────────────────────────
-const REQUIRED_COLS = [
-  { friendly: "Regular Price",  canonical: "regular_price" },
-  { friendly: "Menu Name",      canonical: "alavont_name" },
-  { friendly: "Menu Category",  canonical: "alavont_category" },
-  { friendly: "Merchant Name",  canonical: "lucifer_cruz_name" },
-  { friendly: "Merchant SKU",   canonical: "lab_name" },
-];
-
-const OPTIONAL_COLS = [
-  "Menu Image URL", "Menu Description", "Menu In Stock", "Menu ID",
-  "Menu Amount", "Menu Measurement",
-  "Merchant Price", "Merchant Image URL", "Merchant Description",
-  "Merchant Category", "Merchant In Stock", "Merchant ID",
-  "Merchant Created Date", "Merchant Updated Date",
-  "Merchant Created By ID", "Merchant Created By",
-];
-
+// ─── Template column reference (14-column menu import spec — Task #10) ────────
 const TEMPLATE_HEADERS = [
-  "Regular Price", "Menu Image URL", "Menu Name", "Menu Description",
-  "Menu Category", "Menu In Stock", "Menu ID", "Menu Amount",
-  "Menu Measurement", "Merchant Price", "Merchant Name",
-  "Merchant Image URL", "Merchant Description", "Merchant Category",
-  "Merchant In Stock", "Merchant ID", "Merchant Created Date",
-  "Merchant Updated Date", "Merchant Created By ID", "Merchant Created By",
-  "Merchant SKU",
+  "Menu Regular Price",
+  "Menu Image",
+  "Menu Name",
+  "Menu Description",
+  "Menu Category",
+  "Menu In Stock",
+  "Menu ID",
+  "Amount",
+  "Unit Measurement",
+  "Merchant Name",
+  "Merchant Image",
+  "Merchant Description",
+  "Merchant Category",
+  "Merchant Sku",
 ];
+
+const REQUIRED_COLS = TEMPLATE_HEADERS.map(h => ({ friendly: h, canonical: h }));
+
+const OPTIONAL_COLS: string[] = [];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type HeaderMapping = { original: string; canonical: string; recognized: boolean };
@@ -65,16 +59,19 @@ type ParsedHeaders = {
   fileColumns: string[];
 };
 
+type ImportError = { row: number; message: string };
+
 type ImportResult = {
-  dryRun: boolean;
   inserted: number;
   updated: number;
   skipped: number;
-  failed: number;
-  errors: string[];
+  errors: ImportError[];
+  // Optional fields kept for the legacy WooCommerce sync response shape
+  dryRun?: boolean;
+  failed?: number;
   warnings?: string[];
   unknownHeaders?: string[];
-  total: number;
+  total?: number;
   headerMappings?: HeaderMapping[];
 };
 
@@ -186,12 +183,14 @@ function WooCommerceSync() {
 
 // ─── Result cards ─────────────────────────────────────────────────────────────
 function ResultCards({ result }: { result: ImportResult }) {
+  const errorCount = result.errors.length;
+  const total = result.total ?? (result.inserted + result.updated + result.skipped + errorCount);
   const stats = [
     { label: "Inserted", value: result.inserted, color: "#10b981" },
     { label: "Updated",  value: result.updated,  color: "#3b82f6" },
     { label: "Skipped",  value: result.skipped,  color: "#f59e0b" },
-    { label: "Failed",   value: result.failed ?? 0, color: "#ef4444" },
-    { label: "Total",    value: result.total,    color: "#6b7280" },
+    { label: "Failed",   value: result.failed ?? errorCount, color: "#ef4444" },
+    { label: "Total",    value: total,           color: "#6b7280" },
   ];
   return (
     <div className="space-y-3">
@@ -227,14 +226,15 @@ function ResultCards({ result }: { result: ImportResult }) {
           </div>
           {result.errors.map((e, i) => (
             <div key={i} className="text-[11px] text-yellow-300/70 font-mono flex gap-1.5">
-              <ChevronRight size={10} className="shrink-0 mt-0.5" />{e}
+              <ChevronRight size={10} className="shrink-0 mt-0.5" />
+              {typeof e === "string" ? e : `Row ${e.row}: ${e.message}`}
             </div>
           ))}
         </div>
       )}
-      {result.errors.length === 0 && (
+      {errorCount === 0 && (
         <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold">
-          <CheckCircle2 size={13} /> {result.dryRun ? "Dry run passed" : "Import complete"} — all {result.total} rows processed
+          <CheckCircle2 size={13} /> {result.dryRun ? "Dry run passed" : "Import complete"} — all {total} rows processed
         </div>
       )}
     </div>
@@ -268,16 +268,18 @@ function ExpectedColumnsRef() {
               ))}
             </div>
           </div>
-          <div>
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Optional</div>
-            <div className="flex flex-wrap gap-1.5">
-              {OPTIONAL_COLS.map(c => (
-                <span key={c} className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-border/40 bg-muted/20 text-muted-foreground">{c}</span>
-              ))}
+          {OPTIONAL_COLS.length > 0 && (
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Optional</div>
+              <div className="flex flex-wrap gap-1.5">
+                {OPTIONAL_COLS.map(c => (
+                  <span key={c} className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-border/40 bg-muted/20 text-muted-foreground">{c}</span>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
           <p className="text-[11px] text-muted-foreground/60">
-            Column names are case-insensitive. Aliases like "Menu Name", "menu_name", and "alavont_name" all map to the same field. Download the template for an exact starting point.
+            Column names must match exactly (case-sensitive) — extra or misspelled columns will be rejected. Order does not matter. Download the template above for an exact starting point. Both CSV and TSV are accepted.
           </p>
         </div>
       )}
@@ -427,7 +429,7 @@ function ColumnMapper({ parsedData, userMapping, onMap, onUnmap }: ColumnMapperP
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-orange-500/15">
             <AlertTriangle size={13} className="text-orange-400 shrink-0" />
             <span className="text-xs font-semibold text-orange-300">
-              {unknownHeaders.length} unrecognized column{unknownHeaders.length !== 1 ? "s" : ""} — will be ignored
+              {unknownHeaders.length} unrecognized column{unknownHeaders.length !== 1 ? "s" : ""} — import will be rejected
             </span>
           </div>
           <div className="p-3 space-y-2">
@@ -439,7 +441,7 @@ function ColumnMapper({ parsedData, userMapping, onMap, onUnmap }: ColumnMapperP
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground/60">
-              These columns are not recognized. If they contain data you need, use the dropdowns above to map them to the correct field.
+              These columns are not part of the 14-column menu spec. Remove them from your file before importing — the server will reject any file with extra columns.
             </p>
           </div>
         </div>
@@ -640,11 +642,10 @@ export default function AdminImport() {
 
   function downloadTemplate() {
     const sampleRow = [
-      "29.99", "https://example.com/menu-img.jpg", "Midnight Recovery Complex",
-      "Advanced cellular recovery blend", "Dermatology", "true", "ALV-001", "false",
-      "24.99", "", "Velvet Restore Set", "https://example.com/merchant-img.jpg",
-      "Luxurious overnight treatment", "Skin Care", "true", "MRC-001",
-      "2024-01-15", "2024-03-20", "user_123", "admin", "MRC-Lab",
+      "29.99", "https://example.com/menu.jpg", "Midnight Recovery Complex",
+      "Advanced cellular recovery blend", "Dermatology", "true", "ALV-001",
+      "10", "ml", "Velvet Restore Set", "https://example.com/merchant.jpg",
+      "Luxurious overnight treatment", "Skin Care", "MRC-LAB-001",
     ];
     const csv = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });

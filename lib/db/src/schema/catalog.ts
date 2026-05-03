@@ -61,6 +61,14 @@ export const catalogItemsTable = pgTable("catalog_items", {
   stockUnit: text("stock_unit").default("#"),
   // Par level — minimum desired stock; drives restock slip generation
   parLevel: numeric("par_level", { precision: 10, scale: 2 }).default("0"),
+  // ── Task #10: 14-column menu import spec ──
+  externalMenuId: text("external_menu_id"),
+  inventoryAmount: numeric("inventory_amount", { precision: 10, scale: 2 }),
+  unitMeasurement: text("unit_measurement"),
+  merchantName: text("merchant_name"),
+  merchantImage: text("merchant_image"),
+  merchantDescription: text("merchant_description"),
+  merchantCategory: text("merchant_category"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
