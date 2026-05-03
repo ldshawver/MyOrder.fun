@@ -20,5 +20,6 @@ export interface UserProfile {
   mfaEnabled?: boolean;
   status?: UserProfileStatus;
   isActive: boolean;
+  contactPhone?: string | null;
   createdAt: Date;
 }

@@ -227,7 +227,8 @@ export const ListCatalogItemsQueryParams = zod.object({
   "search": zod.coerce.string().optional(),
   "available": zod.coerce.boolean().optional(),
   "page": zod.coerce.number().default(listCatalogItemsQueryPageDefault),
-  "limit": zod.coerce.number().default(listCatalogItemsQueryLimitDefault)
+  "limit": zod.coerce.number().default(listCatalogItemsQueryLimitDefault),
+  "mode": zod.coerce.string().optional()
 })
 
 export const ListCatalogItemsResponse = zod.object({
@@ -264,10 +265,28 @@ export const CreateCatalogItemBody = zod.object({
   "sku": zod.string().optional(),
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
-  "tags": zod.array(zod.string()).optional()
+  "tags": zod.array(zod.string()).optional(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "labName": zod.string().nullish(),
+  "receiptName": zod.string().nullish()
 })
 
 
@@ -311,10 +330,28 @@ export const UpdateCatalogItemBody = zod.object({
   "sku": zod.string().optional(),
   "price": zod.number().optional(),
   "compareAtPrice": zod.number().optional(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
-  "tags": zod.array(zod.string()).optional()
+  "tags": zod.array(zod.string()).optional(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "labName": zod.string().nullish(),
+  "receiptName": zod.string().nullish()
 })
 
 export const UpdateCatalogItemResponse = zod.object({
@@ -555,6 +592,7 @@ export const GetCurrentUserResponse = zod.object({
   "mfaEnabled": zod.boolean().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
   "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })
 
@@ -579,6 +617,7 @@ export const ListUsersResponse = zod.object({
   "mfaEnabled": zod.boolean().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
   "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })),
   "total": zod.number()
@@ -608,6 +647,7 @@ export const UpdateUserRoleResponse = zod.object({
   "mfaEnabled": zod.boolean().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected']).optional(),
   "isActive": zod.boolean(),
+  "contactPhone": zod.string().nullish(),
   "createdAt": zod.coerce.date()
 })
 

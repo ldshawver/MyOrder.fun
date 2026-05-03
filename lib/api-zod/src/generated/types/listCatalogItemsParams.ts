@@ -12,4 +12,5 @@ search?: string;
 available?: boolean;
 page?: number;
 limit?: number;
+mode?: string;
 };

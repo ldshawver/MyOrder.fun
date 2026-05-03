@@ -13,8 +13,26 @@ export interface CreateCatalogItemBody {
   sku?: string;
   price: number;
   compareAtPrice?: number;
+  regularPrice?: number | null;
+  homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
   imageUrl?: string;
   tags?: string[];
+  luciferCruzName?: string | null;
+  luciferCruzImageUrl?: string | null;
+  luciferCruzDescription?: string | null;
+  luciferCruzCategory?: string | null;
+  merchantProcessingMode?: string | null;
+  merchantProductSource?: string | null;
+  isWooManaged?: boolean;
+  wooProductId?: string | null;
+  wooVariationId?: string | null;
+  alavontName?: string | null;
+  alavontDescription?: string | null;
+  alavontCategory?: string | null;
+  alavontImageUrl?: string | null;
+  alavontInStock?: boolean | null;
+  labName?: string | null;
+  receiptName?: string | null;
 }

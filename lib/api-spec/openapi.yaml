@@ -237,6 +237,10 @@ paths:
           schema:
             type: integer
             default: 20
+        - in: query
+          name: mode
+          schema:
+            type: string
       responses:
         "200":
           description: List of catalog items
@@ -999,6 +1003,12 @@ components:
           type: number
         compareAtPrice:
           type: number
+        regularPrice:
+          type: number
+          nullable: true
+        homiePrice:
+          type: number
+          nullable: true
         stockQuantity:
           type: integer
         isAvailable:
@@ -1009,6 +1019,53 @@ components:
           type: array
           items:
             type: string
+        luciferCruzName:
+          type: string
+          nullable: true
+        luciferCruzImageUrl:
+          type: string
+          nullable: true
+        luciferCruzDescription:
+          type: string
+          nullable: true
+        luciferCruzCategory:
+          type: string
+          nullable: true
+        merchantProcessingMode:
+          type: string
+          nullable: true
+        merchantProductSource:
+          type: string
+          nullable: true
+        isWooManaged:
+          type: boolean
+        wooProductId:
+          type: string
+          nullable: true
+        wooVariationId:
+          type: string
+          nullable: true
+        alavontName:
+          type: string
+          nullable: true
+        alavontDescription:
+          type: string
+          nullable: true
+        alavontCategory:
+          type: string
+          nullable: true
+        alavontImageUrl:
+          type: string
+          nullable: true
+        alavontInStock:
+          type: boolean
+          nullable: true
+        labName:
+          type: string
+          nullable: true
+        receiptName:
+          type: string
+          nullable: true
       required: [name, category, price]
 
     UpdateCatalogItemBody:
@@ -1026,6 +1083,12 @@ components:
           type: number
         compareAtPrice:
           type: number
+        regularPrice:
+          type: number
+          nullable: true
+        homiePrice:
+          type: number
+          nullable: true
         stockQuantity:
           type: integer
         isAvailable:
@@ -1036,6 +1099,53 @@ components:
           type: array
           items:
             type: string
+        luciferCruzName:
+          type: string
+          nullable: true
+        luciferCruzImageUrl:
+          type: string
+          nullable: true
+        luciferCruzDescription:
+          type: string
+          nullable: true
+        luciferCruzCategory:
+          type: string
+          nullable: true
+        merchantProcessingMode:
+          type: string
+          nullable: true
+        merchantProductSource:
+          type: string
+          nullable: true
+        isWooManaged:
+          type: boolean
+        wooProductId:
+          type: string
+          nullable: true
+        wooVariationId:
+          type: string
+          nullable: true
+        alavontName:
+          type: string
+          nullable: true
+        alavontDescription:
+          type: string
+          nullable: true
+        alavontCategory:
+          type: string
+          nullable: true
+        alavontImageUrl:
+          type: string
+          nullable: true
+        alavontInStock:
+          type: boolean
+          nullable: true
+        labName:
+          type: string
+          nullable: true
+        receiptName:
+          type: string
+          nullable: true
 
     CatalogItemListResponse:
       type: object
@@ -1261,6 +1371,9 @@ components:
           enum: [pending, approved, rejected]
         isActive:
           type: boolean
+        contactPhone:
+          type: string
+          nullable: true
         createdAt:
           type: string
           format: date-time
