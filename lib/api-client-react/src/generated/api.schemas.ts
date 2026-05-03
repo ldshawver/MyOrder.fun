@@ -7,6 +7,8 @@
  */
 export interface HealthStatus {
   status: string;
+  sha?: string;
+  uptime?: number;
 }
 
 export interface OnboardingRequestBody {

@@ -768,6 +768,10 @@ components:
       properties:
         status:
           type: string
+        sha:
+          type: string
+        uptime:
+          type: number
       required: [status]
 
     # ─── Onboarding ───
