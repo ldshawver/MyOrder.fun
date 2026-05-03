@@ -73,7 +73,11 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.platform
       args:
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        # Fall back to the plain CLERK_PUBLISHABLE_KEY so a single-key .env
+        # still produces a SPA bundle with a real Clerk publishable key.
+        # An empty key here causes the deployed app to treat every visitor as
+        # signed-out and redirect them to the waitlist.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY (or VITE_CLERK_PUBLISHABLE_KEY) must be set in .env}}
         VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
         VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
     restart: unless-stopped
