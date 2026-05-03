@@ -30,35 +30,50 @@ vi.mock("@workspace/db", () => ({
   db: {},
 }));
 
-import express from "express";
+// Bypass the auth middleware chain so unknown /api/* paths actually reach
+// the global JSON 404 handler instead of being short-circuited at 401. The
+// production behaviour of those middlewares (returning JSON 401) is covered
+// by approval-gate.test.ts; this suite is specifically about the contract
+// of the global 404 / error / body-parse handlers in app.ts.
+vi.mock("../lib/auth", () => {
+  const noop = (_req: unknown, _res: unknown, next: () => void) => next();
+  return {
+    requireAuth: noop,
+    loadDbUser: noop,
+    requireDbUser: noop,
+    requireApproved: noop,
+    requireRole: () => noop,
+  };
+});
+
 import supertest from "supertest";
 import app from "../app";
 
-describe("API contract — /api/* always returns JSON", () => {
-  it("unknown /api/* route → always JSON (404 if past auth, 401 if gated)", async () => {
-    const res = await supertest(app).get("/api/this-route-does-not-exist");
-    // /api/* subrouters mount requireAuth, so unknown paths typically hit 401
-    // (still JSON) before falling to the 404 handler. Either is acceptable —
-    // the contract is JSON-always, never HTML.
-    expect([401, 403, 404]).toContain(res.status);
+describe("API contract — /api/* always returns JSON (real assembled app)", () => {
+  it("unknown /api/* path that bypasses auth gates → JSON 404 with documented {error, path}", async () => {
+    // /api/__contract/known-prefix is mounted (test-only) with no sub-routes,
+    // so this URL falls straight through to the /api JSON 404 handler.
+    const target = "/api/__contract/known-prefix/does-not-exist";
+    const res = await supertest(app).get(target);
+    expect(res.status).toBe(404);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(typeof res.body).toBe("object");
-    expect(typeof res.body.error).toBe("string");
+    expect(res.body).toMatchObject({
+      error: "Not found",
+      path: target,
+    });
   });
 
-  it("/api/__truly_unhandled → JSON 404 with path (passes auth gate)", async () => {
-    // The webhooks router and a couple of others are mounted without a path
-    // prefix and don't gate everything. Use a clearly-unhandled prefix that
-    // doesn't match any router's auth gate to verify the explicit 404 handler
-    // emits the documented body shape.
-    const res = await supertest(app).get("/api");
-    expect([401, 404]).toContain(res.status);
+  it("any unknown /api/* path → JSON 404 with documented body shape", async () => {
+    const target = "/api/this-route-does-not-exist";
+    const res = await supertest(app).get(target);
+    expect(res.status).toBe(404);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
+    expect(res.body).toMatchObject({ error: "Not found", path: target });
   });
 
   it("malformed JSON body → JSON 400, never HTML", async () => {
     const res = await supertest(app)
-      .post("/api/anything")
+      .post("/api/__contract/sync-throw")
       .set("Content-Type", "application/json")
       .send("{not valid json");
     expect(res.status).toBe(400);
@@ -67,63 +82,25 @@ describe("API contract — /api/* always returns JSON", () => {
   });
 });
 
-describe("API contract — error middleware returns JSON 500", () => {
-  // Build a minimal app that reuses ONLY the error-handling middleware
-  // contract from app.ts by replicating it inline. This isolates the
-  // contract from authenticated routes that need real DB/Clerk.
-  function buildErrorApp() {
-    const a = express();
-    a.use(express.json());
-
-    // Sync throw
-    a.get("/api/sync-throw", () => {
-      throw new Error("sync boom");
-    });
-    // Async throw (rejected promise — Express 5 forwards automatically)
-    a.get("/api/async-throw", async () => {
-      await Promise.resolve();
-      throw new Error("async boom");
-    });
-    // Custom status error
-    a.get("/api/custom-status", () => {
-      const e = new Error("custom") as Error & { status: number };
-      e.status = 418;
-      throw e;
-    });
-
-    // Same JSON error handler shape as app.ts
-    a.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-      const status =
-        typeof (err as { status?: number; statusCode?: number }).status === "number"
-          ? (err as { status: number }).status
-          : typeof (err as { statusCode?: number }).statusCode === "number"
-            ? (err as { statusCode: number }).statusCode
-            : 500;
-      const message = err instanceof Error ? err.message : "Internal Server Error";
-      res.status(status).json({ error: message, requestId: req.headers["x-request-id"] ?? null });
-    });
-
-    return a;
-  }
-
-  it("synchronous throw → JSON 500", async () => {
-    const res = await supertest(buildErrorApp()).get("/api/sync-throw");
+describe("API contract — global error middleware (real assembled app)", () => {
+  it("synchronous throw → JSON 500 via the real chain", async () => {
+    const res = await supertest(app).get("/api/__contract/sync-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(res.body.error).toBe("sync boom");
   });
 
-  it("asynchronous throw → JSON 500", async () => {
-    const res = await supertest(buildErrorApp()).get("/api/async-throw");
+  it("asynchronous throw → JSON 500 via the real chain", async () => {
+    const res = await supertest(app).get("/api/__contract/async-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(res.body.error).toBe("async boom");
   });
 
-  it("error with custom status → that status, JSON body", async () => {
-    const res = await supertest(buildErrorApp()).get("/api/custom-status");
+  it("error with custom status → that status, JSON body, via the real chain", async () => {
+    const res = await supertest(app).get("/api/__contract/custom-status");
     expect(res.status).toBe(418);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(res.body.error).toBe("custom");
+    expect(res.body.error).toBe("teapot");
   });
 });

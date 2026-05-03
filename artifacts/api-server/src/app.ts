@@ -113,6 +113,29 @@ app.use("/api", healthRouter);
 // ── Clerk auth middleware ────────────────────────────────────────────────────
 app.use(clerkMiddleware());
 
+// ── Test-only routes (exercise the real middleware chain in vitest) ─────────
+// These are mounted ONLY when NODE_ENV === "test" so they cannot be hit in
+// production. They sit before the auth-gated routers so tests can verify the
+// global JSON error contract end-to-end.
+if (process.env["NODE_ENV"] === "test") {
+  app.get("/api/__contract/sync-throw", () => {
+    throw new Error("sync boom");
+  });
+  app.get("/api/__contract/async-throw", async () => {
+    await Promise.resolve();
+    throw new Error("async boom");
+  });
+  app.get("/api/__contract/custom-status", () => {
+    const e = new Error("teapot") as Error & { status: number };
+    e.status = 418;
+    throw e;
+  });
+  // Mount a known prefix that has NO sub-routes so unknown paths under it
+  // fall straight through to the /api JSON 404 handler (bypassing every
+  // auth-gated subrouter).
+  app.use("/api/__contract/known-prefix", express.Router());
+}
+
 // ── API routes ───────────────────────────────────────────────────────────────
 app.use("/api", router);
 
