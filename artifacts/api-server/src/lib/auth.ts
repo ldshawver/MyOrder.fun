@@ -4,7 +4,26 @@ import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
-export type Role = "admin" | "supervisor" | "business_sitter" | "user";
+export type Role =
+  | "admin"
+  | "supervisor"
+  | "business_sitter"
+  | "customer_service_rep"
+  | "sales_rep"
+  | "lab_tech"
+  | "user";
+
+// Staff roles are implicitly approved — having been assigned a staff role
+// by an admin is itself the approval gate. Keep this list in sync with
+// requireApproved below.
+export const STAFF_ROLES: readonly Role[] = [
+  "admin",
+  "supervisor",
+  "business_sitter",
+  "customer_service_rep",
+  "sales_rep",
+  "lab_tech",
+] as const;
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -113,10 +132,10 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
-  // Elevated roles (admin, supervisor, business_sitter) are implicitly approved —
-  // having been assigned a staff role by an admin is itself the approval gate.
-  // Only end-customer "user" accounts require an explicit status check.
-  if (user.role === "admin" || user.role === "supervisor" || user.role === "business_sitter") {
+  // Elevated/staff roles are implicitly approved — having been assigned a
+  // staff role by an admin is itself the approval gate. Only end-customer
+  // "user" accounts require an explicit status check.
+  if ((STAFF_ROLES as readonly string[]).includes(user.role)) {
     next();
     return;
   }

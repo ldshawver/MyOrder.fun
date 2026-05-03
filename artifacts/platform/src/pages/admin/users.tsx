@@ -210,7 +210,7 @@ export default function AdminUsers() {
   const updateStatusMutation = useUpdateUserStatus();
 
   const handleRoleChange = (id: number, newRole: string) => {
-    if (["supervisor", "business_sitter", "user"].includes(newRole)) {
+    if (["supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
@@ -364,7 +364,10 @@ export default function AdminUsers() {
                             </SelectTrigger>
                             <SelectContent className="rounded-sm">
                               <SelectItem value="supervisor" className="text-xs font-mono uppercase tracking-wider">Supervisor</SelectItem>
-                              <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Cust. Service Rep</SelectItem>
+                              <SelectItem value="business_sitter" className="text-xs font-mono uppercase tracking-wider">Business Sitter</SelectItem>
+                              <SelectItem value="customer_service_rep" className="text-xs font-mono uppercase tracking-wider">Customer Service Rep</SelectItem>
+                              <SelectItem value="sales_rep" className="text-xs font-mono uppercase tracking-wider">Sales Rep</SelectItem>
+                              <SelectItem value="lab_tech" className="text-xs font-mono uppercase tracking-wider">Lab Tech</SelectItem>
                               <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
                             </SelectContent>
                           </Select>

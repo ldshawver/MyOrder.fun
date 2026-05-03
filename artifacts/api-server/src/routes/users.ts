@@ -17,7 +17,15 @@ import { clerkClient } from "@clerk/express";
 
 const router: IRouter = Router();
 
-const VALID_ROLES = ["admin", "supervisor", "business_sitter", "user"] as const;
+const VALID_ROLES = [
+  "admin",
+  "supervisor",
+  "business_sitter",
+  "customer_service_rep",
+  "sales_rep",
+  "lab_tech",
+  "user",
+] as const;
 type ValidRole = typeof VALID_ROLES[number];
 
 function normalizeRole(role: unknown): ValidRole {

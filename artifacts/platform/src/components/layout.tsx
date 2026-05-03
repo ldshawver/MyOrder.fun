@@ -35,18 +35,22 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
 
   usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
 
+  // Staff roles that can run a shift / see the CSR queue + clock-in
+  const SHIFT_ROLES = ["admin", "supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech"];
+  const ALL_ROLES = [...SHIFT_ROLES, "user"];
+
   const navItems = [
-    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/users", label: "Users", icon: Users, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/print", label: "Print", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/contractor-hub", label: "Contractor Hub", icon: FileText, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: false },
+    { href: "/contractor-hub", label: "Contractor Hub", icon: FileText, roles: ALL_ROLES, mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
 

@@ -479,7 +479,7 @@ paths:
           name: role
           schema:
             type: string
-            enum: [admin, supervisor, business_sitter, user]
+            enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
       responses:
         "200":
           description: Users
@@ -1245,7 +1245,7 @@ components:
           type: string
         role:
           type: string
-          enum: [admin, supervisor, business_sitter, user]
+          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
         tenantId:
           type: integer
         tenantName:
@@ -1267,7 +1267,7 @@ components:
       properties:
         role:
           type: string
-          enum: [supervisor, business_sitter, user]
+          enum: [supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
       required: [role]
 
     UserListResponse:

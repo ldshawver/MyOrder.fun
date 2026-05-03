@@ -6,11 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type UpdateTenantBodyStatus = typeof UpdateTenantBodyStatus[keyof typeof UpdateTenantBodyStatus];
+export type UserProfileStatus = typeof UserProfileStatus[keyof typeof UserProfileStatus];
 
 
-export const UpdateTenantBodyStatus = {
-  active: 'active',
-  suspended: 'suspended',
+export const UserProfileStatus = {
   pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
 } as const;

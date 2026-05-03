@@ -9,7 +9,19 @@ import {
   orderItemsTable,
   usersTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+
+// Roles permitted to operate a shift (clock in/out, view current shift,
+// view inventory template). CSR / sales rep / lab tech are first-class
+// shift operators alongside the legacy business_sitter / supervisor / admin.
+const SHIFT_OPERATOR_ROLES = [
+  "business_sitter",
+  "customer_service_rep",
+  "sales_rep",
+  "lab_tech",
+  "supervisor",
+  "admin",
+] as const;
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
@@ -156,7 +168,7 @@ function enrichInventoryWithSales(
 // ─── GET /api/shifts/inventory-template ───────────────────────────────────────
 router.get(
   "/shifts/inventory-template",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const rows = await db
       .select()
@@ -185,7 +197,7 @@ router.get(
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -201,7 +213,9 @@ router.post(
       .limit(1);
 
     if (existing.length > 0) {
-      res.status(409).json({ error: "Already clocked in", shift: existing[0] });
+      // Idempotent re-clock-in: return the existing active shift instead of
+      // erroring so the UI doesn't double-create on retry / refresh races.
+      res.status(200).json({ shift: existing[0], alreadyClockedIn: true });
       return;
     }
 
@@ -292,7 +306,7 @@ router.post(
 // ─── POST /api/shifts/clock-out ───────────────────────────────────────────────
 router.post(
   "/shifts/clock-out",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -405,14 +419,37 @@ router.post(
       .where(eq(labTechShiftsTable.id, activeShift.id))
       .returning();
 
+    await writeAuditLog({
+      actorId: tech.id,
+      actorEmail: tech.email,
+      actorRole: tech.role,
+      action: "shift.clock_out",
+      tenantId: activeShift.tenantId ?? null,
+      resourceType: "lab_tech_shift",
+      resourceId: String(activeShift.id),
+      metadata: {
+        clockedInAt: activeShift.clockedInAt,
+        clockedOutAt: new Date().toISOString(),
+        orderCount: stats.orderCount,
+        totalRevenue: stats.totalRevenue,
+        cashBankStart,
+        cashBankEndReported: cashBankEndVal,
+        cashDiscrepancy,
+      },
+      ipAddress: getClientIp(req),
+    });
+
     res.json({ summary, shift: updatedShift });
   }
 );
 
-// ─── GET /api/shifts/current ──────────────────────────────────────────────────
+// ─── GET /api/shifts/current  (alias: /shifts/active) ────────────────────────
+// Both paths return the caller's active shift (or { shift: null }). The
+// /active alias matches the OpenAPI/spec wording in stab-02; /current is
+// kept for backward-compat with the existing UI.
 router.get(
-  "/shifts/current",
-  requireRole("business_sitter", "supervisor", "admin"),
+  ["/shifts/current", "/shifts/active"],
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -490,7 +527,7 @@ router.get(
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }

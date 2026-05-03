@@ -286,7 +286,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
+        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
         {(user.role === "supervisor" || user.role === "admin") && (
@@ -300,7 +300,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
+        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
           <Route path="/staff" component={StaffQueue} />
         )}
 
