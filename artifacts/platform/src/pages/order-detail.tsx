@@ -26,6 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { CatalogNotice } from "@/components/CatalogNotice";
 
 type OrderWithTracking = Order & { trackingUrl?: string };
 
@@ -242,6 +243,8 @@ export default function OrderDetail() {
           </div>
         </div>
       )}
+
+      <CatalogNotice />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: Manifest + Notes */}

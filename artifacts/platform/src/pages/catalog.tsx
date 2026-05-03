@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
+import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 
 type MenuMode = "alavont" | "lucifer";
@@ -550,6 +551,8 @@ export default function Catalog() {
           </p>
         </div>
       )}
+
+      <CatalogNotice />
 
       {/* Filters */}
       <div className="flex gap-2 flex-wrap items-center">

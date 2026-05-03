@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
+import { CatalogNotice } from "@/components/CatalogNotice";
 
 type CartItem = { id: number; name: string; price: number; quantity: number };
 
@@ -219,6 +220,8 @@ export default function NewOrder() {
                   data-testid="input-notes"
                 />
               </div>
+
+              <CatalogNotice />
 
               <div className="flex items-center justify-between text-lg pt-2 border-t border-border/50">
                 <span className="font-medium text-muted-foreground">Total</span>
