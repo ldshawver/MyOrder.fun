@@ -21,6 +21,8 @@ import type {
 
 import type {
   AddOrderNoteBody,
+  AdjustOrderEtaBody,
+  AdminSettings,
   AdminStats,
   AiChatBody,
   AiChatResponse,
@@ -33,12 +35,16 @@ import type {
   ConfirmPaymentBody,
   CreateCatalogItemBody,
   CreateOrderBody,
+  GetRecentOrderEvents200,
+  GetRecentOrderEventsParams,
   GetRecentOrdersParams,
   HealthStatus,
   InviteWaitlistEntryBody,
   InviteWaitlistEntryResponse,
+  ListActiveCsrs200,
   ListAuditLogsParams,
   ListCatalogItemsParams,
+  ListDelayedOrders200,
   ListNotificationsParams,
   ListOnboardingRequestsParams,
   ListOrdersParams,
@@ -56,6 +62,7 @@ import type {
   OrderNote,
   OrderNotesResponse,
   OrderSummary,
+  ReassignOrderBody,
   SetUserApprovalBody,
   SetUserApprovalResponse,
   Tenant,
@@ -63,6 +70,7 @@ import type {
   TenantSummary,
   TokenizePaymentBody,
   TokenizePaymentResponse,
+  UpdateAdminSettingsBody,
   UpdateCatalogItemBody,
   UpdateCurrentUser400,
   UpdateCurrentUserBody,
@@ -1607,6 +1615,647 @@ export function useGetOrderSummary<TData = Awaited<ReturnType<typeof getOrderSum
 
 
 /**
+ * @summary CSR accepts a routed order (sets acceptedAt + status=processing)
+ */
+export const getAcceptOrderUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/accept`
+}
+
+export const acceptOrder = async (id: number, options?: RequestInit): Promise<Order> => {
+
+  return customFetch<Order>(getAcceptOrderUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getAcceptOrderMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof acceptOrder>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof acceptOrder>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['acceptOrder'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof acceptOrder>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  acceptOrder(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AcceptOrderMutationResult = NonNullable<Awaited<ReturnType<typeof acceptOrder>>>
+
+    export type AcceptOrderMutationError = ErrorType<unknown>
+
+    /**
+ * @summary CSR accepts a routed order (sets acceptedAt + status=processing)
+ */
+export const useAcceptOrder = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof acceptOrder>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof acceptOrder>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getAcceptOrderMutationOptions(options));
+    }
+
+/**
+ * @summary Supervisor adjusts the customer hourglass estimatedReadyAt.
+
+Semantics: when `promisedMinutes` is supplied, the new
+estimatedReadyAt is computed as `now() + promisedMinutes` (a
+reset-from-now), not as an offset from the original routedAt or
+the current ETA. To shift the existing ETA by a delta, send the
+absolute target as `estimatedReadyAt` (ISO-8601) instead.
+
+ */
+export const getAdjustOrderEtaUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/eta`
+}
+
+export const adjustOrderEta = async (id: number,
+    adjustOrderEtaBody: AdjustOrderEtaBody, options?: RequestInit): Promise<Order> => {
+
+  return customFetch<Order>(getAdjustOrderEtaUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      adjustOrderEtaBody,)
+  }
+);}
+
+
+
+
+export const getAdjustOrderEtaMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adjustOrderEta>>, TError,{id: number;data: BodyType<AdjustOrderEtaBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof adjustOrderEta>>, TError,{id: number;data: BodyType<AdjustOrderEtaBody>}, TContext> => {
+
+const mutationKey = ['adjustOrderEta'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof adjustOrderEta>>, {id: number;data: BodyType<AdjustOrderEtaBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  adjustOrderEta(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AdjustOrderEtaMutationResult = NonNullable<Awaited<ReturnType<typeof adjustOrderEta>>>
+    export type AdjustOrderEtaMutationBody = BodyType<AdjustOrderEtaBody>
+    export type AdjustOrderEtaMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Supervisor adjusts the customer hourglass estimatedReadyAt.
+
+Semantics: when `promisedMinutes` is supplied, the new
+estimatedReadyAt is computed as `now() + promisedMinutes` (a
+reset-from-now), not as an offset from the original routedAt or
+the current ETA. To shift the existing ETA by a delta, send the
+absolute target as `estimatedReadyAt` (ISO-8601) instead.
+
+ */
+export const useAdjustOrderEta = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof adjustOrderEta>>, TError,{id: number;data: BodyType<AdjustOrderEtaBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof adjustOrderEta>>,
+        TError,
+        {id: number;data: BodyType<AdjustOrderEtaBody>},
+        TContext
+      > => {
+      return useMutation(getAdjustOrderEtaMutationOptions(options));
+    }
+
+/**
+ * @summary Mark order as ready for handoff
+ */
+export const getMarkOrderReadyUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/mark-ready`
+}
+
+export const markOrderReady = async (id: number, options?: RequestInit): Promise<Order> => {
+
+  return customFetch<Order>(getMarkOrderReadyUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getMarkOrderReadyMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof markOrderReady>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof markOrderReady>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['markOrderReady'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof markOrderReady>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  markOrderReady(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type MarkOrderReadyMutationResult = NonNullable<Awaited<ReturnType<typeof markOrderReady>>>
+
+    export type MarkOrderReadyMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Mark order as ready for handoff
+ */
+export const useMarkOrderReady = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof markOrderReady>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof markOrderReady>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getMarkOrderReadyMutationOptions(options));
+    }
+
+/**
+ * @summary Supervisor reassigns an order to a different user (or to the General Account fallback queue)
+ */
+export const getReassignOrderUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/reassign`
+}
+
+export const reassignOrder = async (id: number,
+    reassignOrderBody: ReassignOrderBody, options?: RequestInit): Promise<Order> => {
+
+  return customFetch<Order>(getReassignOrderUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      reassignOrderBody,)
+  }
+);}
+
+
+
+
+export const getReassignOrderMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reassignOrder>>, TError,{id: number;data: BodyType<ReassignOrderBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reassignOrder>>, TError,{id: number;data: BodyType<ReassignOrderBody>}, TContext> => {
+
+const mutationKey = ['reassignOrder'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reassignOrder>>, {id: number;data: BodyType<ReassignOrderBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  reassignOrder(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReassignOrderMutationResult = NonNullable<Awaited<ReturnType<typeof reassignOrder>>>
+    export type ReassignOrderMutationBody = BodyType<ReassignOrderBody>
+    export type ReassignOrderMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Supervisor reassigns an order to a different user (or to the General Account fallback queue)
+ */
+export const useReassignOrder = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reassignOrder>>, TError,{id: number;data: BodyType<ReassignOrderBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reassignOrder>>,
+        TError,
+        {id: number;data: BodyType<ReassignOrderBody>},
+        TContext
+      > => {
+      return useMutation(getReassignOrderMutationOptions(options));
+    }
+
+/**
+ * @summary Server-Sent Events stream of realtime order events. Authentication is via the Clerk
+session cookie since EventSource cannot send Authorization headers. The server enforces
+recipient scoping per role: customers receive events for their own orders only; CSR
+roles receive events assigned to them or to the General Account fallback queue
+(assignedCsrUserId == null); supervisors and admins receive all events.
+
+Event names: `order.assigned` (new order routed), `order.updated` (status / ETA /
+accept / reassign), `order.ready` (marked ready). Each payload includes `orderId`,
+`customerId`, and `assignedCsrUserId` for client routing.
+
+ */
+export const getOrderEventStreamUrl = () => {
+
+
+
+
+  return `/api/orders/stream`
+}
+
+export const orderEventStream = async ( options?: RequestInit): Promise<unknown> => {
+
+  return customFetch<unknown>(getOrderEventStreamUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getOrderEventStreamQueryKey = () => {
+    return [
+    `/api/orders/stream`
+    ] as const;
+    }
+
+
+export const getOrderEventStreamQueryOptions = <TData = Awaited<ReturnType<typeof orderEventStream>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof orderEventStream>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getOrderEventStreamQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof orderEventStream>>> = ({ signal }) => orderEventStream({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof orderEventStream>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type OrderEventStreamQueryResult = NonNullable<Awaited<ReturnType<typeof orderEventStream>>>
+export type OrderEventStreamQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Server-Sent Events stream of realtime order events. Authentication is via the Clerk
+session cookie since EventSource cannot send Authorization headers. The server enforces
+recipient scoping per role: customers receive events for their own orders only; CSR
+roles receive events assigned to them or to the General Account fallback queue
+(assignedCsrUserId == null); supervisors and admins receive all events.
+
+Event names: `order.assigned` (new order routed), `order.updated` (status / ETA /
+accept / reassign), `order.ready` (marked ready). Each payload includes `orderId`,
+`customerId`, and `assignedCsrUserId` for client routing.
+
+ */
+
+export function useOrderEventStream<TData = Awaited<ReturnType<typeof orderEventStream>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof orderEventStream>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getOrderEventStreamQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Active CSR roster used by supervisor reassignment dropdowns. Returns
+currently clocked-in CSRs with their open shift id.
+
+ */
+export const getListActiveCsrsUrl = () => {
+
+
+
+
+  return `/api/orders/active-csrs`
+}
+
+export const listActiveCsrs = async ( options?: RequestInit): Promise<ListActiveCsrs200> => {
+
+  return customFetch<ListActiveCsrs200>(getListActiveCsrsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListActiveCsrsQueryKey = () => {
+    return [
+    `/api/orders/active-csrs`
+    ] as const;
+    }
+
+
+export const getListActiveCsrsQueryOptions = <TData = Awaited<ReturnType<typeof listActiveCsrs>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActiveCsrs>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListActiveCsrsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listActiveCsrs>>> = ({ signal }) => listActiveCsrs({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listActiveCsrs>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListActiveCsrsQueryResult = NonNullable<Awaited<ReturnType<typeof listActiveCsrs>>>
+export type ListActiveCsrsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Active CSR roster used by supervisor reassignment dropdowns. Returns
+currently clocked-in CSRs with their open shift id.
+
+ */
+
+export function useListActiveCsrs<TData = Awaited<ReturnType<typeof listActiveCsrs>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActiveCsrs>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListActiveCsrsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Polling fallback for clients whose SSE stream is unavailable. Returns
+the most recent order events the caller is authorised to see, scoped
+with the same role rules as /orders/stream.
+
+ */
+export const getGetRecentOrderEventsUrl = (params?: GetRecentOrderEventsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/orders/recent-events?${stringifiedParams}` : `/api/orders/recent-events`
+}
+
+export const getRecentOrderEvents = async (params?: GetRecentOrderEventsParams, options?: RequestInit): Promise<GetRecentOrderEvents200> => {
+
+  return customFetch<GetRecentOrderEvents200>(getGetRecentOrderEventsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRecentOrderEventsQueryKey = (params?: GetRecentOrderEventsParams,) => {
+    return [
+    `/api/orders/recent-events`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getGetRecentOrderEventsQueryOptions = <TData = Awaited<ReturnType<typeof getRecentOrderEvents>>, TError = ErrorType<unknown>>(params?: GetRecentOrderEventsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRecentOrderEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRecentOrderEventsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRecentOrderEvents>>> = ({ signal }) => getRecentOrderEvents(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRecentOrderEvents>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetRecentOrderEventsQueryResult = NonNullable<Awaited<ReturnType<typeof getRecentOrderEvents>>>
+export type GetRecentOrderEventsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Polling fallback for clients whose SSE stream is unavailable. Returns
+the most recent order events the caller is authorised to see, scoped
+with the same role rules as /orders/stream.
+
+ */
+
+export function useGetRecentOrderEvents<TData = Awaited<ReturnType<typeof getRecentOrderEvents>>, TError = ErrorType<unknown>>(
+ params?: GetRecentOrderEventsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getRecentOrderEvents>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetRecentOrderEventsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Orders that have passed their estimatedReadyAt without completion
+ */
+export const getListDelayedOrdersUrl = () => {
+
+
+
+
+  return `/api/orders/delayed`
+}
+
+export const listDelayedOrders = async ( options?: RequestInit): Promise<ListDelayedOrders200> => {
+
+  return customFetch<ListDelayedOrders200>(getListDelayedOrdersUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListDelayedOrdersQueryKey = () => {
+    return [
+    `/api/orders/delayed`
+    ] as const;
+    }
+
+
+export const getListDelayedOrdersQueryOptions = <TData = Awaited<ReturnType<typeof listDelayedOrders>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDelayedOrders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListDelayedOrdersQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listDelayedOrders>>> = ({ signal }) => listDelayedOrders({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listDelayedOrders>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListDelayedOrdersQueryResult = NonNullable<Awaited<ReturnType<typeof listDelayedOrders>>>
+export type ListDelayedOrdersQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Orders that have passed their estimatedReadyAt without completion
+ */
+
+export function useListDelayedOrders<TData = Awaited<ReturnType<typeof listDelayedOrders>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDelayedOrders>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListDelayedOrdersQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
  * @summary Recent orders activity feed
  */
 export const getGetRecentOrdersUrl = (params?: GetRecentOrdersParams,) => {
@@ -2884,6 +3533,154 @@ export const useMarkNotificationRead = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getMarkNotificationReadMutationOptions(options));
+    }
+
+/**
+ * @summary Read tenant admin settings (includes order routing rule + default ETA)
+ */
+export const getGetAdminSettingsUrl = () => {
+
+
+
+
+  return `/api/admin/settings`
+}
+
+export const getAdminSettings = async ( options?: RequestInit): Promise<AdminSettings> => {
+
+  return customFetch<AdminSettings>(getGetAdminSettingsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAdminSettingsQueryKey = () => {
+    return [
+    `/api/admin/settings`
+    ] as const;
+    }
+
+
+export const getGetAdminSettingsQueryOptions = <TData = Awaited<ReturnType<typeof getAdminSettings>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAdminSettings>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAdminSettingsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAdminSettings>>> = ({ signal }) => getAdminSettings({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAdminSettings>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAdminSettingsQueryResult = NonNullable<Awaited<ReturnType<typeof getAdminSettings>>>
+export type GetAdminSettingsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Read tenant admin settings (includes order routing rule + default ETA)
+ */
+
+export function useGetAdminSettings<TData = Awaited<ReturnType<typeof getAdminSettings>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAdminSettings>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAdminSettingsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+/**
+ * @summary Update tenant admin settings (partial update)
+ */
+export const getUpdateAdminSettingsUrl = () => {
+
+
+
+
+  return `/api/admin/settings`
+}
+
+export const updateAdminSettings = async (updateAdminSettingsBody: UpdateAdminSettingsBody, options?: RequestInit): Promise<AdminSettings> => {
+
+  return customFetch<AdminSettings>(getUpdateAdminSettingsUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      updateAdminSettingsBody,)
+  }
+);}
+
+
+
+
+export const getUpdateAdminSettingsMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAdminSettings>>, TError,{data: BodyType<UpdateAdminSettingsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateAdminSettings>>, TError,{data: BodyType<UpdateAdminSettingsBody>}, TContext> => {
+
+const mutationKey = ['updateAdminSettings'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateAdminSettings>>, {data: BodyType<UpdateAdminSettingsBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  updateAdminSettings(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateAdminSettingsMutationResult = NonNullable<Awaited<ReturnType<typeof updateAdminSettings>>>
+    export type UpdateAdminSettingsMutationBody = BodyType<UpdateAdminSettingsBody>
+    export type UpdateAdminSettingsMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Update tenant admin settings (partial update)
+ */
+export const useUpdateAdminSettings = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAdminSettings>>, TError,{data: BodyType<UpdateAdminSettingsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateAdminSettings>>,
+        TError,
+        {data: BodyType<UpdateAdminSettingsBody>},
+        TContext
+      > => {
+      return useMutation(getUpdateAdminSettingsMutationOptions(options));
     }
 
 /**

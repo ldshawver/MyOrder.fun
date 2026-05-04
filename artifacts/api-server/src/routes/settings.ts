@@ -8,9 +8,14 @@ import { encrypt, safeDecrypt } from "../lib/crypto";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
+type RoutingRule = typeof ROUTING_RULES[number];
+
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
   return {
     id: s.id,
+    orderRoutingRule: (s.orderRoutingRule ?? "round_robin") as RoutingRule,
+    defaultEtaMinutes: s.defaultEtaMinutes ?? 30,
     menuImportEnabled: s.menuImportEnabled,
     showOutOfStock: s.showOutOfStock,
     enabledProcessors: s.enabledProcessors,
@@ -82,6 +87,21 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
   const update: Record<string, unknown> = {};
   for (const k of allowed) {
     if (body[k] !== undefined) update[k] = body[k];
+  }
+  if (body.orderRoutingRule !== undefined) {
+    if (typeof body.orderRoutingRule !== "string" || !(ROUTING_RULES as readonly string[]).includes(body.orderRoutingRule)) {
+      res.status(400).json({ error: `orderRoutingRule must be one of ${ROUTING_RULES.join(", ")}` });
+      return;
+    }
+    update.orderRoutingRule = body.orderRoutingRule;
+  }
+  if (body.defaultEtaMinutes !== undefined) {
+    const n = Number(body.defaultEtaMinutes);
+    if (!Number.isInteger(n) || n < 1) {
+      res.status(400).json({ error: "defaultEtaMinutes must be a positive integer" });
+      return;
+    }
+    update.defaultEtaMinutes = n;
   }
 
   const existing = await getOrCreateSettings();

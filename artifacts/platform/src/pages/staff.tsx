@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 import { Link } from "wouter";
@@ -1201,6 +1202,9 @@ export default function CustomerServiceRepQueue() {
   };
 
   const isStaff = user?.role === "business_sitter" || user?.role === "supervisor" || user?.role === "admin";
+  // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
+  // get the supervisor surfaces (delayed list, reassign panel) instead.
+  const isCsrOnly = user?.role === "customer_service_rep" || user?.role === "lab_tech" || user?.role === "sales_rep";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -1218,6 +1222,11 @@ export default function CustomerServiceRepQueue() {
           <RefreshCw size={16} />
         </Button>
       </div>
+
+      {/* Task #12: realtime CSR alert banner — CSR roles only */}
+      {isCsrOnly && user?.id != null && (
+        <CsrAlertBanner currentUserId={user.id} onAccepted={refresh} />
+      )}
 
       {/* Shift panel */}
       {isStaff && (

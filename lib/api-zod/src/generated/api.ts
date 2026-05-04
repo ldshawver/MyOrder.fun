@@ -425,6 +425,15 @@ export const ListOrdersResponse = zod.object({
   "unitPrice": zod.number(),
   "totalPrice": zod.number()
 })),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -476,6 +485,15 @@ export const GetOrderResponse = zod.object({
   "unitPrice": zod.number(),
   "totalPrice": zod.number()
 })),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -515,6 +533,15 @@ export const UpdateOrderStatusResponse = zod.object({
   "unitPrice": zod.number(),
   "totalPrice": zod.number()
 })),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -533,6 +560,268 @@ export const GetOrderSummaryResponse = zod.object({
   "revenueToday": zod.number(),
   "revenueThisWeek": zod.number(),
   "averageOrderValue": zod.number()
+})
+
+
+/**
+ * @summary CSR accepts a routed order (sets acceptedAt + status=processing)
+ */
+export const AcceptOrderParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AcceptOrderResponse = zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "customerId": zod.number(),
+  "customerName": zod.string().optional(),
+  "customerEmail": zod.string().optional(),
+  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
+  "paymentToken": zod.string().optional(),
+  "subtotal": zod.number(),
+  "tax": zod.number().optional(),
+  "total": zod.number(),
+  "shippingAddress": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "catalogItemName": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "totalPrice": zod.number()
+})),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Supervisor adjusts the customer hourglass estimatedReadyAt.
+
+Semantics: when `promisedMinutes` is supplied, the new
+estimatedReadyAt is computed as `now() + promisedMinutes` (a
+reset-from-now), not as an offset from the original routedAt or
+the current ETA. To shift the existing ETA by a delta, send the
+absolute target as `estimatedReadyAt` (ISO-8601) instead.
+
+ */
+export const AdjustOrderEtaParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AdjustOrderEtaBody = zod.object({
+  "estimatedReadyAt": zod.coerce.date().optional().describe('Absolute target time. Use this for delta-style adjustments.'),
+  "promisedMinutes": zod.number().optional().describe('Resets ETA to now() + promisedMinutes. Does not stack with current ETA.')
+})
+
+export const AdjustOrderEtaResponse = zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "customerId": zod.number(),
+  "customerName": zod.string().optional(),
+  "customerEmail": zod.string().optional(),
+  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
+  "paymentToken": zod.string().optional(),
+  "subtotal": zod.number(),
+  "tax": zod.number().optional(),
+  "total": zod.number(),
+  "shippingAddress": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "catalogItemName": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "totalPrice": zod.number()
+})),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Mark order as ready for handoff
+ */
+export const MarkOrderReadyParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const MarkOrderReadyResponse = zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "customerId": zod.number(),
+  "customerName": zod.string().optional(),
+  "customerEmail": zod.string().optional(),
+  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
+  "paymentToken": zod.string().optional(),
+  "subtotal": zod.number(),
+  "tax": zod.number().optional(),
+  "total": zod.number(),
+  "shippingAddress": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "catalogItemName": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "totalPrice": zod.number()
+})),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Supervisor reassigns an order to a different user (or to the General Account fallback queue)
+ */
+export const ReassignOrderParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const ReassignOrderBody = zod.object({
+  "assignedCsrUserId": zod.number().nullable()
+})
+
+export const ReassignOrderResponse = zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "customerId": zod.number(),
+  "customerName": zod.string().optional(),
+  "customerEmail": zod.string().optional(),
+  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
+  "paymentToken": zod.string().optional(),
+  "subtotal": zod.number(),
+  "tax": zod.number().optional(),
+  "total": zod.number(),
+  "shippingAddress": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "catalogItemName": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "totalPrice": zod.number()
+})),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Active CSR roster used by supervisor reassignment dropdowns. Returns
+currently clocked-in CSRs with their open shift id.
+
+ */
+export const ListActiveCsrsResponse = zod.object({
+  "csrs": zod.array(zod.object({
+  "userId": zod.number(),
+  "shiftId": zod.number(),
+  "name": zod.string()
+}))
+})
+
+
+/**
+ * @summary Polling fallback for clients whose SSE stream is unavailable. Returns
+the most recent order events the caller is authorised to see, scoped
+with the same role rules as /orders/stream.
+
+ */
+export const GetRecentOrderEventsQueryParams = zod.object({
+  "since": zod.date().optional().describe('ISO-8601 timestamp; defaults to 60s ago when omitted.')
+})
+
+export const GetRecentOrderEventsResponse = zod.object({
+  "events": zod.array(zod.object({
+
+}).passthrough()),
+  "serverTime": zod.coerce.date()
+})
+
+
+/**
+ * @summary Orders that have passed their estimatedReadyAt without completion
+ */
+export const ListDelayedOrdersResponse = zod.object({
+  "orders": zod.array(zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "customerId": zod.number(),
+  "customerName": zod.string().optional(),
+  "customerEmail": zod.string().optional(),
+  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
+  "paymentToken": zod.string().optional(),
+  "subtotal": zod.number(),
+  "tax": zod.number().optional(),
+  "total": zod.number(),
+  "shippingAddress": zod.string().optional(),
+  "notes": zod.string().optional(),
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "catalogItemName": zod.string(),
+  "quantity": zod.number(),
+  "unitPrice": zod.number(),
+  "totalPrice": zod.number()
+})),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})),
+  "total": zod.number()
 })
 
 
@@ -568,6 +857,15 @@ export const GetRecentOrdersResponse = zod.object({
   "unitPrice": zod.number(),
   "totalPrice": zod.number()
 })),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -981,6 +1279,49 @@ export const MarkNotificationReadResponse = zod.object({
 
 
 /**
+ * @summary Read tenant admin settings (includes order routing rule + default ETA)
+ */
+
+
+
+export const GetAdminSettingsResponse = zod.object({
+  "id": zod.number().optional(),
+  "orderRoutingRule": zod.enum(['round_robin', 'least_recent_order', 'supervisor_manual_assignment']).describe('Controls how new orders are assigned to active CSRs.\nround_robin (default): rotate through active CSRs in user-id order.\nleast_recent_order: route to the active CSR who has gone the longest without a new order.\nsupervisor_manual_assignment: skip auto-assignment; orders sit in the General Account queue until a supervisor reassigns.\n'),
+  "defaultEtaMinutes": zod.number().min(1).describe('Default customer-hourglass duration (minutes) stamped on new orders.'),
+  "menuImportEnabled": zod.boolean().optional(),
+  "showOutOfStock": zod.boolean().optional(),
+  "autoPrintOnPayment": zod.boolean().optional()
+})
+
+
+/**
+ * @summary Update tenant admin settings (partial update)
+ */
+
+
+
+export const UpdateAdminSettingsBody = zod.object({
+  "orderRoutingRule": zod.enum(['round_robin', 'least_recent_order', 'supervisor_manual_assignment']).optional().describe('Controls how new orders are assigned to active CSRs.\nround_robin (default): rotate through active CSRs in user-id order.\nleast_recent_order: route to the active CSR who has gone the longest without a new order.\nsupervisor_manual_assignment: skip auto-assignment; orders sit in the General Account queue until a supervisor reassigns.\n'),
+  "defaultEtaMinutes": zod.number().min(1).optional(),
+  "menuImportEnabled": zod.boolean().optional(),
+  "showOutOfStock": zod.boolean().optional(),
+  "autoPrintOnPayment": zod.boolean().optional()
+})
+
+
+
+
+export const UpdateAdminSettingsResponse = zod.object({
+  "id": zod.number().optional(),
+  "orderRoutingRule": zod.enum(['round_robin', 'least_recent_order', 'supervisor_manual_assignment']).describe('Controls how new orders are assigned to active CSRs.\nround_robin (default): rotate through active CSRs in user-id order.\nleast_recent_order: route to the active CSR who has gone the longest without a new order.\nsupervisor_manual_assignment: skip auto-assignment; orders sit in the General Account queue until a supervisor reassigns.\n'),
+  "defaultEtaMinutes": zod.number().min(1).describe('Default customer-hourglass duration (minutes) stamped on new orders.'),
+  "menuImportEnabled": zod.boolean().optional(),
+  "showOutOfStock": zod.boolean().optional(),
+  "autoPrintOnPayment": zod.boolean().optional()
+})
+
+
+/**
  * @summary Global admin platform statistics
  */
 export const GetAdminStatsResponse = zod.object({
@@ -1080,6 +1421,15 @@ export const ConfirmPaymentResponse = zod.object({
   "unitPrice": zod.number(),
   "totalPrice": zod.number()
 })),
+  "assignedCsrUserId": zod.number().nullish(),
+  "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
+  "routedAt": zod.coerce.date().nullish(),
+  "acceptedAt": zod.coerce.date().nullish(),
+  "promisedMinutes": zod.number().nullish(),
+  "estimatedReadyAt": zod.coerce.date().nullish(),
+  "readyAt": zod.coerce.date().nullish(),
+  "etaAdjustedBySupervisor": zod.boolean().optional(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })

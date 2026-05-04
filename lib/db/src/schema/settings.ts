@@ -36,6 +36,11 @@ export const adminSettingsTable = pgTable("admin_settings", {
   wcConsumerKey: text("wc_consumer_key"),
   wcConsumerSecret: text("wc_consumer_secret"),
   wcEnabled: boolean("wc_enabled").notNull().default(true),
+  // Task #12: Order routing rule
+  //   round_robin | least_recent_order | supervisor_manual_assignment
+  orderRoutingRule: text("order_routing_rule").notNull().default("round_robin"),
+  // Default ETA (minutes) used to compute customer hourglass when no per-order override is set
+  defaultEtaMinutes: integer("default_eta_minutes").notNull().default(30),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

@@ -5,8 +5,10 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
 import type { OrderPaymentStatus } from './orderPaymentStatus';
+import type { OrderRouteSource } from './orderRouteSource';
 import type { OrderStatus } from './orderStatus';
 
 export interface Order {
@@ -24,6 +26,15 @@ export interface Order {
   shippingAddress?: string;
   notes?: string;
   items: OrderItem[];
+  assignedCsrUserId?: number | null;
+  routeSource?: OrderRouteSource;
+  routedAt?: Date | null;
+  acceptedAt?: Date | null;
+  promisedMinutes?: number | null;
+  estimatedReadyAt?: Date | null;
+  readyAt?: Date | null;
+  etaAdjustedBySupervisor?: boolean;
+  fulfillmentStatus?: OrderFulfillmentStatus;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -266,6 +266,27 @@ export const OrderPaymentStatus = {
   failed: 'failed',
 } as const;
 
+export type OrderRouteSource = typeof OrderRouteSource[keyof typeof OrderRouteSource] | null;
+
+
+export const OrderRouteSource = {
+  active_csr: 'active_csr',
+  general_account: 'general_account',
+  supervisor_override: 'supervisor_override',
+} as const;
+
+export type OrderFulfillmentStatus = typeof OrderFulfillmentStatus[keyof typeof OrderFulfillmentStatus] | null;
+
+
+export const OrderFulfillmentStatus = {
+  submitted: 'submitted',
+  accepted: 'accepted',
+  preparing: 'preparing',
+  ready: 'ready',
+  completed: 'completed',
+  cancelled: 'cancelled',
+} as const;
+
 export interface Order {
   id: number;
   tenantId: number;
@@ -281,6 +302,15 @@ export interface Order {
   shippingAddress?: string;
   notes?: string;
   items: OrderItem[];
+  assignedCsrUserId?: number | null;
+  routeSource?: OrderRouteSource;
+  routedAt?: string | null;
+  acceptedAt?: string | null;
+  promisedMinutes?: number | null;
+  estimatedReadyAt?: string | null;
+  readyAt?: string | null;
+  etaAdjustedBySupervisor?: boolean;
+  fulfillmentStatus?: OrderFulfillmentStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -637,6 +667,46 @@ export interface NotificationListResponse {
   unreadCount: number;
 }
 
+/**
+ * Controls how new orders are assigned to active CSRs.
+round_robin (default): rotate through active CSRs in user-id order.
+least_recent_order: route to the active CSR who has gone the longest without a new order.
+supervisor_manual_assignment: skip auto-assignment; orders sit in the General Account queue until a supervisor reassigns.
+
+ */
+export type OrderRoutingRule = typeof OrderRoutingRule[keyof typeof OrderRoutingRule];
+
+
+export const OrderRoutingRule = {
+  round_robin: 'round_robin',
+  least_recent_order: 'least_recent_order',
+  supervisor_manual_assignment: 'supervisor_manual_assignment',
+} as const;
+
+export interface AdminSettings {
+  id?: number;
+  orderRoutingRule: OrderRoutingRule;
+  /**
+     * Default customer-hourglass duration (minutes) stamped on new orders.
+     * @minimum 1
+     */
+  defaultEtaMinutes: number;
+  menuImportEnabled?: boolean;
+  showOutOfStock?: boolean;
+  autoPrintOnPayment?: boolean;
+  [key: string]: unknown;
+ }
+
+export interface UpdateAdminSettingsBody {
+  orderRoutingRule?: OrderRoutingRule;
+  /** @minimum 1 */
+  defaultEtaMinutes?: number;
+  menuImportEnabled?: boolean;
+  showOutOfStock?: boolean;
+  autoPrintOnPayment?: boolean;
+  [key: string]: unknown;
+ }
+
 export interface AdminStats {
   totalTenants: number;
   activeTenants: number;
@@ -724,6 +794,46 @@ export const ListOrdersStatus = {
   delivered: 'delivered',
   cancelled: 'cancelled',
 } as const;
+
+export type AdjustOrderEtaBody = {
+  /** Absolute target time. Use this for delta-style adjustments. */
+  estimatedReadyAt?: string;
+  /** Resets ETA to now() + promisedMinutes. Does not stack with current ETA. */
+  promisedMinutes?: number;
+};
+
+export type ReassignOrderBody = {
+  assignedCsrUserId: number | null;
+};
+
+export type ListActiveCsrs200CsrsItem = {
+  userId: number;
+  shiftId: number;
+  name: string;
+};
+
+export type ListActiveCsrs200 = {
+  csrs: ListActiveCsrs200CsrsItem[];
+};
+
+export type GetRecentOrderEventsParams = {
+/**
+ * ISO-8601 timestamp; defaults to 60s ago when omitted.
+ */
+since?: string;
+};
+
+export type GetRecentOrderEvents200EventsItem = { [key: string]: unknown };
+
+export type GetRecentOrderEvents200 = {
+  events: GetRecentOrderEvents200EventsItem[];
+  serverTime: string;
+};
+
+export type ListDelayedOrders200 = {
+  orders: Order[];
+  total: number;
+};
 
 export type GetRecentOrdersParams = {
 limit?: number;

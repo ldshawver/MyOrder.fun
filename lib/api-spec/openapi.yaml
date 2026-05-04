@@ -440,6 +440,211 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrderSummary"
 
+  /orders/{id}/accept:
+    post:
+      operationId: acceptOrder
+      tags: [orders]
+      summary: CSR accepts a routed order (sets acceptedAt + status=processing)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/{id}/eta:
+    patch:
+      operationId: adjustOrderEta
+      tags: [orders]
+      summary: |
+        Supervisor adjusts the customer hourglass estimatedReadyAt.
+
+        Semantics: when `promisedMinutes` is supplied, the new
+        estimatedReadyAt is computed as `now() + promisedMinutes` (a
+        reset-from-now), not as an offset from the original routedAt or
+        the current ETA. To shift the existing ETA by a delta, send the
+        absolute target as `estimatedReadyAt` (ISO-8601) instead.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                estimatedReadyAt:
+                  type: string
+                  format: date-time
+                  description: Absolute target time. Use this for delta-style adjustments.
+                promisedMinutes:
+                  type: integer
+                  description: Resets ETA to now() + promisedMinutes. Does not stack with current ETA.
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/{id}/mark-ready:
+    post:
+      operationId: markOrderReady
+      tags: [orders]
+      summary: Mark order as ready for handoff
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/{id}/reassign:
+    post:
+      operationId: reassignOrder
+      tags: [orders]
+      summary: Supervisor reassigns an order to a different user (or to the General Account fallback queue)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                assignedCsrUserId:
+                  type: integer
+                  nullable: true
+              required: [assignedCsrUserId]
+      responses:
+        "200":
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+
+  /orders/stream:
+    get:
+      operationId: orderEventStream
+      tags: [orders]
+      summary: |
+        Server-Sent Events stream of realtime order events. Authentication is via the Clerk
+        session cookie since EventSource cannot send Authorization headers. The server enforces
+        recipient scoping per role: customers receive events for their own orders only; CSR
+        roles receive events assigned to them or to the General Account fallback queue
+        (assignedCsrUserId == null); supervisors and admins receive all events.
+
+        Event names: `order.assigned` (new order routed), `order.updated` (status / ETA /
+        accept / reassign), `order.ready` (marked ready). Each payload includes `orderId`,
+        `customerId`, and `assignedCsrUserId` for client routing.
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream: {}
+
+  /orders/active-csrs:
+    get:
+      operationId: listActiveCsrs
+      tags: [orders]
+      summary: |
+        Active CSR roster used by supervisor reassignment dropdowns. Returns
+        currently clocked-in CSRs with their open shift id.
+      responses:
+        "200":
+          description: Active CSRs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrs]
+                properties:
+                  csrs:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, shiftId, name]
+                      properties:
+                        userId: { type: integer }
+                        shiftId: { type: integer }
+                        name: { type: string }
+
+  /orders/recent-events:
+    get:
+      operationId: getRecentOrderEvents
+      tags: [orders]
+      summary: |
+        Polling fallback for clients whose SSE stream is unavailable. Returns
+        the most recent order events the caller is authorised to see, scoped
+        with the same role rules as /orders/stream.
+      parameters:
+        - in: query
+          name: since
+          description: ISO-8601 timestamp; defaults to 60s ago when omitted.
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Recent order events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, serverTime]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  serverTime:
+                    type: string
+                    format: date-time
+
+  /orders/delayed:
+    get:
+      operationId: listDelayedOrders
+      tags: [orders]
+      summary: Orders that have passed their estimatedReadyAt without completion
+      responses:
+        "200":
+          description: Delayed orders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Order"
+                  total:
+                    type: integer
+                required: [orders, total]
+
   /orders/recent:
     get:
       operationId: getRecentOrders
@@ -804,6 +1009,36 @@ paths:
                 $ref: "#/components/schemas/Notification"
 
   # ─────────────── GLOBAL ADMIN ───────────────
+  /admin/settings:
+    get:
+      operationId: getAdminSettings
+      tags: [admin]
+      summary: Read tenant admin settings (includes order routing rule + default ETA)
+      responses:
+        "200":
+          description: Admin settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSettings"
+    put:
+      operationId: updateAdminSettings
+      tags: [admin]
+      summary: Update tenant admin settings (partial update)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAdminSettingsBody"
+      responses:
+        "200":
+          description: Updated admin settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminSettings"
+
   /admin/stats:
     get:
       operationId: getAdminStats
@@ -1396,6 +1631,38 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/OrderItem"
+        assignedCsrUserId:
+          type: integer
+          nullable: true
+        routeSource:
+          type: string
+          enum: [active_csr, general_account, supervisor_override]
+          nullable: true
+        routedAt:
+          type: string
+          format: date-time
+          nullable: true
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        promisedMinutes:
+          type: integer
+          nullable: true
+        estimatedReadyAt:
+          type: string
+          format: date-time
+          nullable: true
+        readyAt:
+          type: string
+          format: date-time
+          nullable: true
+        etaAdjustedBySupervisor:
+          type: boolean
+        fulfillmentStatus:
+          type: string
+          enum: [submitted, accepted, preparing, ready, completed, cancelled]
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -1843,6 +2110,50 @@ components:
         unreadCount:
           type: integer
       required: [notifications, unreadCount]
+
+    # ─── Admin Settings (incl. order routing rule) ───
+    OrderRoutingRule:
+      type: string
+      enum: [round_robin, least_recent_order, supervisor_manual_assignment]
+      description: |
+        Controls how new orders are assigned to active CSRs.
+        round_robin (default): rotate through active CSRs in user-id order.
+        least_recent_order: route to the active CSR who has gone the longest without a new order.
+        supervisor_manual_assignment: skip auto-assignment; orders sit in the General Account queue until a supervisor reassigns.
+    AdminSettings:
+      type: object
+      properties:
+        id:
+          type: integer
+        orderRoutingRule:
+          $ref: "#/components/schemas/OrderRoutingRule"
+        defaultEtaMinutes:
+          type: integer
+          description: Default customer-hourglass duration (minutes) stamped on new orders.
+          minimum: 1
+        menuImportEnabled:
+          type: boolean
+        showOutOfStock:
+          type: boolean
+        autoPrintOnPayment:
+          type: boolean
+      required: [orderRoutingRule, defaultEtaMinutes]
+      additionalProperties: true
+    UpdateAdminSettingsBody:
+      type: object
+      properties:
+        orderRoutingRule:
+          $ref: "#/components/schemas/OrderRoutingRule"
+        defaultEtaMinutes:
+          type: integer
+          minimum: 1
+        menuImportEnabled:
+          type: boolean
+        showOutOfStock:
+          type: boolean
+        autoPrintOnPayment:
+          type: boolean
+      additionalProperties: true
 
     # ─── Admin Stats ───
     AdminStats:

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, lt, isNotNull, notInArray, or, sql } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -33,8 +33,94 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 import { getHouseTenantId } from "../lib/singleTenant";
 import { normalizeCheckoutCart, buildMerchantPayloadLines, type NormalizedCartLine } from "../lib/checkoutNormalizer";
 import { logger } from "../lib/logger";
+import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
+import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 
 const router: IRouter = Router();
+
+// ─── SSE: realtime order events ──────────────────────────────────────────────
+// Mounted BEFORE the global router.use() auth chain so we can short-circuit
+// when EventSource (which cannot send Authorization headers) authenticates
+// via the Clerk cookie session.
+router.get(
+  "/orders/stream",
+  requireAuth,
+  loadDbUser,
+  requireDbUser,
+  requireApproved,
+  (req, res): void => {
+    const actor = req.dbUser!;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write(`event: hello\ndata: ${JSON.stringify({ userId: actor.id, role: actor.role })}\n\n`);
+
+    const teardown = subscribe({ res, userId: actor.id, role: actor.role });
+    const keepalive = setInterval(() => {
+      try { res.write(`: keepalive\n\n`); } catch { /* ignore */ }
+    }, 25_000);
+    req.on("close", () => {
+      clearInterval(keepalive);
+      teardown();
+      try { res.end(); } catch { /* ignore */ }
+    });
+  }
+);
+
+// SSE poll fallback: clients whose EventSource has dropped poll this every
+// ~10 seconds with `?since=<ISO>` to recover any events they missed. Strict
+// server-side scoping is reused so no extra leak surface is added.
+router.get(
+  "/orders/recent-events",
+  requireAuth,
+  loadDbUser,
+  requireDbUser,
+  requireApproved,
+  (req, res): void => {
+    const actor = req.dbUser!;
+    const since = typeof req.query.since === "string" ? req.query.since : new Date(Date.now() - 60_000).toISOString();
+    const events = getRecentEventsForClient(
+      { res, userId: actor.id, role: actor.role },
+      since,
+    );
+    res.json({ events, serverTime: new Date().toISOString() });
+  },
+);
+
+// GET /api/orders/delayed — supervisor list of orders past their ETA.
+router.get(
+  "/orders/delayed",
+  requireAuth,
+  loadDbUser,
+  requireDbUser,
+  requireApproved,
+  requireRole("supervisor", "admin"),
+  async (_req, res): Promise<void> => {
+    // Push the delayed predicate into SQL so we don't load the full
+    // orders table to filter in memory. Excludes terminal fulfillment
+    // and terminal legacy status values to keep parity with the
+    // previous in-memory filter.
+    const now = new Date();
+    const TERMINAL_FULFILLMENT = ["ready", "completed", "cancelled"];
+    const TERMINAL_STATUS = ["completed", "cancelled", "ready", "delivered", "refunded"];
+    const delayed = await db.select().from(ordersTable).where(
+      and(
+        isNotNull(ordersTable.estimatedReadyAt),
+        lt(ordersTable.estimatedReadyAt, now),
+        or(
+          sql`${ordersTable.fulfillmentStatus} is null`,
+          notInArray(ordersTable.fulfillmentStatus, TERMINAL_FULFILLMENT),
+        ),
+        notInArray(ordersTable.status, TERMINAL_STATUS),
+      ),
+    ).orderBy(desc(ordersTable.estimatedReadyAt));
+    const out = await Promise.all(delayed.map(buildOrderResponse));
+    res.json({ orders: out, total: out.length });
+  },
+);
+
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
@@ -65,6 +151,15 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),
     })),
+    assignedCsrUserId: order.assignedCsrUserId ?? null,
+    routeSource: order.routeSource ?? null,
+    routedAt: order.routedAt ?? null,
+    acceptedAt: order.acceptedAt ?? null,
+    promisedMinutes: order.promisedMinutes ?? null,
+    estimatedReadyAt: order.estimatedReadyAt ?? null,
+    readyAt: order.readyAt ?? null,
+    etaAdjustedBySupervisor: order.etaAdjustedBySupervisor ?? false,
+    fulfillmentStatus: order.fulfillmentStatus ?? null,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
   };
@@ -81,9 +176,21 @@ router.get("/orders", async (req, res): Promise<void> => {
   let rows = await db.select().from(ordersTable)
     .orderBy(desc(ordersTable.createdAt));
 
-  // Customers see only their own orders
+  // Customers see only their own orders.
   if (actor.role === "user") {
     rows = rows.filter(o => o.customerId === actor.id);
+  }
+  // CSR-tier roles see their own assignments + the General Account
+  // fallback queue (assignedCsrUserId === null), matching the SSE
+  // audience scoping so the listing UI cannot drift from realtime
+  // alerts. Admin/supervisor still see everything.
+  if (
+    actor.role === "customer_service_rep" ||
+    actor.role === "lab_tech" ||
+    actor.role === "sales_rep" ||
+    actor.role === "business_sitter"
+  ) {
+    rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
   if (query.data.status) rows = rows.filter(o => o.status === query.data.status);
   if (query.data.customerId) rows = rows.filter(o => o.customerId === query.data.customerId);
@@ -139,28 +246,32 @@ router.post("/orders", async (req, res): Promise<void> => {
 
   const houseTenantId = await getHouseTenantId();
 
-  // Assign to active lab tech shift (or default tech if no shift active)
-  const [activeShift] = await db
-    .select()
-    .from(labTechShiftsTable)
-    .where(eq(labTechShiftsTable.status, "active"))
-    .orderBy(desc(labTechShiftsTable.clockedInAt))
-    .limit(1);
+  // supervisor_manual_assignment; routes to assigned CSR + their active
+  // shift, or to the General Account fallback queue).
+  const routing = await decideRouting();
 
-  let assignedTechId: number | null = null;
-  let assignedShiftId: number | null = null;
-  if (activeShift) {
-    assignedTechId = activeShift.techId;
-    assignedShiftId = activeShift.id;
-  } else {
-    const [defaultTech] = await db
-      .select({ id: usersTable.id })
-      .from(usersTable)
-      .where(eq(usersTable.isDefaultTech, true))
+  // Legacy assignedTechId/assignedShiftId mirror the routing decision so
+  // the existing FulfillmentCard / shift dashboards / legacy reports
+  // keep working. When the routing decision is general_account (no CSR
+  // owner), fall back to any active shift for both legacy fields —
+  // routing ownership lives in assignedCsrUserId/routeSource, so the
+  // legacy fallback does not muddy the new vocabulary.
+  let assignedTechId: number | null = routing.assignedCsrUserId;
+  let assignedShiftId: number | null = routing.assignedShiftId;
+  if (!assignedTechId) {
+    const [activeShift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "active"))
+      .orderBy(desc(labTechShiftsTable.clockedInAt))
       .limit(1);
-    if (defaultTech) assignedTechId = defaultTech.id;
+    if (activeShift) {
+      assignedTechId = activeShift.techId;
+      assignedShiftId = activeShift.id;
+    }
   }
 
+  const now = new Date();
   const [order] = await db.insert(ordersTable).values({
     tenantId: houseTenantId,
     customerId: actor.id,
@@ -173,6 +284,12 @@ router.post("/orders", async (req, res): Promise<void> => {
     notes: body.data.notes ?? null,
     assignedTechId,
     assignedShiftId,
+    assignedCsrUserId: routing.assignedCsrUserId,
+    routeSource: routing.routeSource,
+    routedAt: now,
+    promisedMinutes: routing.promisedMinutes,
+    estimatedReadyAt: routing.estimatedReadyAt,
+    fulfillmentStatus: "submitted",
   }).returning();
 
   // Persist dual-brand snapshots on the order for auditability
@@ -232,7 +349,17 @@ router.post("/orders", async (req, res): Promise<void> => {
     action: "CREATE_ORDER",
     resourceType: "order",
     resourceId: String(order.id),
-    metadata: { total, itemCount: normalizedLines.length },
+    metadata: { total, itemCount: normalizedLines.length, routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId },
+    ipAddress: req.ip,
+  });
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "ORDER_ASSIGNED",
+    resourceType: "order",
+    resourceId: String(order.id),
+    metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
     ipAddress: req.ip,
   });
 
@@ -277,7 +404,289 @@ router.post("/orders", async (req, res): Promise<void> => {
   } catch { /* non-critical */ }
 
   const orderObj = await buildOrderResponse(order);
+
+  // Realtime: notify CSR pool / supervisors. Server enforces scoping in
+  // shouldDeliver — clients receive only what they're authorized to see.
+  publishOrderEvent({
+    type: "order.assigned",
+    orderId: order.id,
+    customerId: actor.id,
+    assignedCsrUserId: routing.assignedCsrUserId,
+    routeSource: routing.routeSource,
+    customerName,
+    total,
+    itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0),
+    routedAt: now.toISOString(),
+    estimatedReadyAt: routing.estimatedReadyAt.toISOString(),
+    promisedMinutes: routing.promisedMinutes,
+  });
+
   res.status(201).json(GetOrderResponse.parse(orderObj));
+});
+
+
+function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
+  publishOrderEvent({
+    type: "order.updated",
+    orderId: o.id,
+    customerId: o.customerId,
+    assignedCsrUserId: o.assignedCsrUserId ?? null,
+    fulfillmentStatus: o.fulfillmentStatus ?? null,
+    status: o.status,
+    estimatedReadyAt: o.estimatedReadyAt ? o.estimatedReadyAt.toISOString() : null,
+    acceptedAt: o.acceptedAt ? o.acceptedAt.toISOString() : null,
+    etaAdjustedBySupervisor: o.etaAdjustedBySupervisor ?? false,
+    routeSource: o.routeSource ?? null,
+    reason,
+  });
+}
+
+// POST /api/orders/:id/accept — CSR accepts a routed order
+router.post("/orders/:id/accept", requireRole("customer_service_rep", "lab_tech", "sales_rep"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+
+  // CSRs may only accept orders assigned to them or sitting in the General
+  // Account fallback queue (assignedCsrUserId === null).
+  if (actor.role === "customer_service_rep" || actor.role === "lab_tech" || actor.role === "sales_rep") {
+    if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
+      res.status(403).json({ error: "Order is assigned to another rep" });
+      return;
+    }
+  }
+  if (order.acceptedAt) {
+    res.status(409).json({ error: "Order already accepted", acceptedAt: order.acceptedAt });
+    return;
+  }
+  if ((order.fulfillmentStatus ?? "submitted") !== "submitted") {
+    res.status(409).json({
+      error: "Order is not in submitted state",
+      fulfillmentStatus: order.fulfillmentStatus,
+    });
+    return;
+  }
+
+  const now = new Date();
+  // Atomic claim: include accepted_at IS NULL and fulfillment_status =
+  // submitted in the WHERE clause so two CSRs racing on a general-queue
+  // order cannot both win. The loser's UPDATE returns zero rows and we
+  // 409 instead of double-accepting.
+  const updatedRows = await db.update(ordersTable)
+    .set({
+      acceptedAt: now,
+      status: "processing",
+      fulfillmentStatus: "accepted",
+      assignedCsrUserId: order.assignedCsrUserId ?? actor.id,
+    })
+    .where(and(
+      eq(ordersTable.id, orderId),
+      sql`${ordersTable.acceptedAt} is null`,
+      eq(ordersTable.fulfillmentStatus, "submitted"),
+    ))
+    .returning();
+  const updated = updatedRows[0];
+  if (!updated) {
+    res.status(409).json({ error: "Order was already accepted by another rep" });
+    return;
+  }
+
+  emitUpdated(updated, "accepted");
+
+  // If this was a general-queue order (no prior assignee), every CSR in the
+  // pool received the original order.assigned event. The post-accept
+  // order.updated above is now scoped to the accepting CSR only because
+  // assignedCsrUserId is no longer null, so other CSR clients would keep a
+  // stale alert. Broadcast a synthetic queue-clear event scoped to the
+  // general queue (assignedCsrUserId: null) so they can drop it.
+  if (order.assignedCsrUserId == null) {
+    publishOrderEvent({
+      type: "order.updated",
+      orderId: updated.id,
+      customerId: updated.customerId,
+      assignedCsrUserId: null,
+      fulfillmentStatus: updated.fulfillmentStatus ?? null,
+      status: updated.status,
+      estimatedReadyAt: updated.estimatedReadyAt ? updated.estimatedReadyAt.toISOString() : null,
+      acceptedAt: updated.acceptedAt ? updated.acceptedAt.toISOString() : null,
+      etaAdjustedBySupervisor: updated.etaAdjustedBySupervisor ?? false,
+      routeSource: updated.routeSource ?? null,
+      reason: "claimed_from_queue",
+    });
+  }
+
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_ACCEPTED",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { acceptedByUserId: actor.id }, ipAddress: req.ip,
+  });
+
+  res.json(await buildOrderResponse(updated));
+});
+
+// PATCH /api/orders/:id/eta — supervisor adjusts the customer hourglass
+router.patch("/orders/:id/eta", requireRole("supervisor", "admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const { estimatedReadyAt, promisedMinutes } = req.body as { estimatedReadyAt?: string; promisedMinutes?: number };
+  let when: Date;
+  let promised: number | undefined;
+  if (typeof promisedMinutes === "number" && promisedMinutes > 0) {
+    promised = promisedMinutes;
+    when = new Date(Date.now() + promisedMinutes * 60_000);
+  } else if (typeof estimatedReadyAt === "string") {
+    when = new Date(estimatedReadyAt);
+    if (isNaN(when.getTime())) { res.status(400).json({ error: "Invalid estimatedReadyAt" }); return; }
+  } else {
+    res.status(400).json({ error: "Provide estimatedReadyAt (ISO) or promisedMinutes (number > 0)" });
+    return;
+  }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  const [updated] = await db.update(ordersTable)
+    .set({ estimatedReadyAt: when, etaAdjustedBySupervisor: true, ...(promised != null ? { promisedMinutes: promised } : {}) })
+    .where(eq(ordersTable.id, orderId)).returning();
+  emitUpdated(updated, "eta_adjusted");
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_ETA_ADJUSTED",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { estimatedReadyAt: when.toISOString(), promisedMinutes: promised ?? null }, ipAddress: req.ip,
+  });
+  res.json(await buildOrderResponse(updated));
+});
+
+// POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
+router.post("/orders/:id/mark-ready", requireRole("supervisor", "admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  const now = new Date();
+  const [updated] = await db.update(ordersTable)
+    .set({ readyAt: now, status: "ready", fulfillmentStatus: "ready" })
+    .where(eq(ordersTable.id, orderId)).returning();
+  publishOrderEvent({
+    type: "order.ready",
+    orderId,
+    customerId: updated.customerId,
+    assignedCsrUserId: updated.assignedCsrUserId ?? null,
+    readyAt: now.toISOString(),
+  });
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_MARKED_READY",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: {}, ipAddress: req.ip,
+  });
+  res.json(await buildOrderResponse(updated));
+});
+
+// POST /api/orders/:id/reassign — supervisor reassigns to a specific user
+router.post("/orders/:id/reassign", requireRole("supervisor", "admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const { assignedCsrUserId } = req.body as { assignedCsrUserId?: number | null };
+  if (assignedCsrUserId !== null && typeof assignedCsrUserId !== "number") {
+    res.status(400).json({ error: "assignedCsrUserId must be a user id or null" });
+    return;
+  }
+  // Capture the previous assignee BEFORE the swap so we can emit a
+  // scoped clearance event to them after the new assignment publishes.
+  const [priorRow] = await db.select({ a: ordersTable.assignedCsrUserId })
+    .from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const previousAssignedCsrUserId = priorRow?.a ?? null;
+  let updated;
+  try {
+    updated = await reassignOrder(orderId, assignedCsrUserId);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  if (!updated) { res.status(404).json({ error: "Not found" }); return; }
+  emitUpdated(updated, "reassigned");
+  // CSR -> CSR (or CSR -> general) reassignment: the post-update event
+  // above is scoped to the new assignee, so the previous CSR would keep
+  // a stale alert. Emit a clearance event scoped to that previous CSR.
+  if (previousAssignedCsrUserId !== null && previousAssignedCsrUserId !== updated.assignedCsrUserId) {
+    publishOrderEvent({
+      type: "order.updated",
+      orderId: updated.id,
+      customerId: updated.customerId,
+      assignedCsrUserId: previousAssignedCsrUserId,
+      fulfillmentStatus: updated.fulfillmentStatus ?? null,
+      status: updated.status,
+      estimatedReadyAt: updated.estimatedReadyAt ? updated.estimatedReadyAt.toISOString() : null,
+      acceptedAt: updated.acceptedAt ? updated.acceptedAt.toISOString() : null,
+      etaAdjustedBySupervisor: updated.etaAdjustedBySupervisor ?? false,
+      routeSource: updated.routeSource ?? null,
+      reason: "reassigned",
+    });
+  }
+  // Spec: a reassignment must surface as a "new order" alert to the
+  // newly-assigned CSR (or to the General Account queue when assignedCsrUserId
+  // is null). Re-emit order.assigned so CsrAlertBanner enqueues for the
+  // appropriate audience.
+  let routedCustomerName = `customer ${updated.customerId}`;
+  try {
+    const [cust] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+      .from(usersTable).where(eq(usersTable.id, updated.customerId)).limit(1);
+    if (cust) routedCustomerName = [cust.firstName, cust.lastName].filter(Boolean).join(" ") || cust.email || routedCustomerName;
+  } catch { /* best-effort */ }
+  const itemRows = await db.select({ qty: orderItemsTable.quantity })
+    .from(orderItemsTable).where(eq(orderItemsTable.orderId, updated.id));
+  publishOrderEvent({
+    type: "order.assigned",
+    orderId: updated.id,
+    customerId: updated.customerId,
+    assignedCsrUserId: updated.assignedCsrUserId ?? null,
+    routeSource: "supervisor_override",
+    customerName: routedCustomerName,
+    total: Number(updated.total ?? 0),
+    itemCount: itemRows.reduce((s, r) => s + (r.qty ?? 0), 0),
+    routedAt: (updated.routedAt ?? new Date()).toISOString(),
+    estimatedReadyAt: updated.estimatedReadyAt ? updated.estimatedReadyAt.toISOString() : null,
+    promisedMinutes: updated.promisedMinutes ?? null,
+  });
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_REASSIGNED",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { assignedCsrUserId }, ipAddress: req.ip,
+  });
+  res.json(await buildOrderResponse(updated));
+});
+
+// GET /api/orders/active-csrs — supervisor reassign dropdown source.
+router.get("/orders/active-csrs", requireRole("supervisor", "admin"), async (_req, res): Promise<void> => {
+  const active = await listActiveCsrs();
+  if (active.length === 0) { res.json({ csrs: [] }); return; }
+  const ids = active.map(a => a.userId);
+  const users = await db.select({
+    id: usersTable.id,
+    firstName: usersTable.firstName,
+    lastName: usersTable.lastName,
+    email: usersTable.email,
+    role: usersTable.role,
+  }).from(usersTable).where(sql`${usersTable.id} = ANY(${ids})`);
+  const byId = new Map(users.map(u => [u.id, u]));
+  res.json({
+    csrs: active.map(a => {
+      const u = byId.get(a.userId);
+      return {
+        userId: a.userId,
+        shiftId: a.shiftId,
+        name: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email : `User ${a.userId}`,
+        role: u?.role ?? null,
+      };
+    }),
+  });
 });
 
 // GET /api/orders/summary
@@ -434,6 +843,8 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
     ipAddress: req.ip,
   });
 
+  emitUpdated(updated, "status_changed");
+
   const orderObj = await buildOrderResponse(updated);
   res.json(UpdateOrderStatusResponse.parse(orderObj));
 });
@@ -521,9 +932,20 @@ router.post("/orders/:id/fulfillment", requireRole("business_sitter", "superviso
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
-  const { fulfillmentStatus } = req.body as { fulfillmentStatus?: string };
-  const VALID = ["ready_behind_gate", "courier_arrived", "handed_off", "complete"];
-  if (!fulfillmentStatus || !VALID.includes(fulfillmentStatus)) {
+  const { fulfillmentStatus: rawFulfillment } = req.body as { fulfillmentStatus?: string };
+  // Task #12 vocabulary — the only values the new contract accepts.
+  // Legacy inputs are mapped to the closest spec value before persistence
+  // so out-of-spec strings can never be written, but older clients keep
+  // working for one rollout cycle.
+  const LEGACY_MAP: Record<string, string> = {
+    complete: "completed",
+    handed_off: "completed",
+    courier_arrived: "ready",
+    ready_behind_gate: "ready",
+  };
+  const VALID = ["submitted", "accepted", "preparing", "ready", "completed", "cancelled"] as const;
+  const fulfillmentStatus = rawFulfillment ? (LEGACY_MAP[rawFulfillment] ?? rawFulfillment) : undefined;
+  if (!fulfillmentStatus || !(VALID as readonly string[]).includes(fulfillmentStatus)) {
     res.status(400).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
   }
 
@@ -531,10 +953,10 @@ router.post("/orders/:id/fulfillment", requireRole("business_sitter", "superviso
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
-  // Mark status as complete on certain transitions
-  if (fulfillmentStatus === "handed_off" || fulfillmentStatus === "complete") {
-    update.status = "completed";
-  }
+  if (fulfillmentStatus === "preparing") update.status = "processing";
+  if (fulfillmentStatus === "ready") update.status = "ready";
+  if (fulfillmentStatus === "completed") update.status = "completed";
+  if (fulfillmentStatus === "cancelled") update.status = "cancelled";
 
   const [updated] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, orderId)).returning();
 
@@ -544,6 +966,21 @@ router.post("/orders/:id/fulfillment", requireRole("business_sitter", "superviso
     resourceType: "order", resourceId: String(orderId),
     metadata: { fulfillmentStatus }, ipAddress: req.ip,
   });
+
+  // Emit realtime so customer hourglass / CSR queue / supervisor views
+  // do not lag behind direct fulfillment-status mutations. Use
+  // order.ready when the new state is ready, order.updated otherwise.
+  if (fulfillmentStatus === "ready") {
+    publishOrderEvent({
+      type: "order.ready",
+      orderId: updated.id,
+      customerId: updated.customerId,
+      assignedCsrUserId: updated.assignedCsrUserId ?? null,
+      readyAt: new Date().toISOString(),
+    });
+  } else {
+    emitUpdated(updated, "fulfillment_changed");
+  }
 
   res.json({ id: updated.id, fulfillmentStatus: updated.fulfillmentStatus, status: updated.status });
 });

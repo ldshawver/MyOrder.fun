@@ -27,8 +27,259 @@ import { Label } from "@/components/ui/label";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { useOrderEvents } from "@/hooks/useOrderEvents";
 
 type OrderWithTracking = Order & { trackingUrl?: string };
+
+function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
+  const queryClient = useQueryClient();
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useOrderEvents((ev) => {
+    if (ev.orderId !== order.id) return;
+    if (ev.type === "order.updated" || ev.type === "order.ready" || ev.type === "order.assigned") {
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(order.id) });
+    }
+  });
+
+  const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
+  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "delivered";
+  const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
+  const timerExpired = etaForCheck !== null && now >= etaForCheck;
+  const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
+
+  if (isReady || isCompleted || (timerExpired && !isCancelled)) {
+    return (
+      <div
+        className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
+        data-testid="customer-ready-banner"
+      >
+        <CheckCircle2 size={56} className="text-emerald-400" />
+        <div className="mt-4 text-2xl font-bold text-emerald-300">
+          {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
+        </div>
+        <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
+          {isReady || isCompleted
+            ? stageMessageFor(order)
+            : "Your order should be ready right about now — please head to the counter for pickup."}
+        </p>
+      </div>
+    );
+  }
+
+  const eta = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
+  const routedAt = order.routedAt ? new Date(order.routedAt).getTime() : new Date(order.createdAt).getTime();
+  const total = eta ? Math.max(1, eta - routedAt) : 0;
+  const remaining = eta ? eta - now : 0;
+  const overdue = remaining < 0;
+  const absMs = Math.abs(remaining);
+  const mins = Math.floor(absMs / 60000);
+  const secs = Math.floor((absMs % 60000) / 1000);
+  const pct = eta ? Math.max(0, Math.min(100, ((total - Math.max(0, remaining)) / total) * 100)) : 0;
+
+  // Spec: the hourglass itself is time-driven (sand empties as the
+  // promised window elapses). Stage messaging also progresses:
+  // queued → preparing → almost-ready (>85% of window) → finishing-up.
+  const progress = eta ? Math.max(0, Math.min(1, (now - routedAt) / total)) : 0;
+  const almostReady = !overdue && progress >= 0.85;
+  let message: string;
+  if (overdue) {
+    message = "Almost ready — our team is finishing up your order.";
+  } else if (almostReady) {
+    message = "Almost ready — just putting on the finishing touches.";
+  } else if (order.fulfillmentStatus === "preparing" || order.fulfillmentStatus === "accepted") {
+    message = "Our lab team is preparing your order...";
+  } else if (order.status === "pending" || order.fulfillmentStatus === "submitted") {
+    message = "Your order is in the queue waiting to be picked up...";
+  } else {
+    message = "Our lab team is working on your order...";
+  }
+
+  return (
+    <div
+      className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
+      data-testid="customer-hourglass-panel"
+    >
+      <AnimatedHourglass size={200} message={message} progress={eta ? progress : undefined} />
+      {eta && (
+        <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
+          <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
+            {overdue ? "almost ready" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+          </div>
+          <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
+            {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
+          </div>
+          <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
+            <div
+              className={`h-full transition-all ${overdue ? "bg-amber-400" : "bg-primary"}`}
+              style={{ width: `${overdue ? 100 : pct}%` }}
+            />
+          </div>
+        </div>
+      )}
+      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message">
+        {stageMessageFor(order)}
+        {" "}You'll receive a push notification the moment it's ready.
+      </p>
+    </div>
+  );
+}
+
+type ActiveCsrOption = { userId: number; shiftId: number; name: string; role: string | null };
+
+function SupervisorRoutingPanel({
+  order,
+  getToken,
+  onMutated,
+}: {
+  order: OrderWithTracking;
+  getToken: () => Promise<string | null>;
+  onMutated: () => void;
+}) {
+  const [etaMins, setEtaMins] = useState<string>(String(order.promisedMinutes ?? 30));
+  const [etaAbsolute, setEtaAbsolute] = useState<string>(() => {
+    const d = order.estimatedReadyAt ? new Date(order.estimatedReadyAt) : new Date(Date.now() + 30 * 60_000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+  const [reassignTo, setReassignTo] = useState<string>("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [activeCsrs, setActiveCsrs] = useState<ActiveCsrOption[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const token = await getToken();
+      const res = await fetch("/api/orders/active-csrs", { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok || cancelled) return;
+      const json = (await res.json()) as { csrs: ActiveCsrOption[] };
+      if (!cancelled) setActiveCsrs(json.csrs);
+    })();
+    return () => { cancelled = true; };
+  }, [getToken]);
+
+  const call = async (key: string, url: string, method: "POST" | "PATCH", body?: unknown) => {
+    setBusy(key);
+    try {
+      const token = await getToken();
+      await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      onMutated();
+    } finally { setBusy(null); }
+  };
+
+  const setEta = (minutes: number) => {
+    if (minutes <= 0) return;
+    setEtaMins(String(minutes));
+    void call("eta", `/api/orders/${order.id}/eta`, "PATCH", { promisedMinutes: minutes });
+  };
+  const bumpEta = (delta: number) => {
+    // True delta against the existing estimatedReadyAt rather than a
+    // reset-from-now: a +5 click on an order that was already ETA'd to
+    // 12:30 should produce 12:35, not now+5min. Falls back to
+    // routedAt+promisedMinutes if no ETA has been set yet.
+    const baseMs = order.estimatedReadyAt
+      ? new Date(order.estimatedReadyAt).getTime()
+      : (order.routedAt ? new Date(order.routedAt).getTime() : Date.now())
+        + (order.promisedMinutes ?? 30) * 60_000;
+    const nextMs = baseMs + delta * 60_000;
+    if (nextMs <= Date.now()) return;
+    void call("eta", `/api/orders/${order.id}/eta`, "PATCH", { estimatedReadyAt: new Date(nextMs).toISOString() });
+  };
+  const setExplicitEta = () => {
+    const n = parseInt(etaMins, 10);
+    if (isNaN(n) || n <= 0) return;
+    setEta(n);
+  };
+  const setAbsoluteEta = () => {
+    const t = new Date(etaAbsolute);
+    if (isNaN(t.getTime())) return;
+    void call("eta", `/api/orders/${order.id}/eta`, "PATCH", { estimatedReadyAt: t.toISOString() });
+  };
+  const markReady = () => void call("ready", `/api/orders/${order.id}/mark-ready`, "POST");
+  const reassign = () => {
+    const id = reassignTo === "" || reassignTo === "__general__" ? null : parseInt(reassignTo, 10);
+    if (id !== null && isNaN(id)) return;
+    void call("reassign", `/api/orders/${order.id}/reassign`, "POST", { assignedCsrUserId: id });
+  };
+
+  return (
+    <div className="glass-card rounded-2xl p-5 border border-border/50 space-y-4" data-testid="supervisor-routing-panel">
+      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <Truck size={14} /> Routing controls
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <div className="space-y-0.5">
+          <div className="text-muted-foreground">Assigned CSR</div>
+          <div className="font-mono">{order.assignedCsrUserId ?? "— general queue —"}</div>
+        </div>
+        <div className="space-y-0.5">
+          <div className="text-muted-foreground">Route source</div>
+          <div className="font-mono">{order.routeSource ?? "n/a"}</div>
+        </div>
+        <div className="space-y-0.5">
+          <div className="text-muted-foreground">Estimated ready</div>
+          <div className="font-mono">{order.estimatedReadyAt ? new Date(order.estimatedReadyAt).toLocaleString() : "—"}</div>
+        </div>
+      </div>
+      <div className="space-y-2 pt-2 border-t border-border/30">
+        <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Adjust ETA</Label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => bumpEta(-5)} disabled={busy === "eta"} data-testid="button-eta-minus-5">−5 min</Button>
+          <Button size="sm" variant="outline" onClick={() => bumpEta(5)} disabled={busy === "eta"} data-testid="button-eta-plus-5">+5 min</Button>
+          <div className="flex items-end gap-1">
+            <Input value={etaMins} onChange={(e) => setEtaMins(e.target.value)} className="w-24 h-9" data-testid="input-eta-minutes" placeholder="min" />
+            <Button size="sm" onClick={setExplicitEta} disabled={busy === "eta"} data-testid="button-set-eta">Set minutes</Button>
+          </div>
+          <div className="flex items-end gap-1">
+            <Input
+              type="datetime-local"
+              value={etaAbsolute}
+              onChange={(e) => setEtaAbsolute(e.target.value)}
+              className="w-56 h-9"
+              data-testid="input-eta-absolute"
+            />
+            <Button size="sm" variant="outline" onClick={setAbsoluteEta} disabled={busy === "eta"} data-testid="button-set-eta-absolute">Set exact time</Button>
+          </div>
+          <Button size="sm" variant="default" onClick={markReady} disabled={busy === "ready"} data-testid="button-mark-ready">
+            <CheckCircle2 size={14} className="mr-1.5" />
+            Mark ready
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-2 pt-2 border-t border-border/30">
+        <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Reassign to active CSR</Label>
+        <div className="flex flex-wrap items-end gap-2">
+          <Select value={reassignTo} onValueChange={setReassignTo}>
+            <SelectTrigger className="w-64 h-9" data-testid="select-reassign-csr">
+              <SelectValue placeholder="— General Account queue —" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__general__">— General Account queue —</SelectItem>
+              {activeCsrs.map((c) => (
+                <SelectItem key={c.userId} value={String(c.userId)} data-testid={`option-csr-${c.userId}`}>
+                  {c.name} {c.role ? `· ${c.role}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button size="sm" variant="outline" onClick={reassign} disabled={busy === "reassign"} data-testid="button-reassign">Reassign</Button>
+        </div>
+        {activeCsrs.length === 0 && (
+          <p className="text-[11px] text-muted-foreground">No CSRs are currently clocked in — orders will go to the General Account queue.</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   const cls = `status-${status.toLowerCase()}`;
@@ -47,6 +298,22 @@ const STATUS_MESSAGES: Record<string, string> = {
   cancelled: "This order has been cancelled.",
 };
 
+const FULFILLMENT_STAGE_MESSAGES: Record<string, string> = {
+  submitted: "Order received — waiting for a customer service rep to pick it up.",
+  accepted: "A customer service rep is preparing your order.",
+  preparing: "Your order is being packaged discreetly for pickup.",
+  ready: "Your order is ready for pickup or delivery.",
+  completed: "Your order has been completed. Thanks for shopping with us!",
+  cancelled: "This order has been cancelled.",
+};
+
+function stageMessageFor(order: { fulfillmentStatus?: string | null; status: string }): string {
+  if (order.fulfillmentStatus && FULFILLMENT_STAGE_MESSAGES[order.fulfillmentStatus]) {
+    return FULFILLMENT_STAGE_MESSAGES[order.fulfillmentStatus];
+  }
+  return STATUS_MESSAGES[order.status] ?? "";
+}
+
 export default function OrderDetail() {
   const params = useParams();
   const id = parseInt(params.id || "0", 10);
@@ -61,6 +328,7 @@ export default function OrderDetail() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
   const canEditStatus = user?.role === "admin" || user?.role === "supervisor" || user?.role === "business_sitter";
+  const canManageRouting = user?.role === "admin" || user?.role === "supervisor";
   const isCustomer = user?.role === "user";
 
   const { notifyOrderStatusChange } = usePushNotifications({
@@ -208,21 +476,13 @@ export default function OrderDetail() {
         </p>
       </div>
 
-      {/* ── Customer waiting view: Hourglass ───────────────────────── */}
+      {/* ── Customer waiting view: Hourglass with ETA countdown ────── */}
       {isCustomer && isPendingOrProcessing && (
-        <div className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center">
-          <AnimatedHourglass
-            size={200}
-            message={order.status === "pending"
-              ? "Your order is in the queue..."
-              : "Our lab team is working on your order..."
-            }
-          />
-          <p className="text-sm text-muted-foreground mt-4 max-w-sm">
-            {STATUS_MESSAGES[order.status]}
-            {" "}You'll receive a push notification the moment it's ready.
-          </p>
-        </div>
+        <CustomerHourglassPanel order={order as OrderWithTracking} />
+      )}
+
+      {canManageRouting && (
+        <SupervisorRoutingPanel order={order as OrderWithTracking} getToken={getToken} onMutated={() => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) })} />
       )}
 
       {/* ── Ready / Delivered banner ───────────────────────────────── */}
@@ -238,7 +498,7 @@ export default function OrderDetail() {
               {isReady ? "Your Order is Ready!" : "Order Delivered"}
             </div>
             <div className="text-xs text-muted-foreground mt-0.5">
-              {STATUS_MESSAGES[order.status]}
+              {stageMessageFor(order)}
             </div>
           </div>
         </div>
