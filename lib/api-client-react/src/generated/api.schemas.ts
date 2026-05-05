@@ -697,6 +697,13 @@ export interface AdminSettings {
   menuImportEnabled?: boolean;
   showOutOfStock?: boolean;
   autoPrintOnPayment?: boolean;
+  /** Admin-editable system prompt for the AI concierge. NULL means the
+  server uses the built-in default. May contain the placeholders
+  {{itemCount}} and {{catalog}}, which are substituted server-side.
+   */
+  aiConciergePrompt?: string | null;
+  /** True when no custom prompt is set and the server is using the built-in default. */
+  aiConciergePromptIsDefault?: boolean;
   [key: string]: unknown;
  }
 
@@ -707,6 +714,11 @@ export interface UpdateAdminSettingsBody {
   menuImportEnabled?: boolean;
   showOutOfStock?: boolean;
   autoPrintOnPayment?: boolean;
+  /** Set to a non-empty string to override the default. Set to null or
+  an empty string to revert to the built-in default. Hard-capped at
+  8000 characters server-side.
+   */
+  aiConciergePrompt?: string | null;
   [key: string]: unknown;
  }
 

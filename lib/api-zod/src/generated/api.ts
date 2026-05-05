@@ -1295,7 +1295,9 @@ export const GetAdminSettingsResponse = zod.object({
   "defaultEtaMinutes": zod.number().min(1).describe('Default customer-hourglass duration (minutes) stamped on new orders.'),
   "menuImportEnabled": zod.boolean().optional(),
   "showOutOfStock": zod.boolean().optional(),
-  "autoPrintOnPayment": zod.boolean().optional()
+  "autoPrintOnPayment": zod.boolean().optional(),
+  "aiConciergePrompt": zod.string().nullish().describe('Admin-editable system prompt for the AI concierge. NULL means the\nserver uses the built-in default. May contain the placeholders\n{{itemCount}} and {{catalog}}, which are substituted server-side.\n'),
+  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.')
 })
 
 
@@ -1310,7 +1312,8 @@ export const UpdateAdminSettingsBody = zod.object({
   "defaultEtaMinutes": zod.number().min(1).optional(),
   "menuImportEnabled": zod.boolean().optional(),
   "showOutOfStock": zod.boolean().optional(),
-  "autoPrintOnPayment": zod.boolean().optional()
+  "autoPrintOnPayment": zod.boolean().optional(),
+  "aiConciergePrompt": zod.string().nullish().describe('Set to a non-empty string to override the default. Set to null or\nan empty string to revert to the built-in default. Hard-capped at\n8000 characters server-side.\n')
 })
 
 
@@ -1322,7 +1325,9 @@ export const UpdateAdminSettingsResponse = zod.object({
   "defaultEtaMinutes": zod.number().min(1).describe('Default customer-hourglass duration (minutes) stamped on new orders.'),
   "menuImportEnabled": zod.boolean().optional(),
   "showOutOfStock": zod.boolean().optional(),
-  "autoPrintOnPayment": zod.boolean().optional()
+  "autoPrintOnPayment": zod.boolean().optional(),
+  "aiConciergePrompt": zod.string().nullish().describe('Admin-editable system prompt for the AI concierge. NULL means the\nserver uses the built-in default. May contain the placeholders\n{{itemCount}} and {{catalog}}, which are substituted server-side.\n'),
+  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.')
 })
 
 

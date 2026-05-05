@@ -14,5 +14,10 @@ export interface UpdateAdminSettingsBody {
   menuImportEnabled?: boolean;
   showOutOfStock?: boolean;
   autoPrintOnPayment?: boolean;
+  /** Set to a non-empty string to override the default. Set to null or
+  an empty string to revert to the built-in default. Hard-capped at
+  8000 characters server-side.
+   */
+  aiConciergePrompt?: string | null;
   [key: string]: unknown;
  }

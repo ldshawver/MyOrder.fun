@@ -2142,6 +2142,16 @@ components:
           type: boolean
         autoPrintOnPayment:
           type: boolean
+        aiConciergePrompt:
+          type: string
+          nullable: true
+          description: |
+            Admin-editable system prompt for the AI concierge. NULL means the
+            server uses the built-in default. May contain the placeholders
+            {{itemCount}} and {{catalog}}, which are substituted server-side.
+        aiConciergePromptIsDefault:
+          type: boolean
+          description: True when no custom prompt is set and the server is using the built-in default.
       required: [orderRoutingRule, defaultEtaMinutes]
       additionalProperties: true
     UpdateAdminSettingsBody:
@@ -2158,6 +2168,13 @@ components:
           type: boolean
         autoPrintOnPayment:
           type: boolean
+        aiConciergePrompt:
+          type: string
+          nullable: true
+          description: |
+            Set to a non-empty string to override the default. Set to null or
+            an empty string to revert to the built-in default. Hard-capped at
+            8000 characters server-side.
       additionalProperties: true
 
     # ─── Admin Stats ───

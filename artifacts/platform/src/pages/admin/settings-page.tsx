@@ -25,7 +25,11 @@ type AdminSettings = {
   wcConsumerKeySet: boolean;
   wcConsumerSecretSet: boolean;
   wcEnabled: boolean;
+  aiConciergePrompt: string | null;
+  aiConciergePromptIsDefault: boolean;
 };
+
+const AI_PROMPT_MAX_CHARS = 8000;
 
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
@@ -45,6 +49,8 @@ const DEFAULTS: AdminSettings = {
   wcConsumerKeySet: false,
   wcConsumerSecretSet: false,
   wcEnabled: true,
+  aiConciergePrompt: null,
+  aiConciergePromptIsDefault: true,
 };
 
 export default function AdminSettingsPage() {
@@ -231,6 +237,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
           <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
+          <TabsTrigger value="ai" className="rounded-lg text-xs">AI Concierge</TabsTrigger>
         </TabsList>
 
         {/* Products */}
@@ -533,6 +540,57 @@ export default function AdminSettingsPage() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* AI Concierge */}
+        <TabsContent value="ai">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-1">AI Concierge System Prompt</div>
+              <div className="text-[11px] text-muted-foreground leading-relaxed">
+                Controls how Zappy (the customer-facing AI order helper) introduces itself and what rules it follows. Leave blank to use the built-in default prompt.
+              </div>
+            </div>
+
+            <div className="text-[11px] text-muted-foreground bg-muted/20 rounded-xl p-3 border border-border/30 leading-relaxed">
+              <strong>Placeholders:</strong> <code className="px-1 py-0.5 rounded bg-background/50 font-mono">{"{{itemCount}}"}</code> — number of available items.{" "}
+              <code className="px-1 py-0.5 rounded bg-background/50 font-mono">{"{{catalog}}"}</code> — bulleted catalog summary (name, category, price). Both are substituted server-side at request time.
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Prompt</label>
+                <span className={`text-[10px] ${(settings.aiConciergePrompt?.length ?? 0) > AI_PROMPT_MAX_CHARS ? "text-red-400" : "text-muted-foreground"}`}>
+                  {settings.aiConciergePrompt?.length ?? 0} / {AI_PROMPT_MAX_CHARS}
+                </span>
+              </div>
+              <textarea
+                value={settings.aiConciergePrompt ?? ""}
+                onChange={e => set("aiConciergePrompt", e.target.value)}
+                placeholder="Leave blank to use the built-in default prompt."
+                rows={14}
+                maxLength={AI_PROMPT_MAX_CHARS}
+                className="w-full text-xs font-mono rounded-xl bg-background/50 border border-border/40 p-3 leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40"
+              />
+              {settings.aiConciergePromptIsDefault && (
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  Currently using the built-in default prompt.
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => set("aiConciergePrompt", null)}
+                disabled={settings.aiConciergePromptIsDefault && !settings.aiConciergePrompt}
+                className="rounded-xl gap-2"
+              >
+                Reset to default
+              </Button>
             </div>
           </div>
         </TabsContent>

@@ -11,7 +11,12 @@ router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
 type RoutingRule = typeof ROUTING_RULES[number];
 
+// Hard cap on the admin-editable AI prompt to avoid pathological prompts
+// or accidental paste-the-whole-document mistakes blowing the model context.
+export const AI_CONCIERGE_PROMPT_MAX_CHARS = 8000;
+
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
+  const aiPrompt = s.aiConciergePrompt ?? null;
   return {
     id: s.id,
     orderRoutingRule: (s.orderRoutingRule ?? "round_robin") as RoutingRule,
@@ -29,6 +34,8 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     keepAuditToken: s.keepAuditToken,
     keepFailedPaymentLogs: s.keepFailedPaymentLogs,
     receiptLineNameMode: s.receiptLineNameMode ?? "lucifer_only",
+    aiConciergePrompt: aiPrompt,
+    aiConciergePromptIsDefault: aiPrompt === null || aiPrompt.trim() === "",
     // WooCommerce — secrets are returned as a boolean mask only,
     // never echoed back to the client in plaintext.
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -102,6 +109,27 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
       return;
     }
     update.defaultEtaMinutes = n;
+  }
+  if (body.aiConciergePrompt !== undefined) {
+    if (body.aiConciergePrompt === null) {
+      update.aiConciergePrompt = null;
+    } else if (typeof body.aiConciergePrompt !== "string") {
+      res.status(400).json({ error: "aiConciergePrompt must be a string or null" });
+      return;
+    } else {
+      const trimmed = body.aiConciergePrompt.trim();
+      if (trimmed.length === 0) {
+        // Empty string === revert to default.
+        update.aiConciergePrompt = null;
+      } else if (body.aiConciergePrompt.length > AI_CONCIERGE_PROMPT_MAX_CHARS) {
+        res.status(400).json({
+          error: `aiConciergePrompt exceeds maximum length of ${AI_CONCIERGE_PROMPT_MAX_CHARS} characters`,
+        });
+        return;
+      } else {
+        update.aiConciergePrompt = body.aiConciergePrompt;
+      }
+    }
   }
 
   const existing = await getOrCreateSettings();

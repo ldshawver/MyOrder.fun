@@ -41,6 +41,10 @@ export const adminSettingsTable = pgTable("admin_settings", {
   orderRoutingRule: text("order_routing_rule").notNull().default("round_robin"),
   // Default ETA (minutes) used to compute customer hourglass when no per-order override is set
   defaultEtaMinutes: integer("default_eta_minutes").notNull().default(30),
+  // Admin-editable AI concierge system prompt. NULL → server falls back to
+  // DEFAULT_AI_CONCIERGE_PROMPT in routes/ai.ts. Supports placeholders
+  // {{itemCount}} and {{catalog}} substituted at request time.
+  aiConciergePrompt: text("ai_concierge_prompt"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
