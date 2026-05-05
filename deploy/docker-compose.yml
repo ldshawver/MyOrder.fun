@@ -61,6 +61,18 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tell the bundled cups-client (lp/lpstat) which CUPS server to talk to.
+      # Default uses the bind-mounted host socket below; override with an
+      # IP:port like "host.docker.internal:631" if you front CUPS over IPP.
+      CUPS_SERVER: ${CUPS_SERVER:-/var/run/cups/cups.sock}
+    volumes:
+      # Bind-mount the host's CUPS socket so `lp -d <queue>` inside the
+      # container drives the host's CUPS daemon. The host MUST have CUPS
+      # installed (apt-get install -y cups cups-bsd) and a queue named in
+      # admin → printers configured BEFORE this mount works. If the host
+      # file does not yet exist, docker will create an empty directory in
+      # its place — install CUPS first to avoid that footgun.
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
     depends_on:
       db:
         condition: service_healthy
