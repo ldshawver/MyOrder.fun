@@ -316,13 +316,16 @@ export interface Order {
 }
 
 export type CreateOrderBodyItemsItem = {
+  /** @minimum 1 */
   catalogItemId: number;
+  /** @minimum 1 */
   quantity: number;
 };
 
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
+  /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
 }
 
@@ -733,8 +736,17 @@ export interface MfaVerifyResponse {
 }
 
 export interface TokenizePaymentBody {
+  /** @minimum 1 */
   orderId: number;
-  amount: number;
+  /**
+     * DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
+  server-side from the normalized order lines + tax rule. Provided
+  here only for legacy clients; mismatches are logged but do not
+  change the amount sent to Stripe.
+
+     * @minimum 0
+     */
+  amount?: number;
   currency?: string;
 }
 

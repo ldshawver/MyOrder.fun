@@ -446,13 +446,18 @@ export const ListOrdersResponse = zod.object({
 /**
  * @summary Place a new order
  */
+
+
+
+
+
 export const CreateOrderBody = zod.object({
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
   "items": zod.array(zod.object({
-  "catalogItemId": zod.number(),
-  "quantity": zod.number()
-}))
+  "catalogItemId": zod.number().min(1),
+  "quantity": zod.number().min(1)
+})).min(1)
 })
 
 
@@ -1373,11 +1378,14 @@ export const VerifyMfaResponse = zod.object({
 /**
  * @summary Create a payment token for an order (returns client secret for card element)
  */
+
+export const tokenizePaymentBodyAmountMin = 0;
+
 export const tokenizePaymentBodyCurrencyDefault = `usd`;
 
 export const TokenizePaymentBody = zod.object({
-  "orderId": zod.number(),
-  "amount": zod.number(),
+  "orderId": zod.number().min(1),
+  "amount": zod.number().min(tokenizePaymentBodyAmountMin).optional().describe('DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed\nserver-side from the normalized order lines + tax rule. Provided\nhere only for legacy clients; mismatches are logged but do not\nchange the amount sent to Stripe.\n'),
   "currency": zod.string().default(tokenizePaymentBodyCurrencyDefault)
 })
 

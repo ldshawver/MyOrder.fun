@@ -10,5 +10,6 @@ import type { CreateOrderBodyItemsItem } from './createOrderBodyItemsItem';
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
+  /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
 }

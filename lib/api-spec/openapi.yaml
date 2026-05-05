@@ -1673,6 +1673,7 @@ components:
 
     CreateOrderBody:
       type: object
+      additionalProperties: false
       properties:
         shippingAddress:
           type: string
@@ -1680,13 +1681,17 @@ components:
           type: string
         items:
           type: array
+          minItems: 1
           items:
             type: object
+            additionalProperties: false
             properties:
               catalogItemId:
                 type: integer
+                minimum: 1
               quantity:
                 type: integer
+                minimum: 1
             required: [catalogItemId, quantity]
       required: [items]
 
@@ -2210,15 +2215,23 @@ components:
     # ─── Payments ───
     TokenizePaymentBody:
       type: object
+      additionalProperties: false
       properties:
         orderId:
           type: integer
+          minimum: 1
         amount:
           type: number
+          minimum: 0
+          description: |
+            DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
+            server-side from the normalized order lines + tax rule. Provided
+            here only for legacy clients; mismatches are logged but do not
+            change the amount sent to Stripe.
         currency:
           type: string
           default: usd
-      required: [orderId, amount]
+      required: [orderId]
 
     TokenizePaymentResponse:
       type: object

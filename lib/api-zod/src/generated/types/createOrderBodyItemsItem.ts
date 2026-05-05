@@ -7,6 +7,8 @@
  */
 
 export type CreateOrderBodyItemsItem = {
+  /** @minimum 1 */
   catalogItemId: number;
+  /** @minimum 1 */
   quantity: number;
 };

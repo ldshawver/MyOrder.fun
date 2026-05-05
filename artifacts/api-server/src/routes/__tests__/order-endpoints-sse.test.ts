@@ -48,15 +48,55 @@ vi.mock("../../lib/auth", () => ({
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
-vi.mock("../../lib/checkoutNormalizer", () => ({
-  normalizeCheckoutCart: async () => ([
-    {
-      catalog_item_id: 1, receipt_alavont_name: "Test", merchant_payload_name: "Test",
-      classification: "local_mapped", quantity: 1, unit_price: 10, total_price: 10,
+vi.mock("../../lib/checkoutNormalizer", async () => {
+  const { z } = await import("zod");
+  class CheckoutMappingError extends Error {
+    public readonly catalogItemId: number;
+    public readonly reason: string;
+    constructor(catalogItemId: number, reason: string, message?: string) {
+      super(message ?? reason);
+      this.name = "CheckoutMappingError";
+      this.catalogItemId = catalogItemId;
+      this.reason = reason;
+    }
+  }
+  return {
+    CheckoutMappingError,
+    CartLineInput: z
+      .object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })
+      .strict(),
+    CHECKOUT_TAX_RATE: 0.08,
+    normalizeCheckoutCart: async () => ([
+      {
+        catalog_item_id: 1,
+        source_type: "local_mapped",
+        merchant_brand: "alavont",
+        catalog_display_name: "Test",
+        merchant_name: "Test LC",
+        merchant_sku: "LC-TEST",
+        receipt_alavont_name: "Test",
+        receipt_lucifer_name: "Test LC",
+        merchant_image_url: null,
+        unit_price: 10,
+        quantity: 1,
+        line_subtotal: 10,
+        alavont_id: null,
+        woo_product_id: null,
+        woo_variation_id: null,
+        lab_name: null,
+        receipt_name: null,
+        label_name: null,
+      },
+    ]),
+    computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
+      const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
+      const tax = parseFloat((subtotal * 0.08).toFixed(2));
+      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08 };
     },
-  ]),
-  buildMerchantPayloadLines: () => [],
-}));
+    buildMerchantPayloadLines: () => [],
+    buildReceiptLines: () => [],
+  };
+});
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));

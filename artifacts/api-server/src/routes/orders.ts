@@ -5,7 +5,6 @@ import {
   ordersTable,
   orderItemsTable,
   orderNotesTable,
-  catalogItemsTable,
   usersTable,
   notificationsTable,
   labTechShiftsTable,
@@ -31,7 +30,15 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { normalizeCheckoutCart, buildMerchantPayloadLines, type NormalizedCartLine } from "../lib/checkoutNormalizer";
+import {
+  normalizeCheckoutCart,
+  computeCheckoutTotals,
+  buildMerchantPayloadLines,
+  CheckoutMappingError,
+  CartLineInput,
+  type NormalizedCartLine,
+} from "../lib/checkoutNormalizer";
+import { z } from "zod";
 import { logger } from "../lib/logger";
 import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
@@ -213,36 +220,55 @@ router.post("/orders", async (req, res): Promise<void> => {
     return;
   }
 
-  // Verify all catalog items belong to tenant and compute totals
-  let subtotal = 0;
-  const resolvedItems: Array<{ catalogItem: typeof catalogItemsTable.$inferSelect; quantity: number }> = [];
-  for (const item of body.data.items) {
-    const [ci] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, item.catalogItemId)).limit(1);
-    if (!ci) {
-      res.status(400).json({ error: `Catalog item ${item.catalogItemId} not found` });
-      return;
-    }
-    if (!ci.isAvailable) {
-      res.status(400).json({ error: `Item "${ci.name}" is not available` });
-      return;
-    }
-    const price = parseFloat(ci.price as string);
-    subtotal += price * item.quantity;
-    resolvedItems.push({ catalogItem: ci, quantity: item.quantity });
+  // Strict re-parse of cart lines: rejects any client-supplied unitPrice,
+  // total, sku, merchantName, etc. Server is the single source of truth for
+  // pricing — clients send only catalogItemId + quantity.
+  const StrictItemsSchema = z.array(CartLineInput).min(1);
+  const strictItems = StrictItemsSchema.safeParse(body.data.items);
+  if (!strictItems.success) {
+    res.status(400).json({
+      error: "Cart line items must contain only catalogItemId and quantity",
+      details: strictItems.error.issues,
+    });
+    return;
   }
 
-  // Dual-brand normalization: validates merchant fields, classifies local_mapped vs woo,
-  // and guarantees Alavont names never appear in processor payloads
+  // Dual-brand normalization: converts every Alavont catalog line into a
+  // Lucifer Cruz merchant line. Throws CheckoutMappingError (→ 422) when an
+  // Alavont item has no LC mapping so a payment intent is NEVER created
+  // against an unrouteable cart.
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items);
+    normalizedLines = await normalizeCheckoutCart(strictItems.data);
   } catch (normErr) {
+    if (normErr instanceof CheckoutMappingError) {
+      // Audit BEFORE returning so missing-mapping incidents are observable.
+      await writeAuditLog({
+        actorId: actor.id,
+        actorEmail: actor.email,
+        actorRole: actor.role,
+        action: "ITEM_CONVERSION_FAILED",
+        resourceType: "catalog_item",
+        resourceId: String(normErr.catalogItemId),
+        metadata: { reason: normErr.reason, message: normErr.message, items: strictItems.data },
+        ipAddress: req.ip,
+      });
+      res.status(422).json({
+        error: "Item not available for purchase",
+        catalogItemId: normErr.catalogItemId,
+      });
+      return;
+    }
     res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
     return;
   }
 
-  const tax = subtotal * 0.08; // 8% tax
-  const total = subtotal + tax;
+  // Server-side authoritative totals — any client-supplied numeric fields
+  // were rejected above; subtotal/tax/total are rederived from DB prices.
+  const totals = computeCheckoutTotals(normalizedLines);
+  const subtotal = totals.subtotal;
+  const tax = totals.tax;
+  const total = totals.total;
 
   const houseTenantId = await getHouseTenantId();
 

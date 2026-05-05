@@ -69,6 +69,15 @@ export const catalogItemsTable = pgTable("catalog_items", {
   merchantImage: text("merchant_image"),
   merchantDescription: text("merchant_description"),
   merchantCategory: text("merchant_category"),
+  // Merchant-side SKU on the Lucifer Cruz catalog. For Alavont-brand items the
+  // server-side checkout normalizer requires this to be non-empty so the LC
+  // mapping resolves before any payment intent is created.
+  merchantSku: text("merchant_sku"),
+  // Discriminator for which catalog/brand surface the item lives on.
+  // - "alavont": customer-facing Alavont item that MUST be converted to a
+  //   Lucifer Cruz merchant line by the normalizer before payment.
+  // - "lucifer_cruz": item already on the LC merchant catalog (no rewrite).
+  merchantBrand: text("merchant_brand").notNull().default("alavont"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

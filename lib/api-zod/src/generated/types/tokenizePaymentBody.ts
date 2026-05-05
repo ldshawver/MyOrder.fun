@@ -7,7 +7,16 @@
  */
 
 export interface TokenizePaymentBody {
+  /** @minimum 1 */
   orderId: number;
-  amount: number;
+  /**
+     * DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
+  server-side from the normalized order lines + tax rule. Provided
+  here only for legacy clients; mismatches are logged but do not
+  change the amount sent to Stripe.
+
+     * @minimum 0
+     */
+  amount?: number;
   currency?: string;
 }
