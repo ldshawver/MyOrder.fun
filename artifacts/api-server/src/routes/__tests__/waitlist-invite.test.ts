@@ -77,6 +77,13 @@ vi.mock("@workspace/db", () => {
     // bugs (e.g. eq(undefinedCol, x) matching admin and demoting them).
     if (!col) return () => false;
     if (op === "ne") return (row) => row[col] !== val;
+    if (op === "ieq") {
+      const needle = typeof val === "string" ? val.toLowerCase() : val;
+      return (row) => {
+        const v = row[col];
+        return typeof v === "string" ? v.toLowerCase() === needle : v === needle;
+      };
+    }
     return (row) => row[col] === val;
   }
 
@@ -163,6 +170,12 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col) => col),
   asc: vi.fn((col) => col),
   like: vi.fn((col, val) => ({ op: "like", col, val })),
+  // Tagged-template `sql` mock — only supports the
+  // `sql`lower(${col}) = lower(${val})`` pattern used by the invite/webhook
+  // routes for case-insensitive email matching.
+  sql: vi.fn((_strings: TemplateStringsArray, col: string, val: unknown) => ({
+    op: "ieq", col, val,
+  })),
 }));
 
 vi.mock("../../lib/sms", () => ({

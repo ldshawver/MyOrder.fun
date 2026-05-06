@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db, usersTable, notificationsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
@@ -551,12 +551,13 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
   // (because no future `user.created` webhook will fire).
   let existingReal: typeof usersTable.$inferSelect | undefined;
   if (email) {
+    // Case-insensitive email match — see webhooks.ts for the rationale.
     const realRows = await db
       .select()
       .from(usersTable)
       .where(
         and(
-          eq(usersTable.email, email),
+          sql`lower(${usersTable.email}) = lower(${email})`,
           ne(usersTable.clerkId, sentinelClerkId),
         ),
       );
