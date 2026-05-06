@@ -329,6 +329,34 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     );
   });
 
+  it("blocks supervisors with 403 (admin-only)", async () => {
+    // Seed the actor as a supervisor instead of an admin. The route must
+    // reject the request before it ever reaches Clerk.
+    dbState.users.push({
+      id: 1,
+      clerkId: "admin-clerk-id",
+      email: "supe@example.com",
+      firstName: "Sue",
+      lastName: "Pervisor",
+      role: "supervisor",
+      status: "approved",
+      isActive: true,
+      contactPhone: null,
+      mfaEnabled: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = buildApp();
+    const res = await supertest(app)
+      .post("/api/admin/users/waitlist/wlent_blocked/invite")
+      .send({ role: "sales_rep" });
+    expect(res.status).toBe(403);
+    expect(clerkClient.waitlistEntries.invite).not.toHaveBeenCalled();
+    // No users row should be touched.
+    const sentinel = dbState.users.find((u) => u.clerkId === "pending_invite:wlent_blocked");
+    expect(sentinel).toBeUndefined();
+  });
+
   it("is idempotent on re-invite (upserts by clerkId sentinel)", async () => {
     seedAdmin();
     const app = buildApp();
