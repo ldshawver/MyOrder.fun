@@ -1,4 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// `../ai` imports `@workspace/db`, which throws at import time when
+// DATABASE_URL is unset (e.g. CI without a provisioned DB). This test only
+// exercises pure prompt-rendering helpers, so we stub the db module to
+// avoid the connection requirement.
+vi.mock("@workspace/db", () => ({
+  db: {},
+  catalogItemsTable: {},
+  adminSettingsTable: {},
+}));
+
 import { DEFAULT_AI_CONCIERGE_PROMPT, renderConciergePrompt } from "../ai";
 
 describe("AI Concierge prompt rendering", () => {
