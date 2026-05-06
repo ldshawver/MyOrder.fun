@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { Webhook } from "svix";
 import { db, usersTable } from "@workspace/db";
-import { and, desc, eq, like } from "drizzle-orm";
+import { and, desc, eq, like, sql } from "drizzle-orm";
 import { logger } from "../lib/logger";
 import { syncUserToClerk } from "../lib/clerkSync";
 
@@ -68,12 +68,17 @@ router.post("/webhooks/clerk", async (req, res): Promise<void> => {
           // without this filter the unrelated row could be returned first and
           // the sentinel would be silently skipped, leaving the invitee in
           // pending state.
+          // Case-insensitive email match: an admin may have invited
+          // "Marek@example.com" while Clerk normalizes the sign-up to
+          // "marek@example.com" (or vice versa). Without LOWER() on both
+          // sides the sentinel row is missed and the new user lands in
+          // status='pending', role='user' instead of being upgraded.
           const [pendingInvite] = await db
             .select()
             .from(usersTable)
             .where(
               and(
-                eq(usersTable.email, email),
+                sql`lower(${usersTable.email}) = lower(${email})`,
                 like(usersTable.clerkId, "pending_invite:%"),
               ),
             )
