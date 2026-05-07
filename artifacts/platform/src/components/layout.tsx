@@ -26,6 +26,7 @@ import {
   UserCheck
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
@@ -46,6 +47,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
     { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"], mobileShow: false },
@@ -310,6 +312,9 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             </motion.div>
           </AnimatePresence>
         </main>
+
+        {/* Floating Feedback button — sits above the mobile tab bar */}
+        <FloatingFeedbackButton />
 
         {/* ── Mobile Bottom Tab Bar ────────────────────────────────── */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-sidebar/95 backdrop-blur-xl border-t border-border/50 bottom-nav-safe z-40">

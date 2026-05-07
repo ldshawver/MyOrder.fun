@@ -18,6 +18,7 @@ import settingsRouter from "./settings";
 import woocommerceRouter from "./woocommerce";
 import inventoryRouter from "./inventory";
 import sessionRouter from "./session";
+import feedbackRouter from "./feedback";
 
 const router: IRouter = Router();
 
@@ -40,5 +41,6 @@ router.use(settingsRouter);
 router.use(woocommerceRouter);
 router.use(inventoryRouter);
 router.use(sessionRouter);
+router.use(feedbackRouter);
 
 export default router;
