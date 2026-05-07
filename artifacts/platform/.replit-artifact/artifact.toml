@@ -12,10 +12,10 @@ version = "1.0.0"
 [[services]]
 name = "web"
 paths = [ "/" ]
-localPort = 23633
+localPort = 5000
 
 [services.development]
-run = "pnpm --filter @workspace/platform run dev"
+run = "cd /home/runner/workspace/artifacts/platform && ./node_modules/.bin/vite --host 0.0.0.0"
 
 [services.production]
 publicDir = "artifacts/platform/dist"
@@ -34,5 +34,5 @@ from = "/*"
 to = "/index.html"
 
 [services.env]
-PORT = "23633"
+PORT = "5000"
 BASE_PATH = "/"

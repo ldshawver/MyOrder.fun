@@ -13,7 +13,7 @@ function getPort(): number {
   const rawPort = process.env.PORT;
 
   if (!rawPort) {
-    return 5173;
+    return 5000;
   }
 
   const port = Number(rawPort);
@@ -112,13 +112,13 @@ export default defineConfig(async () => {
       ],
     },
     server: {
-      host: true,
+      host: "0.0.0.0",
       port,
       strictPort: true,
       allowedHosts: true,
     },
     preview: {
-      host: true,
+      host: "0.0.0.0",
       port,
       strictPort: true,
     },
