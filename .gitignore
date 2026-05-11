@@ -57,3 +57,9 @@ deploy/nginx/ssl/
 
 # Replit attached assets (terminal pastes, screenshots)
 attached_assets/
+
+# Secrets / deployment markers
+client_secret*.json
+*.env
+.env.*
+.deployed-sha
