@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+import { CsrAlertBanner } from "@/components/CsrAlertBanner";
+import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 import { Link } from "wouter";
 import {
@@ -33,6 +35,8 @@ type TemplateRow = {
   startingQuantityDefault: number;
   catalogItemId: number | null;
   displayOrder: number;
+  menuPrice: number | null;
+  payoutPrice: number | null;
 };
 
 type InventorySnapshot = { templateItemId: number; quantityStart: number };
@@ -156,6 +160,7 @@ function ClockInPanel({ onClockIn, getToken }: {
 
   const handleSubmit = async () => {
     setClocking(true);
+    setError(null);
     try {
       const snapshot: InventorySnapshot[] = template
         .filter(r => r.rowType === "item" || r.rowType === "cash")
@@ -164,6 +169,8 @@ function ClockInPanel({ onClockIn, getToken }: {
           quantityStart: parseFloat(quantities[r.id] ?? "0") || 0,
         }));
       await onClockIn(snapshot, parseFloat(cashBankStart) || 0);
+    } catch (err) {
+      setError((err as Error).message ?? "Clock-in failed. Please try again.");
     } finally {
       setClocking(false);
     }
@@ -253,6 +260,18 @@ function ClockInPanel({ onClockIn, getToken }: {
               {section.items.map(row => (
                 <div key={row.id} className="flex items-center gap-3 px-6 py-2.5">
                   <div className="flex-1 text-sm font-medium truncate">{row.itemName}</div>
+                  {row.menuPrice != null && (
+                    <div className="text-[10px] text-muted-foreground shrink-0 text-right w-16 font-mono">
+                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Menu</span>
+                      ${row.menuPrice.toFixed(2)}
+                    </div>
+                  )}
+                  {row.payoutPrice != null && (
+                    <div className="text-[10px] text-emerald-400/80 shrink-0 text-right w-16 font-mono">
+                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Payout</span>
+                      ${row.payoutPrice.toFixed(2)}
+                    </div>
+                  )}
                   <div className="text-[10px] text-muted-foreground shrink-0 w-8 text-center">
                     {row.unitType}
                   </div>
@@ -1115,6 +1134,9 @@ export default function CustomerServiceRepQueue() {
 
   const { shift, setShift, loading: shiftLoading, refetch: refetchShift } = useShift(getToken);
 
+  const isAdmin = user?.role === "admin";
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+
   const { data, isLoading } = useListOrders(
     { status: activeTab as ListOrdersStatus, limit: 50 },
     { query: { queryKey: ["listOrders", activeTab] } }
@@ -1133,14 +1155,32 @@ export default function CustomerServiceRepQueue() {
 
   const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number) => {
     const token = await getToken();
-    const res = await fetch("/api/shifts/clock-in", {
-      method: "POST",
+    const method = "POST";
+    const endpoint = "/api/shifts/clock-in";
+    const res = await fetch(endpoint, {
+      method,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ inventorySnapshot: snapshot, cashBankStart }),
     });
-    if (res.ok) {
-      await refetchShift();
+    const contentType = res.headers.get("content-type") ?? "";
+    const responseData = contentType.includes("application/json") ? (await res.json() as Record<string, unknown>) : null;
+    if (isAdmin) {
+      setDebugEntries(prev => [{
+        label: res.ok ? "Clock-in" : "Clock-in (failed)",
+        method,
+        endpoint,
+        status: res.status,
+        response: responseData,
+        timestamp: new Date().toLocaleTimeString(),
+      }, ...prev]);
     }
+    if (!res.ok) {
+      const msg = responseData
+        ? ((responseData as { error?: string }).error ?? "Clock-in failed")
+        : `Clock-in failed (${res.status})`;
+      throw new Error(msg);
+    }
+    await refetchShift();
   };
 
   const handleClockOutConfirm = async (data: {
@@ -1162,6 +1202,9 @@ export default function CustomerServiceRepQueue() {
   };
 
   const isStaff = user?.role === "business_sitter" || user?.role === "supervisor" || user?.role === "admin";
+  // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
+  // get the supervisor surfaces (delayed list, reassign panel) instead.
+  const isCsrOnly = user?.role === "customer_service_rep" || user?.role === "lab_tech" || user?.role === "sales_rep";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -1180,6 +1223,11 @@ export default function CustomerServiceRepQueue() {
         </Button>
       </div>
 
+      {/* Task #12: realtime CSR alert banner — CSR roles only */}
+      {isCsrOnly && user?.id != null && (
+        <CsrAlertBanner currentUserId={user.id} onAccepted={refresh} />
+      )}
+
       {/* Shift panel */}
       {isStaff && (
         shiftLoading ? (
@@ -1189,6 +1237,11 @@ export default function CustomerServiceRepQueue() {
         ) : (
           <ClockInPanel onClockIn={handleClockIn} getToken={getToken} />
         )
+      )}
+
+      {/* Admin debug panel — clock-in/out calls */}
+      {isAdmin && debugEntries.length > 0 && (
+        <DebugPanel entries={debugEntries} onClear={() => setDebugEntries([])} />
       )}
 
       {/* Order queue */}

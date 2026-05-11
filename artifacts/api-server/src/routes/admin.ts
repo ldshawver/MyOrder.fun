@@ -69,7 +69,7 @@ router.get("/admin/stats", async (req, res): Promise<void> => {
 router.post("/admin/mfa/setup", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const secret = generateSecret();
-  const otpauth = generateURI({ issuer: "OrderFlow Admin", label: actor.email ?? "", secret });
+  const otpauth = generateURI({ label: actor.email ?? "unknown", issuer: "OrderFlow Admin", secret });
   const qrCodeUrl = await qrcode.toDataURL(otpauth);
 
   // Generate 10 backup codes
@@ -107,8 +107,7 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
     return;
   }
 
-  const mfaSecret = actor.mfaSecret;
-  const isValid = verifySync({ token: body.data.token, secret: mfaSecret }).valid;
+  const isValid = verifySync({ token: body.data.token, secret: actor.mfaSecret });
   if (!isValid) {
     // Check backup codes
     const backupCodes: string[] = actor.mfaBackupCodes ? JSON.parse(actor.mfaBackupCodes) : [];

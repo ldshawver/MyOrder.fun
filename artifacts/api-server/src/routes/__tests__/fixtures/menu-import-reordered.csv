@@ -1,0 +1,2 @@
+Merchant Sku,Menu Name,Menu Regular Price,Menu Category,Menu Image,Menu Description,Menu In Stock,Menu ID,Amount,Unit Measurement,Merchant Name,Merchant Image,Merchant Description,Merchant Category
+SKU-100,Reordered Item,15.00,Wellness,https://example.com/r.jpg,Reordered desc,yes,ALV-100,3,kg,Reordered Merchant,https://example.com/rm.jpg,Reordered merchant desc,Wellness Cat

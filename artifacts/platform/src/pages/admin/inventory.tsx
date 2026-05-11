@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, ChevronRight, Calendar,
-  Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2,
+  Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +50,7 @@ type TemplateRow = {
   isActive: boolean;
   catalogItemId: number | null;
   deductionQuantityPerSale: string;
+  parLevel: string | null;
 };
 
 type TemplateRowEdit = {
@@ -60,6 +61,7 @@ type TemplateRowEdit = {
   isActive: boolean;
   catalogItemId: number | null;
   deductionQty: string;
+  parLevel: string;
   dirty: boolean;
   saving: boolean;
 };
@@ -100,6 +102,8 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
   const [error, setError] = useState<string | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<{ inserted: number; updated: number } | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -128,6 +132,7 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
           isActive: r.isActive,
           catalogItemId: r.catalogItemId ?? null,
           deductionQty: String(parseFloat(String(r.deductionQuantityPerSale)) || 1),
+          parLevel: r.parLevel != null ? String(parseFloat(String(r.parLevel))) : "0",
           dirty: false,
           saving: false,
         };
@@ -174,6 +179,7 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
           isActive: edit.isActive,
           catalogItemId: edit.catalogItemId ?? null,
           deductionQuantityPerSale: parseFloat(edit.deductionQty) || 1,
+          parLevel: parseFloat(edit.parLevel) || 0,
         }),
       });
       setEdits(prev => ({ ...prev, [id]: { ...prev[id], dirty: false, saving: false } }));
@@ -225,12 +231,34 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
           isActive: r.isActive,
           catalogItemId: null,
           deductionQty: "1",
+          parLevel: "0",
           dirty: false,
           saving: false,
         },
       }));
     } catch { /* silent */ } finally {
       setAdding(false);
+    }
+  }
+
+  async function seedFromCsv() {
+    setSeeding(true);
+    setSeedResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/inventory-template/seed", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Seed failed");
+      setSeedResult({ inserted: data.inserted, updated: data.updated });
+      await fetchAll();
+      setTimeout(() => setSeedResult(null), 5000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Seed failed");
+    } finally {
+      setSeeding(false);
     }
   }
 
@@ -288,8 +316,8 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
     }
   }
 
-  const colHeader = "grid grid-cols-[1fr_50px_88px_100px_180px_76px_44px_32px] gap-2 px-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest";
-  const colRow = "grid grid-cols-[1fr_50px_88px_100px_180px_76px_44px_32px] gap-2 px-3 py-2 items-center transition-colors";
+  const colHeader = "grid grid-cols-[1fr_50px_88px_100px_180px_76px_70px_44px_32px] gap-2 px-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest";
+  const colRow = "grid grid-cols-[1fr_50px_88px_100px_180px_76px_70px_44px_32px] gap-2 px-3 py-2 items-center transition-colors";
 
   return (
     <div className="space-y-4">
@@ -302,6 +330,17 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            onClick={seedFromCsv}
+            disabled={seeding}
+            size="sm"
+            variant="outline"
+            className="gap-1.5 rounded-xl border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+            title="Load all 26 products from the Alavont CSR cash box spreadsheet"
+          >
+            {seeding ? <Loader2 size={12} className="animate-spin" /> : <Database size={12} />}
+            {seeding ? "Seeding..." : "Seed from CSV"}
+          </Button>
           <Button
             onClick={addRow}
             disabled={adding}
@@ -324,6 +363,14 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
         </div>
       </div>
 
+      {/* Seed result banner */}
+      {seedResult && (
+        <div className="rounded-xl border border-green-500/30 bg-green-500/10 text-green-400 px-4 py-2.5 text-xs flex items-center gap-2">
+          <Database size={13} />
+          Seeded successfully — <strong>{seedResult.inserted}</strong> items added, <strong>{seedResult.updated}</strong> items updated with prices.
+        </div>
+      )}
+
       {/* Column header */}
       <div className={colHeader}>
         <div>Item Label</div>
@@ -332,6 +379,7 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
         <div className="text-center">Current Stock</div>
         <div>Linked Menu Item</div>
         <div className="text-center">Deduct/Sale</div>
+        <div className="text-center" title="Par level — minimum stock kept on hand. When end-of-shift count is below par, a restock slip can be printed.">Par Level</div>
         <div className="text-center">Active</div>
         <div />
       </div>
@@ -454,6 +502,19 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
                     disabled={!edit.catalogItemId}
                     title="How much to deduct from current stock each time the linked menu item is sold"
                     className={`h-7 text-xs text-center rounded-lg bg-background/60 border-border/40 font-mono ${!edit.catalogItemId ? "opacity-30" : ""}`}
+                  />
+
+                  {/* Par Level */}
+                  <Input
+                    type="number"
+                    min="0"
+                    step={edit.unitType === "G" ? "0.1" : "1"}
+                    value={edit.parLevel}
+                    onChange={e => update(row.id, "parLevel", e.target.value)}
+                    onBlur={() => saveRow(row.id)}
+                    title="Par level — when end-of-shift quantity falls below this, the supervisor sees this row on the restock slip. 0 disables the alert."
+                    data-testid={`input-par-level-${row.id}`}
+                    className="h-7 text-xs text-center rounded-lg bg-background/60 border-border/40 font-mono"
                   />
 
                   {/* Active toggle */}

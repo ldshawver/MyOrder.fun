@@ -10,7 +10,14 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { normalizeCheckoutCart, buildMerchantPayloadLines } from "../lib/checkoutNormalizer";
+import {
+  normalizeCheckoutCart,
+  buildMerchantPayloadLines,
+  computeCheckoutTotals,
+  CheckoutMappingError,
+  type NormalizedCartLine,
+} from "../lib/checkoutNormalizer";
+import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/stripePayload";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -76,34 +83,80 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
-  // Normalize cart from order items → builds merchant-safe LC-only payload.
-  // normalizeCheckoutCart() enforces that Alavont names never appear in processor-facing
-  // payloads. Hard-fails with 422 if merchant routing data is invalid — payment cannot
-  // proceed with unvalidated merchant information.
-  let stripeLinesSummary = "";
+  // Re-normalize cart from order items so the LC-only Stripe payload is built
+  // from the SAME conversion path used at /orders. If the conversion fails
+  // here (e.g. an item lost its mapping after order creation), the spec'd 422
+  // is returned with the offending catalogItemId — Stripe is never called.
+  let normalizedLines: NormalizedCartLine[] = [];
+  // Authoritative server-side amount. Default is the persisted order.total
+  // (which itself was server-recomputed by /orders); when normalized lines are
+  // available we re-derive the total from them via computeCheckoutTotals(),
+  // so a tampered or stale order row alone cannot mis-charge a customer.
+  let serverAmount = parseFloat(order.total as string);
   const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const cartLines = orderItems
     .filter(i => i.catalogItemId != null)
     .map(i => ({ catalogItemId: i.catalogItemId as number, quantity: i.quantity }));
   if (cartLines.length > 0) {
-    let normalizedLines;
     try {
       normalizedLines = await normalizeCheckoutCart(cartLines);
     } catch (normalizeErr) {
+      if (normalizeErr instanceof CheckoutMappingError) {
+        await writeAuditLog({
+          actorId: actor.id,
+          actorEmail: actor.email,
+          actorRole: actor.role,
+          action: "ITEM_CONVERSION_FAILED",
+          resourceType: "catalog_item",
+          resourceId: String(normalizeErr.catalogItemId),
+          metadata: { stage: "tokenize", reason: normalizeErr.reason, orderId: order.id },
+          ipAddress: req.ip,
+        });
+        res.status(422).json({
+          error: "Item not available for purchase",
+          catalogItemId: normalizeErr.catalogItemId,
+        });
+        return;
+      }
       logger.error({ normalizeErr, orderId: order.id }, "Merchant routing validation failed — blocking payment tokenize");
       res.status(422).json({ error: "Merchant routing validation failed. Contact support." });
       return;
     }
-    const merchantLines = buildMerchantPayloadLines(normalizedLines);
-    // Build a compact summary for Stripe metadata (max 500 chars per key)
-    stripeLinesSummary = merchantLines
-      .map(l => `${l.name} x${l.quantity}`)
-      .join(", ")
-      .slice(0, 490);
+    // Server-derived total. Any client-supplied `amount` in the request body
+    // is IGNORED — pricing is recomputed from the normalized lines + tax rule.
+    serverAmount = computeCheckoutTotals(normalizedLines).total;
+    if (typeof body.data.amount === "number" && Math.abs(body.data.amount - serverAmount) > 0.01) {
+      logger.warn(
+        { orderId: order.id, clientAmount: body.data.amount, serverAmount, actorId: actor.id },
+        "TOKENIZE_AMOUNT_MISMATCH: client-supplied amount differs from server total — using server value"
+      );
+    }
     logger.info(
-      { orderId: order.id, merchantLines, actorId: actor.id },
+      { orderId: order.id, merchantLines: buildMerchantPayloadLines(normalizedLines), actorId: actor.id, serverAmount },
       "MERCHANT_PAYLOAD_AUDIT: Stripe tokenize — LC names for processor (no Alavont names)"
     );
+  }
+
+  // Build the Stripe-bound payload once, in one place. Every field that
+  // crosses the Stripe boundary (description, metadata, statement_descriptor,
+  // amount) is derived ONLY from server-trusted state — the client `amount`
+  // is never forwarded to Stripe.
+  const stripePayload = buildStripeIntentPayload({
+    orderId: order.id,
+    amount: serverAmount,
+    currency: body.data.currency ?? "usd",
+    lines: normalizedLines,
+  });
+
+  // Defense-in-depth: assert no Alavont string leaked into the Stripe payload.
+  const leakCheck = payloadContainsAlavontLeak(stripePayload, normalizedLines);
+  if (leakCheck.leaked) {
+    logger.error(
+      { orderId: order.id, offenders: leakCheck.offenders },
+      "STRIPE_PAYLOAD_LEAK: Alavont strings detected in Stripe payload — blocking tokenize"
+    );
+    res.status(500).json({ error: "Payment processor payload validation failed." });
+    return;
   }
 
   const stripe = getStripeClient();
@@ -127,19 +180,14 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     return;
   }
 
-  // Real Stripe — merchant line items included in metadata for audit trail
+  // Real Stripe — payload assembled by buildStripeIntentPayload() above
   try {
-    const amountCents = Math.round(body.data.amount * 100);
-    const currency = body.data.currency ?? "usd";
-
     const intent = await stripe.paymentIntents.create({
-      amount: amountCents,
-      currency,
-      metadata: {
-        orderId: String(order.id),
-        // LC-only merchant names — Alavont brand names never stored in Stripe
-        merchantLines: stripeLinesSummary,
-      },
+      amount: stripePayload.amount,
+      currency: stripePayload.currency,
+      description: stripePayload.description,
+      statement_descriptor_suffix: stripePayload.statement_descriptor_suffix,
+      metadata: stripePayload.metadata,
     });
 
     await db

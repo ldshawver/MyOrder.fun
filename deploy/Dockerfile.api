@@ -36,7 +36,11 @@ RUN pnpm --filter @workspace/api-server run build
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
-# No extra OS packages needed — sharp bundles its own libvips for musl/Alpine.
+# sharp bundles its own libvips for musl/Alpine.
+# cups-client provides `lp` and `lpstat` so the API can drive the host CUPS
+# daemon for receipt printing. The host's CUPS socket is bind-mounted in via
+# docker-compose (see `volumes:` on the api service).
+RUN apk add --no-cache cups-client
 
 RUN npm install -g pnpm@10
 
@@ -50,6 +54,7 @@ COPY artifacts/api-server/package.json artifacts/api-server/
 
 RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
 
+ENV HUSKY=0
 RUN pnpm install --no-frozen-lockfile --prod \
                  --filter @workspace/db... \
                  --filter @workspace/api-zod... \

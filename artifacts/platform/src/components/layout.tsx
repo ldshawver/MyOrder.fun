@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
 import { useClerk } from "@clerk/react";
+import { useBrand } from "@/contexts/BrandContext";
 import { 
   FlaskConical, 
   ShoppingCart, 
@@ -10,7 +11,6 @@ import {
   ShieldAlert, 
   LogOut,
   Bell,
-  Users,
   User,
   ListTodo,
   Menu,
@@ -20,28 +20,41 @@ import {
   Upload,
   Settings,
   ClipboardList,
-  Bug
+  Bug,
+  ReceiptText,
+  ClipboardCheck,
+  UserCheck
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
   const { signOut } = useClerk();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { brand } = useBrand();
+  const isLC = brand === "lucifer_cruz";
 
   usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
 
+  // Staff roles that can run a shift / see the CSR queue + clock-in
+  const SHIFT_ROLES = ["admin", "supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech"];
+  const ALL_ROLES = [...SHIFT_ROLES, "user"];
+
   const navItems = [
-    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ["admin", "supervisor", "business_sitter", "user"], mobileShow: true },
-    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
-    { href: "/admin/users", label: "Users", icon: Users, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: ["admin", "supervisor", "business_sitter"], mobileShow: false },
+    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/print", label: "Print", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/settings", label: "Settings", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
 
@@ -60,18 +73,26 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         {/* Logo */}
         <div className="p-5 border-b border-border/40">
           <Link href="/catalog" className="flex items-center gap-3 group">
-            <img
-              src="/lc-icon.png"
-              alt="Lucifer Cruz"
-              className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-              style={{ filter: "invert(1) brightness(1.15)" }}
-            />
+            {isLC ? (
+              <img
+                src="/lc-icon.png"
+                alt="Lucifer Cruz"
+                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
+                style={{ filter: "invert(1) brightness(1.15)" }}
+              />
+            ) : (
+              <img
+                src="/alavont-logo-glow.png"
+                alt="Alavont"
+                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
+              />
+            )}
             <div>
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
-                LUCIFER CRUZ
+                {isLC ? "LUCIFER CRUZ" : "ALAVONT"}
               </div>
               <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                Adult Boutique
+                {isLC ? "Adult Boutique" : "Premium Platform"}
               </div>
             </div>
           </Link>
@@ -116,12 +137,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <span>Notifications</span>
           </Link>
           <Link
-            href="/account"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group"
-            data-testid="link-account"
+            href="/profile"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group hover:bg-sidebar-accent/60"
+            data-testid="link-profile"
           >
-            <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 border border-primary/30">
-              <User size={14} />
+            <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 border border-primary/30 overflow-hidden">
+              {user.avatarUrl ? (
+                <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" data-testid="img-user-avatar" />
+              ) : (
+                <User size={14} />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium truncate" data-testid="text-user-name">
@@ -131,6 +156,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 {user.role.replace(/_/g, " ")}
               </div>
             </div>
+          </Link>
+          <Link
+            href="/account"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground transition-all"
+            data-testid="link-account"
+          >
+            <Settings size={16} />
+            <span>Account</span>
           </Link>
           <button
             onClick={() => signOut()}
@@ -153,10 +186,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           <div className="relative w-72 bg-sidebar border-r border-border/50 flex flex-col h-full shadow-2xl">
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
               <Link href="/catalog" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
-                <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+                {isLC ? (
+                  <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+                ) : (
+                  <img src="/alavont-logo-glow.png" alt="Alavont" className="w-8 h-8 object-contain" />
+                )}
                 <div>
-                  <div className="font-bold text-sm tracking-wide">LUCIFER CRUZ</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">Adult Boutique</div>
+                  <div className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</div>
+                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Adult Boutique" : "Premium Platform"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -195,12 +232,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
 
             <div className="p-3 border-t border-border/40 space-y-1">
               <Link
-                href="/account"
+                href="/profile"
                 onClick={() => setMobileMenuOpen(false)}
                 className="flex items-center gap-3 px-4 py-3 rounded-xl"
               >
-                <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center border border-primary/30">
-                  <User size={15} />
+                <div className="w-9 h-9 rounded-full bg-primary/20 flex items-center justify-center border border-primary/30 overflow-hidden">
+                  {user.avatarUrl ? (
+                    <img src={user.avatarUrl} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <User size={15} />
+                  )}
                 </div>
                 <div>
                   <div className="text-sm font-medium">{user.firstName || "User"} {user.lastName}</div>
@@ -231,8 +272,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <Menu size={22} />
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
-            <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-            <span className="font-bold text-sm tracking-wide">LUCIFER CRUZ</span>
+            {isLC ? (
+              <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
+            ) : (
+              <img src="/alavont-logo-glow.png" alt="Alavont" className="w-7 h-7 object-contain" />
+            )}
+            <span className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</span>
           </Link>
           <Link href="/notifications" className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />
@@ -267,6 +312,9 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             </motion.div>
           </AnimatePresence>
         </main>
+
+        {/* Floating Feedback button — sits above the mobile tab bar */}
+        <FloatingFeedbackButton />
 
         {/* ── Mobile Bottom Tab Bar ────────────────────────────────── */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-sidebar/95 backdrop-blur-xl border-t border-border/50 bottom-nav-safe z-40">

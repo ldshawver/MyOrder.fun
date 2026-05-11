@@ -3,6 +3,7 @@ import { eq, desc, inArray } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
+  renderBodyOnly,
   buildCustomerReceiptBlocks,
   buildInventoryStartBlocks,
   buildInventoryEndBlocks,
@@ -10,6 +11,7 @@ import {
   getLogo,
   charWidth,
 } from "../lib/print/index";
+import { printReceiptEscPos } from "../lib/escposPrinter";
 import {
   printPrintersTable,
   printBridgeProfilesTable,
@@ -142,7 +144,7 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
 
 // ── PATCH /api/print/printers/:id ─────────────────────────────────────────
 router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -167,7 +169,7 @@ router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> =
 
 // ── DELETE /api/print/printers/:id ────────────────────────────────────────
 router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   await db.delete(printPrintersTable).where(eq(printPrintersTable.id, id));
   res.json({ ok: true });
 });
@@ -175,7 +177,7 @@ router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> 
 // ── POST /api/print/printers/:id/test ────────────────────────────────────
 // Synchronous — awaits dispatch and returns the real pass/fail result.
 router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, id)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
@@ -226,7 +228,7 @@ router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<voi
 
 // ── POST /api/print/printers/:id/probe ───────────────────────────────────
 router.post("/print/printers/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const [printer] = await db.select().from(printPrintersTable)
     .where(eq(printPrintersTable.id, id)).limit(1);
   if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
@@ -284,7 +286,7 @@ router.post("/print/profiles", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.delete("/print/profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   await db.delete(operatorPrintProfilesTable).where(eq(operatorPrintProfilesTable.id, id));
   res.json({ ok: true });
 });
@@ -312,7 +314,7 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.patch("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -331,7 +333,7 @@ router.patch("/print/templates/:id", adminOnly, async (req, res): Promise<void> 
 });
 
 router.delete("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id));
   res.json({ ok: true });
 });
@@ -348,7 +350,7 @@ router.get("/print/jobs", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.get("/print/jobs/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -359,7 +361,7 @@ router.get("/print/jobs/:id", adminOnly, async (req, res): Promise<void> => {
 });
 
 router.post("/print/jobs/:id/retry", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -379,7 +381,7 @@ router.post("/print/jobs/:id/retry", adminOnly, async (req, res): Promise<void> 
 });
 
 router.post("/print/jobs/:id/reprint", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const [job] = await db.select().from(printJobsTable)
     .where(eq(printJobsTable.id, id)).limit(1);
   if (!job) { res.status(404).json({ error: "Job not found" }); return; }
@@ -641,7 +643,7 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
 
 /** POST /api/print/orders/:id/receipt — reprint/trigger receipt for an order */
 router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
-  const orderId = parseInt(req.params.id as string, 10);
+  const orderId = parseInt(String(req.params.id), 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -674,7 +676,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
   const width = charWidth(s.paperWidth as string ?? "80mm");
   const logoLines = s.includeLogo !== false ? getLogo(width) : [];
   const operatorName = operator
-    ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email
+    ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email || undefined
     : undefined;
 
   const printOrder = {
@@ -736,7 +738,11 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
-  const orderId = parseInt(req.params.id as string, 10);
+  if (process.env.LABEL_PRINT_ENABLED !== "true") {
+    res.status(503).json({ error: "Label printing is not enabled (LABEL_PRINT_ENABLED=false)" });
+    return;
+  }
+  const orderId = parseInt(String(req.params.id), 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -919,7 +925,7 @@ router.post("/print/bridge-profiles", adminOnly, async (req, res): Promise<void>
 
 /** PATCH /api/print/bridge-profiles/:id — update a bridge profile */
 router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const b = req.body ?? {};
   const updates: Partial<typeof printBridgeProfilesTable.$inferInsert> = {};
   if (b.name !== undefined) updates.name = String(b.name);
@@ -938,14 +944,14 @@ router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<
 
 /** DELETE /api/print/bridge-profiles/:id */
 router.delete("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   await db.delete(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id));
   res.json({ success: true });
 });
 
 /** POST /api/print/bridge-profiles/:id/probe — health check a bridge profile */
 router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
   const profile = rows[0];
   if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
@@ -980,7 +986,7 @@ router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Pro
 
 /** POST /api/print/bridge-profiles/:id/list-printers — list CUPS printers on a bridge */
 router.post("/print/bridge-profiles/:id/list-printers", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id as string, 10);
+  const id = parseInt(String(req.params.id), 10);
   const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
   const profile = rows[0];
   if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
@@ -1023,19 +1029,21 @@ router.get("/print/routing/decision", adminOnly, async (req, res): Promise<void>
   res.json({ operatorIp, decision });
 });
 
-/** POST /api/print/printers/seed-defaults — upsert the two known-good Tailscale bridge printers */
+/** POST /api/print/printers/seed-defaults — upsert Pi CUPS bridge printers */
 router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promise<void> => {
   const body = req.body ?? {};
-  const bridgeUrl = String(body.bridgeUrl ?? "http://100.103.51.63:3100");
+  const piHost = process.env.PRINT_SERVER_HOST ?? "100.83.99.2";
+  const defaultBridgeUrl = `http://${piHost}:3100`;
+  const bridgeUrl = String(body.bridgeUrl ?? defaultBridgeUrl);
   const apiKey    = String(body.apiKey ?? "");
 
   const defaults = [
     {
-      name: "Reciept_POS80_Printer",
+      name: "receipt",
       role: "receipt",
       connectionType: "bridge" as const,
       bridgeUrl,
-      bridgePrinterName: "Reciept_POS80_Printer",
+      bridgePrinterName: process.env.RECEIPT_PRINTER_NAME ?? "receipt",
       apiKey: apiKey || null,
       isActive: true,
       paperWidth: "80mm",
@@ -1043,11 +1051,11 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
       copies: 1,
     },
     {
-      name: "Label_Themal_Printer",
+      name: "label",
       role: "label",
       connectionType: "bridge" as const,
       bridgeUrl,
-      bridgePrinterName: "Label_Themal_Printer",
+      bridgePrinterName: process.env.LABEL_PRINTER_NAME ?? "label",
       apiKey: apiKey || null,
       isActive: true,
       paperWidth: "58mm",
@@ -1056,14 +1064,23 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
     },
   ];
 
+  // Also clean up any old Mac-named printers for the same roles
+  const legacyNames = ["Reciept_POS80_Printer", "Label_Themal_Printer", "Receipt_Printer"];
+
   const results = [];
   for (const d of defaults) {
-    // Try to find existing by bridgePrinterName + role
+    // Find by canonical name OR any legacy name for this role
     const existing = await db.select().from(printPrintersTable)
       .where(eq(printPrintersTable.name, d.name)).limit(1);
 
-    if (existing.length) {
+    const legacyExisting = existing.length ? [] : await db.select().from(printPrintersTable)
+      .where(inArray(printPrintersTable.name, legacyNames)).limit(1);
+
+    const target = existing[0] ?? legacyExisting[0];
+
+    if (target) {
       const updates: Record<string, unknown> = {
+        name: d.name,
         role: d.role,
         connectionType: d.connectionType,
         bridgeUrl: d.bridgeUrl,
@@ -1076,7 +1093,7 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
 
       const [updated] = await db.update(printPrintersTable)
         .set(updates)
-        .where(eq(printPrintersTable.id, existing[0].id))
+        .where(eq(printPrintersTable.id, target.id))
         .returning();
       results.push({ action: "updated", id: updated.id, name: updated.name, role: updated.role });
     } else {
@@ -1098,6 +1115,212 @@ router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
     role: usersTable.role,
   }).from(usersTable).where(eq(usersTable.isActive, true)).orderBy(usersTable.email);
   res.json({ users: rows });
+});
+
+// ── Secure local CUPS receipt printing ────────────────────────────────────
+//
+// Receipt content is built entirely server-side from trusted DB data.
+// Clients supply only the orderId — no receipt content, no printer commands.
+// ESC/POS framing (\x1b@ reset, \x1dV1 cut) is added by escposPrinter, not here.
+
+const staffOrAbove = requireRole("admin", "supervisor", "business_sitter");
+
+/**
+ * POST /api/print/receipt/order/:orderId
+ *
+ * Fetch order from DB, render receipt body, print via `lp -d receipt`.
+ * Allowed: admin, supervisor, staff.
+ * Logs a print_jobs row for audit and reprint support.
+ */
+router.post("/print/receipt/order/:orderId", staffOrAbove, async (req, res): Promise<void> => {
+  const orderId = parseInt(String(req.params.orderId), 10);
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid orderId" });
+    return;
+  }
+
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(eq(ordersTable.id, orderId))
+    .limit(1);
+
+  if (!order) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+
+  const items = await db
+    .select()
+    .from(orderItemsTable)
+    .where(eq(orderItemsTable.orderId, orderId));
+
+  const settings = await getSettings();
+  const s = settings as Record<string, unknown>;
+  const width = charWidth((s.paperWidth as string | undefined) ?? "80mm");
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+
+  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
+  try {
+    const [adminRow] = await db
+      .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
+      .from(adminSettingsTable)
+      .limit(1);
+    if (adminRow?.receiptLineNameMode) {
+      receiptLineNameMode = adminRow.receiptLineNameMode as typeof receiptLineNameMode;
+    }
+  } catch { /* no admin settings row — use default */ }
+
+  const blocks = buildCustomerReceiptBlocks({
+    orderId: order.id,
+    orderNumber: String(order.id),
+    createdAt: order.createdAt,
+    fulfillmentType: "Pickup",
+    paymentStatus: order.paymentStatus ?? undefined,
+    paymentMethod: order.paymentMethod ?? undefined,
+    notes: order.notes ?? undefined,
+    items: items.map((i) => ({
+      name: i.receiptName ?? i.catalogItemName,
+      quantity: i.quantity,
+      unitPrice: parseFloat(String(i.unitPrice)),
+      totalPrice: parseFloat(String(i.totalPrice)),
+    })),
+    subtotal: parseFloat(String(order.subtotal)),
+    tax: order.tax ? parseFloat(String(order.tax)) : undefined,
+    total: parseFloat(String(order.total)),
+    logoLines,
+    dualBrandName: (s.brandName as string | undefined) ?? undefined,
+    footerMessage: (s.footerMessage as string | undefined) ?? undefined,
+    showDiscreetNotice: Boolean(s.showDiscreetNotice),
+    showOperatorName: s.includeOperatorName !== false,
+  });
+
+  const body = renderBodyOnly(blocks, width);
+  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
+  const iKey = `lp:${orderId}:receipt:${Date.now()}`;
+
+  const [job] = await db
+    .insert(printJobsTable)
+    .values({
+      orderId: order.id,
+      printerId: null,
+      jobType: "receipt",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "escpos",
+      payloadJson: { orderId, printerName, receiptLineNameMode },
+      renderedText: body,
+      operatorUserId: req.dbUser!.id,
+    })
+    .returning();
+
+  try {
+    const { jobRef } = await printReceiptEscPos(body);
+    await db
+      .update(printJobsTable)
+      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
+      .where(eq(printJobsTable.id, job.id));
+
+    req.log.info(
+      { event: "receipt_printed", jobId: job.id, orderId, jobRef },
+      "Receipt printed via lp_cups"
+    );
+
+    res.json({ ok: true, jobId: job.id, jobRef });
+  } catch (err) {
+    const msg = (err as Error).message;
+    await db
+      .update(printJobsTable)
+      .set({ status: "failed", errorMessage: msg })
+      .where(eq(printJobsTable.id, job.id));
+
+    req.log.warn(
+      { event: "receipt_print_failed", jobId: job.id, orderId },
+      "Receipt print failed"
+    );
+
+    res.status(500).json({ ok: false, jobId: job.id, error: msg });
+  }
+});
+
+/**
+ * POST /api/print/receipt/jobs/:jobId/reprint
+ *
+ * Reprint a past receipt from its stored body text.
+ * Allowed: admin, supervisor only.
+ * Creates a new print_jobs row for audit trail.
+ */
+router.post("/print/receipt/jobs/:jobId/reprint", adminOnly, async (req, res): Promise<void> => {
+  const jobId = parseInt(String(req.params.jobId), 10);
+  if (isNaN(jobId)) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+
+  const [original] = await db
+    .select()
+    .from(printJobsTable)
+    .where(eq(printJobsTable.id, jobId))
+    .limit(1);
+
+  if (!original) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (!original.renderedText) {
+    res.status(400).json({ error: "Job has no stored receipt body — cannot reprint" });
+    return;
+  }
+  if (original.renderFormat !== "escpos") {
+    res.status(400).json({ error: "Job was not printed via lp_cups — use the standard reprint endpoint" });
+    return;
+  }
+
+  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
+  const iKey = `lp:reprint:${jobId}:${Date.now()}`;
+
+  const [newJob] = await db
+    .insert(printJobsTable)
+    .values({
+      orderId: original.orderId,
+      printerId: null,
+      jobType: "receipt",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "escpos",
+      payloadJson: { reprintOf: jobId, printerName },
+      renderedText: original.renderedText,
+      operatorUserId: req.dbUser!.id,
+    })
+    .returning();
+
+  try {
+    const { jobRef } = await printReceiptEscPos(original.renderedText);
+    await db
+      .update(printJobsTable)
+      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
+      .where(eq(printJobsTable.id, newJob.id));
+
+    req.log.info(
+      { event: "receipt_reprinted", newJobId: newJob.id, originalJobId: jobId, jobRef },
+      "Receipt reprinted via lp_cups"
+    );
+
+    res.json({ ok: true, jobId: newJob.id, jobRef });
+  } catch (err) {
+    const msg = (err as Error).message;
+    await db
+      .update(printJobsTable)
+      .set({ status: "failed", errorMessage: msg })
+      .where(eq(printJobsTable.id, newJob.id));
+
+    req.log.warn(
+      { event: "receipt_reprint_failed", newJobId: newJob.id, originalJobId: jobId },
+      "Receipt reprint failed"
+    );
+
+    res.status(500).json({ ok: false, jobId: newJob.id, error: msg });
+  }
 });
 
 export default router;

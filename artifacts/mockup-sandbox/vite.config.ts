@@ -57,7 +57,7 @@ export default defineConfig({
   },
   server: {
     port,
-    host: "d16275c8-2423-4286-ba97-f9ea25b11f13-00-2xs2cdvprt316.janeway.replit.dev",
+    host: true,
     allowedHosts: true,
     fs: {
       strict: true,
@@ -66,7 +66,7 @@ export default defineConfig({
   },
   preview: {
     port,
-    host: "0.0.0.0",
+    host: true,
     allowedHosts: true,
   },
 });

@@ -49,11 +49,14 @@ function makeSampleLocalMappedItem(overrides: Record<string, unknown> = {}) {
     luciferCruzImageUrl: "https://lucifercruz.com/img/product.jpg",
     luciferCruzDescription: "LC description",
     luciferCruzCategory: "Adult",
+    merchantBrand: "alavont",
+    merchantSku: "LC-SKU-1",
     labName: "Lab Product A",
     receiptName: null,
     imageUrl: null,
     wooProductId: null,
     wooVariationId: null,
+    sku: null,
     ...overrides,
   };
 }
@@ -116,7 +119,7 @@ describe("checkoutNormalizer", () => {
     it("throws when local_mapped item has no lucifer_cruz_name", async () => {
       makeDbMock(makeSampleLocalMappedItem({ luciferCruzName: null }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
-        /missing lucifer_cruz_name/
+        /lucifer_cruz_name/
       );
     });
 

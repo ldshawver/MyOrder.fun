@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
@@ -13,260 +13,65 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const ok = /\.(csv|xlsx|xls)$/i.test(file.originalname) ||
+    const ok = /\.(csv|tsv|xlsx|xls)$/i.test(file.originalname) ||
       file.mimetype === "text/csv" ||
+      file.mimetype === "text/tab-separated-values" ||
+      file.mimetype === "text/plain" ||
       file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
       file.mimetype === "application/vnd.ms-excel";
     cb(null, ok);
   },
 });
 
-// ─── Canonical header list (the downloadable template uses these exactly) ─────
-export const CANONICAL_HEADERS = [
-  "regular_price",
-  "alavont_image_url",
-  "alavont_name",
-  "alavont_description",
-  "alavont_category",
-  "alavont_in_stock",
-  "alavont_is_upsell",
-  "alavont_id",
-  "alavont_created_date",
-  "alavont_updated_date",
-  "alavont_created_by_id",
-  "alavont_created_by",
-  "alavont_is_sample",
-  "homie_price",
-  "lucifer_cruz_name",
-  "lucifer_cruz_image_url",
-  "lucifer_cruz_description",
-  "lucifer_cruz_category",
-  "lab_name",
+// ─── Exact 14-column header set ───────────────────────────────────────────────
+// Order matches the downloadable template; on import, headers are matched
+// case-sensitively but the column order in the user's file does not matter.
+export const EXPECTED_HEADERS = [
+  "Menu Regular Price",
+  "Menu Image",
+  "Menu Name",
+  "Menu Description",
+  "Menu Category",
+  "Menu In Stock",
+  "Menu ID",
+  "Amount",
+  "Unit Measurement",
+  "Merchant Name",
+  "Merchant Image",
+  "Merchant Description",
+  "Merchant Category",
+  "Merchant Sku",
 ] as const;
 
-const CANONICAL_SET = new Set<string>(CANONICAL_HEADERS);
+export type ExpectedHeader = (typeof EXPECTED_HEADERS)[number];
 
-// Required after normalization
-const REQUIRED_HEADERS: string[] = [
-  "regular_price",
-  "alavont_name",
-  "alavont_category",
-  "lucifer_cruz_name",
-  "lab_name",
-];
-
-// ─── Alias map ────────────────────────────────────────────────────────────────
-// Keys are lowercase (exact or normalized), values are canonical field names.
-// Add new aliases here — no other code needs changing.
-const HEADER_ALIASES: Record<string, string> = {
-  // ── Friendly "Menu *" column names (what the template uses) ──────────────
-  "menu regular price":              "regular_price",
-  "menu_regular_price":              "regular_price",
-  "menu regu":                       "regular_price",
-  "menu price":                      "regular_price",
-  "menu_price":                      "regular_price",
-
-  "menu image":                      "alavont_image_url",
-  "menu_image":                      "alavont_image_url",
-  "menu image url":                  "alavont_image_url",
-  "menu_image_url":                  "alavont_image_url",
-  "menu imag":                       "alavont_image_url",
-
-  "menu name":                       "alavont_name",
-  "menu_name":                       "alavont_name",
-
-  "menu description":                "alavont_description",
-  "menu_description":                "alavont_description",
-  "menu desc":                       "alavont_description",
-  "menu_desc":                       "alavont_description",
-  "menu-desc":                       "alavont_description",
-
-  "menu category":                   "alavont_category",
-  "menu_category":                   "alavont_category",
-  "menu cate":                       "alavont_category",
-  "menu_cate":                       "alavont_category",
-
-  "menu in stock":                   "alavont_in_stock",
-  "menu_in_stock":                   "alavont_in_stock",
-  "menu in st":                      "alavont_in_stock",
-  "menu_in_st":                      "alavont_in_stock",
-
-  "menu id":                         "alavont_id",
-  "menu_id":                         "alavont_id",
-
-  "menu is upsell":                  "alavont_is_upsell",
-  "menu_is_upsell":                  "alavont_is_upsell",
-
-  "menu is sample":                  "alavont_is_sample",
-  "menu_is_sample":                  "alavont_is_sample",
-
-  "sale price":                      "homie_price",
-  "sale_price":                      "homie_price",
-  "sale pri":                        "homie_price",
-  "sale_pri":                        "homie_price",
-
-  // ── Friendly "Merchant *" column names ───────────────────────────────────
-  "merchant name":                   "lucifer_cruz_name",
-  "merchant_name":                   "lucifer_cruz_name",
-  "merchant- name":                  "lucifer_cruz_name",
-  "merchant-name":                   "lucifer_cruz_name",
-
-  "merchant image":                  "lucifer_cruz_image_url",
-  "merchant_image":                  "lucifer_cruz_image_url",
-  "merchant image url":              "lucifer_cruz_image_url",
-  "merchant_image_url":              "lucifer_cruz_image_url",
-  "merchant-i":                      "lucifer_cruz_image_url",
-  "merchant_i":                      "lucifer_cruz_image_url",
-
-  "merchant description":            "lucifer_cruz_description",
-  "merchant_description":            "lucifer_cruz_description",
-  "merchant-description":            "lucifer_cruz_description",
-  "merchant-idescription":           "lucifer_cruz_description",
-  "merchant_idescription":           "lucifer_cruz_description",
-
-  "merchant category":               "lucifer_cruz_category",
-  "merchant_category":               "lucifer_cruz_category",
-  "merchant-category":               "lucifer_cruz_category",
-
-  "merchant sku":                    "lab_name",
-  "merchant_sku":                    "lab_name",
-  "merchant-s":                      "lab_name",
-  "merchant_s":                      "lab_name",
-  "merchant source":                 "lab_name",
-
-  // ── Legacy / old-style aliases (kept for backward compatibility) ──────────
-  "regular price":                   "regular_price",
-  "price":                           "regular_price",
-
-  "alavont image_url":               "alavont_image_url",
-  "alavont image url":               "alavont_image_url",
-
-  "alavont iname":                   "alavont_name",
-  "alavont i name":                  "alavont_name",
-  "alavont_i_name":                  "alavont_name",
-
-  "alavont-idescription":            "alavont_description",
-  "alavont_idescription":            "alavont_description",
-  "alavont i description":           "alavont_description",
-  "alavont_i_description":           "alavont_description",
-  "alavont-description":             "alavont_description",
-  "alavont idescription":            "alavont_description",
-
-  "alavont i category":              "alavont_category",
-  "alavont_i_category":              "alavont_category",
-  "alavont icategory":               "alavont_category",
-
-  "alavont in_stock":                "alavont_in_stock",
-  "alavont in stock":                "alavont_in_stock",
-
-  "alavont i is_upsell":             "alavont_is_upsell",
-  "alavont_i_is_upsell":             "alavont_is_upsell",
-  "alavont i isupsell":              "alavont_is_upsell",
-  "alavont iisupsell":               "alavont_is_upsell",
-
-  "alavont i id":                    "alavont_id",
-  "alavont_i_id":                    "alavont_id",
-  "alavont iid":                     "alavont_id",
-
-  "alavont i created_date":          "alavont_created_date",
-  "alavont_i_created_date":          "alavont_created_date",
-  "alavont i created date":          "alavont_created_date",
-
-  "alavont i updated_date":          "alavont_updated_date",
-  "alavont_i_updated_date":          "alavont_updated_date",
-  "alavont i updated date":          "alavont_updated_date",
-
-  "alavont i created_by_id":         "alavont_created_by_id",
-  "alavont_i_created_by_id":         "alavont_created_by_id",
-  "alavont i created by id":         "alavont_created_by_id",
-
-  "alavont i created_by":            "alavont_created_by",
-  "alavont_i_created_by":            "alavont_created_by",
-  "alavont i created by":            "alavont_created_by",
-
-  "alavont i is_sample":             "alavont_is_sample",
-  "alavont_i_is_sample":             "alavont_is_sample",
-  "alavont i issample":              "alavont_is_sample",
-
-  "homie price":                     "homie_price",
-
-  "lucifr cruz- name":               "lucifer_cruz_name",
-  "lucifer cruz- name":              "lucifer_cruz_name",
-  "lucifer cruz name":               "lucifer_cruz_name",
-  "lucifer_cruz- name":              "lucifer_cruz_name",
-  "lucifr_cruz_name":                "lucifer_cruz_name",
-  "lucifer-name":                    "lucifer_cruz_name",
-  "lucifer_name":                    "lucifer_cruz_name",
-  "lucifer name":                    "lucifer_cruz_name",
-  "lucifer cruz_ name":              "lucifer_cruz_name",
-
-  "lucifer-image_url":               "lucifer_cruz_image_url",
-  "lucifer_image_url":               "lucifer_cruz_image_url",
-  "lucifer image_url":               "lucifer_cruz_image_url",
-  "lucifer image url":               "lucifer_cruz_image_url",
-  "lucifer cruz image_url":          "lucifer_cruz_image_url",
-  "lucifer cruz image url":          "lucifer_cruz_image_url",
-
-  "lucifer-idescription":            "lucifer_cruz_description",
-  "lucifer_idescription":            "lucifer_cruz_description",
-  "lucifer-description":             "lucifer_cruz_description",
-  "lucifer_description":             "lucifer_cruz_description",
-  "lucifer i description":           "lucifer_cruz_description",
-  "lucifer_i_description":           "lucifer_cruz_description",
-  "lucifer cruz description":        "lucifer_cruz_description",
-  "lucifer idescription":            "lucifer_cruz_description",
-
-  "lucifer-category":                "lucifer_cruz_category",
-  "lucifer_category":                "lucifer_cruz_category",
-  "lucifer category":                "lucifer_cruz_category",
-  "lucifer cruz category":           "lucifer_cruz_category",
-
-  "lab name":                        "lab_name",
+// Header → record field name (per spec)
+export const HEADER_TO_FIELD: Record<ExpectedHeader, string> = {
+  "Menu Regular Price": "regularPrice",
+  "Menu Image":         "imageUrl",
+  "Menu Name":          "name",
+  "Menu Description":   "description",
+  "Menu Category":      "category",
+  "Menu In Stock":      "inStock",
+  "Menu ID":            "externalMenuId",
+  "Amount":             "inventoryAmount",
+  "Unit Measurement":   "unitMeasurement",
+  "Merchant Name":      "merchantName",
+  "Merchant Image":     "merchantImage",
+  "Merchant Description":"merchantDescription",
+  "Merchant Category":  "merchantCategory",
+  "Merchant Sku":       "sku",
 };
 
-// ─── Header normalizer ────────────────────────────────────────────────────────
-export type HeaderMapping = {
-  original: string;
-  canonical: string;
-  recognized: boolean;
-};
+const EXPECTED_SET = new Set<string>(EXPECTED_HEADERS);
 
-export function normalizeHeader(raw: string): HeaderMapping {
-  const lower = raw.toLowerCase().trim();
-
-  // 1. Already a canonical name
-  if (CANONICAL_SET.has(lower)) {
-    return { original: raw, canonical: lower, recognized: true };
-  }
-
-  // 2. Exact alias match on lowercase
-  if (HEADER_ALIASES[lower]) {
-    return { original: raw, canonical: HEADER_ALIASES[lower], recognized: true };
-  }
-
-  // 3. Normalize: spaces/dashes → _, strip non-alnum/_, collapse/trim underscores
-  const norm = lower
-    .replace(/[\s\u2013\u2014-]+/g, "_")
-    .replace(/[^a-z0-9_]/g, "")
-    .replace(/_+/g, "_")
-    .replace(/^_|_$/g, "");
-
-  // 4. Normalized is already canonical
-  if (CANONICAL_SET.has(norm)) {
-    return { original: raw, canonical: norm, recognized: true };
-  }
-
-  // 5. Alias on normalized form
-  if (HEADER_ALIASES[norm]) {
-    return { original: raw, canonical: HEADER_ALIASES[norm], recognized: true };
-  }
-
-  // 6. Unrecognized — pass through normalized for logging
-  return { original: raw, canonical: norm, recognized: false };
+// ─── Header normalization (BOM / whitespace strip only — case-sensitive) ──────
+function cleanHeader(raw: string): string {
+  return raw.replace(/^\uFEFF/, "").trim();
 }
 
-// ─── Parsers ──────────────────────────────────────────────────────────────────
-function parseCsvLine(line: string): string[] {
+// ─── Delimited (CSV / TSV) parser ─────────────────────────────────────────────
+function parseDelimitedLine(line: string, delim: string): string[] {
   const result: string[] = [];
   let cur = "";
   let inQuote = false;
@@ -275,57 +80,65 @@ function parseCsvLine(line: string): string[] {
     if (c === '"') {
       if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
       else inQuote = !inQuote;
-    } else if (c === "," && !inQuote) {
-      result.push(cur.trim());
+    } else if (c === delim && !inQuote) {
+      result.push(cur);
       cur = "";
     } else {
       cur += c;
     }
   }
-  result.push(cur.trim());
-  return result;
+  result.push(cur);
+  return result.map(s => s.trim());
 }
 
-type ParseResult = {
-  headerMappings: HeaderMapping[];
-  canonicalHeaders: string[];
-  rows: Record<string, string>[];
+type ParsedFile = {
+  headers: string[];          // cleaned (BOM/whitespace stripped)
+  rawHeaders: string[];       // as appeared in file
+  rows: string[][];           // values aligned with headers
 };
 
-function parseBuffer(buffer: Buffer, ext: string): ParseResult {
-  let rawHeaders: string[];
-  let rawRows: string[][];
+function parseBuffer(buffer: Buffer, originalName: string): ParsedFile {
+  const ext = originalName.split(".").pop()?.toLowerCase() ?? "csv";
 
-  if (ext === "csv") {
-    const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
-    const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(l => l.trim());
-    if (lines.length < 2) return { headerMappings: [], canonicalHeaders: [], rows: [] };
-    rawHeaders = parseCsvLine(lines[0]);
-    rawRows = lines.slice(1).map(parseCsvLine);
-  } else {
+  if (ext === "xlsx" || ext === "xls") {
     const workbook = XLSX.read(buffer, { type: "buffer" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    if (data.length < 2) return { headerMappings: [], canonicalHeaders: [], rows: [] };
-    rawHeaders = (data[0] as unknown[]).map(String);
-    rawRows = (data.slice(1) as unknown[][]).map(r => r.map(String));
+    const data: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    if (data.length < 1) return { headers: [], rawHeaders: [], rows: [] };
+    const rawHeaders = (data[0] as unknown[]).map(String);
+    const rows = (data.slice(1) as unknown[][]).map(r => r.map(v => String(v ?? "")));
+    return {
+      headers: rawHeaders.map(cleanHeader),
+      rawHeaders,
+      rows,
+    };
   }
 
-  const headerMappings = rawHeaders.map(normalizeHeader);
-  const canonicalHeaders = headerMappings.map(m => m.canonical);
+  // CSV / TSV — strip BOM up front, normalize line endings
+  const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  // Drop trailing blank lines (but keep blank lines in middle as empty rows? spec doesn't say — drop)
+  const nonBlank = lines.filter(l => l.trim().length > 0);
+  if (nonBlank.length < 1) return { headers: [], rawHeaders: [], rows: [] };
 
-  const rows = rawRows.map(vals => {
-    const obj: Record<string, string> = {};
-    canonicalHeaders.forEach((h, i) => { obj[h] = (vals[i] ?? "").trim(); });
-    return obj;
-  });
+  const firstLine = nonBlank[0];
+  // Choose delimiter: explicit by extension, otherwise auto-detect (tab beats comma)
+  let delim = ",";
+  if (ext === "tsv") delim = "\t";
+  else if (firstLine.includes("\t") && !firstLine.includes(",")) delim = "\t";
 
-  return { headerMappings, canonicalHeaders, rows };
+  const rawHeaders = parseDelimitedLine(firstLine, delim);
+  const rows = nonBlank.slice(1).map(l => parseDelimitedLine(l, delim));
+  return {
+    headers: rawHeaders.map(cleanHeader),
+    rawHeaders,
+    rows,
+  };
 }
 
-// ─── Validators / coercers ────────────────────────────────────────────────────
-function parseBool(v: string): boolean {
-  return ["true", "1", "yes", "y"].includes(v.toLowerCase().trim());
+// ─── Coercers ─────────────────────────────────────────────────────────────────
+function parseTruthy(v: string): boolean {
+  return ["1", "true", "yes", "y"].includes(v.trim().toLowerCase());
 }
 
 function parsePrice(raw: string): number | null {
@@ -335,28 +148,29 @@ function parsePrice(raw: string): number | null {
   return isNaN(n) ? null : n;
 }
 
+function parseAmount(raw: string): number | null {
+  if (!raw?.trim()) return null;
+  const n = parseFloat(raw.replace(/[,\s]/g, ""));
+  return isNaN(n) ? null : n;
+}
+
 function isValidUrl(s: string): boolean {
   try { new URL(s); return true; } catch { return false; }
 }
 
-// ─── Friendly template column headers ─────────────────────────────────────────
-const TEMPLATE_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
-  "Menu Name",
-  "Menu Description",
-  "Menu Category",
-  "Menu In Stock",
-  "Menu ID",
-  "Menu Is Upsell",
-  "Menu Is Sample",
-  "Sale Price",
-  "Merchant Name",
-  "Merchant Image",
-  "Merchant Description",
-  "Merchant Category",
-  "Lab Name",
-] as const;
+// ─── Header validation ────────────────────────────────────────────────────────
+type HeaderValidation = {
+  ok: boolean;
+  missing: string[];   // expected headers not present
+  extra: string[];     // present headers not in expected set (cleaned form)
+};
+
+function validateHeaders(headers: string[]): HeaderValidation {
+  const present = new Set(headers);
+  const missing = EXPECTED_HEADERS.filter(h => !present.has(h));
+  const extra = headers.filter(h => !EXPECTED_SET.has(h));
+  return { ok: missing.length === 0 && extra.length === 0, missing, extra };
+}
 
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
 router.get(
@@ -364,32 +178,123 @@ router.get(
   requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
-      "29.99",
-      "https://example.com/menu-img.jpg",
-      "Midnight Recovery Complex",
-      "Advanced cellular recovery blend",
-      "Dermatology",
-      "true",
-      "ALV-001",
-      "false",
-      "false",
-      "24.99",
-      "Velvet Restore Set",
-      "https://example.com/merchant-img.jpg",
-      "Luxurious overnight treatment",
-      "Skin Care",
-      "MRC-Lab",
+      "29.99",                              // Menu Regular Price
+      "https://example.com/menu.jpg",       // Menu Image
+      "Midnight Recovery Complex",          // Menu Name
+      "Advanced cellular recovery blend",   // Menu Description
+      "Dermatology",                        // Menu Category
+      "true",                               // Menu In Stock
+      "ALV-001",                            // Menu ID
+      "10",                                 // Amount
+      "ml",                                 // Unit Measurement
+      "Velvet Restore Set",                 // Merchant Name
+      "https://example.com/merchant.jpg",   // Merchant Image
+      "Luxurious overnight treatment",      // Merchant Description
+      "Skin Care",                          // Merchant Category
+      "MRC-LAB-001",                        // Merchant Sku
     ];
-    const csvContent = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
+    const csv = [EXPECTED_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", 'attachment; filename="menu_import_template.csv"');
-    res.send(csvContent);
+    res.send(csv);
   }
 );
 
-// ─── POST /api/admin/products/import ─────────────────────────────────────────
-// Accepts multipart/form-data with field "file" (CSV or XLSX)
-// Optional query: ?dryRun=true to validate without writing
+// ─── POST /api/admin/products/parse-headers ───────────────────────────────────
+// Inspect a file's headers without importing — used by the UI to preview
+// which expected columns are present and which are missing/extra.
+router.post(
+  "/admin/products/parse-headers",
+  requireRole("admin", "supervisor"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upload.single("file") as any,
+  (req, res): void => {
+    if (!req.file?.buffer) {
+      res.status(400).json({ error: "No file provided" });
+      return;
+    }
+
+    let parsed: ParsedFile;
+    try {
+      parsed = parseBuffer(req.file.buffer, req.file.originalname);
+    } catch (e) {
+      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
+      return;
+    }
+
+    const { headers, rawHeaders } = parsed;
+    const v = validateHeaders(headers);
+
+    // Provide a structured view tailored to the existing UI.
+    const headerMappings = headers.map((h, i) => ({
+      original: rawHeaders[i] ?? h,
+      canonical: h,
+      recognized: EXPECTED_SET.has(h),
+    }));
+
+    res.json({
+      headerMappings,
+      missingRequired: v.missing,
+      unknownHeaders: v.extra,
+      requiredFields: EXPECTED_HEADERS.map(h => ({
+        canonical: h,
+        friendlyName: h,
+        found: !v.missing.includes(h),
+        mappedFrom: headers.includes(h) ? h : null,
+      })),
+      allCanonicals: EXPECTED_HEADERS.map(h => ({
+        canonical: h,
+        friendlyName: h,
+        required: true,
+      })),
+      fileColumns: rawHeaders,
+    });
+  }
+);
+
+// ─── Row → record mapping ─────────────────────────────────────────────────────
+type RowRecord = {
+  regularPrice: string;
+  imageUrl: string;
+  name: string;
+  description: string;
+  category: string;
+  inStock: string;
+  externalMenuId: string;
+  inventoryAmount: string;
+  unitMeasurement: string;
+  merchantName: string;
+  merchantImage: string;
+  merchantDescription: string;
+  merchantCategory: string;
+  sku: string;
+};
+
+function buildRecord(row: string[], headerIndex: Record<string, number>): RowRecord {
+  const get = (h: ExpectedHeader): string => {
+    const idx = headerIndex[h];
+    if (idx === undefined) return "";
+    return (row[idx] ?? "").trim();
+  };
+  return {
+    regularPrice:        get("Menu Regular Price"),
+    imageUrl:            get("Menu Image"),
+    name:                get("Menu Name"),
+    description:         get("Menu Description"),
+    category:            get("Menu Category"),
+    inStock:             get("Menu In Stock"),
+    externalMenuId:      get("Menu ID"),
+    inventoryAmount:     get("Amount"),
+    unitMeasurement:     get("Unit Measurement"),
+    merchantName:        get("Merchant Name"),
+    merchantImage:       get("Merchant Image"),
+    merchantDescription: get("Merchant Description"),
+    merchantCategory:    get("Merchant Category"),
+    sku:                 get("Merchant Sku"),
+  };
+}
+
+// ─── POST /api/admin/products/import ──────────────────────────────────────────
 router.post(
   "/admin/products/import",
   requireRole("admin", "supervisor"),
@@ -401,131 +306,110 @@ router.post(
     const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
 
     if (!req.file?.buffer) {
-      res.status(400).json({ error: "A file upload is required (CSV or XLSX)" });
+      res.status(400).json({ error: "A file upload is required (CSV or TSV)" });
       return;
     }
 
-    const ext = req.file.originalname.split(".").pop()?.toLowerCase() ?? "csv";
-    const fileExt = ["xlsx", "xls"].includes(ext) ? "xlsx" : "csv";
-
-    let parsed: ParseResult;
+    let parsed: ParsedFile;
     try {
-      parsed = parseBuffer(req.file.buffer, fileExt);
+      parsed = parseBuffer(req.file.buffer, req.file.originalname);
     } catch (e) {
-      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown error"}` });
+      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
       return;
     }
 
-    const { headerMappings, canonicalHeaders, rows } = parsed;
+    const { headers, rows } = parsed;
+    const v = validateHeaders(headers);
 
-    // Check for required columns
-    const missing = REQUIRED_HEADERS.filter(h => !canonicalHeaders.includes(h));
-    if (missing.length) {
+    if (v.missing.length > 0) {
       res.status(400).json({
-        error: `Missing required columns: ${missing.join(", ")}`,
-        headerMappings,
+        error: `Missing required column(s): ${v.missing.join(", ")}`,
+        missingColumns: v.missing,
+      });
+      return;
+    }
+    if (v.extra.length > 0) {
+      res.status(400).json({
+        error: `Unexpected column(s): ${v.extra.join(", ")}`,
+        extraColumns: v.extra,
       });
       return;
     }
 
-    let inserted = 0, updated = 0, skipped = 0, failed = 0;
-    const errors: string[] = [];
+    // Header → column index lookup
+    const headerIndex: Record<string, number> = {};
+    headers.forEach((h, i) => { headerIndex[h] = i; });
+
+    let inserted = 0, updated = 0;
+    const skipped = 0;
+    const errors: { row: number; message: string }[] = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const rowNum = i + 2;
+      const rowNum = i + 2; // header is row 1
+      const rec = buildRecord(rows[i], headerIndex);
 
-      // ── Required field validation ──────────────────────────────────────────
-      const luciferCruzName = row.lucifer_cruz_name?.trim();
-      if (!luciferCruzName) {
-        errors.push(`Row ${rowNum}: lucifer_cruz_name is required`);
-        failed++;
+      // ── Required-value checks ──
+      if (!rec.name) {
+        errors.push({ row: rowNum, message: "Menu Name is required" });
         continue;
       }
-
-      const alavontName = row.alavont_name?.trim() || luciferCruzName;
-      if (!alavontName) {
-        errors.push(`Row ${rowNum}: alavont_name is required`);
-        failed++;
+      if (!rec.category) {
+        errors.push({ row: rowNum, message: "Menu Category is required" });
         continue;
       }
-
-      const alavontCategory = row.alavont_category?.trim();
-      if (!alavontCategory) {
-        errors.push(`Row ${rowNum}: alavont_category is required`);
-        failed++;
-        continue;
-      }
-
-      const labName = row.lab_name?.trim();
-      if (!labName) {
-        errors.push(`Row ${rowNum}: lab_name is required`);
-        failed++;
-        continue;
-      }
-
-      // ── Price validation ───────────────────────────────────────────────────
-      const regularPrice = parsePrice(row.regular_price);
+      const regularPrice = parsePrice(rec.regularPrice);
       if (regularPrice === null) {
-        errors.push(`Row ${rowNum}: regular_price must be numeric (got "${row.regular_price}")`);
-        failed++;
+        errors.push({ row: rowNum, message: `Menu Regular Price must be numeric (got "${rec.regularPrice}")` });
+        continue;
+      }
+      if (!rec.sku && !rec.externalMenuId) {
+        errors.push({ row: rowNum, message: "Either Merchant Sku or Menu ID is required" });
         continue;
       }
 
-      const homiePrice = row.homie_price?.trim() ? parsePrice(row.homie_price) : null;
-      if (row.homie_price?.trim() && homiePrice === null) {
-        errors.push(`Row ${rowNum}: homie_price must be numeric if provided (got "${row.homie_price}")`);
-        failed++;
-        continue;
-      }
+      // ── Optional/coerced values ──
+      const inStock = rec.inStock ? parseTruthy(rec.inStock) : true;
+      const amount = parseAmount(rec.inventoryAmount);
+      const imageUrl = rec.imageUrl && isValidUrl(rec.imageUrl) ? rec.imageUrl : null;
+      const merchantImage = rec.merchantImage && isValidUrl(rec.merchantImage) ? rec.merchantImage : null;
+      const merchantName = rec.merchantName || rec.name;
 
-      // ── Image URL validation (optional but must be valid if present) ───────
-      const rawImgUrl = row.alavont_image_url?.trim() || "";
-      const skipImg = rawImgUrl.startsWith("data:") || rawImgUrl.includes("drive.google.com");
-      const alavontImageUrl = (!skipImg && rawImgUrl && isValidUrl(rawImgUrl)) ? rawImgUrl : null;
-      if (rawImgUrl && !skipImg && !isValidUrl(rawImgUrl)) {
-        errors.push(`Row ${rowNum}: alavont_image_url is not a valid URL — skipped`);
-      }
-
-      const rawLcImgUrl = row.lucifer_cruz_image_url?.trim() || "";
-      const skipLcImg = rawLcImgUrl.startsWith("data:") || rawLcImgUrl.includes("drive.google.com");
-      const luciferCruzImageUrl = (!skipLcImg && rawLcImgUrl && isValidUrl(rawLcImgUrl))
-        ? rawLcImgUrl
-        : alavontImageUrl;
-
-      const alavontId = row.alavont_id?.trim() || null;
-
-      const values = {
+      // Build values for insert/update. We populate the new fields that the
+      // 14-column spec defines, plus legacy columns (alavont*, lucifer_cruz*)
+      // for backward compatibility with code paths that still read them.
+      const values: typeof catalogItemsTable.$inferInsert = {
         tenantId: houseTenantId,
-        name: alavontName,
-        description: row.alavont_description?.trim() || null,
-        category: alavontCategory,
-        price: String(regularPrice.toFixed(2)),
-        isAvailable: parseBool(row.alavont_in_stock ?? "true"),
-        regularPrice: String(regularPrice.toFixed(2)),
-        homiePrice: homiePrice !== null ? String(homiePrice.toFixed(2)) : null,
-        alavontId,
-        alavontName,
-        alavontDescription: row.alavont_description?.trim() || null,
-        alavontCategory,
-        alavontImageUrl,
-        alavontInStock: parseBool(row.alavont_in_stock ?? "true"),
-        alavontIsUpsell: parseBool(row.alavont_is_upsell ?? "false"),
-        alavontIsSample: parseBool(row.alavont_is_sample ?? "false"),
-        alavontCreatedDate: row.alavont_created_date?.trim() || null,
-        alavontUpdatedDate: row.alavont_updated_date?.trim() || null,
-        alavontCreatedById: row.alavont_created_by_id?.trim() || null,
-        alavontCreatedBy: row.alavont_created_by?.trim() || null,
-        luciferCruzName,
-        luciferCruzImageUrl,
-        luciferCruzDescription: row.lucifer_cruz_description?.trim() || null,
-        receiptName: luciferCruzName,
-        labelName: luciferCruzName,
-        labName,
-        imageUrl: alavontImageUrl,
-        metadata: {
-          luciferCruzCategory: row.lucifer_cruz_category?.trim() || null,
-        },
+        name: rec.name,
+        description: rec.description || null,
+        category: rec.category,
+        sku: rec.sku || null,
+        price: regularPrice.toFixed(2),
+        regularPrice: regularPrice.toFixed(2),
+        isAvailable: inStock,
+        imageUrl,
+        // New fields per task #10 spec
+        externalMenuId: rec.externalMenuId || null,
+        inventoryAmount: amount !== null ? amount.toFixed(2) : null,
+        unitMeasurement: rec.unitMeasurement || null,
+        merchantName,
+        merchantImage,
+        merchantDescription: rec.merchantDescription || null,
+        merchantCategory: rec.merchantCategory || null,
+        // Legacy mirrors so other routes that still read alavont*/lucifer_cruz*
+        // continue to work (downstream task converts these to lucifer cruz).
+        alavontId: rec.externalMenuId || null,
+        alavontName: rec.name,
+        alavontDescription: rec.description || null,
+        alavontCategory: rec.category,
+        alavontImageUrl: imageUrl,
+        alavontInStock: inStock,
+        luciferCruzName: merchantName,
+        luciferCruzImageUrl: merchantImage,
+        luciferCruzDescription: rec.merchantDescription || null,
+        luciferCruzCategory: rec.merchantCategory || null,
+        receiptName: merchantName,
+        labelName: merchantName,
+        labName: rec.sku || null,
       };
 
       if (dryRun) {
@@ -534,13 +418,23 @@ router.post(
       }
 
       try {
+        // Upsert key: (tenantId, sku) if sku present, else (tenantId, externalMenuId)
         let existingId: number | undefined;
-        if (alavontId) {
+        if (rec.sku) {
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .where(eq((catalogItemsTable as any).alavontId, alavontId))
+            .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.sku, rec.sku)))
+            .limit(1);
+          existingId = existing?.id;
+        } else if (rec.externalMenuId) {
+          const [existing] = await db
+            .select({ id: catalogItemsTable.id })
+            .from(catalogItemsTable)
+            .where(and(
+              eq(catalogItemsTable.tenantId, houseTenantId),
+              eq(catalogItemsTable.externalMenuId, rec.externalMenuId),
+            ))
             .limit(1);
           existingId = existing?.id;
         }
@@ -553,13 +447,10 @@ router.post(
           inserted++;
         }
       } catch (err) {
-        errors.push(`Row ${rowNum}: database error — ${(err as Error)?.message ?? "unknown"}`);
-        failed++;
-        skipped++;
+        errors.push({ row: rowNum, message: `database error — ${(err as Error)?.message ?? "unknown"}` });
       }
     }
 
-    // ── Audit log ─────────────────────────────────────────────────────────────
     if (!dryRun) {
       try {
         await db.insert(auditLogsTable).values({
@@ -570,12 +461,10 @@ router.post(
           resourceType: "catalog_item",
           metadata: {
             fileName: req.file.originalname,
-            fileType: fileExt,
             total: rows.length,
             inserted,
             updated,
             skipped,
-            failed,
             errorCount: errors.length,
           },
           ipAddress: req.ip ?? undefined,
@@ -583,16 +472,7 @@ router.post(
       } catch { /* audit failure is non-fatal */ }
     }
 
-    res.json({
-      dryRun,
-      total: rows.length,
-      inserted,
-      updated,
-      skipped,
-      failed,
-      errors,
-      headerMappings,
-    });
+    res.json({ inserted, updated, skipped, errors });
   }
 );
 
@@ -600,9 +480,28 @@ router.post(
 router.get(
   "/admin/products",
   requireRole("admin", "supervisor"),
-  async (req, res): Promise<void> => {
+  async (_req, res): Promise<void> => {
     const rows = await db.select().from(catalogItemsTable);
     res.json({ products: rows });
+  }
+);
+
+// ─── Spec doc aliases ─────────────────────────────────────────────────────────
+router.get(
+  "/admin/import/catalog-template",
+  requireRole("admin", "supervisor"),
+  (_req, res): void => {
+    res.redirect(307, "/api/admin/products/import-template");
+  }
+);
+
+router.post(
+  "/admin/import/catalog",
+  requireRole("admin", "supervisor"),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  upload.single("file") as any,
+  (_req, res): void => {
+    res.redirect(307, "/api/admin/products/import");
   }
 );
 

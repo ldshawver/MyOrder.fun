@@ -121,10 +121,10 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
-  console.log(
-    `[catalog] mode=${catalogMode} totalInDb=${totalBeforeFilters} afterFilters=${total} returned=${paged.length}` +
-    (query.data.category ? ` category="${query.data.category}"` : "") +
-    (query.data.search ? ` search="${query.data.search}"` : "")
+  req.log.info(
+    { catalogMode, totalInDb: totalBeforeFilters, afterFilters: total, returned: paged.length,
+      category: query.data.category, search: query.data.search },
+    "catalog list"
   );
 
   res.json(ListCatalogItemsResponse.parse({ items: paged.map(i => mapItem(i, alavontOnly)), total, page, limit }));
@@ -138,14 +138,17 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
     return;
   }
   const tenantId = await getHouseTenantId();
+  // price is number in the Zod schema but string in the db schema (numeric precision);
+  // use double-cast to satisfy drizzle's strict insert overloads
   const [row] = await db.insert(catalogItemsTable).values({
-    ...body.data,
+    ...(body.data as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
+    name: body.data.name,
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     isAvailable: body.data.isAvailable ?? true,
     stockQuantity: String(body.data.stockQuantity ?? 0),
-  }).returning();
+  } as unknown as typeof catalogItemsTable.$inferInsert).returning();
   res.status(201).json(mapItem(row));
 });
 

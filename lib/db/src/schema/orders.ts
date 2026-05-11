@@ -6,6 +6,7 @@ import {
   integer,
   numeric,
   jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
@@ -30,6 +31,26 @@ export const ordersTable = pgTable("orders", {
   assignedShiftId: integer("assigned_shift_id"),
   // Fulfillment workflow
   fulfillmentStatus: text("fulfillment_status"), // ready_behind_gate | courier_arrived | handed_off | complete
+  // Task #12: Order routing + customer hourglass
+  // assignedCsrUserId — the CSR the order was routed to (null = General
+  // Account fallback, visible to all CSRs in the queue)
+  assignedCsrUserId: integer("assigned_csr_user_id").references(() => usersTable.id),
+  // routeSource — provenance of the assignment (per spec):
+  //   active_csr          assigned to a CSR who was on shift
+  //   general_account     no active CSR; sits in the General Account queue
+  //   supervisor_override supervisor manually reassigned the order
+  routeSource: text("route_source"),
+  routedAt: timestamp("routed_at", { withTimezone: true }),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  // Per-order ETA in minutes; defaults to 30 (also overridable from
+  // admin_settings.defaultEtaMinutes at insert time).
+  promisedMinutes: integer("promised_minutes").default(30),
+  // Computed timestamp = routedAt + promisedMinutes (or default). Stored so
+  // the customer hourglass needs no per-tick math on the server.
+  estimatedReadyAt: timestamp("estimated_ready_at", { withTimezone: true }),
+  readyAt: timestamp("ready_at", { withTimezone: true }),
+  // True once supervisor manually adjusts ETA so the auto-eta logic stops overwriting it
+  etaAdjustedBySupervisor: boolean("eta_adjusted_by_supervisor").notNull().default(false),
   purgedAt: timestamp("purged_at", { withTimezone: true }),
   auditToken: text("audit_token"),
   // Dual-brand checkout snapshots

@@ -24,7 +24,12 @@ type AdminSettings = {
   wcStoreUrl: string;
   wcConsumerKeySet: boolean;
   wcConsumerSecretSet: boolean;
+  wcEnabled: boolean;
+  aiConciergePrompt: string | null;
+  aiConciergePromptIsDefault: boolean;
 };
+
+const AI_PROMPT_MAX_CHARS = 8000;
 
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
@@ -43,6 +48,9 @@ const DEFAULTS: AdminSettings = {
   wcStoreUrl: "https://lucifercruz.com",
   wcConsumerKeySet: false,
   wcConsumerSecretSet: false,
+  wcEnabled: true,
+  aiConciergePrompt: null,
+  aiConciergePromptIsDefault: true,
 };
 
 export default function AdminSettingsPage() {
@@ -61,17 +69,31 @@ export default function AdminSettingsPage() {
   const [wcSaving, setWcSaving] = useState(false);
   const [wcSaved, setWcSaved] = useState(false);
   const [wcError, setWcError] = useState<string | null>(null);
+  const [wcTesting, setWcTesting] = useState(false);
+  const [wcTestResult, setWcTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        const res = await fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } });
-        if (res.ok) {
-          const data = await res.json();
-          setSettings({ ...DEFAULTS, ...data });
-          setWcStoreUrl(data.wcStoreUrl ?? "https://lucifercruz.com");
+        const [genRes, wcRes] = await Promise.all([
+          fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        let merged: Partial<AdminSettings> = {};
+        if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
+        if (wcRes.ok) {
+          const wc = await wcRes.json();
+          merged = {
+            ...merged,
+            wcStoreUrl: wc.wcStoreUrl ?? wc.wc_store_url ?? "https://lucifercruz.com",
+            wcConsumerKeySet: !!(wc.wcConsumerKeySet ?? wc.hasConsumerKey),
+            wcConsumerSecretSet: !!(wc.wcConsumerSecretSet ?? wc.hasConsumerSecret),
+            wcEnabled: wc.wcEnabled ?? wc.enabled ?? true,
+          };
+          setWcStoreUrl(merged.wcStoreUrl ?? "https://lucifercruz.com");
         }
+        setSettings(s => ({ ...s, ...merged }));
       } catch { /* ignore fetch errors */ }
       setLoading(false);
     })();
@@ -109,11 +131,16 @@ export default function AdminSettingsPage() {
       const res = await fetch("/api/admin/settings/woocommerce", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret }),
+        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret, enabled: settings.wcEnabled }),
       });
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        setWcError(`Server returned an unexpected response (HTTP ${res.status}). Make sure the API server is running.`);
+        return;
+      }
       const data = await res.json();
       if (!res.ok) { setWcError(data.error ?? "Save failed"); return; }
-      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet }));
+      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet, wcEnabled: data.wcEnabled ?? s.wcEnabled }));
       setWcKey("");
       setWcSecret("");
       setWcSaved(true);
@@ -122,6 +149,41 @@ export default function AdminSettingsPage() {
       setWcError((e as Error)?.message ?? "Network error");
     } finally {
       setWcSaving(false);
+    }
+  }
+
+  async function toggleWooEnabled(enabled: boolean) {
+    setSettings(s => ({ ...s, wcEnabled: enabled }));
+    try {
+      const token = await getToken();
+      await fetch("/api/admin/settings/woocommerce", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ enabled }),
+      });
+    } catch { /* ignore */ }
+  }
+
+  async function testWooConnection() {
+    setWcTesting(true);
+    setWcTestResult(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/woocommerce/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setWcTestResult({ ok: true, message: `Connected${data.wcVersion ? ` — WooCommerce ${data.wcVersion}` : ""}` });
+      } else {
+        setWcTestResult({ ok: false, message: data.message ?? data.error ?? `HTTP ${res.status}` });
+      }
+    } catch (e) {
+      setWcTestResult({ ok: false, message: (e as Error)?.message ?? "Network error" });
+    } finally {
+      setWcTesting(false);
     }
   }
 
@@ -175,6 +237,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
           <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
+          <TabsTrigger value="ai" className="rounded-lg text-xs">AI Concierge</TabsTrigger>
         </TabsList>
 
         {/* Products */}
@@ -442,15 +505,92 @@ export default function AdminSettingsPage() {
                   <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-xs">{wcError}</div>
                 )}
 
-                <Button
-                  onClick={saveWooCredentials}
-                  disabled={wcSaving || !wcKey || !wcSecret}
-                  className="gap-2 rounded-xl"
-                >
-                  {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
-                  {wcSaved ? "Credentials Saved!" : wcSaving ? "Saving..." : "Save WooCommerce Credentials"}
-                </Button>
+                {wcTestResult && (
+                  <div className={`p-3 rounded-xl text-xs ${wcTestResult.ok ? "border border-green-500/30 bg-green-500/10 text-green-400" : "border border-red-500/30 bg-red-500/10 text-red-400"}`}>
+                    {wcTestResult.ok ? "✓ " : "✗ "}{wcTestResult.message}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button
+                    onClick={saveWooCredentials}
+                    disabled={wcSaving || !wcKey || !wcSecret}
+                    className="gap-2 rounded-xl"
+                  >
+                    {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+                    {wcSaved ? "Credentials Saved!" : wcSaving ? "Saving..." : "Save WooCommerce Credentials"}
+                  </Button>
+
+                  <Button
+                    onClick={testWooConnection}
+                    disabled={wcTesting || (!settings.wcConsumerKeySet && !wcKey)}
+                    variant="outline"
+                    className="gap-2 rounded-xl"
+                  >
+                    {wcTesting ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    {wcTesting ? "Testing..." : "Test Connection"}
+                  </Button>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <span className="text-xs text-muted-foreground">Enabled</span>
+                    <Switch
+                      checked={settings.wcEnabled}
+                      onCheckedChange={v => void toggleWooEnabled(v)}
+                    />
+                  </div>
+                </div>
               </div>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* AI Concierge */}
+        <TabsContent value="ai">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-1">AI Concierge System Prompt</div>
+              <div className="text-[11px] text-muted-foreground leading-relaxed">
+                Controls how Zappy (the customer-facing AI order helper) introduces itself and what rules it follows. Leave blank to use the built-in default prompt.
+              </div>
+            </div>
+
+            <div className="text-[11px] text-muted-foreground bg-muted/20 rounded-xl p-3 border border-border/30 leading-relaxed">
+              <strong>Placeholders:</strong> <code className="px-1 py-0.5 rounded bg-background/50 font-mono">{"{{itemCount}}"}</code> — number of available items.{" "}
+              <code className="px-1 py-0.5 rounded bg-background/50 font-mono">{"{{catalog}}"}</code> — bulleted catalog summary (name, category, price). Both are substituted server-side at request time.
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Prompt</label>
+                <span className={`text-[10px] ${(settings.aiConciergePrompt?.length ?? 0) > AI_PROMPT_MAX_CHARS ? "text-red-400" : "text-muted-foreground"}`}>
+                  {settings.aiConciergePrompt?.length ?? 0} / {AI_PROMPT_MAX_CHARS}
+                </span>
+              </div>
+              <textarea
+                value={settings.aiConciergePrompt ?? ""}
+                onChange={e => set("aiConciergePrompt", e.target.value)}
+                placeholder="Leave blank to use the built-in default prompt."
+                rows={14}
+                maxLength={AI_PROMPT_MAX_CHARS}
+                className="w-full text-xs font-mono rounded-xl bg-background/50 border border-border/40 p-3 leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40"
+              />
+              {settings.aiConciergePromptIsDefault && (
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  Currently using the built-in default prompt.
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => set("aiConciergePrompt", null)}
+                disabled={settings.aiConciergePromptIsDefault && !settings.aiConciergePrompt}
+                className="rounded-xl gap-2"
+              >
+                Reset to default
+              </Button>
             </div>
           </div>
         </TabsContent>

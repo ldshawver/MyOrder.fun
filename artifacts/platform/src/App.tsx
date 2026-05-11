@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { BrandProvider } from "@/contexts/BrandContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
@@ -29,6 +30,7 @@ import GlobalAdminAudit from "@/pages/global-admin/audit";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
+import Profile from "@/pages/profile";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -36,6 +38,9 @@ import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import AdminCatalogDebug from "@/pages/admin/catalog-debug";
+import AdminReceipts from "@/pages/admin/receipts";
+import AdminCloseouts from "@/pages/admin/closeouts";
+import AdminFeedback from "@/pages/admin/feedback";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -282,7 +287,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
+        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
         {(user.role === "supervisor" || user.role === "admin") && (
@@ -293,16 +298,20 @@ function AuthenticatedApp() {
             <Route path="/admin/import" component={AdminImport} />
             <Route path="/admin/settings" component={AdminSettingsPage} />
             <Route path="/admin/catalog-debug" component={AdminCatalogDebug} />
+            <Route path="/admin/receipts" component={AdminReceipts} />
+            <Route path="/admin/closeouts" component={AdminCloseouts} />
+            <Route path="/admin/feedback" component={AdminFeedback} />
           </>
         )}
 
-        {(user.role === "business_sitter" || user.role === "supervisor" || user.role === "admin") && (
+        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
           <Route path="/staff" component={StaffQueue} />
         )}
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
         <Route path="/account" component={Account} />
+        <Route path="/profile" component={Profile} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -373,12 +382,14 @@ function ClerkProviderWithRoutes() {
 
 function App() {
   return (
-    <TooltipProvider>
-      <WouterRouter base={basePath}>
-        <ClerkProviderWithRoutes />
-      </WouterRouter>
-      <Toaster />
-    </TooltipProvider>
+    <BrandProvider>
+      <TooltipProvider>
+        <WouterRouter base={basePath}>
+          <ClerkProviderWithRoutes />
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
+    </BrandProvider>
   );
 }
 

@@ -1,5 +1,4 @@
 import { Router, type IRouter } from "express";
-import healthRouter from "./health";
 import webhooksRouter from "./webhooks";
 import usersRouter from "./users";
 import onboardingRouter from "./onboarding";
@@ -13,15 +12,17 @@ import aiRouter from "./ai";
 import paymentsRouter from "./payments";
 import shiftsRouter from "./shifts";
 import printRouter from "./print";
+import adminPrintersRouter from "./admin-printers";
 import importRouter from "./import";
 import settingsRouter from "./settings";
 import woocommerceRouter from "./woocommerce";
 import inventoryRouter from "./inventory";
 import sessionRouter from "./session";
+import feedbackRouter from "./feedback";
+import integrationsRouter from "./integrations";
 
 const router: IRouter = Router();
 
-router.use(healthRouter);
 router.use(webhooksRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);
@@ -35,10 +36,13 @@ router.use(aiRouter);
 router.use(paymentsRouter);
 router.use(shiftsRouter);
 router.use(printRouter);
+router.use(adminPrintersRouter);
 router.use(importRouter);
 router.use(settingsRouter);
 router.use(woocommerceRouter);
 router.use(inventoryRouter);
 router.use(sessionRouter);
+router.use(feedbackRouter);
+router.use(integrationsRouter);
 
 export default router;
