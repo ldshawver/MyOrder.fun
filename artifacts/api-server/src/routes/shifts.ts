@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request } from "express";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, sql } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -9,7 +9,19 @@ import {
   orderItemsTable,
   usersTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+
+// Roles permitted to operate a shift (clock in/out, view current shift,
+// view inventory template). CSR / sales rep / lab tech are first-class
+// shift operators alongside the legacy business_sitter / supervisor / admin.
+const SHIFT_OPERATOR_ROLES = [
+  "business_sitter",
+  "customer_service_rep",
+  "sales_rep",
+  "lab_tech",
+  "supervisor",
+  "admin",
+] as const;
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
@@ -54,16 +66,18 @@ async function computeShiftStats(shiftId: number) {
   }
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
-  let cashSales = 0;
-  let cardSales = 0;
-  let compSales = 0;
+  const paymentTotals: Record<string, number> = {
+    cash: 0, card: 0, cashapp: 0, paypal: 0, venmo: 0, comp: 0, other: 0,
+  };
 
   for (const order of shiftOrders) {
     const method = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const orderTotal = parseFloat(order.total as string);
-    if (method === "card") cardSales += orderTotal;
-    else if (method === "comp") compSales += orderTotal;
-    else cashSales += orderTotal;
+    if (method in paymentTotals) {
+      paymentTotals[method] += orderTotal;
+    } else {
+      paymentTotals.other += orderTotal;
+    }
 
     if (!customerMap[order.customerId]) {
       const [u] = await db
@@ -86,9 +100,10 @@ async function computeShiftStats(shiftId: number) {
   return {
     orderCount: shiftOrders.length,
     totalRevenue: shiftOrders.reduce((s, o) => s + parseFloat(o.total as string), 0),
-    cashSales,
-    cardSales,
-    compSales,
+    cashSales: paymentTotals.cash,
+    cardSales: paymentTotals.card,
+    compSales: paymentTotals.comp,
+    paymentTotals,
     byItem: Object.values(itemMap),
     byCustomer: Object.values(customerMap),
   };
@@ -153,7 +168,7 @@ function enrichInventoryWithSales(
 // ─── GET /api/shifts/inventory-template ───────────────────────────────────────
 router.get(
   "/shifts/inventory-template",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const rows = await db
       .select()
@@ -172,6 +187,8 @@ router.get(
         catalogItemId: r.catalogItemId,
         alavontId: r.alavontId,
         displayOrder: r.displayOrder,
+        menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
+        payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
       })),
     });
   }
@@ -180,7 +197,7 @@ router.get(
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -196,7 +213,9 @@ router.post(
       .limit(1);
 
     if (existing.length > 0) {
-      res.status(409).json({ error: "Already clocked in", shift: existing[0] });
+      // Idempotent re-clock-in: return the existing active shift instead of
+      // erroring so the UI doesn't double-create on retry / refresh races.
+      res.status(200).json({ shift: existing[0], alreadyClockedIn: true });
       return;
     }
 
@@ -219,6 +238,8 @@ router.post(
         cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
       })
       .returning();
+
+    let inventoryItemsInserted = 0;
 
     if (inventorySnapshot && inventorySnapshot.length > 0) {
       const templateRows = await db
@@ -252,29 +273,40 @@ router.post(
       if (inserts.length > 0) {
         await db.insert(shiftInventoryItemsTable).values(inserts);
       }
+      inventoryItemsInserted = inserts.length;
     } else if (legacyInventory.length > 0) {
-      await db.insert(shiftInventoryItemsTable).values(
-        legacyInventory.map(item => ({
-          shiftId: shift.id,
-          catalogItemId: item.catalogItemId ?? null,
-          itemName: item.itemName,
-          unitPrice: String(item.unitPrice ?? 0),
-          quantityStart: String(item.quantityStart),
-          rowType: "item",
-          unitType: "#",
-          displayOrder: 0,
-        }))
-      );
+      const legacyInserts = legacyInventory.map(item => ({
+        shiftId: shift.id,
+        catalogItemId: item.catalogItemId ?? null,
+        itemName: item.itemName,
+        unitPrice: String(item.unitPrice ?? 0),
+        quantityStart: String(item.quantityStart),
+        rowType: "item",
+        unitType: "#",
+        displayOrder: 0,
+      }));
+      await db.insert(shiftInventoryItemsTable).values(legacyInserts);
+      inventoryItemsInserted = legacyInserts.length;
     }
 
-    res.status(201).json({ shift });
+    res.status(201).json({
+      shift,
+      _debug: {
+        tenantId: houseTenantId,
+        techId: tech.id,
+        techClerkId: tech.clerkId,
+        techRole: tech.role,
+        shiftId: shift.id,
+        inventoryItemsInserted,
+      },
+    });
   }
 );
 
 // ─── POST /api/shifts/clock-out ───────────────────────────────────────────────
 router.post(
   "/shifts/clock-out",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -296,7 +328,7 @@ router.post(
       cashBankEnd,
     } = req.body as {
       endingInventory?: { shiftInventoryItemId: number; quantityEndActual: number }[];
-      cashBankEnd?: number;
+      cashBankEnd?: number; // rep-reported ending cash bank
     };
 
     const stats = await computeShiftStats(activeShift.id);
@@ -367,32 +399,57 @@ router.post(
       ...stats,
       inventorySummary,
       cashBankStart,
-      cashBankEnd: cashBankEndVal,
+      cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
     };
 
-    await db
+    const [updatedShift] = await db
       .update(labTechShiftsTable)
       .set({
-        status: "completed",
+        status: "supervisor_pending",
         clockedOutAt: new Date(),
+        cashBankEndReported: cashBankEndVal != null ? String(cashBankEndVal) : null,
         cashBankEnd: cashBankEndVal != null ? String(cashBankEndVal) : null,
+        paymentTotalsJson: stats.paymentTotals,
         summary,
       })
       .where(eq(labTechShiftsTable.id, activeShift.id))
       .returning();
 
-    res.json({ summary });
+    await writeAuditLog({
+      actorId: tech.id,
+      actorEmail: tech.email,
+      actorRole: tech.role,
+      action: "shift.clock_out",
+      tenantId: activeShift.tenantId ?? null,
+      resourceType: "lab_tech_shift",
+      resourceId: String(activeShift.id),
+      metadata: {
+        clockedInAt: activeShift.clockedInAt,
+        clockedOutAt: new Date().toISOString(),
+        orderCount: stats.orderCount,
+        totalRevenue: stats.totalRevenue,
+        cashBankStart,
+        cashBankEndReported: cashBankEndVal,
+        cashDiscrepancy,
+      },
+      ipAddress: getClientIp(req),
+    });
+
+    res.json({ summary, shift: updatedShift });
   }
 );
 
-// ─── GET /api/shifts/current ──────────────────────────────────────────────────
+// ─── GET /api/shifts/current  (alias: /shifts/active) ────────────────────────
+// Both paths return the caller's active shift (or { shift: null }). The
+// /active alias matches the OpenAPI/spec wording in stab-02; /current is
+// kept for backward-compat with the existing UI.
 router.get(
-  "/shifts/current",
-  requireRole("business_sitter", "supervisor", "admin"),
+  ["/shifts/current", "/shifts/active"],
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -470,9 +527,9 @@ router.get(
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id as string, 10);
+    const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const [shift] = await db
@@ -517,12 +574,12 @@ router.patch(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id as string, 10);
+    const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const {
       itemName, unitType, startingQuantityDefault, displayOrder, isActive,
-      catalogItemId, deductionQuantityPerSale, sectionName, rowType, currentStock,
+      catalogItemId, deductionQuantityPerSale, sectionName, rowType, currentStock, parLevel,
     } = req.body as {
       itemName?: string;
       unitType?: string;
@@ -534,6 +591,7 @@ router.patch(
       sectionName?: string | null;
       rowType?: string;
       currentStock?: number | null;
+      parLevel?: number | null;
     };
 
     const update: Record<string, unknown> = {};
@@ -548,6 +606,7 @@ router.patch(
     if (sectionName !== undefined) update.sectionName = sectionName;
     if (rowType !== undefined) update.rowType = rowType;
     if (currentStock !== undefined) update.currentStock = currentStock != null ? String(currentStock) : null;
+    if (parLevel !== undefined) update.parLevel = parLevel != null ? String(parLevel) : "0";
 
     if (Object.keys(update).length === 0) {
       res.status(400).json({ error: "No fields to update" });
@@ -617,7 +676,7 @@ router.delete(
   "/admin/inventory-template/:id",
   requireRole("admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const id = parseInt(req.params.id as string, 10);
+    const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
     const [deleted] = await db
@@ -627,6 +686,408 @@ router.delete(
 
     if (!deleted) { res.status(404).json({ error: "Not found" }); return; }
     res.json({ ok: true });
+  }
+);
+
+// ─── POST /api/admin/inventory-template/seed ──────────────────────────────────
+// Seeds the canonical inventory template from the Alavont CSR cash box spreadsheet.
+// Safe to call multiple times — upserts by item name.
+const CSR_INVENTORY_SEED = [
+  { itemName: "Squirting Dildo",                                startingQty: 0,    menuPrice: 100, payoutPrice: 90  },
+  { itemName: "Real Feel Deluxe No 7 Wallbanger Vibrating Dildo", startingQty: 0, menuPrice: 80,  payoutPrice: 75  },
+  { itemName: "Realistic Foreskin Dildo",                       startingQty: 0,    menuPrice: 95,  payoutPrice: 90  },
+  { itemName: "Real Feel Deluxe 11 Inch Wall Banger Vibe in Black", startingQty: 8.5, menuPrice: 20, payoutPrice: 15 },
+  { itemName: "Silky - Intimate Gel Collection",                startingQty: 2,    menuPrice: 25,  payoutPrice: 20  },
+  { itemName: "Aqua - Intimate Gel Collection",                 startingQty: 2,    menuPrice: 40,  payoutPrice: 30  },
+  { itemName: "Crimson Brick Condoms",                          startingQty: 8,    menuPrice: 7,   payoutPrice: 6   },
+  { itemName: "Obsidian Edge Collection",                       startingQty: 17,   menuPrice: 10,  payoutPrice: 9   },
+  { itemName: "Sex Machine with Dildo",                         startingQty: 3.5,  menuPrice: 100, payoutPrice: 100 },
+  { itemName: "Vibrating Mechanical Dildo",                     startingQty: 2.32, menuPrice: 12,  payoutPrice: 12  },
+  { itemName: "Metal Cockrings",                                startingQty: 10,   menuPrice: 5,   payoutPrice: 5   },
+  { itemName: "Blue Cockring",                                  startingQty: 0,    menuPrice: 5,   payoutPrice: 5   },
+  { itemName: "Black Cockring",                                 startingQty: 1,    menuPrice: 40,  payoutPrice: 40  },
+  { itemName: "Leather Cockrings",                              startingQty: 1,    menuPrice: 25,  payoutPrice: 25  },
+  { itemName: "Silicone Cockrings",                             startingQty: 0.5,  menuPrice: 60,  payoutPrice: 60  },
+  { itemName: "1 Morning After Pill",                           startingQty: 9,    menuPrice: 20,  payoutPrice: 18  },
+  { itemName: "Glass Vase",                                     startingQty: 1,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Butane Lighter",                                 startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Oil Burning Massage Candle",                     startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
+  { itemName: "Couples Dice Games",                             startingQty: 3,    menuPrice: 1,   payoutPrice: 0   },
+  { itemName: "Midnight Lace Set",                              startingQty: 15,   menuPrice: 6,   payoutPrice: 5   },
+  { itemName: "Velvet Embrace Set",                             startingQty: 2,    menuPrice: 4,   payoutPrice: 4   },
+  { itemName: "Crimson Silk Ensemble",                          startingQty: 6,    menuPrice: 3,   payoutPrice: 3   },
+  { itemName: "Obsidian Desire Set",                            startingQty: 4,    menuPrice: 9,   payoutPrice: 8   },
+  { itemName: "Euphoria Lace Collection",                       startingQty: 21,   menuPrice: 6,   payoutPrice: 5   },
+  { itemName: "Soft Touch Satin Set",                           startingQty: 114,  menuPrice: 5,   payoutPrice: 5   },
+];
+
+router.post(
+  "/admin/inventory-template/seed",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+
+    // Fetch existing by item name to avoid duplicates
+    const existing = await db
+      .select({ id: inventoryTemplatesTable.id, itemName: inventoryTemplatesTable.itemName })
+      .from(inventoryTemplatesTable)
+      .where(eq(inventoryTemplatesTable.tenantId, houseTenantId));
+
+    const existingNames = new Set(existing.map(r => r.itemName?.toLowerCase()));
+
+    const toInsert = CSR_INVENTORY_SEED
+      .filter(item => !existingNames.has(item.itemName.toLowerCase()))
+      .map((item, idx) => ({
+        tenantId: houseTenantId,
+        itemName: item.itemName,
+        rowType: "item",
+        unitType: "#",
+        startingQuantityDefault: String(item.startingQty),
+        currentStock: String(item.startingQty),
+        menuPrice: String(item.menuPrice),
+        payoutPrice: String(item.payoutPrice),
+        displayOrder: (existing.length + idx) * 10,
+        isActive: true,
+        deductionQuantityPerSale: "1",
+      }));
+
+    // Update prices for existing rows (in case they were previously seeded without prices)
+    for (const item of CSR_INVENTORY_SEED) {
+      const match = existing.find(e => e.itemName?.toLowerCase() === item.itemName.toLowerCase());
+      if (match) {
+        await db
+          .update(inventoryTemplatesTable)
+          .set({ menuPrice: String(item.menuPrice), payoutPrice: String(item.payoutPrice) })
+          .where(eq(inventoryTemplatesTable.id, match.id));
+      }
+    }
+
+    let inserted: (typeof inventoryTemplatesTable.$inferSelect)[] = [];
+    if (toInsert.length > 0) {
+      inserted = await db.insert(inventoryTemplatesTable).values(toInsert).returning();
+    }
+
+    res.json({ inserted: inserted.length, updated: CSR_INVENTORY_SEED.length - toInsert.length, total: CSR_INVENTORY_SEED.length });
+  }
+);
+
+// ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
+// Supervisor confirms ending inventory, sets tip %, calculates final amounts.
+router.post(
+  "/shifts/:id/supervisor-checkout",
+  requireRole("admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+    if (shift.status !== "supervisor_pending") {
+      res.status(409).json({ error: `Shift is not pending supervisor review (status: ${shift.status})` });
+      return;
+    }
+
+    const { tipPercent } = req.body as { tipPercent?: number };
+    if (!tipPercent || ![15, 16, 17, 18].includes(tipPercent)) {
+      res.status(400).json({ error: "tipPercent must be 15, 16, 17, or 18" });
+      return;
+    }
+
+    const supervisor = req.dbUser!;
+
+    const stats = await computeShiftStats(shiftId);
+    const snapshotItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+
+    // Tip is calculated on eligible completed sales subtotal (non-comp, non-voided)
+    const eligibleSalesBase = stats.totalRevenue - stats.compSales;
+    const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
+
+    // Inventory shortage: sum of flagged item discrepancies converted to monetary value
+    // Uses unit price from shift items
+    let differenceAmount = 0;
+    for (const item of inventory) {
+      if (item.isFlagged && item.discrepancy != null && item.discrepancy > 0) {
+        differenceAmount += item.discrepancy * item.unitPrice;
+      }
+    }
+    differenceAmount = Math.round(differenceAmount * 100) / 100;
+
+    const finalTip = Math.max(0, tipAmount - differenceAmount);
+
+    const cashBankStart = parseFloat(String(shift.cashBankStart ?? 0));
+    const cashBankEndReported = parseFloat(String(shift.cashBankEndReported ?? 0));
+    // deposit = ending cash - starting cash - final tip - difference
+    const depositAmount = Math.max(0, cashBankEndReported - cashBankStart - finalTip - differenceAmount);
+
+    const [finalized] = await db
+      .update(labTechShiftsTable)
+      .set({
+        status: "finalized",
+        tipPercentSelected: String(tipPercent),
+        tipAmount: String(finalTip),
+        differenceAmount: String(differenceAmount),
+        depositAmount: String(depositAmount),
+        supervisorId: supervisor.id,
+        supervisorConfirmedAt: new Date(),
+      })
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .returning();
+
+    res.json({
+      shift: finalized,
+      checkout: {
+        eligibleSalesBase,
+        tipPercent,
+        tipAmount,
+        differenceAmount,
+        finalTip,
+        cashBankStart,
+        cashBankEndReported,
+        depositAmount,
+        paymentTotals: stats.paymentTotals,
+        flaggedItems: inventory.filter(i => i.isFlagged),
+      },
+    });
+  }
+);
+
+// ─── GET /api/shifts/:id/restock-slip ────────────────────────────────────────
+// Computes which items need restocking based on actual ending counts vs par level.
+// Available immediately after clock-out (quantityEndActual recorded).
+router.get(
+  "/shifts/:id/restock-slip",
+  requireRole("business_sitter", "supervisor", "admin"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+
+    const shiftItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+    // Pull par levels from inventory templates
+    const templateIds = shiftItems
+      .filter(i => i.templateItemId != null)
+      .map(i => i.templateItemId as number);
+
+    const templates = templateIds.length
+      ? await db
+          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
+          .from(inventoryTemplatesTable)
+          .where(
+            templateIds.length === 1
+              ? eq(inventoryTemplatesTable.id, templateIds[0])
+              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
+          )
+      : [];
+
+    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
+
+    const restockItems: {
+      templateItemId: number | null;
+      sectionName: string | null;
+      itemName: string;
+      unitType: string;
+      parLevel: number;
+      actualEndingQty: number;
+      restockQty: number;
+    }[] = [];
+
+    for (const item of shiftItems) {
+      if (item.rowType !== "item") continue;
+
+      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
+      if (parLevel <= 0) continue;
+
+      const actualEnding = item.quantityEndActual != null
+        ? parseFloat(String(item.quantityEndActual))
+        : null;
+
+      if (actualEnding === null) continue;
+
+      const restockQty = Math.max(0, parLevel - actualEnding);
+      if (restockQty === 0) continue;
+
+      restockItems.push({
+        templateItemId: item.templateItemId,
+        sectionName: item.sectionName,
+        itemName: item.itemName,
+        unitType: item.unitType ?? "#",
+        parLevel,
+        actualEndingQty: actualEnding,
+        restockQty: Math.round(restockQty * 1000) / 1000,
+      });
+    }
+
+    res.json({
+      shiftId,
+      generatedAt: new Date().toISOString(),
+      totalItemsNeedingRestock: restockItems.length,
+      items: restockItems,
+    });
+  }
+);
+
+// ─── POST /api/shifts/:id/restock-slip/print ─────────────────────────────────
+// Generates and prints a restock slip for the shift via CUPS.
+router.post(
+  "/shifts/:id/restock-slip/print",
+  requireRole("supervisor", "admin"),
+  async (req, res): Promise<void> => {
+    const shiftId = parseInt(String(req.params.id), 10);
+    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+
+    const [shift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, shiftId))
+      .limit(1);
+    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+
+    const shiftItems = await db
+      .select()
+      .from(shiftInventoryItemsTable)
+      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
+      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+    const templateIds = shiftItems
+      .filter(i => i.templateItemId != null)
+      .map(i => i.templateItemId as number);
+
+    const templates = templateIds.length
+      ? await db
+          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
+          .from(inventoryTemplatesTable)
+          .where(
+            templateIds.length === 1
+              ? eq(inventoryTemplatesTable.id, templateIds[0])
+              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
+          )
+      : [];
+
+    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
+
+    const lines: string[] = [];
+    const W = 40;
+    const divider = "=".repeat(W);
+    const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
+
+    lines.push(divider);
+    lines.push(center("RESTOCK SLIP"));
+    lines.push(divider);
+    lines.push(`Shift #: ${shiftId}`);
+    lines.push(`Printed: ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`);
+    lines.push(divider);
+
+    let needCount = 0;
+    let currentSection: string | null = null;
+
+    for (const item of shiftItems) {
+      if (item.rowType !== "item") continue;
+
+      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
+      if (parLevel <= 0) continue;
+
+      const actualEnding = item.quantityEndActual != null
+        ? parseFloat(String(item.quantityEndActual))
+        : null;
+      if (actualEnding === null) continue;
+
+      const restockQty = Math.max(0, parLevel - actualEnding);
+      if (restockQty === 0) continue;
+
+      if (item.sectionName && item.sectionName !== currentSection) {
+        currentSection = item.sectionName;
+        lines.push("");
+        lines.push(`[ ${currentSection.toUpperCase()} ]`);
+      }
+
+      const name = item.itemName.length > 26 ? item.itemName.slice(0, 23) + "..." : item.itemName;
+      const qty = `+${Math.round(restockQty * 1000) / 1000}${item.unitType ?? ""}`;
+      lines.push(`  ${name.padEnd(W - qty.length - 2)}${qty}`);
+      lines.push(`    par:${parLevel} | end:${actualEnding}`);
+      needCount++;
+    }
+
+    lines.push("");
+    lines.push(divider);
+    lines.push(center(`TOTAL: ${needCount} items need restock`));
+    lines.push(divider);
+    lines.push("");
+
+    const body = lines.join("\n");
+
+    if (needCount === 0) {
+      res.json({ ok: true, printed: false, message: "No items need restocking", shiftId });
+      return;
+    }
+
+    try {
+      const { printReceiptEscPos } = await import("../lib/escposPrinter");
+      const { jobRef } = await printReceiptEscPos(body);
+      res.json({ ok: true, printed: true, jobRef, itemCount: needCount, shiftId });
+    } catch (err) {
+      const msg = (err as Error).message;
+      req.log.warn({ shiftId, err: msg }, "Restock slip print failed");
+      res.status(500).json({ ok: false, printed: false, error: msg, shiftId });
+    }
+  }
+);
+
+// ─── GET /api/shifts/pending-supervisor ───────────────────────────────────────
+// Returns all shifts awaiting supervisor checkout.
+router.get(
+  "/shifts/pending-supervisor",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    const shifts = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "supervisor_pending"))
+      .orderBy(desc(labTechShiftsTable.clockedOutAt));
+
+    const result = await Promise.all(
+      shifts.map(async shift => {
+        const [u] = await db
+          .select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+          .from(usersTable)
+          .where(eq(usersTable.id, shift.techId))
+          .limit(1);
+        const stats = await computeShiftStats(shift.id);
+        return {
+          shiftId: shift.id,
+          techName: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
+          techEmail: u?.email ?? "",
+          clockedInAt: shift.clockedInAt,
+          clockedOutAt: shift.clockedOutAt,
+          cashBankStart: parseFloat(String(shift.cashBankStart ?? 0)),
+          cashBankEndReported: parseFloat(String(shift.cashBankEndReported ?? 0)),
+          paymentTotals: stats.paymentTotals,
+          totalRevenue: stats.totalRevenue,
+        };
+      })
+    );
+
+    res.json({ pendingShifts: result });
   }
 );
 

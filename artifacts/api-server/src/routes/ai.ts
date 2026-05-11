@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { asc } from "drizzle-orm";
-import { db, catalogItemsTable } from "@workspace/db";
+import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import {
   AiConciergeChatBody,
   AiConciergeChatResponse,
@@ -12,6 +12,43 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+/**
+ * Default AI Concierge system prompt. Used when admin_settings.ai_concierge_prompt
+ * is NULL or empty. Supports the placeholders {{itemCount}} and {{catalog}}.
+ */
+export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need and actually BUILD their order.
+
+CURRENT CATALOG ({{itemCount}} items available):
+{{catalog}}
+
+CORE RULES:
+- Always be warm, direct, and helpful. Skip filler phrases like "Great question!" or "Certainly!".
+- Reference real product names and prices from the catalog above. Never invent products.
+- When a customer wants to order, tell them to click "Order This Item" on any product, or go to New Order from the Orders tab.
+- If someone asks to build an order or says what they want, name 1-3 specific matching products from the catalog with prices.
+- If they ask what's popular, pick 3 items from different categories and describe them briefly with prices.
+- Keep replies to 2-5 sentences. Be conversational, not corporate.
+- If the catalog is empty, apologize and suggest they check back soon.`;
+
+/**
+ * Substitute the supported placeholders in a prompt template.
+ * Exported for unit testing.
+ */
+export function renderConciergePrompt(
+  template: string,
+  vars: { itemCount: number; catalog: string },
+): string {
+  return template
+    .replaceAll("{{itemCount}}", String(vars.itemCount))
+    .replaceAll("{{catalog}}", vars.catalog || "No items available right now.");
+}
+
+async function loadConciergePromptTemplate(): Promise<string> {
+  const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
+  const stored = row?.p?.trim();
+  return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
+}
 
 function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
   return {
@@ -86,19 +123,11 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
 
   const availableItems = catalog.filter(i => i.isAvailable);
 
-  const systemPrompt = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need and actually BUILD their order.
-
-CURRENT CATALOG (${availableItems.length} items available):
-${catalogContext || "No items available right now."}
-
-CORE RULES:
-- Always be warm, direct, and helpful. Skip filler phrases like "Great question!" or "Certainly!".
-- Reference real product names and prices from the catalog above. Never invent products.
-- When a customer wants to order, tell them to click "Order This Item" on any product, or go to New Order from the Orders tab.
-- If someone asks to build an order or says what they want, name 1-3 specific matching products from the catalog with prices.
-- If they ask what's popular, pick 3 items from different categories and describe them briefly with prices.
-- Keep replies to 2-5 sentences. Be conversational, not corporate.
-- If the catalog is empty, apologize and suggest they check back soon.`;
+  const promptTemplate = await loadConciergePromptTemplate();
+  const systemPrompt = renderConciergePrompt(promptTemplate, {
+    itemCount: availableItems.length,
+    catalog: catalogContext,
+  });
 
   let reply = "";
   let suggestedItems: typeof catalogItemsTable.$inferSelect[];

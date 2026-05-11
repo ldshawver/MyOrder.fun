@@ -218,6 +218,14 @@ import importRouter from "../import";
 function buildApp(...routers: express.Router[]) {
   const app = express();
   app.use(express.json());
+  // Stub req.log so route handlers that call req.log.info/warn/error don't crash
+  // (pino-http is not installed in the test app, so req.log would otherwise be undefined)
+  app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    (req as unknown as Record<string, unknown>).log = {
+      info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
+    };
+    next();
+  });
   for (const r of routers) app.use("/api", r);
   return app;
 }

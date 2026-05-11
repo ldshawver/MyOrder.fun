@@ -55,6 +55,7 @@ export default defineConfig({
       mode: "split",
       clean: true,
       prettier: true,
+      indexFiles: false,
       override: {
         zod: {
           coerce: {

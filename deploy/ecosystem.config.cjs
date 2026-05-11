@@ -1,42 +1,31 @@
+const path = require("node:path");
+
+/**
+ * PM2 ecosystem config for the API server.
+ *
+ * BASE_DIR resolves to the repository root relative to this config file:
+ *   <repo>/deploy/ecosystem.config.cjs -> <repo>
+ */
+const BASE_DIR = path.resolve(__dirname, "..");
+const ENV_FILE = path.join(BASE_DIR, ".env");
+
 module.exports = {
   apps: [
     {
-      name: "orderflow-api",
-      script: "node",
-      args: "--enable-source-maps artifacts/api-server/dist/index.mjs",
-      cwd: "/opt/orderflow",
-      interpreter: "none",
+      name: "alavont-api",
+      script: "./artifacts/api-server/dist/index.mjs",
+      interpreter: "node",
+      node_args: `--env-file ${ENV_FILE} --enable-source-maps`,
+      cwd: BASE_DIR,
       env: {
         NODE_ENV: "production",
         PORT: "8080",
-
-        // --- Fill these in ---
-        DATABASE_URL: "",
-
-        CLERK_SECRET_KEY: "",
-
-        STRIPE_SECRET_KEY: "",
-        STRIPE_PUBLISHABLE_KEY: "",
-
-        OPENAI_API_KEY: "",
-
-        TWILIO_ACCOUNT_SID: "",
-        TWILIO_AUTH_TOKEN: "",
-        TWILIO_PHONE_NUMBER: "",
-        ADMIN_ALERT_PHONE: "",
-
-        PRINT_BRIDGE_API_KEY: "",
-
-        WC_STORE_URL: "",
-        WC_CONSUMER_KEY: "",
-        WC_CONSUMER_SECRET: "",
-
-        LOG_LEVEL: "info",
       },
       watch: false,
       autorestart: true,
       max_restarts: 10,
       restart_delay: 3000,
+      kill_timeout: 5000,
     },
   ],
 };

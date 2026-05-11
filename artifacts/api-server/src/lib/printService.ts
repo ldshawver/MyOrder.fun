@@ -135,6 +135,7 @@ async function dispatchBridge(
     return { success: false, error: "API key missing — add it to this printer's settings in Admin → Print → Printers" };
   }
 
+  // Resolve printer name before the try block so it's accessible in catch
   const printerName = printer.bridgePrinterName ?? printer.name;
 
   try {
@@ -145,7 +146,6 @@ async function dispatchBridge(
     const payloadForLog = job.renderFormat === "png"
       ? { ...((job.payloadJson as object) ?? {}), imageData: "[base64 omitted]" }
       : job.payloadJson;
-    const printerName = printer.bridgePrinterName ?? printer.name;
 
     pLog.info({
       event: "bridge_dispatch",

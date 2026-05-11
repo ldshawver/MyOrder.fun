@@ -52,5 +52,8 @@ Thumbs.db
 .env
 deploy/nginx/ssl/
 
+# MCP config — contains API tokens, never commit
+.mcp.json
+
 # Replit attached assets (terminal pastes, screenshots)
 attached_assets/

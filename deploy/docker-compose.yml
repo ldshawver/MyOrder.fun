@@ -45,6 +45,11 @@ services:
       PORT: "8080"
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
+      # Pass DEPLOY_SHA straight from the deploy shell into the container at
+      # runtime (the bare-key form looks up the variable in the host env every
+      # time the container starts, so a fresh `git rev-parse HEAD` value reaches
+      # the API even when the image was built earlier with a different SHA).
+      DEPLOY_SHA:
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
       CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY}
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
@@ -56,6 +61,18 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tell the bundled cups-client (lp/lpstat) which CUPS server to talk to.
+      # Default uses the bind-mounted host socket below; override with an
+      # IP:port like "host.docker.internal:631" if you front CUPS over IPP.
+      CUPS_SERVER: ${CUPS_SERVER:-/var/run/cups/cups.sock}
+    volumes:
+      # Bind-mount the host's CUPS socket so `lp -d <queue>` inside the
+      # container drives the host's CUPS daemon. The host MUST have CUPS
+      # installed (apt-get install -y cups cups-bsd) and a queue named in
+      # admin → printers configured BEFORE this mount works. If the host
+      # file does not yet exist, docker will create an empty directory in
+      # its place — install CUPS first to avoid that footgun.
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
     depends_on:
       db:
         condition: service_healthy
@@ -68,8 +85,13 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.platform
       args:
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        # Fall back to the plain CLERK_PUBLISHABLE_KEY so a single-key .env
+        # still produces a SPA bundle with a real Clerk publishable key.
+        # An empty key here causes the deployed app to treat every visitor as
+        # signed-out and redirect them to the waitlist.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY (or VITE_CLERK_PUBLISHABLE_KEY) must be set in .env}}
         VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
+        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
     restart: unless-stopped
     networks:
       - internal

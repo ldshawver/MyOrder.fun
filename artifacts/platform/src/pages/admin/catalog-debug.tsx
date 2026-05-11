@@ -347,7 +347,7 @@ export default function CatalogDebug() {
                   <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">LC Name</th>
                   <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Price</th>
                   <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Category</th>
-                  <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Lab Name</th>
+                  <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Merchant SKU</th>
                   <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Visibility</th>
                   <th className="text-left px-3 py-2 text-muted-foreground font-semibold uppercase tracking-wider">Issues</th>
                 </tr>

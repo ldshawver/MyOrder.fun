@@ -1,11 +1,11 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
 const DEPLOY_SHA = process.env["DEPLOY_SHA"] ?? "unknown";
 
-router.get("/healthz", (_req, res) => {
+const sendHealth = (_req: Request, res: Response) => {
   const data = HealthCheckResponse.parse({
     status: "ok",
     sha: DEPLOY_SHA,
@@ -13,6 +13,9 @@ router.get("/healthz", (_req, res) => {
   });
   res.setHeader("X-Deploy-SHA", DEPLOY_SHA);
   res.json(data);
-});
+};
+
+router.get("/health", sendHealth);
+router.get("/healthz", sendHealth);
 
 export default router;

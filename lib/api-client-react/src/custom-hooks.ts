@@ -2,24 +2,18 @@ import { useMutation } from "@tanstack/react-query";
 import type { UseMutationOptions, UseMutationResult } from "@tanstack/react-query";
 import { customFetch } from "./custom-fetch";
 import type { ErrorType } from "./custom-fetch";
-import type { UserProfileStatus } from "./generated/api.schemas";
+import type { UpdateUserStatusBody, UpdateUserStatusResponse } from "./generated/api.schemas";
 
-export interface UpdateUserStatusBody {
-  status: UserProfileStatus;
-}
-
-export interface UpdateUserStatusResponse {
-  id: number;
-  status: string;
-}
-
+// Calls the legacy non-admin path. The generated `useAdminUpdateUserStatus`
+// hook calls /api/admin/users/:id/status. Both paths are aliases on the
+// server.
 export const updateUserStatus = async (
   id: number,
-  updateUserStatusBody: UpdateUserStatusBody,
+  body: UpdateUserStatusBody,
 ): Promise<UpdateUserStatusResponse> => {
   return customFetch<UpdateUserStatusResponse>(`/api/users/${id}/status`, {
     method: "PATCH",
-    body: JSON.stringify(updateUserStatusBody),
+    body: JSON.stringify(body),
   });
 };
 

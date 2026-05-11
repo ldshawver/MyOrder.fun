@@ -12,20 +12,27 @@ version = "1.0.0"
 [[services]]
 name = "web"
 paths = [ "/" ]
-localPort = 23633
+localPort = 5000
 
 [services.development]
-run = "pnpm --filter @workspace/platform run dev"
+run = "cd /home/runner/workspace/artifacts/platform && node dev-server.mjs"
 
 [services.production]
-build = [ "pnpm", "--filter", "@workspace/platform", "run", "build" ]
-publicDir = "artifacts/platform/dist/public"
+publicDir = "artifacts/platform/dist"
 serve = "static"
+
+[services.production.build]
+args = [ "pnpm", "--filter", "@workspace/platform", "run", "build" ]
+
+[services.production.build.env]
+NODE_ENV = "production"
+PORT = "3000"
+BASE_PATH = "/"
 
 [[services.production.rewrites]]
 from = "/*"
 to = "/index.html"
 
 [services.env]
-PORT = "23633"
+PORT = "5000"
 BASE_PATH = "/"

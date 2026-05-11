@@ -1,38 +1,70 @@
-modules = ["nodejs-24", "postgresql-16"]
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
 
-[[artifacts]]
-id = "artifacts/api-server"
+  [[artifacts]]
+  id = "artifacts/api-server"
 
-[[artifacts]]
-id = "artifacts/mockup-sandbox"
+  [[artifacts]]
+  id = "artifacts/platform"
 
-[deployment]
-router = "application"
-deploymentTarget = "autoscale"
+  [[artifacts]]
+  id = "artifacts/mockup-sandbox"
 
-[deployment.postBuild]
-args = ["pnpm", "store", "prune"]
-env = { "CI" = "true" }
+  [deployment]
+  router = "application"
+  deploymentTarget = "autoscale"
 
-[workflows]
-runButton = "Project"
+  [deployment.postBuild]
+  args = ["pnpm", "store", "prune"]
+  env = { "CI" = "true" }
 
-[agent]
-stack = "PNPM_WORKSPACE"
+  [workflows]
+  runButton = "Project"
+
+  [[workflows.workflow]]
+  name = "Project"
+  mode = "parallel"
+  author = "agent"
+
+  [[workflows.workflow.tasks]]
+  task = "workflow.run"
+  args = "lint"
+
+  [[workflows.workflow]]
+  name = "lint"
+  author = "agent"
+
+  [[workflows.workflow.tasks]]
+  task = "shell.exec"
+  args = "pnpm lint"
+
+  [workflows.workflow.metadata]
+  isValidation = true
+
+  [agent]
+  stack = "PNPM_WORKSPACE"
 expertMode = true
 
-[postMerge]
-path = "scripts/post-merge.sh"
-timeoutMs = 20000
+  [postMerge]
+  path = "scripts/post-merge.sh"
+  timeoutMs = 20000
 
-[nix]
-channel = "stable-25_05"
+  [nix]
+  channel = "stable-25_05"
 
-[userenv]
+  [userenv]
 
-[userenv.shared]
-SMTP_FROM = "no-reply@alavont.com"
-SMTP_USER = "luke@adiken.com"
-SMTP_HOST = "smtp.office365.com"
-SMTP_PORT = "587"
-SMTP_TLS = "true"
+  [userenv.shared]
+  SMTP_FROM = "no-reply@alavont.com"
+  SMTP_USER = "luke@adiken.com"
+  SMTP_HOST = "smtp.office365.com"
+  SMTP_PORT = "587"
+  SMTP_TLS = "true"
+  RECEIPT_PRINTER_URI = "ipp://100.83.99.2:631/printers/receipt"
+  RECEIPT_PRINTER_NAME = "receipt"
+  PRINT_SERVER_HOST = "100.83.99.2"
+  PRINT_SERVER_PORT = "631"
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+  

@@ -3,6 +3,7 @@ import { useListOrders, useGetCurrentUser } from "@workspace/api-client-react";
 import { Link } from "wouter";
 import { Plus, Package, Clock, ShieldAlert } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
+import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
 
 const SESSION_ORDERS_KEY = "alavont_session_orders";
 
@@ -46,6 +47,7 @@ export default function Orders() {
   );
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const isCustomer = user?.role === "user";
+  const isSupervisor = user?.role === "supervisor" || user?.role === "admin";
 
   // Customers only see orders from the current browser session
   const visibleOrders = useMemo(() => {
@@ -83,6 +85,8 @@ export default function Orders() {
           New Order
         </Link>
       </div>
+
+      {isSupervisor && <SupervisorDelayedOrders />}
 
       {isLoading ? (
         <div className="flex flex-col items-center justify-center py-24 gap-6">

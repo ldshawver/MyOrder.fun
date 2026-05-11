@@ -3,12 +3,22 @@ import { useEffect, useRef } from "react";
 interface AnimatedHourglassProps {
   size?: number;
   message?: string;
+  /**
+   * Optional 0..1 progress through the promised-ready window.
+   * 0 = just routed, sand fully in the top bulb.
+   * 1 = ETA reached, sand fully in the bottom bulb.
+   * When omitted, the hourglass falls back to its self-looping animation
+   * (used in loading spinners that have no time anchor).
+   */
+  progress?: number;
 }
 
-export default function AnimatedHourglass({ size = 180, message = "Processing your order..." }: AnimatedHourglassProps) {
+export default function AnimatedHourglass({ size = 180, message = "Processing your order...", progress }: AnimatedHourglassProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const timeRef = useRef(0);
+  const progressRef = useRef<number | undefined>(progress);
+  progressRef.current = progress;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -227,27 +237,42 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
 
       drawRings();
 
-      const cycleLen = 250;
-      const phase = (t % cycleLen) / cycleLen;
       let rotation: number;
       let sandFraction: number;
+      const externalProgress = progressRef.current;
+      const isTimeDriven = typeof externalProgress === "number";
 
-      if (phase < 0.45) {
+      if (isTimeDriven) {
+        // Deterministic: sand empties from top to bottom across the
+        // promised-ready window. No flips — the orientation is fixed so
+        // the customer can read remaining time at a glance.
         rotation = 0;
-        sandFraction = phase / 0.45;
-      } else if (phase < 0.55) {
-        const flipT = (phase - 0.45) / 0.1;
-        rotation = flipT * Math.PI;
-        sandFraction = 1;
+        sandFraction = Math.max(0, Math.min(1, externalProgress!));
       } else {
-        rotation = Math.PI;
-        sandFraction = 1 - (phase - 0.55) / 0.45;
+        const cycleLen = 250;
+        const phase = (t % cycleLen) / cycleLen;
+        if (phase < 0.45) {
+          rotation = 0;
+          sandFraction = phase / 0.45;
+        } else if (phase < 0.55) {
+          const flipT = (phase - 0.45) / 0.1;
+          rotation = flipT * Math.PI;
+          sandFraction = 1;
+        } else {
+          rotation = Math.PI;
+          sandFraction = 1 - (phase - 0.55) / 0.45;
+        }
       }
 
       drawHourglass(rotation, sandFraction);
 
-      if (phase < 0.45 && t % 2 === 0) spawnParticle();
-      if (phase > 0.55 && t % 2 === 0) spawnParticle();
+      if (isTimeDriven) {
+        if (sandFraction < 1 && t % 2 === 0) spawnParticle();
+      } else {
+        const phase = (t % 250) / 250;
+        if (phase < 0.45 && t % 2 === 0) spawnParticle();
+        if (phase > 0.55 && t % 2 === 0) spawnParticle();
+      }
       drawParticles();
 
       animRef.current = requestAnimationFrame(animate);
