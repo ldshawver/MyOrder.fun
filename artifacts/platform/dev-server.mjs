@@ -35,7 +35,11 @@ const vite = spawn(
   process.execPath,
   [join(__dir, "node_modules/vite/bin/vite.js")],
   {
-    stdio: ["ignore", "pipe", "pipe"],
+    // "pipe" for stdin so we hold the stdin fd open indefinitely — if we
+    // pass "ignore" (/dev/null), Vite 7's readline loop detects EOF and
+    // exits immediately in non-TTY environments (e.g. Replit workflows).
+    // We simply never write to vite.stdin and never close it.
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, PORT: String(VITE_PORT) },
   },
 );
