@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 5000
 
 [services.development]
-run = "cd /home/runner/workspace/artifacts/platform && node dev-server.mjs"
+run = "cd /home/runner/workspace/artifacts/platform && node_modules/.bin/vite --host 0.0.0.0 --port 5000"
 
 [services.production]
 publicDir = "artifacts/platform/dist"
