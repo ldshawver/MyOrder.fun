@@ -121,7 +121,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
     return roleById[id] ?? "user";
   }
 
-  async function handleApprove(id: string) {
+  async function handleApprove(id: string, email: string) {
     const role = getRole(id);
     setActionLoading(id);
     setActionMsg(null);
@@ -130,7 +130,9 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
       const res = await fetch(`/api/admin/users/waitlist/${id}/invite`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ role }),
+        // Always send the email we already have — the server uses it as a
+        // fallback when Clerk's waitlist API is unavailable (Restricted mode).
+        body: JSON.stringify({ role, email }),
       });
       const body = await res.json() as { status?: string; error?: string; clerkInviteFailed?: boolean };
       if (!res.ok) throw new Error(body.error ?? "Invite failed");
@@ -275,7 +277,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
                             size="sm"
                             variant="outline"
                             className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600 gap-1"
-                            onClick={() => handleApprove(entry.id)}
+                            onClick={() => handleApprove(entry.id, entry.emailAddress)}
                             disabled={actionLoading === entry.id}
                             data-testid={`btn-waitlist-approve-${entry.id}`}
                           >

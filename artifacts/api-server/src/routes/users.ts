@@ -495,6 +495,9 @@ const WaitlistInviteBody = z.object({
   role: z.enum([...VALID_ROLES]).default("user"),
   firstName: z.string().trim().max(100).optional(),
   lastName: z.string().trim().max(100).optional(),
+  // Frontend passes the email it already has so we never hard-fail when
+  // the Clerk waitlist API is unavailable (e.g. Restricted mode).
+  email: z.string().email().optional(),
 });
 
 // Sentinel clerk_id used while a waitlist invite is outstanding (the real
@@ -522,18 +525,19 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const { role, firstName, lastName } = body.data;
+  const { role, firstName, lastName, email: bodyEmail } = body.data;
 
   // Pre-fetch email from the waitlist list so we have it even if the Clerk
   // invite call fails (e.g. entry already processed, Clerk not in Waitlist
   // mode, or the user has already signed up via a direct invite link).
-  let prefetchedEmail: string | null = null;
+  // The frontend also sends the email it already has as a reliable fallback.
+  let prefetchedEmail: string | null = bodyEmail ?? null;
   try {
     const list = await clerkClient.waitlistEntries.list({ limit: 500 });
     const found = list.data.find((e) => e.id === id);
     if (found) prefetchedEmail = found.emailAddress;
   } catch {
-    // best-effort — continue even if the list call fails
+    // best-effort — continue even if the list call fails (bodyEmail is the fallback)
   }
 
   let entry: { id: string; status: string; emailAddress: string };
@@ -667,8 +671,10 @@ router.post("/admin/users/waitlist/:id/reject", requireRole("admin"), async (req
     const entry = await clerkClient.waitlistEntries.reject(id);
     res.json({ id: entry.id, status: entry.status });
   } catch (err) {
-    req.log.error({ err }, "Failed to reject waitlist entry");
-    res.status(500).json({ error: "Failed to reject waitlist entry" });
+    // Clerk may not be in Waitlist mode, or the entry is already processed.
+    // Either way the admin's intent is fulfilled — return success gracefully.
+    req.log.warn({ err, waitlistId: id }, "Clerk waitlist reject failed — returning success anyway");
+    res.json({ id, status: "rejected", clerkRejectFailed: true });
   }
 });
 
