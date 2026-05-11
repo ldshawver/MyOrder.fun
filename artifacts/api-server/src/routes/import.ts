@@ -23,44 +23,46 @@ const upload = multer({
   },
 });
 
-// ─── Exact 14-column header set ───────────────────────────────────────────────
+// ─── Exact 15-column header set ───────────────────────────────────────────────
 // Order matches the downloadable template; on import, headers are matched
 // case-sensitively but the column order in the user's file does not matter.
 export const EXPECTED_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
-  "Menu Name",
-  "Menu Description",
-  "Menu Category",
-  "Menu In Stock",
-  "Menu ID",
-  "Amount",
-  "Unit Measurement",
-  "Merchant Name",
-  "Merchant Image",
-  "Merchant Description",
-  "Merchant Category",
-  "Merchant Sku",
+  "regular_price",
+  "alavont_image",
+  "alavont_name",
+  "alavont_desc",
+  "alavont_category",
+  "alavont_in_stock",
+  "alavont_id",
+  "Quantity",
+  "Unit",
+  "Sale_price",
+  "lucifer_cruz_image",
+  "lucifer_cruz_name",
+  "lucifer_cruz_desc",
+  "lucifer_cruz_category",
+  "lucifer_cruz_Inventory",
 ] as const;
 
 export type ExpectedHeader = (typeof EXPECTED_HEADERS)[number];
 
 // Header → record field name (per spec)
 export const HEADER_TO_FIELD: Record<ExpectedHeader, string> = {
-  "Menu Regular Price": "regularPrice",
-  "Menu Image":         "imageUrl",
-  "Menu Name":          "name",
-  "Menu Description":   "description",
-  "Menu Category":      "category",
-  "Menu In Stock":      "inStock",
-  "Menu ID":            "externalMenuId",
-  "Amount":             "inventoryAmount",
-  "Unit Measurement":   "unitMeasurement",
-  "Merchant Name":      "merchantName",
-  "Merchant Image":     "merchantImage",
-  "Merchant Description":"merchantDescription",
-  "Merchant Category":  "merchantCategory",
-  "Merchant Sku":       "sku",
+  "regular_price":         "regularPrice",
+  "alavont_image":         "alavontImage",
+  "alavont_name":          "alavontName",
+  "alavont_desc":          "alavontDesc",
+  "alavont_category":      "alavontCategory",
+  "alavont_in_stock":      "alavontInStock",
+  "alavont_id":            "alavontId",
+  "Quantity":              "quantity",
+  "Unit":                  "unit",
+  "Sale_price":            "salePrice",
+  "lucifer_cruz_image":    "luciferCruzImage",
+  "lucifer_cruz_name":     "luciferCruzName",
+  "lucifer_cruz_desc":     "luciferCruzDesc",
+  "lucifer_cruz_category": "luciferCruzCategory",
+  "lucifer_cruz_Inventory":"luciferCruzInventory",
 };
 
 const EXPECTED_SET = new Set<string>(EXPECTED_HEADERS);
@@ -178,20 +180,21 @@ router.get(
   requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
-      "29.99",                              // Menu Regular Price
-      "https://example.com/menu.jpg",       // Menu Image
-      "Midnight Recovery Complex",          // Menu Name
-      "Advanced cellular recovery blend",   // Menu Description
-      "Dermatology",                        // Menu Category
-      "true",                               // Menu In Stock
-      "ALV-001",                            // Menu ID
-      "10",                                 // Amount
-      "ml",                                 // Unit Measurement
-      "Velvet Restore Set",                 // Merchant Name
-      "https://example.com/merchant.jpg",   // Merchant Image
-      "Luxurious overnight treatment",      // Merchant Description
-      "Skin Care",                          // Merchant Category
-      "MRC-LAB-001",                        // Merchant Sku
+      "29.99",                              // regular_price
+      "https://example.com/alavont.jpg",    // alavont_image
+      "Midnight Recovery Complex",          // alavont_name
+      "Advanced cellular recovery blend",   // alavont_desc
+      "Dermatology",                        // alavont_category
+      "true",                               // alavont_in_stock
+      "ALV-001",                            // alavont_id
+      "10",                                 // Quantity
+      "ml",                                 // Unit
+      "24.99",                              // Sale_price
+      "https://example.com/lc.jpg",         // lucifer_cruz_image
+      "Velvet Restore Set",                 // lucifer_cruz_name
+      "Luxurious overnight treatment",      // lucifer_cruz_desc
+      "Skin Care",                          // lucifer_cruz_category
+      "MRC-LAB-001",                        // lucifer_cruz_Inventory
     ];
     const csv = [EXPECTED_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
@@ -255,19 +258,20 @@ router.post(
 // ─── Row → record mapping ─────────────────────────────────────────────────────
 type RowRecord = {
   regularPrice: string;
-  imageUrl: string;
-  name: string;
-  description: string;
-  category: string;
-  inStock: string;
-  externalMenuId: string;
-  inventoryAmount: string;
-  unitMeasurement: string;
-  merchantName: string;
-  merchantImage: string;
-  merchantDescription: string;
-  merchantCategory: string;
-  sku: string;
+  alavontImage: string;
+  alavontName: string;
+  alavontDesc: string;
+  alavontCategory: string;
+  alavontInStock: string;
+  alavontId: string;
+  quantity: string;
+  unit: string;
+  salePrice: string;
+  luciferCruzImage: string;
+  luciferCruzName: string;
+  luciferCruzDesc: string;
+  luciferCruzCategory: string;
+  luciferCruzInventory: string;
 };
 
 function buildRecord(row: string[], headerIndex: Record<string, number>): RowRecord {
@@ -277,20 +281,21 @@ function buildRecord(row: string[], headerIndex: Record<string, number>): RowRec
     return (row[idx] ?? "").trim();
   };
   return {
-    regularPrice:        get("Menu Regular Price"),
-    imageUrl:            get("Menu Image"),
-    name:                get("Menu Name"),
-    description:         get("Menu Description"),
-    category:            get("Menu Category"),
-    inStock:             get("Menu In Stock"),
-    externalMenuId:      get("Menu ID"),
-    inventoryAmount:     get("Amount"),
-    unitMeasurement:     get("Unit Measurement"),
-    merchantName:        get("Merchant Name"),
-    merchantImage:       get("Merchant Image"),
-    merchantDescription: get("Merchant Description"),
-    merchantCategory:    get("Merchant Category"),
-    sku:                 get("Merchant Sku"),
+    regularPrice:        get("regular_price"),
+    alavontImage:        get("alavont_image"),
+    alavontName:         get("alavont_name"),
+    alavontDesc:         get("alavont_desc"),
+    alavontCategory:     get("alavont_category"),
+    alavontInStock:      get("alavont_in_stock"),
+    alavontId:           get("alavont_id"),
+    quantity:            get("Quantity"),
+    unit:                get("Unit"),
+    salePrice:           get("Sale_price"),
+    luciferCruzImage:    get("lucifer_cruz_image"),
+    luciferCruzName:     get("lucifer_cruz_name"),
+    luciferCruzDesc:     get("lucifer_cruz_desc"),
+    luciferCruzCategory: get("lucifer_cruz_category"),
+    luciferCruzInventory:get("lucifer_cruz_Inventory"),
   };
 }
 
