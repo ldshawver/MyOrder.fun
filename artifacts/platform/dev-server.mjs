@@ -112,7 +112,7 @@ proxy.on("upgrade", (req, clientSocket, head) => {
 });
 
 // ── Listen on PORT immediately ───────────────────────────────────────────────
-proxy.listen(PORT, "0.0.0.0", () => {
+proxy.listen(PORT, "::", () => {
   console.log(
     `[dev-server] Proxy on :${PORT} → Vite on :${VITE_PORT} (Vite ready: ${viteReady})`,
   );
