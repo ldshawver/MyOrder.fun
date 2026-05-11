@@ -23,46 +23,44 @@ const upload = multer({
   },
 });
 
-// ─── Exact 15-column header set ───────────────────────────────────────────────
+// ─── Exact 14-column header set ───────────────────────────────────────────────
 // Order matches the downloadable template; on import, headers are matched
 // case-sensitively but the column order in the user's file does not matter.
 export const EXPECTED_HEADERS = [
-  "regular_price",
-  "alavont_image",
-  "alavont_name",
-  "alavont_desc",
-  "alavont_category",
-  "alavont_in_stock",
-  "alavont_id",
-  "Quantity",
-  "Unit",
-  "Sale_price",
-  "lucifer_cruz_image",
-  "lucifer_cruz_name",
-  "lucifer_cruz_desc",
-  "lucifer_cruz_category",
-  "lucifer_cruz_Inventory",
+  "Menu Regular Price",
+  "Menu Image",
+  "Menu Name",
+  "Menu Description",
+  "Menu Category",
+  "Menu In Stock",
+  "Menu ID",
+  "Amount",
+  "Unit Measurement",
+  "Merchant Name",
+  "Merchant Image",
+  "Merchant Description",
+  "Merchant Category",
+  "Merchant Sku",
 ] as const;
 
 export type ExpectedHeader = (typeof EXPECTED_HEADERS)[number];
 
 // Header → record field name (per spec)
 export const HEADER_TO_FIELD: Record<ExpectedHeader, string> = {
-  "regular_price":         "regularPrice",
-  "alavont_image":         "alavontImage",
-  "alavont_name":          "alavontName",
-  "alavont_desc":          "alavontDesc",
-  "alavont_category":      "alavontCategory",
-  "alavont_in_stock":      "alavontInStock",
-  "alavont_id":            "alavontId",
-  "Quantity":              "quantity",
-  "Unit":                  "unit",
-  "Sale_price":            "salePrice",
-  "lucifer_cruz_image":    "luciferCruzImage",
-  "lucifer_cruz_name":     "luciferCruzName",
-  "lucifer_cruz_desc":     "luciferCruzDesc",
-  "lucifer_cruz_category": "luciferCruzCategory",
-  "lucifer_cruz_Inventory":"luciferCruzInventory",
+  "Menu Regular Price": "regularPrice",
+  "Menu Image":         "alavontImage",
+  "Menu Name":          "alavontName",
+  "Menu Description":   "alavontDesc",
+  "Menu Category":      "alavontCategory",
+  "Menu In Stock":      "alavontInStock",
+  "Menu ID":            "alavontId",
+  "Amount":             "quantity",
+  "Unit Measurement":   "unit",
+  "Merchant Name":      "luciferCruzName",
+  "Merchant Image":     "luciferCruzImage",
+  "Merchant Description": "luciferCruzDesc",
+  "Merchant Category":  "luciferCruzCategory",
+  "Merchant Sku":       "luciferCruzInventory",
 };
 
 const EXPECTED_SET = new Set<string>(EXPECTED_HEADERS);
@@ -180,21 +178,20 @@ router.get(
   requireRole("admin", "supervisor"),
   (_req, res): void => {
     const sampleRow = [
-      "29.99",                              // regular_price
-      "https://example.com/alavont.jpg",    // alavont_image
-      "Midnight Recovery Complex",          // alavont_name
-      "Advanced cellular recovery blend",   // alavont_desc
-      "Dermatology",                        // alavont_category
-      "true",                               // alavont_in_stock
-      "ALV-001",                            // alavont_id
-      "10",                                 // Quantity
-      "ml",                                 // Unit
-      "24.99",                              // Sale_price
-      "https://example.com/lc.jpg",         // lucifer_cruz_image
-      "Velvet Restore Set",                 // lucifer_cruz_name
-      "Luxurious overnight treatment",      // lucifer_cruz_desc
-      "Skin Care",                          // lucifer_cruz_category
-      "MRC-LAB-001",                        // lucifer_cruz_Inventory
+      "29.99",                              // Menu Regular Price
+      "https://example.com/alavont.jpg",    // Menu Image
+      "Midnight Recovery Complex",          // Menu Name
+      "Advanced cellular recovery blend",   // Menu Description
+      "Dermatology",                        // Menu Category
+      "true",                               // Menu In Stock
+      "ALV-001",                            // Menu ID
+      "10",                                 // Amount
+      "ml",                                 // Unit Measurement
+      "Velvet Restore Set",                 // Merchant Name
+      "https://example.com/lc.jpg",         // Merchant Image
+      "Luxurious overnight treatment",      // Merchant Description
+      "Skin Care",                          // Merchant Category
+      "MRC-LAB-001",                        // Merchant Sku
     ];
     const csv = [EXPECTED_HEADERS.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
@@ -266,9 +263,8 @@ type RowRecord = {
   alavontId: string;
   quantity: string;
   unit: string;
-  salePrice: string;
-  luciferCruzImage: string;
   luciferCruzName: string;
+  luciferCruzImage: string;
   luciferCruzDesc: string;
   luciferCruzCategory: string;
   luciferCruzInventory: string;
@@ -281,21 +277,20 @@ function buildRecord(row: string[], headerIndex: Record<string, number>): RowRec
     return (row[idx] ?? "").trim();
   };
   return {
-    regularPrice:        get("regular_price"),
-    alavontImage:        get("alavont_image"),
-    alavontName:         get("alavont_name"),
-    alavontDesc:         get("alavont_desc"),
-    alavontCategory:     get("alavont_category"),
-    alavontInStock:      get("alavont_in_stock"),
-    alavontId:           get("alavont_id"),
-    quantity:            get("Quantity"),
-    unit:                get("Unit"),
-    salePrice:           get("Sale_price"),
-    luciferCruzImage:    get("lucifer_cruz_image"),
-    luciferCruzName:     get("lucifer_cruz_name"),
-    luciferCruzDesc:     get("lucifer_cruz_desc"),
-    luciferCruzCategory: get("lucifer_cruz_category"),
-    luciferCruzInventory:get("lucifer_cruz_Inventory"),
+    regularPrice:        get("Menu Regular Price"),
+    alavontImage:        get("Menu Image"),
+    alavontName:         get("Menu Name"),
+    alavontDesc:         get("Menu Description"),
+    alavontCategory:     get("Menu Category"),
+    alavontInStock:      get("Menu In Stock"),
+    alavontId:           get("Menu ID"),
+    quantity:            get("Amount"),
+    unit:                get("Unit Measurement"),
+    luciferCruzName:     get("Merchant Name"),
+    luciferCruzImage:    get("Merchant Image"),
+    luciferCruzDesc:     get("Merchant Description"),
+    luciferCruzCategory: get("Merchant Category"),
+    luciferCruzInventory:get("Merchant Sku"),
   };
 }
 
@@ -355,27 +350,26 @@ router.post(
 
       // ── Required-value checks ──
       if (!rec.alavontName) {
-        errors.push({ row: rowNum, message: "alavont_name is required" });
+        errors.push({ row: rowNum, message: "Menu Name is required" });
         continue;
       }
       if (!rec.alavontCategory) {
-        errors.push({ row: rowNum, message: "alavont_category is required" });
+        errors.push({ row: rowNum, message: "Menu Category is required" });
         continue;
       }
       const regularPrice = parsePrice(rec.regularPrice);
       if (regularPrice === null) {
-        errors.push({ row: rowNum, message: `regular_price must be numeric (got "${rec.regularPrice}")` });
+        errors.push({ row: rowNum, message: `Menu Regular Price must be numeric (got "${rec.regularPrice}")` });
         continue;
       }
       if (!rec.luciferCruzInventory && !rec.alavontId) {
-        errors.push({ row: rowNum, message: "Either lucifer_cruz_Inventory or alavont_id is required" });
+        errors.push({ row: rowNum, message: "Either Merchant Sku or Menu ID is required" });
         continue;
       }
 
       // ── Optional/coerced values ──
       const inStock = rec.alavontInStock ? parseTruthy(rec.alavontInStock) : true;
       const amount = parseAmount(rec.quantity);
-      const salePrice = parsePrice(rec.salePrice);
       const alavontImageUrl = rec.alavontImage && isValidUrl(rec.alavontImage) ? rec.alavontImage : null;
       const lcImageUrl = rec.luciferCruzImage && isValidUrl(rec.luciferCruzImage) ? rec.luciferCruzImage : null;
       const lcName = rec.luciferCruzName || rec.alavontName;
@@ -390,7 +384,7 @@ router.post(
         description: rec.alavontDesc || null,
         category: rec.alavontCategory,
         sku: rec.luciferCruzInventory || null,
-        price: (salePrice ?? regularPrice).toFixed(2),
+        price: regularPrice.toFixed(2),
         regularPrice: regularPrice.toFixed(2),
         isAvailable: inStock,
         imageUrl: alavontImageUrl,
