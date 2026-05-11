@@ -1,23 +1,33 @@
-# Runs drizzle-kit push to create / update all database tables.
+# Applies pending drizzle-kit SQL migrations to the production database.
 # Used as a one-shot service: docker compose run --rm migrate
-FROM node:20-alpine
+#
+# IMPORTANT: uses `drizzle-kit migrate` (applies lib/db/drizzle/*.sql files in
+# order) — NOT `push --force` (which diffs and alters the live schema
+# destructively; only safe for dev resets).
+FROM node:24-alpine
+
+# postgresql-client provides pg_isready for pre-flight health checks.
+# bash is required by migrate.sh.
+RUN apk add --no-cache postgresql-client bash
 
 RUN npm install -g pnpm@10
 
 WORKDIR /app
 
-# Copy workspace manifests
+# Copy workspace manifests first (layer-cache friendly)
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY lib/db/package.json lib/db/
 
-# Install db package INCLUDING devDependencies (drizzle-kit lives there)
+# Install db package deps INCLUDING devDependencies (drizzle-kit + tsx live there)
 RUN pnpm install --filter @workspace/db
 
-# Copy db source (schema + config)
+# Copy db source: schema, config, migration SQL files, and check script
 COPY lib/db/ lib/db/
 COPY tsconfig.base.json ./
 COPY tsconfig.json ./
 
-WORKDIR /app/lib/db
+# Copy the migration entrypoint script
+COPY deploy/migrate.sh /migrate.sh
+RUN chmod +x /migrate.sh
 
-CMD ["pnpm", "run", "push-force"]
+CMD ["/migrate.sh"]

@@ -179,13 +179,42 @@ jobs:
             fi
 
             echo "▶ Starting database..."
+            # NOTE: `docker compose down` (not `down -v`) is used above, so the
+            # named postgres_data volume is NEVER deleted during a normal deploy.
+            # Never add -v unless this is an intentional data reset.
             docker compose up -d db
 
-            echo "▶ Waiting 20s for postgres..."
-            sleep 20
+            echo "▶ Waiting for Postgres healthcheck (up to 60s)..."
+            # migrate.sh runs pg_isready internally, but we also wait here so
+            # the depends_on healthcheck has time to pass before `run --rm`.
+            WAIT=0
+            until docker compose exec -T db pg_isready -q 2>/dev/null; do
+              WAIT=$((WAIT + 2))
+              if [ "$WAIT" -ge 60 ]; then
+                echo "  ERROR: Postgres did not become healthy within 60s" >&2
+                docker compose logs db | tail -30
+                exit 1
+              fi
+              echo "  not ready — ${WAIT}s elapsed..."
+              sleep 2
+            done
+            echo "  ✓ Postgres healthy"
 
-            echo "▶ Running migrations..."
-            docker compose run --rm migrate
+            echo "▶ Running migrations (drizzle-kit migrate via migrate.sh)..."
+            # migrate.sh: runs pg_isready, db:check, db:migrate:verbose.
+            # On failure it prints full diagnostics before exiting non-zero.
+            MIGRATE_OUTPUT=$(docker compose run --rm migrate 2>&1) || {
+              MIGRATE_EXIT=$?
+              echo ""
+              echo "  ✗ Migration container exited with code ${MIGRATE_EXIT}" >&2
+              echo "════════ migrate output ════════"
+              echo "${MIGRATE_OUTPUT}"
+              echo "════════════════════════════════"
+              echo "  Recent DB container logs:"
+              docker compose logs db | tail -30
+              exit "${MIGRATE_EXIT}"
+            }
+            echo "${MIGRATE_OUTPUT}"
             echo "MIGRATE SUCCESS"
 
             echo "▶ Starting all services..."
