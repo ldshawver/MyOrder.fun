@@ -354,67 +354,72 @@ router.post(
       const rec = buildRecord(rows[i], headerIndex);
 
       // ── Required-value checks ──
-      if (!rec.name) {
-        errors.push({ row: rowNum, message: "Menu Name is required" });
+      if (!rec.alavontName) {
+        errors.push({ row: rowNum, message: "alavont_name is required" });
         continue;
       }
-      if (!rec.category) {
-        errors.push({ row: rowNum, message: "Menu Category is required" });
+      if (!rec.alavontCategory) {
+        errors.push({ row: rowNum, message: "alavont_category is required" });
         continue;
       }
       const regularPrice = parsePrice(rec.regularPrice);
       if (regularPrice === null) {
-        errors.push({ row: rowNum, message: `Menu Regular Price must be numeric (got "${rec.regularPrice}")` });
+        errors.push({ row: rowNum, message: `regular_price must be numeric (got "${rec.regularPrice}")` });
         continue;
       }
-      if (!rec.sku && !rec.externalMenuId) {
-        errors.push({ row: rowNum, message: "Either Merchant Sku or Menu ID is required" });
+      if (!rec.luciferCruzInventory && !rec.alavontId) {
+        errors.push({ row: rowNum, message: "Either lucifer_cruz_Inventory or alavont_id is required" });
         continue;
       }
 
       // ── Optional/coerced values ──
-      const inStock = rec.inStock ? parseTruthy(rec.inStock) : true;
-      const amount = parseAmount(rec.inventoryAmount);
-      const imageUrl = rec.imageUrl && isValidUrl(rec.imageUrl) ? rec.imageUrl : null;
-      const merchantImage = rec.merchantImage && isValidUrl(rec.merchantImage) ? rec.merchantImage : null;
-      const merchantName = rec.merchantName || rec.name;
+      const inStock = rec.alavontInStock ? parseTruthy(rec.alavontInStock) : true;
+      const amount = parseAmount(rec.quantity);
+      const salePrice = parsePrice(rec.salePrice);
+      const alavontImageUrl = rec.alavontImage && isValidUrl(rec.alavontImage) ? rec.alavontImage : null;
+      const lcImageUrl = rec.luciferCruzImage && isValidUrl(rec.luciferCruzImage) ? rec.luciferCruzImage : null;
+      const lcName = rec.luciferCruzName || rec.alavontName;
 
-      // Build values for insert/update. We populate the new fields that the
-      // 14-column spec defines, plus legacy columns (alavont*, lucifer_cruz*)
-      // for backward compatibility with code paths that still read them.
+      // Build values for insert/update.
+      // alavont_* columns drive the customer-facing catalog;
+      // lucifer_cruz_* columns drive the merchant/payment side.
       const values: typeof catalogItemsTable.$inferInsert = {
         tenantId: houseTenantId,
-        name: rec.name,
-        description: rec.description || null,
-        category: rec.category,
-        sku: rec.sku || null,
-        price: regularPrice.toFixed(2),
+        // Legacy generic fields (mirrored from alavont fields)
+        name: rec.alavontName,
+        description: rec.alavontDesc || null,
+        category: rec.alavontCategory,
+        sku: rec.luciferCruzInventory || null,
+        price: (salePrice ?? regularPrice).toFixed(2),
         regularPrice: regularPrice.toFixed(2),
         isAvailable: inStock,
-        imageUrl,
-        // New fields per task #10 spec
-        externalMenuId: rec.externalMenuId || null,
-        inventoryAmount: amount !== null ? amount.toFixed(2) : null,
-        unitMeasurement: rec.unitMeasurement || null,
-        merchantName,
-        merchantImage,
-        merchantDescription: rec.merchantDescription || null,
-        merchantCategory: rec.merchantCategory || null,
-        // Legacy mirrors so other routes that still read alavont*/lucifer_cruz*
-        // continue to work (downstream task converts these to lucifer cruz).
-        alavontId: rec.externalMenuId || null,
-        alavontName: rec.name,
-        alavontDescription: rec.description || null,
-        alavontCategory: rec.category,
-        alavontImageUrl: imageUrl,
+        imageUrl: alavontImageUrl,
+        // Alavont-facing fields
+        alavontName: rec.alavontName,
+        alavontDescription: rec.alavontDesc || null,
+        alavontCategory: rec.alavontCategory,
+        alavontImageUrl,
         alavontInStock: inStock,
-        luciferCruzName: merchantName,
-        luciferCruzImageUrl: merchantImage,
-        luciferCruzDescription: rec.merchantDescription || null,
-        luciferCruzCategory: rec.merchantCategory || null,
-        receiptName: merchantName,
-        labelName: merchantName,
-        labName: rec.sku || null,
+        alavontId: rec.alavontId || null,
+        externalMenuId: rec.alavontId || null,
+        // Quantity / unit
+        inventoryAmount: amount !== null ? amount.toFixed(2) : null,
+        unitMeasurement: rec.unit || null,
+        // Lucifer Cruz-facing fields
+        luciferCruzName: lcName,
+        luciferCruzImageUrl: lcImageUrl,
+        luciferCruzDescription: rec.luciferCruzDesc || null,
+        luciferCruzCategory: rec.luciferCruzCategory || null,
+        // Merchant mirrors
+        merchantName: lcName,
+        merchantImage: lcImageUrl,
+        merchantDescription: rec.luciferCruzDesc || null,
+        merchantCategory: rec.luciferCruzCategory || null,
+        merchantSku: rec.luciferCruzInventory || null,
+        // Print names
+        receiptName: lcName,
+        labelName: lcName,
+        labName: rec.luciferCruzInventory || null,
       };
 
       if (dryRun) {
@@ -423,22 +428,23 @@ router.post(
       }
 
       try {
-        // Upsert key: (tenantId, sku) if sku present, else (tenantId, externalMenuId)
+        // Upsert key: (tenantId, sku) if lucifer_cruz_Inventory present,
+        // else (tenantId, externalMenuId) if alavont_id present
         let existingId: number | undefined;
-        if (rec.sku) {
+        if (rec.luciferCruzInventory) {
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
-            .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.sku, rec.sku)))
+            .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.sku, rec.luciferCruzInventory)))
             .limit(1);
           existingId = existing?.id;
-        } else if (rec.externalMenuId) {
+        } else if (rec.alavontId) {
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
             .where(and(
               eq(catalogItemsTable.tenantId, houseTenantId),
-              eq(catalogItemsTable.externalMenuId, rec.externalMenuId),
+              eq(catalogItemsTable.externalMenuId, rec.alavontId),
             ))
             .limit(1);
           existingId = existing?.id;

@@ -12,22 +12,23 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-// ─── Template column reference (14-column menu import spec — Task #10) ────────
+// ─── Template column reference (15-column Alavont import spec) ────────────────
 const TEMPLATE_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
-  "Menu Name",
-  "Menu Description",
-  "Menu Category",
-  "Menu In Stock",
-  "Menu ID",
-  "Amount",
-  "Unit Measurement",
-  "Merchant Name",
-  "Merchant Image",
-  "Merchant Description",
-  "Merchant Category",
-  "Merchant Sku",
+  "regular_price",
+  "alavont_image",
+  "alavont_name",
+  "alavont_desc",
+  "alavont_category",
+  "alavont_in_stock",
+  "alavont_id",
+  "Quantity",
+  "Unit",
+  "Sale_price",
+  "lucifer_cruz_image",
+  "lucifer_cruz_name",
+  "lucifer_cruz_desc",
+  "lucifer_cruz_category",
+  "lucifer_cruz_Inventory",
 ];
 
 const REQUIRED_COLS = TEMPLATE_HEADERS.map(h => ({ friendly: h, canonical: h }));
