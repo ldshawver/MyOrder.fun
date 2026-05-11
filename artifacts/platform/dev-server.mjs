@@ -1,20 +1,11 @@
 /**
- * dev-server.mjs — Replit development proxy for the OrderFlow Platform.
+ * dev-server.mjs — Replit-compatible Vite dev launcher.
  *
- * WHY THIS EXISTS:
- * Replit's workflow port-detection probes http://localhost:<PORT>/ immediately
- * after the process starts. Vite takes a few seconds to compile and bind its
- * socket, so the probe lands before Vite is ready and the workflow is marked
- * "failed" — even though Vite eventually starts correctly.
+ * Owns port PORT directly (http.createServer) so Replit's workflow health
+ * probe can always reach it — even before Vite finishes compiling.
  *
- * This script fixes that by:
- *   1. Binding PORT immediately and returning HTTP 200 for ANY request while
- *      Vite is warming up (satisfies the Replit probe).
- *   2. Spawning Vite on PORT+1 in the background.
- *   3. Forwarding all HTTP + WebSocket traffic to Vite once it is ready.
- *      Before Vite is ready, HTTP requests get a lightweight "Loading…" page.
- *
- * No npm packages are required — only Node.js built-ins.
+ * Vite runs on PORT+1.  All traffic is proxied to Vite once ready.
+ * If Vite exits unexpectedly it is restarted automatically.
  */
 
 import http from "node:http";
@@ -25,37 +16,60 @@ import { dirname, join } from "node:path";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-const PORT = parseInt(process.env.PORT ?? "5000", 10);
-const VITE_PORT = PORT + 1; // Vite lives on 5001; this proxy owns 5000
+const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const VITE_PORT = PORT + 1;
 
 let viteReady = false;
+let viteProcess = null;
 
-// ── Start Vite on VITE_PORT ──────────────────────────────────────────────────
-const vite = spawn(
-  process.execPath,
-  [join(__dir, "node_modules/vite/bin/vite.js")],
-  {
-    // "pipe" for stdin so we hold the stdin fd open indefinitely — if we
-    // pass "ignore" (/dev/null), Vite 7's readline loop detects EOF and
-    // exits immediately in non-TTY environments (e.g. Replit workflows).
-    // We simply never write to vite.stdin and never close it.
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, PORT: String(VITE_PORT) },
-  },
-);
+function startVite() {
+  viteReady = false;
 
-vite.stdout.on("data", (chunk) => {
-  const text = chunk.toString();
-  process.stdout.write(text);
-  if (text.includes("Local:") || text.includes("ready in")) {
-    viteReady = true;
-  }
-});
-vite.stderr.on("data", (chunk) => process.stderr.write(chunk));
-vite.on("exit", (code) => process.exit(code ?? 0));
+  const vite = spawn(
+    process.execPath,
+    [join(__dir, "node_modules", "vite", "bin", "vite.js"), "--config", "vite.config.ts"],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PORT: String(VITE_PORT) },
+    },
+  );
 
-// ── Proxy helpers ────────────────────────────────────────────────────────────
+  viteProcess = vite;
+
+  vite.stdout.on("data", (chunk) => {
+    const text = chunk.toString();
+    process.stdout.write(text);
+    if (text.includes("ready in") || text.includes("Local:")) {
+      viteReady = true;
+    }
+  });
+
+  vite.stderr.on("data", (chunk) => process.stderr.write(chunk));
+
+  vite.on("exit", (code, signal) => {
+    viteReady = false;
+    viteProcess = null;
+    // Don't exit the proxy — restart Vite after a short delay.
+    if (!shuttingDown) {
+      process.stderr.write(`[dev-server] Vite exited (code=${code} signal=${signal}), restarting in 1s…\n`);
+      setTimeout(startVite, 1000);
+    }
+  });
+}
+
+// ── HTTP proxy ────────────────────────────────────────────────────────────────
 function tryProxy(req, res) {
+  if (!viteReady) {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(
+      "<!DOCTYPE html><html><head><meta charset=utf-8><title>Starting…</title>" +
+      "<meta http-equiv='refresh' content='2'></head>" +
+      "<body style='background:#0B1121;color:#3B82F6;font-family:sans-serif;padding:2rem'>" +
+      "<h2>OrderFlow is starting…</h2><p>Vite is compiling — this page refreshes automatically.</p>" +
+      "</body></html>",
+    );
+  }
+
   const opts = {
     hostname: "127.0.0.1",
     port: VITE_PORT,
@@ -71,62 +85,68 @@ function tryProxy(req, res) {
 
   pr.on("error", () => {
     if (!res.headersSent) {
-      // Vite not ready yet — return 200 so Replit's health probe passes.
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(
-        "<!DOCTYPE html><html><head><meta charset=utf-8>" +
-          "<title>Starting…</title>" +
-          "<meta http-equiv='refresh' content='2'></head>" +
-          "<body style='font-family:sans-serif;padding:2rem'>" +
-          "<h2>OrderFlow Platform is starting…</h2>" +
-          "<p>Vite is compiling. This page refreshes automatically.</p>" +
-          "</body></html>",
-      );
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("Vite not ready yet — please wait.");
     }
   });
 
   req.pipe(pr, { end: true });
 }
 
-// ── HTTP proxy server ────────────────────────────────────────────────────────
 const proxy = http.createServer(tryProxy);
 
-// ── WebSocket passthrough — required for Vite HMR ───────────────────────────
+// WebSocket passthrough (Vite HMR)
 proxy.on("upgrade", (req, clientSocket, head) => {
-  const upstream = net.createConnection({
-    host: "127.0.0.1",
-    port: VITE_PORT,
-  });
-
+  const upstream = net.createConnection({ host: "127.0.0.1", port: VITE_PORT });
   upstream.on("connect", () => {
-    const headers =
+    const hdrs =
       `${req.method} ${req.url} HTTP/1.1\r\n` +
-      Object.entries(req.headers)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\r\n") +
+      Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") +
       "\r\n\r\n";
-    upstream.write(headers);
+    upstream.write(hdrs);
     if (head?.length) upstream.write(head);
     upstream.pipe(clientSocket);
     clientSocket.pipe(upstream);
   });
-
   upstream.on("error", () => clientSocket.destroy());
   clientSocket.on("error", () => upstream.destroy());
 });
 
-// ── Listen on PORT immediately ───────────────────────────────────────────────
-proxy.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `[dev-server] Proxy on :${PORT} → Vite on :${VITE_PORT} (Vite ready: ${viteReady})`,
-  );
+// Keep event loop alive independently of Vite or the HTTP server
+const keepAlive = setInterval(() => {}, 1 << 30);
+
+// Catch uncaught errors so the process never exits silently
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`[dev-server] UNCAUGHT: ${err.stack}\n`);
+});
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[dev-server] UNHANDLED REJECTION: ${reason}\n`);
 });
 
-// ── Graceful shutdown ────────────────────────────────────────────────────────
+proxy.on("error", (err) => {
+  process.stderr.write(`[dev-server] Proxy server error: ${err.message}\n`);
+  // If port is in use, try IPv4-only fallback
+  if (err.code === "EADDRINUSE" || err.code === "EADDRNOTAVAIL") {
+    process.stderr.write(`[dev-server] Retrying with 0.0.0.0…\n`);
+    proxy.listen(PORT, "0.0.0.0", () => {
+      process.stdout.write(`[dev-server] Proxy on :${PORT} (IPv4 fallback) → Vite on :${VITE_PORT}\n`);
+      startVite();
+    });
+  }
+});
+
+proxy.listen(PORT, "::", () => {
+  process.stdout.write(`[dev-server] Proxy on :${PORT} (IPv4+IPv6) → Vite on :${VITE_PORT}\n`);
+  startVite();
+});
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+let shuttingDown = false;
 const shutdown = () => {
-  vite.kill("SIGTERM");
-  proxy.close();
-  process.exit(0);
+  shuttingDown = true;
+  clearInterval(keepAlive);
+  if (viteProcess) viteProcess.kill("SIGTERM");
+  proxy.close(() => process.exit(0));
 };
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
