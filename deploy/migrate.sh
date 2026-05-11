@@ -25,9 +25,10 @@ fi
 DB_HOST=$(node -e "const u=new URL(process.env.DATABASE_URL); process.stdout.write(u.hostname)")
 DB_PORT=$(node -e "const u=new URL(process.env.DATABASE_URL); process.stdout.write(u.port||'5432')")
 DB_NAME=$(node -e "const u=new URL(process.env.DATABASE_URL); process.stdout.write(u.pathname.slice(1))")
-echo "  host : ${DB_HOST}"
-echo "  port : ${DB_PORT}"
-echo "  db   : ${DB_NAME}"
+echo "  host    : ${DB_HOST}"
+echo "  port    : ${DB_PORT}"
+echo "  db      : ${DB_NAME}"
+echo "  DB_SSL  : ${DB_SSL:-<not set — SSL follows URL sslmode param>}"
 
 # ── Wait for Postgres ─────────────────────────────────────────────────────────
 echo ""

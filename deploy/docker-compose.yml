@@ -26,6 +26,10 @@ services:
       dockerfile: deploy/Dockerfile.migrate
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      # The `db` container runs Postgres without SSL (Docker-internal network).
+      # DB_SSL=false tells drizzle.config.ts to disable SSL negotiation so
+      # drizzle-kit can connect without an SSL handshake failure.
+      DB_SSL: "false"
     depends_on:
       db:
         condition: service_healthy
