@@ -176,7 +176,21 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       }
     }
     if (meta.role && meta.role !== user.role) {
-      updates.role = meta.role;
+      // Never let stale Clerk metadata demote a staff member back to 'user'.
+      // Role elevations come through the admin UI which syncs both DB + Clerk
+      // together. If they're out of sync here it means Clerk has a stale value
+      // (e.g. user was promoted via direct DB change) — the DB staff role wins.
+      const isRoleDowngrade =
+        (STAFF_ROLES as readonly string[]).includes(user.role) &&
+        !(STAFF_ROLES as readonly string[]).includes(meta.role);
+      if (!isRoleDowngrade) {
+        updates.role = meta.role;
+      } else {
+        logger.warn(
+          { userId: user.id, dbRole: user.role, clerkRole: meta.role },
+          "Ignoring Clerk metadata role downgrade (staff → user) — DB is authoritative",
+        );
+      }
     }
     if (Object.keys(updates).length > 0) {
       try {
