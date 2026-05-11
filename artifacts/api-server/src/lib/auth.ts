@@ -161,7 +161,19 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
     );
     const updates: Partial<typeof usersTable.$inferInsert> = {};
     if (meta.status && meta.status !== user.status) {
-      updates.status = meta.status;
+      // Never let stale Clerk metadata downgrade an approved user back to
+      // pending. Approval is an admin action that goes through the app (which
+      // updates both DB and Clerk together). If they're out of sync it means
+      // Clerk has a stale value — the DB 'approved' state wins.
+      const isDowngrade = user.status === "approved" && meta.status === "pending";
+      if (!isDowngrade) {
+        updates.status = meta.status;
+      } else {
+        logger.warn(
+          { userId: user.id, dbStatus: user.status, clerkStatus: meta.status },
+          "Ignoring Clerk metadata status downgrade (approved → pending) — DB is authoritative",
+        );
+      }
     }
     if (meta.role && meta.role !== user.role) {
       updates.role = meta.role;
