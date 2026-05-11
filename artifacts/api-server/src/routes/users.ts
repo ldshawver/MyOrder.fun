@@ -524,7 +524,20 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
   }
   const { role, firstName, lastName } = body.data;
 
+  // Pre-fetch email from the waitlist list so we have it even if the Clerk
+  // invite call fails (e.g. entry already processed, Clerk not in Waitlist
+  // mode, or the user has already signed up via a direct invite link).
+  let prefetchedEmail: string | null = null;
+  try {
+    const list = await clerkClient.waitlistEntries.list({ limit: 500 });
+    const found = list.data.find((e) => e.id === id);
+    if (found) prefetchedEmail = found.emailAddress;
+  } catch {
+    // best-effort — continue even if the list call fails
+  }
+
   let entry: { id: string; status: string; emailAddress: string };
+  let clerkInviteFailed = false;
   try {
     // The Clerk SDK does not expose getById for waitlist entries; the invite
     // call returns the canonical entry shape (and is idempotent thanks to
@@ -536,9 +549,18 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
       emailAddress: invited.emailAddress,
     };
   } catch (err) {
-    req.log.error({ err, waitlistId: id }, "Failed to invite waitlist entry");
-    res.status(500).json({ error: "Failed to invite user from waitlist" });
-    return;
+    req.log.error({ err, waitlistId: id }, "Clerk waitlist invite failed — attempting DB-only approval");
+    // If we have no email at all we genuinely cannot proceed
+    if (!prefetchedEmail) {
+      res.status(500).json({ error: "Failed to invite user from waitlist and could not determine their email. If this user has already signed up, find them in the Platform Users tab and approve them there instead." });
+      return;
+    }
+    // Proceed without the Clerk invite — the DB row will be created/updated
+    // so the user is approved. They won't receive an invite email, but if
+    // they already have a Clerk account the next sign-in will pick up the
+    // approved status from our DB.
+    clerkInviteFailed = true;
+    entry = { id, status: "clerk_invite_skipped", emailAddress: prefetchedEmail };
   }
 
   const sentinelClerkId = pendingInviteSentinel(entry.id);
@@ -633,6 +655,7 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
     role,
     userRowCreated,
     promotedExisting,
+    clerkInviteFailed,
   });
 });
 

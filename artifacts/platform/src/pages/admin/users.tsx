@@ -132,9 +132,15 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ role }),
       });
-      const body = await res.json() as { status?: string; error?: string };
+      const body = await res.json() as { status?: string; error?: string; clerkInviteFailed?: boolean };
       if (!res.ok) throw new Error(body.error ?? "Invite failed");
-      setActionMsg({ id, msg: `Invited as ${role}.`, ok: true });
+      if (body.clerkInviteFailed) {
+        // Clerk invite email couldn't be sent (user may have already signed up),
+        // but the DB row was approved — show a warning, not an error.
+        setActionMsg({ id, msg: `Approved as ${role} in database. No invite email sent — if they already have an account, they can sign in now.`, ok: true });
+      } else {
+        setActionMsg({ id, msg: `Invited as ${role}.`, ok: true });
+      }
       refetch();
       queryClient.invalidateQueries({ queryKey: ["listUsers"] });
     } catch (e) {
