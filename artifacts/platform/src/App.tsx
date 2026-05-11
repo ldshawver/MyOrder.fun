@@ -85,7 +85,12 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
 function SignInPage() {
   return (
     <AuthBrandWrapper>
-      <SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} />
+      <SignIn
+        routing="path"
+        path={`${basePath}/sign-in`}
+        signUpUrl={`${basePath}/waitlist`}
+        forceRedirectUrl={`${basePath}/ai-concierge`}
+      />
     </AuthBrandWrapper>
   );
 }
@@ -163,8 +168,37 @@ function useSessionLogger(_userEmail: string) {
   }, [location, getToken]);
 }
 
+function AuthErrorScreen({ onSignOut, onRetry }: { onSignOut: () => void; onRetry: () => void }) {
+  return (
+    <div className="h-screen w-full flex flex-col items-center justify-center gap-6" style={{ background: "#0A0000" }}>
+      <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-10 h-10 object-contain" style={{ filter: "invert(1)" }} />
+      <div className="text-center flex flex-col gap-1">
+        <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>Unable to load your account.</p>
+        <p className="text-xs font-mono" style={{ color: "#444" }}>The server could not verify your session.</p>
+      </div>
+      <div className="flex gap-3">
+        <button
+          onClick={onRetry}
+          className="px-4 py-2 rounded-lg text-xs font-mono tracking-widest uppercase"
+          style={{ background: "rgba(255,255,255,0.06)", color: "#C0C0C0", border: "1px solid rgba(255,255,255,0.1)" }}
+        >
+          Retry
+        </button>
+        <button
+          onClick={onSignOut}
+          className="px-4 py-2 rounded-lg text-xs font-mono tracking-widest uppercase"
+          style={{ background: "#8B0000", color: "#C0C0C0" }}
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AuthenticatedApp() {
   const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
+  const { signOut } = useClerk();
   const { data: user, isLoading, isError, error } = useGetCurrentUser({
     query: {
       queryKey: ["getCurrentUser"],
@@ -241,10 +275,15 @@ function AuthenticatedApp() {
       }
       return <PendingPage status="pending" userEmail={clerkEmail} onCheckStatus={handleCheckStatus} />;
     }
-    return <LoadingScreen />;
+    return (
+      <AuthErrorScreen
+        onSignOut={() => signOut(() => window.location.replace(`${basePath}/sign-in`))}
+        onRetry={() => refreshCurrentUser().catch(() => {})}
+      />
+    );
   }
 
-  if (!user) return <Redirect to="/waitlist" />;
+  if (!user) return <Redirect to="/sign-in" />;
 
   if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
     return (
