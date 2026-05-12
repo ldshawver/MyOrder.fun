@@ -199,13 +199,24 @@ router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promi
     rows = rows.filter(u => normalizeRole(u.role) === query.data.role);
   }
 
-  // Normalize each row's role before Zod validation — a single user with a
-  // legacy role value (e.g. "customer") would otherwise throw and return an
-  // empty list to the client with no visible error.
-  const normalized = rows.map(u => ({ ...u, role: normalizeRole(u.role) }));
+  // Normalize each row before Zod validation:
+  //  - role: legacy values (e.g. "customer") default to "user"
+  //  - email: nullable in DB but Zod schema requires string — coerce null → ""
+  //  - clerkId: shouldn't be null (DB constraint), but guard anyway
+  const normalized = rows.map(u => ({
+    ...u,
+    role: normalizeRole(u.role),
+    email: u.email ?? "",
+    clerkId: u.clerkId ?? "",
+  }));
 
-  const data = ListUsersResponse.parse({ users: normalized, total: normalized.length });
-  res.json(data);
+  const parsed = ListUsersResponse.safeParse({ users: normalized, total: normalized.length });
+  if (!parsed.success) {
+    logger.error({ error: parsed.error.message }, "GET /users — response schema validation failed");
+    res.status(500).json({ error: "Failed to serialize user list — contact admin", detail: parsed.error.message });
+    return;
+  }
+  res.json(parsed.data);
 });
 
 // PATCH /api/users/me/phone — user updates their own contact phone number
