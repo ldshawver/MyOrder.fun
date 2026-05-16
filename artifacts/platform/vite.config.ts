@@ -69,20 +69,20 @@ export default defineConfig(async () => {
   const port = getPort();
   const basePath = getBasePath();
 
-  // Replit testing uses PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY secrets.
-  // Production builds read VITE_CLERK_PUBLISHABLE_KEY from the server .env file.
-  const clerkPublishableKey =
-    process.env.PUBLIC_KEY ||
-    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
-    process.env.VITE_CLERK_PUBLISHABLE_KEY ||
-    "";
+  // Replit dev uses PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY secrets.
+  // Production Docker builds pass VITE_CLERK_PUBLISHABLE_KEY as a build arg.
+  // Normalise all three into VITE_CLERK_PUBLISHABLE_KEY so Vite's automatic
+  // VITE_* injection picks it up — no manual `define` needed or wanted.
+  if (!process.env.VITE_CLERK_PUBLISHABLE_KEY) {
+    process.env.VITE_CLERK_PUBLISHABLE_KEY =
+      process.env.PUBLIC_KEY ||
+      process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+      "";
+  }
 
   return {
     base: basePath,
     plugins: await getPlugins(),
-    define: {
-      "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(clerkPublishableKey),
-    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
