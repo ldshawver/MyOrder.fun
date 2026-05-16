@@ -116,7 +116,9 @@ services:
       # Certbot renews these on the host; the container sees the updated symlinks
       # automatically because we mount the live/ directory, not the individual files.
       - /etc/letsencrypt/live/myorder.fun:/etc/nginx/ssl:ro
-      - /etc/letsencrypt/archive/myorder.fun:/etc/letsencrypt/archive/myorder.fun:ro
+      # Symlinks in live/ point to ../../archive/myorder.fun/*, which resolves
+      # to /etc/archive/myorder.fun/ relative to the /etc/nginx/ssl mount point.
+      - /etc/letsencrypt/archive/myorder.fun:/etc/archive/myorder.fun:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - api
