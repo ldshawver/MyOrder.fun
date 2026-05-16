@@ -58,6 +58,7 @@ services:
       # Accept either CLERK_PUBLISHABLE_KEY or VITE_CLERK_PUBLISHABLE_KEY from .env
       # (the platform build uses VITE_CLERK_PUBLISHABLE_KEY; the API needs the same key)
       CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-${VITE_CLERK_PUBLISHABLE_KEY}}
+      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
       SESSION_SECRET: ${SESSION_SECRET}
       OPENAI_API_KEY: ${OPENAI_API_KEY}

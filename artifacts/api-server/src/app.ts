@@ -111,17 +111,24 @@ app.get("/healthz", (_req, res) => {
 app.use("/api", healthRouter);
 
 // ── Clerk auth middleware ────────────────────────────────────────────────────
-// Mirror the same key-priority chain used in vite.config.ts so the server
-// always validates JWTs against the same Clerk instance the frontend uses.
-// In Replit dev: PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY (open-rabbit-12)
-// In production: VITE_CLERK_PUBLISHABLE_KEY (pk_live for myorder.fun)
-// CLERK_PUBLISHABLE_KEY is kept as a final fallback only.
+// Key priority: docker-compose passes CLERK_PUBLISHABLE_KEY to the API container.
+// Replit dev uses PUBLIC_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY secrets.
+// proxyUrl must match the frontend's VITE_CLERK_PROXY_URL so the SDK correctly
+// validates JWTs issued through the proxy (required for custom domain / proxy setup).
 const _clerkPubKey =
-  process.env.PUBLIC_KEY ||
-  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+  process.env.CLERK_PUBLISHABLE_KEY ||
   process.env.VITE_CLERK_PUBLISHABLE_KEY ||
-  process.env.CLERK_PUBLISHABLE_KEY;
-app.use(clerkMiddleware({ publishableKey: _clerkPubKey }));
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+  process.env.PUBLIC_KEY;
+const _clerkProxyUrl =
+  process.env.CLERK_PROXY_URL ||
+  process.env.VITE_CLERK_PROXY_URL;
+app.use(clerkMiddleware({
+  publishableKey: _clerkPubKey,
+  ...(process.env.NODE_ENV === "production" && _clerkProxyUrl
+    ? { proxyUrl: _clerkProxyUrl }
+    : {}),
+}));
 
 // ── Test-only routes (exercise the real middleware chain in vitest) ─────────
 // These are mounted ONLY when NODE_ENV === "test" so they cannot be hit in
