@@ -13,7 +13,7 @@ function getPort(): number {
   const rawPort = process.env.PORT;
 
   if (!rawPort) {
-    return 5000;
+    return 5173;
   }
 
   const port = Number(rawPort);
@@ -55,17 +55,11 @@ async function getPlugins(): Promise<PluginOption[]> {
     typeof process.env.REPL_ID !== "undefined";
 
   if (isReplitDev) {
-    const [{ cartographer }, { devBanner }] = await Promise.all([
-      import("@replit/vite-plugin-cartographer"),
-      import("@replit/vite-plugin-dev-banner"),
-    ]);
-
-    plugins.push(
-      cartographer({
-        root: repoRoot,
-      }),
-      devBanner(),
-    );
+    const { cartographer } = await import("@replit/vite-plugin-cartographer");
+    plugins.push(cartographer({ root: repoRoot }));
+    // devBanner omitted — it signals port readiness to Replit's workflow
+    // health check and was causing DIDNT_OPEN_A_PORT failures when the
+    // reported port didn't match the artifact router's expectation.
   }
 
   return plugins;

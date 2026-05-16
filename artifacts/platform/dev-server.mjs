@@ -125,18 +125,10 @@ process.on("unhandledRejection", (reason) => {
 
 proxy.on("error", (err) => {
   process.stderr.write(`[dev-server] Proxy server error: ${err.message}\n`);
-  // If port is in use, try IPv4-only fallback
-  if (err.code === "EADDRINUSE" || err.code === "EADDRNOTAVAIL") {
-    process.stderr.write(`[dev-server] Retrying with 0.0.0.0…\n`);
-    proxy.listen(PORT, "0.0.0.0", () => {
-      process.stdout.write(`[dev-server] Proxy on :${PORT} (IPv4 fallback) → Vite on :${VITE_PORT}\n`);
-      startVite();
-    });
-  }
 });
 
-proxy.listen(PORT, "::", () => {
-  process.stdout.write(`[dev-server] Proxy on :${PORT} (IPv4+IPv6) → Vite on :${VITE_PORT}\n`);
+proxy.listen(PORT, "0.0.0.0", () => {
+  process.stdout.write(`[dev-server] Proxy on :${PORT} (0.0.0.0) → Vite on :${VITE_PORT}\n`);
   startVite();
 });
 
