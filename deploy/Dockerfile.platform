@@ -30,14 +30,22 @@ ARG VITE_CLERK_PUBLISHABLE_KEY
 ARG VITE_WOOCOMMERCE_URL
 ARG VITE_CLERK_PROXY_URL=https://myorder.fun/api/__clerk
 
-ENV VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY
-ENV VITE_WOOCOMMERCE_URL=$VITE_WOOCOMMERCE_URL
-ENV VITE_CLERK_PROXY_URL=$VITE_CLERK_PROXY_URL
+# Write .env.production so Vite's automatic dotenv loading picks up the
+# vars even if the shell process.env handoff is unreliable. Vite reads
+# artifacts/platform/.env.production when NODE_ENV=production.
+RUN printf 'VITE_CLERK_PUBLISHABLE_KEY=%s\nVITE_CLERK_PROXY_URL=%s\nVITE_WOOCOMMERCE_URL=%s\n' \
+    "$VITE_CLERK_PUBLISHABLE_KEY" \
+    "$VITE_CLERK_PROXY_URL" \
+    "$VITE_WOOCOMMERCE_URL" \
+    > artifacts/platform/.env.production && \
+    echo ">>> Clerk key prefix: $(cut -c1-12 artifacts/platform/.env.production)"
+
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV BASE_PATH=/
 
-RUN pnpm --filter @workspace/platform run build
+RUN pnpm --filter @workspace/platform run build && \
+    rm -f artifacts/platform/.env.production
 
 # ── Stage 2: Serve with Nginx ────────────────────────────────────────────────
 FROM nginx:alpine AS runtime
