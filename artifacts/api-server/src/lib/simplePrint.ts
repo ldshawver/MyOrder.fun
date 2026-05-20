@@ -17,7 +17,7 @@ import { logger as _logger } from "./logger";
 
 const log = _logger.child({ module: "simplePrint" });
 
-export const DEFAULT_BRIDGE_URL = "http://100.103.51.63:3100";
+export const DEFAULT_BRIDGE_URL = "http://100.83.99.2:3100";
 // Health preflight is intentionally short — we'd rather report "bridge
 // unreachable, use Local VPS CUPS" quickly than make the admin wait.
 export const BRIDGE_HEALTH_TIMEOUT_MS = 2000;

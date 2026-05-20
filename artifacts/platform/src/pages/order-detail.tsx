@@ -18,7 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -30,6 +30,7 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 
 type OrderWithTracking = Order & { trackingUrl?: string };
+type CreditSummary = { balance: number };
 
 function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   const queryClient = useQueryClient();
@@ -324,6 +325,10 @@ export default function OrderDetail() {
   const [isEncrypted, setIsEncrypted] = useState(false);
   const [trackingInput, setTrackingInput] = useState("");
   const [trackingSaving, setTrackingSaving] = useState(false);
+  const [creditBalance, setCreditBalance] = useState<number | null>(null);
+  const [creditAmount, setCreditAmount] = useState("");
+  const [creditBusy, setCreditBusy] = useState(false);
+  const [creditMessage, setCreditMessage] = useState<string | null>(null);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -393,6 +398,41 @@ export default function OrderDetail() {
       }
     );
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    getToken().then(async token => {
+      const res = await fetch("/api/credits/me", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) return;
+      const data = await res.json() as CreditSummary;
+      if (!cancelled) setCreditBalance(Number(data.balance ?? 0));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [getToken]);
+
+  async function applyCredit() {
+    if (!order) return;
+    setCreditBusy(true);
+    setCreditMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/payments/${order.id}/apply-credit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ amount: Number(creditAmount) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Failed to apply credit");
+      setCreditAmount("");
+      setCreditBalance(Number(data.remainingBalance ?? 0));
+      setCreditMessage(`Applied $${Number(data.applied ?? 0).toFixed(2)} credit.`);
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
+    } catch (err) {
+      setCreditMessage(err instanceof Error ? err.message : "Failed to apply credit");
+    } finally {
+      setCreditBusy(false);
+    }
+  }
 
   // Sync tracking input when order loads
   useEffect(() => {
@@ -743,6 +783,38 @@ export default function OrderDetail() {
 
               {order.paymentStatus === OrderPaymentStatus.unpaid && (
                 <div className="space-y-3">
+                  {(creditBalance ?? 0) > 0 && (
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-xs font-semibold">
+                          <BadgeDollarSign size={14} className="text-primary" />
+                          Credit balance
+                        </div>
+                        <div className="font-mono text-sm font-bold">${(creditBalance ?? 0).toFixed(2)}</div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          value={creditAmount}
+                          onChange={(e) => setCreditAmount(e.target.value)}
+                          placeholder={`Up to $${Math.min(creditBalance ?? 0, order.total).toFixed(2)}`}
+                          className="h-9 rounded-lg text-xs"
+                          data-testid="input-credit-amount"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={applyCredit}
+                          disabled={creditBusy || !creditAmount}
+                          className="rounded-lg text-xs whitespace-nowrap"
+                          data-testid="button-apply-credit"
+                        >
+                          Apply
+                        </Button>
+                      </div>
+                      {creditMessage && <div className="text-[11px] text-muted-foreground">{creditMessage}</div>}
+                    </div>
+                  )}
+
                   {/* Card via Stripe */}
                   <Button
                     className="w-full rounded-xl font-semibold text-xs h-10"

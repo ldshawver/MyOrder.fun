@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { BarChart3, Printer } from "lucide-react";
 
 type ReportsSummary = {
@@ -29,16 +30,45 @@ export default function AdminReports() {
   const [data, setData] = useState<ReportsSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [csrId, setCsrId] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("all");
+  const [product, setProduct] = useState("");
+
+  const buildQuery = useCallback(() => {
+    const params = new URLSearchParams();
+    if (dateFrom) params.set("dateFrom", dateFrom);
+    if (dateTo) params.set("dateTo", dateTo);
+    if (csrId) params.set("csrId", csrId);
+    if (paymentMethod !== "all") params.set("paymentMethod", paymentMethod);
+    if (product.trim()) params.set("product", product.trim());
+    const q = params.toString();
+    return q ? `?${q}` : "";
+  }, [csrId, dateFrom, dateTo, paymentMethod, product]);
 
   const load = useCallback(async () => {
     setLoading(true);
     const token = await getToken();
-    const res = await fetch("/api/admin/reports/summary", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch(`/api/admin/reports/summary${buildQuery()}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error ?? "Failed to load reports");
     setData(body);
     setLoading(false);
-  }, [getToken]);
+  }, [buildQuery, getToken]);
+
+  async function exportCsv() {
+    const token = await getToken();
+    const res = await fetch(`/api/admin/reports/export.csv${buildQuery()}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new Error("Failed to export CSV");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "myorder-reports.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 
   useEffect(() => { load().catch(err => { setError(err.message); setLoading(false); }); }, [load]);
 
@@ -49,8 +79,45 @@ export default function AdminReports() {
           <h1 className="text-3xl font-bold tracking-tight">Reports</h1>
           <p className="text-sm text-muted-foreground mt-1">Sales, payment, product, workforce, discrepancy, and receipt reprint reporting.</p>
         </div>
-        <Button variant="outline" onClick={() => load().catch(err => setError(err.message))} className="rounded-sm">Refresh</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => exportCsv().catch(err => setError(err.message))} className="rounded-sm">Export CSV</Button>
+          <Button variant="outline" onClick={() => load().catch(err => setError(err.message))} className="rounded-sm">Refresh</Button>
+        </div>
       </div>
+
+      <Card className="rounded-sm border-border/50">
+        <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-6 gap-3 items-end">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">From</div>
+            <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-sm" />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">To</div>
+            <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-sm" />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">CSR ID</div>
+            <Input inputMode="numeric" value={csrId} onChange={(e) => setCsrId(e.target.value.replace(/[^\d]/g, ""))} placeholder="All CSRs" className="rounded-sm" />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Payment</div>
+            <select className="h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+              <option value="all">All methods</option>
+              <option value="cash">Cash</option>
+              <option value="stripe">Stripe</option>
+              <option value="card">Card</option>
+              <option value="venmo">Venmo</option>
+              <option value="cash_app">Cash App</option>
+              <option value="credit">Credit</option>
+            </select>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Product</div>
+            <Input value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Name contains" className="rounded-sm" />
+          </div>
+          <Button onClick={() => load().catch(err => setError(err.message))} className="rounded-sm">Apply Filters</Button>
+        </CardContent>
+      </Card>
 
       {loading ? <div className="text-sm text-muted-foreground animate-pulse">Loading reports...</div> : error ? (
         <div className="text-sm text-destructive">{error}</div>

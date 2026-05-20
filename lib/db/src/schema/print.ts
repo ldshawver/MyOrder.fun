@@ -175,11 +175,11 @@ export const printSettingsTable = pgTable("print_settings", {
   // Print Bridge), and a queue / printer name. autoPrintReceipts (above) and
   // lastTestResult round out the eight.
   receiptEnabled: boolean("receipt_enabled").notNull().default(true),
-  receiptMethod: text("receipt_method").notNull().default("local_cups"),
+  receiptMethod: text("receipt_method").notNull().default("bridge"),
   receiptPrinterName: text("receipt_printer_name").notNull().default("receipt"),
   labelEnabled: boolean("label_enabled").notNull().default(true),
   labelMethod: text("label_method").notNull().default("local_cups"),
-  labelPrinterName: text("label_printer_name").notNull().default("label"),
+  labelPrinterName: text("label_printer_name").notNull().default("Label_Themal_Printer"),
   // Last test summary: { ts, role, mode, ok, message }
   lastTestResult: jsonb("last_test_result"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

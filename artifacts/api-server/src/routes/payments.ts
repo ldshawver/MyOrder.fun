@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import Stripe from "stripe";
-import { db, ordersTable, orderItemsTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, userCreditsTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
@@ -21,6 +21,35 @@ import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/str
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+let creditSchemaEnsured = false;
+
+async function ensureCreditSchema(): Promise<void> {
+  if (creditSchemaEnsured) return;
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "user_credits" (
+      "id" serial PRIMARY KEY,
+      "tenant_id" integer NOT NULL REFERENCES "tenants"("id"),
+      "user_id" integer NOT NULL REFERENCES "users"("id"),
+      "amount" numeric(10, 2) NOT NULL,
+      "reason" text,
+      "source" text NOT NULL DEFAULT 'admin_adjustment',
+      "created_by" integer REFERENCES "users"("id"),
+      "created_at" timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
+  creditSchemaEnsured = true;
+}
+
+function money(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function getCreditBalance(userId: number): Promise<number> {
+  await ensureCreditSchema();
+  const entries = await db.select().from(userCreditsTable).where(eq(userCreditsTable.userId, userId));
+  return entries.reduce((sum, entry) => sum + money(entry.amount), 0);
+}
 
 // Dispatches WooCommerce-managed line items to WooCommerce (CJ Dropshipping sync)
 // after payment is confirmed. Fire-and-forget — errors logged, never block response.
@@ -210,6 +239,105 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
     logger.error({ err }, "Stripe payment intent creation failed");
     res.status(500).json({ error: "Payment processing error" });
   }
+});
+
+// POST /api/payments/:orderId/apply-credit
+// Applies customer-selected account credit before external payment. Credit can
+// partially reduce the payable total or fully pay the order.
+router.post("/payments/:orderId/apply-credit", async (req, res): Promise<void> => {
+  await ensureCreditSchema();
+  const actor = req.dbUser!;
+  const rawId = Array.isArray(req.params.orderId) ? req.params.orderId[0] : req.params.orderId;
+  const orderId = parseInt(rawId, 10);
+  const requestedAmount = Number(req.body?.amount);
+
+  if (!Number.isInteger(orderId) || orderId <= 0) {
+    res.status(400).json({ error: "Invalid order id" });
+    return;
+  }
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+    res.status(400).json({ error: "amount must be a positive number" });
+    return;
+  }
+
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+  if (order.customerId !== actor.id && actor.role === "user") {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  if (order.paymentStatus === "paid") {
+    res.status(409).json({ error: "Order is already paid" });
+    return;
+  }
+
+  const balance = await getCreditBalance(order.customerId);
+  if (balance <= 0) {
+    res.status(400).json({ error: "No credit balance available" });
+    return;
+  }
+
+  const currentTotal = money(order.total);
+  const applied = Math.min(requestedAmount, balance, currentTotal);
+  if (applied <= 0) {
+    res.status(400).json({ error: "No payable amount remains" });
+    return;
+  }
+  const remainingTotal = Math.max(0, Number((currentTotal - applied).toFixed(2)));
+
+  await db.insert(userCreditsTable).values({
+    tenantId: order.tenantId,
+    userId: order.customerId,
+    amount: (-applied).toFixed(2),
+    reason: `Applied to order #${order.id}`,
+    source: "order_credit_application",
+    createdBy: actor.id,
+  });
+
+  const [updated] = await db.update(ordersTable)
+    .set({
+      total: remainingTotal.toFixed(2),
+      paymentMethod: remainingTotal === 0 ? "credit" : order.paymentMethod,
+      selectedPaymentMethod: remainingTotal === 0 ? "credit" : order.selectedPaymentMethod,
+      paymentStatus: remainingTotal === 0 ? "paid" : order.paymentStatus,
+      status: remainingTotal === 0 ? "confirmed" : order.status,
+      paymentToken: remainingTotal === 0 ? `credit_${Date.now()}` : order.paymentToken,
+    })
+    .where(eq(ordersTable.id, order.id))
+    .returning();
+
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "APPLY_USER_CREDIT",
+    tenantId: order.tenantId,
+    resourceType: "order",
+    resourceId: String(order.id),
+    metadata: {
+      applied,
+      previousTotal: currentTotal,
+      remainingTotal,
+      previousBalance: balance,
+      remainingBalance: Number((balance - applied).toFixed(2)),
+    },
+    ipAddress: req.ip,
+  });
+
+  if (remainingTotal === 0) {
+    void dispatchWooItemsAfterPayment(updated.id);
+  }
+
+  res.json({
+    orderId: updated.id,
+    applied,
+    remainingTotal,
+    remainingBalance: Number((balance - applied).toFixed(2)),
+    paymentStatus: updated.paymentStatus,
+  });
 });
 
 // POST /api/payments/:orderId/confirm

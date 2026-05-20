@@ -60,7 +60,14 @@ interface SimpleSettings {
 async function loadOrCreateSettings(): Promise<typeof printSettingsTable.$inferSelect> {
   const rows = await db.select().from(printSettingsTable).limit(1);
   if (rows[0]) return rows[0];
-  const [row] = await db.insert(printSettingsTable).values({}).returning();
+  const [row] = await db.insert(printSettingsTable).values({
+    receiptEnabled: true,
+    receiptMethod: "bridge",
+    receiptPrinterName: "receipt",
+    labelEnabled: true,
+    labelMethod: "local_cups",
+    labelPrinterName: "Label_Themal_Printer",
+  }).returning();
   return row;
 }
 
@@ -71,7 +78,7 @@ function projectSettings(row: typeof printSettingsTable.$inferSelect): SimpleSet
     receiptPrinterName: row.receiptPrinterName ?? "receipt",
     labelEnabled: row.labelEnabled,
     labelMethod: (row.labelMethod as PrintMethod) ?? "local_cups",
-    labelPrinterName: row.labelPrinterName ?? "label",
+    labelPrinterName: row.labelPrinterName ?? "Label_Themal_Printer",
     autoPrintReceipts: row.autoPrintReceipts,
     lastTestResult: row.lastTestResult,
     bridgeUrl: getBridgeUrl(),
