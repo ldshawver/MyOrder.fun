@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
@@ -14,6 +14,7 @@ type RoutingRule = typeof ROUTING_RULES[number];
 // Hard cap on the admin-editable AI prompt to avoid pathological prompts
 // or accidental paste-the-whole-document mistakes blowing the model context.
 export const AI_CONCIERGE_PROMPT_MAX_CHARS = 8000;
+let importTemplateColumnEnsured = false;
 
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
   const aiPrompt = s.aiConciergePrompt ?? null;
@@ -48,6 +49,10 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
 
 // Single-tenant: use the one global settings row, creating it if absent
 async function getOrCreateSettings() {
+  if (!importTemplateColumnEnsured) {
+    await db.execute(sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`);
+    importTemplateColumnEnsured = true;
+  }
   const [existing] = await db.select().from(adminSettingsTable).limit(1);
   if (existing) return existing;
   const tenantId = await getHouseTenantId();
