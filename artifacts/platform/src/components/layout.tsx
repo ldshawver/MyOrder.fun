@@ -46,7 +46,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
     { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
     { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
-    { href: "/staff", label: "CSR Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },

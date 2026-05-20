@@ -1212,10 +1212,10 @@ export default function CustomerServiceRepQueue() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-title">
-            Customer Service Rep
+            Shift Dashboard
           </h1>
           <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            Fulfillment dashboard — inventory, cash bank &amp; orders
+            Clock in, manage inventory, track cash bank &amp; orders
           </p>
         </div>
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl" onClick={refresh} title="Refresh">
