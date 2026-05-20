@@ -121,6 +121,7 @@ const DEFAULT_IMPORT_COLUMNS: ImportTemplateColumn[] = [
 
 const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = { version: 1, columns: DEFAULT_IMPORT_COLUMNS };
 let importTemplateColumnEnsured = false;
+let catalogImportSchemaEnsured = false;
 
 // ─── Header normalization (BOM / whitespace strip only — case-sensitive) ──────
 function cleanHeader(raw: string): string {
@@ -250,6 +251,61 @@ async function loadImportSpec(): Promise<ImportTemplateSpec> {
 
 function specRecognizedSet(spec: ImportTemplateSpec): Set<string> {
   return new Set(spec.columns.map(c => c.canonical));
+}
+
+async function ensureCatalogImportSchema(): Promise<void> {
+  if (catalogImportSchemaEnsured) return;
+  const statements = [
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "external_menu_id" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "inventory_amount" numeric(10, 2)`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "unit_measurement" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_image" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_description" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_category" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_sku" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_brand" text NOT NULL DEFAULT 'alavont'`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_description" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_category" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "supplier_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "supplier_category" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "backend_inventory_notes" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "vendor_sku" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "source_inventory_id" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "cost_basis" numeric(10, 2)`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "inventory_tracking_data" jsonb DEFAULT '{}'::jsonb`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_description" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_category" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_image" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_brand_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "marketing_copy" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_description" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "upsell_copy" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "promo_badges" text[] DEFAULT ARRAY[]::text[]`,
+  ];
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  catalogImportSchemaEnsured = true;
+}
+
+function formatDatabaseError(err: unknown): string {
+  const e = err as {
+    message?: string;
+    cause?: { message?: string; detail?: string; constraint?: string; code?: string };
+  };
+  const cause = e.cause;
+  const parts = [
+    cause?.message,
+    cause?.detail,
+    cause?.constraint ? `constraint: ${cause.constraint}` : null,
+    cause?.code ? `code: ${cause.code}` : null,
+  ].filter(Boolean);
+  if (parts.length > 0) return parts.join(" — ");
+  return e.message?.split("\n")[0] ?? "unknown database error";
 }
 
 // ─── Delimited (CSV / TSV) parser ─────────────────────────────────────────────
@@ -563,6 +619,13 @@ router.post(
       return;
     }
 
+    try {
+      await ensureCatalogImportSchema();
+    } catch (err) {
+      res.status(500).json({ error: `Could not prepare catalog import schema: ${formatDatabaseError(err)}` });
+      return;
+    }
+
     // Header → column index lookup
     const headerIndex: Record<string, number> = {};
     headers.forEach((h, i) => { headerIndex[h] = i; });
@@ -679,7 +742,7 @@ router.post(
           inserted++;
         }
       } catch (err) {
-        errors.push({ row: rowNum, message: `database error — ${(err as Error)?.message ?? "unknown"}` });
+        errors.push({ row: rowNum, message: `database error — ${formatDatabaseError(err)}` });
       }
     }
 
