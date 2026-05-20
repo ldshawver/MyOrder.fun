@@ -34,7 +34,7 @@ function FeaturedPanel({ token }: { token: string | null }) {
       fetch("/api/catalog", { headers }).then(r => r.json()),
     ]).then(([prom, cat]) => {
       setPromotedIds(prom.ids ?? []);
-      const items: PromotedItem[] = (cat.items ?? cat ?? []).map((i: any) => ({
+      const items: PromotedItem[] = (cat.items ?? cat ?? []).map((i: Record<string, unknown>) => ({
         id: i.id,
         name: i.alavontName ?? i.name,
         category: i.alavontCategory ?? i.category,
