@@ -1,7 +1,7 @@
-import { getAuth } from "@clerk/express";
+import { getAuth, clerkClient } from "@clerk/express";
 import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { readClerkPublicMetadata } from "./clerkSync";
 
@@ -41,7 +41,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
 
   const clerkId = auth.userId;
 
-  // Try to find existing user by clerkId first
+  // 1. Fast path: existing row by clerkId
   const [existing] = await db
     .select()
     .from(usersTable)
@@ -50,13 +50,45 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
 
   if (existing) return existing;
 
-  // Extract user info from Clerk session claims
-  const rawEmail = (auth.sessionClaims?.email as string) || (auth.sessionClaims?.primaryEmailAddress as string) || "";
+  // 2. Extract user info from Clerk session claims (JWT doesn't always include email,
+  //    so fall back to the Clerk API to get the canonical email address).
+  const claimEmail = (auth.sessionClaims?.email as string) || (auth.sessionClaims?.primaryEmailAddress as string) || "";
   const firstName = (auth.sessionClaims?.firstName as string) || (auth.sessionClaims?.given_name as string) || null;
   const lastName = (auth.sessionClaims?.lastName as string) || (auth.sessionClaims?.family_name as string) || null;
-  // Store null instead of empty string to avoid unique constraint conflicts
-  const email = rawEmail || null;
 
+  let email: string | null = claimEmail || null;
+  try {
+    if (!email) {
+      // JWT didn't carry the email — fetch it directly from Clerk.
+      const clerkUser = await clerkClient.users.getUser(clerkId);
+      email = clerkUser.emailAddresses[0]?.emailAddress ?? null;
+    }
+  } catch (err) {
+    logger.warn({ err, clerkId }, "Could not fetch email from Clerk API; proceeding without email");
+  }
+
+  // 3. Before inserting, look for a pre-approved row by email (e.g. a sentinel
+  //    row created during waitlist approval). This is the critical step that
+  //    prevents a fresh pending/user row from shadowing an approved invitation.
+  if (email) {
+    const [byEmail] = await db
+      .select()
+      .from(usersTable)
+      .where(sql`lower(${usersTable.email}) = lower(${email})`)
+      .limit(1);
+    if (byEmail) {
+      // Claim this row — swap the sentinel/stale clerkId for the real one.
+      logger.info({ clerkId, userId: byEmail.id, role: byEmail.role, status: byEmail.status }, "Claiming pre-approved user row by email match");
+      const [updated] = await db
+        .update(usersTable)
+        .set({ clerkId, updatedAt: new Date() })
+        .where(eq(usersTable.id, byEmail.id))
+        .returning();
+      return updated ?? byEmail;
+    }
+  }
+
+  // 4. Truly new user — create a pending row.
   try {
     const [created] = await db
       .insert(usersTable)
@@ -65,7 +97,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     return created;
   } catch (err) {
     logger.warn({ clerkId }, "User insert failed (conflict), looking up by clerkId or email");
-    // On conflict (race condition or email reuse), look up by clerkId first, then by email if non-null
+    // Race condition: another request beat us to the insert.
     const [byClerkId] = await db
       .select()
       .from(usersTable)
@@ -77,13 +109,12 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
       const [byEmail] = await db
         .select()
         .from(usersTable)
-        .where(eq(usersTable.email, email))
+        .where(sql`lower(${usersTable.email}) = lower(${email})`)
         .limit(1);
       if (byEmail) {
-        // Claim this record by updating the clerkId
         const [updated] = await db
           .update(usersTable)
-          .set({ clerkId })
+          .set({ clerkId, updatedAt: new Date() })
           .where(eq(usersTable.id, byEmail.id))
           .returning();
         return updated ?? byEmail;
