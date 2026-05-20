@@ -327,10 +327,18 @@ export default function AdminUsers() {
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
 
   const { data: currentUser, isSuccess: currentUserLoaded } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const { data, isLoading, isError } = useListUsers(
+  const { data, isLoading, isError, error } = useListUsers(
     {},
     { query: { queryKey: ["listUsers"] } },
   );
+  const usersErrorMsg = (() => {
+    if (!isError) return null;
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 401) return "Not signed in — please reload.";
+    if (status === 403) return "Your account doesn't have permission to view the user list. (In the dev preview the local DB has no admin record — check myorder.fun instead.)";
+    if (status === 500) return "Server error loading users. Check VPS logs.";
+    return "Failed to load users. Check API connection.";
+  })();
 
   const updateRoleMutation = useUpdateUserRole();
   const updateStatusMutation = useUpdateUserStatus();
@@ -505,8 +513,8 @@ export default function AdminUsers() {
                   </TableRow>
                 ) : isError ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="h-32 text-center text-red-500 font-mono text-xs uppercase tracking-widest">
-                      Failed to load users. Check API connection.
+                    <TableCell colSpan={6} className="h-32 text-center text-red-400/80 text-xs leading-relaxed px-8">
+                      {usersErrorMsg}
                     </TableCell>
                   </TableRow>
                 ) : filtered.length === 0 ? (
