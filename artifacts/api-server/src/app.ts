@@ -8,6 +8,7 @@ import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxy
 import router from "./routes";
 import healthRouter from "./routes/health";
 import { logger } from "./lib/logger";
+import { submitOnboardingRequestHandler } from "./routes/onboarding";
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -109,6 +110,10 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.use("/api", healthRouter);
+
+// Public access-request form. Mount this before Clerk so brand-new visitors
+// can request access even when they have no session or a stale Clerk cookie.
+app.post("/api/onboarding/request", submitOnboardingRequestHandler);
 
 // ── Clerk auth middleware ────────────────────────────────────────────────────
 // Key priority: docker-compose passes CLERK_PUBLISHABLE_KEY to the API container.

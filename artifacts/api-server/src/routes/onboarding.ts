@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, desc } from "drizzle-orm";
 import { db, onboardingRequestsTable, tenantsTable } from "@workspace/db";
 import {
@@ -35,8 +35,7 @@ function mapRequest(r: typeof onboardingRequestsTable.$inferSelect) {
   };
 }
 
-// POST /api/onboarding/request — public, no auth required
-router.post("/onboarding/request", async (req, res): Promise<void> => {
+export async function submitOnboardingRequestHandler(req: Request, res: Response): Promise<void> {
   const body = SubmitOnboardingRequestBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -48,7 +47,10 @@ router.post("/onboarding/request", async (req, res): Promise<void> => {
   }).returning();
 
   res.status(201).json(mapRequest(row));
-});
+}
+
+// POST /api/onboarding/request — public, no auth required
+router.post("/onboarding/request", submitOnboardingRequestHandler);
 
 // GET /api/onboarding/requests — global admin only
 router.get("/onboarding/requests", requireAuth, loadDbUser, requireDbUser, requireRole("admin"), async (req, res): Promise<void> => {
