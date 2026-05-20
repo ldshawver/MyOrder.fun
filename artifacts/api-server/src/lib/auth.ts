@@ -26,6 +26,30 @@ export const STAFF_ROLES: readonly Role[] = [
   "lab_tech",
 ] as const;
 
+let usersSchemaEnsured = false;
+
+async function ensureUsersAuthSchema(): Promise<void> {
+  if (usersSchemaEnsured) return;
+
+  const statements = [
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
+  ];
+
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  usersSchemaEnsured = true;
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -38,6 +62,8 @@ declare global {
 export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable.$inferSelect | null> {
   const auth = getAuth(req);
   if (!auth?.userId) return null;
+
+  await ensureUsersAuthSchema();
 
   const clerkId = auth.userId;
 

@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, desc } from "drizzle-orm";
-import { db, onboardingRequestsTable, tenantsTable } from "@workspace/db";
+import { eq, desc, sql } from "drizzle-orm";
+import { db, onboardingRequestsTable, tenantsTable, usersTable } from "@workspace/db";
 import {
   SubmitOnboardingRequestBody,
   ListOnboardingRequestsQueryParams,
@@ -14,6 +14,12 @@ import {
 import { requireAuth, loadDbUser, requireRole, requireDbUser, writeAuditLog } from "../lib/auth";
 
 const router: IRouter = Router();
+
+async function ensureAccessRequestUserSchema(): Promise<void> {
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`);
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`);
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`);
+}
 
 function mapRequest(r: typeof onboardingRequestsTable.$inferSelect) {
   return {
@@ -41,10 +47,39 @@ export async function submitOnboardingRequestHandler(req: Request, res: Response
     res.status(400).json({ error: body.error.message });
     return;
   }
+  await ensureAccessRequestUserSchema();
   const [row] = await db.insert(onboardingRequestsTable).values({
     ...body.data,
     status: "submitted",
   }).returning();
+
+  const email = body.data.contactEmail.trim();
+  const [existingUser] = await db
+    .select({ id: usersTable.id, status: usersTable.status })
+    .from(usersTable)
+    .where(sql`lower(${usersTable.email}) = lower(${email})`)
+    .limit(1);
+
+  if (!existingUser) {
+    await db.insert(usersTable).values({
+      clerkId: `pending_request:${email.toLowerCase()}`,
+      email,
+      firstName: body.data.contactName,
+      contactPhone: body.data.contactPhone ?? null,
+      role: "user",
+      status: "pending",
+      isActive: true,
+    });
+  } else if (existingUser.status !== "approved") {
+    await db.update(usersTable)
+      .set({
+        firstName: body.data.contactName,
+        contactPhone: body.data.contactPhone ?? null,
+        status: "pending",
+        isActive: true,
+      })
+      .where(eq(usersTable.id, existingUser.id));
+  }
 
   res.status(201).json(mapRequest(row));
 }

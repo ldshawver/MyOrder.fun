@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { db, usersTable, notificationsTable } from "@workspace/db";
+import { db, usersTable, notificationsTable, onboardingRequestsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -43,6 +43,7 @@ const UpdateCurrentUserBody = z.object({
 });
 
 const router: IRouter = Router();
+let usersListSchemaEnsured = false;
 
 const VALID_ROLES = [
   "admin",
@@ -61,6 +62,68 @@ function normalizeRole(role: unknown): ValidRole {
   }
   logger.warn({ rawRole: role }, "Invalid role value in DB — defaulting to 'user'");
   return "user";
+}
+
+function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is string {
+  return !!clerkId && !clerkId.startsWith("pending_invite:") && !clerkId.startsWith("pending_request:");
+}
+
+async function ensureUsersListSchema(): Promise<void> {
+  if (usersListSchemaEnsured) return;
+
+  const statements = [
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
+  ];
+
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  usersListSchemaEnsured = true;
+}
+
+function onboardingStatusToUserStatus(status: string | null | undefined): "pending" | "approved" | "rejected" {
+  if (status === "approved") return "approved";
+  if (status === "rejected") return "rejected";
+  return "pending";
+}
+
+async function syncOnboardingRequestsToPendingUsers(): Promise<void> {
+  const requests = await db.select().from(onboardingRequestsTable);
+
+  for (const request of requests) {
+    const email = request.contactEmail?.trim();
+    if (!email) continue;
+
+    try {
+      const [existing] = await db
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(sql`lower(${usersTable.email}) = lower(${email})`)
+        .limit(1);
+      if (existing) continue;
+
+      await db.insert(usersTable).values({
+        clerkId: `pending_request:${email.toLowerCase()}`,
+        email,
+        firstName: request.contactName,
+        contactPhone: request.contactPhone ?? null,
+        role: "user",
+        status: onboardingStatusToUserStatus(request.status),
+        isActive: true,
+      });
+    } catch (err) {
+      logger.warn({ err, requestId: request.id, email }, "Failed to mirror onboarding request into users table");
+    }
+  }
 }
 
 router.use(requireAuth, loadDbUser, requireDbUser);
@@ -192,6 +255,9 @@ router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promi
     return;
   }
 
+  await ensureUsersListSchema();
+  await syncOnboardingRequestsToPendingUsers();
+
   let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
 
   if (query.data.role) {
@@ -264,7 +330,9 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     .returning();
 
   // Mirror role into Clerk publicMetadata so subsequent sign-ins agree.
-  await syncUserToClerk(updated.clerkId, { role: body.data.role });
+  if (hasRealClerkUserId(updated.clerkId)) {
+    await syncUserToClerk(updated.clerkId, { role: body.data.role });
+  }
 
   await writeAuditLog({
     actorId: actor.id,
@@ -327,7 +395,9 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
     .returning();
 
   // Mirror status into Clerk publicMetadata so subsequent sign-ins agree.
-  await syncUserToClerk(updated.clerkId, { status: newStatus });
+  if (hasRealClerkUserId(updated.clerkId)) {
+    await syncUserToClerk(updated.clerkId, { status: newStatus });
+  }
 
   await writeAuditLog({
     actorId: actor.id,
@@ -372,6 +442,9 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
 router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Promise<void> => {
+  await ensureUsersListSchema();
+  await syncOnboardingRequestsToPendingUsers();
+
   const rows = await db
     .select()
     .from(usersTable)
@@ -437,10 +510,12 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
     .returning();
 
   // Push to Clerk publicMetadata so the next sign-in does not re-pend the user.
-  await syncUserToClerk(updated.clerkId, {
-    status: newStatus,
-    role: newRole ?? normalizeRole(updated.role),
-  });
+  if (hasRealClerkUserId(updated.clerkId)) {
+    await syncUserToClerk(updated.clerkId, {
+      status: newStatus,
+      role: newRole ?? normalizeRole(updated.role),
+    });
+  }
 
   await writeAuditLog({
     actorId: actor.id,
@@ -619,7 +694,7 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
       promotedExisting = true;
       // Also push the new state into Clerk so the existing account reflects
       // the admin's decision immediately on next sign-in.
-      if (!existingReal.clerkId.startsWith("pending_invite:")) {
+      if (hasRealClerkUserId(existingReal.clerkId)) {
         await syncUserToClerk(existingReal.clerkId, { status: "approved", role });
       }
     } else {
