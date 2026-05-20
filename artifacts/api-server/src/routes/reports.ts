@@ -1,10 +1,39 @@
 import { Router, type IRouter } from "express";
-import { desc } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { db, labTechShiftsTable, orderItemsTable, ordersTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin", "supervisor"));
+let reportSchemaEnsured = false;
+
+async function ensureReportSchema(): Promise<void> {
+  if (reportSchemaEnsured) return;
+  await db.execute(sql`
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "tracking_url" text;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_tech_id" integer;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "fulfillment_status" text;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "route_source" text;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "accepted_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "promised_minutes" integer DEFAULT 30;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "estimated_ready_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "eta_adjusted_by_supervisor" boolean NOT NULL DEFAULT false;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "purged_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "audit_token" text;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "alavont_cart_snapshot" jsonb;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "lucifer_checkout_snapshot" jsonb;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "final_confirmation_at" timestamp with time zone;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_accepted" boolean NOT NULL DEFAULT false;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_text" text;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "checkout_conversion_snapshot" jsonb;
+    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "selected_payment_method" text;
+  `);
+  reportSchemaEnsured = true;
+}
 
 function money(value: unknown): number {
   const n = Number(value ?? 0);
@@ -63,6 +92,7 @@ function csvEscape(value: unknown): string {
 }
 
 async function buildReport(query: Record<string, unknown>) {
+  await ensureReportSchema();
   const filters = parseFilters(query);
   const [orders, items, shifts, users] = await Promise.all([
     db.select().from(ordersTable).orderBy(desc(ordersTable.createdAt)).limit(500),
