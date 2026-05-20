@@ -55,6 +55,7 @@ const VALID_ROLES = [
   "user",
 ] as const;
 type ValidRole = typeof VALID_ROLES[number];
+type ValidStatus = "pending" | "approved" | "rejected" | "deactivated";
 
 function normalizeRole(role: unknown): ValidRole {
   if (typeof role === "string" && (VALID_ROLES as readonly string[]).includes(role)) {
@@ -62,6 +63,19 @@ function normalizeRole(role: unknown): ValidRole {
   }
   logger.warn({ rawRole: role }, "Invalid role value in DB — defaulting to 'user'");
   return "user";
+}
+
+function normalizeStatus(status: unknown): ValidStatus {
+  if (
+    status === "pending" ||
+    status === "approved" ||
+    status === "rejected" ||
+    status === "deactivated"
+  ) {
+    return status;
+  }
+  logger.warn({ rawStatus: status }, "Invalid user status value in DB — defaulting to 'pending'");
+  return "pending";
 }
 
 function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is string {
@@ -156,7 +170,7 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
     role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
-    status: (user.status as "pending" | "approved" | "rejected") ?? "pending",
+    status: normalizeStatus(user.status),
     createdAt: user.createdAt,
   });
 }
@@ -270,10 +284,19 @@ router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promi
   //  - email: nullable in DB but Zod schema requires string — coerce null → ""
   //  - clerkId: shouldn't be null (DB constraint), but guard anyway
   const normalized = rows.map(u => ({
-    ...u,
-    role: normalizeRole(u.role),
-    email: u.email ?? "",
+    id: u.id,
     clerkId: u.clerkId ?? "",
+    email: u.email ?? "",
+    firstName: u.firstName ?? undefined,
+    lastName: u.lastName ?? undefined,
+    role: normalizeRole(u.role),
+    tenantId: u.tenantId ?? undefined,
+    mfaEnabled: u.mfaEnabled ?? undefined,
+    status: normalizeStatus(u.status),
+    isActive: u.isActive ?? true,
+    contactPhone: u.contactPhone ?? null,
+    avatarUrl: u.avatarUrl ?? null,
+    createdAt: u.createdAt,
   }));
 
   const parsed = ListUsersResponse.safeParse({ users: normalized, total: normalized.length });
