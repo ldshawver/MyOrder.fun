@@ -1055,7 +1055,7 @@ router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promis
       role: "label",
       connectionType: "bridge" as const,
       bridgeUrl,
-      bridgePrinterName: process.env.LABEL_PRINTER_NAME ?? "label",
+      bridgePrinterName: process.env.LABEL_PRINTER_NAME ?? "Label_Themal_Printer",
       apiKey: apiKey || null,
       isActive: true,
       paperWidth: "58mm",

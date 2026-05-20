@@ -5,7 +5,7 @@
  *   1. local_cups — spawn `lp -d <queue>` and pipe ESC/POS bytes via stdin.
  *      No shell interpolation, no template injection.
  *   2. bridge     — POST to the Tailscale Print Bridge at
- *      http://100.103.51.63:3100 (overridable via PRINT_BRIDGE_URL).
+ *      http://100.83.99.2:3100 (overridable via PRINT_BRIDGE_URL).
  *
  * All callers receive structured `{ ok, message, ... }` results — no thrown
  * exceptions leak across the route boundary, so route handlers can always

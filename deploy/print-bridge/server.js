@@ -26,11 +26,17 @@ const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 const { execFileSync } = require("child_process");
 
-require("dotenv").config();
+try {
+  require("dotenv").config();
+} catch {
+  // dotenv is convenient for local runs; systemd also supplies EnvironmentFile.
+}
 
 const PORT = parseInt(process.env.PORT ?? "3100", 10);
+const BIND_HOST = process.env.BIND_HOST ?? "0.0.0.0";
 const API_KEY = process.env.PRINT_BRIDGE_API_KEY ?? "";
 
 const DIRECT_PRINTER_IP = process.env.DIRECT_PRINTER_IP ?? "";
@@ -39,8 +45,9 @@ const DIRECT_TIMEOUT_MS = parseInt(process.env.DIRECT_TIMEOUT_MS ?? "3000", 10);
 
 const PRINTER_NAME = process.env.PRINTER_NAME ?? "";
 const USB_DEVICE = process.env.USB_DEVICE ?? "";
-const MAX_COPIES = 5;
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const CUPS_RAW = String(process.env.CUPS_RAW ?? "false").toLowerCase() === "true";
+const MAX_COPIES = parseInt(process.env.MAX_COPIES ?? "5", 10);
+const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES ?? String(2 * 1024 * 1024), 10);
 
 if (!API_KEY) {
   console.error("PRINT_BRIDGE_API_KEY is required");
@@ -68,7 +75,14 @@ function respond(res, status, data) {
 }
 
 function authenticate(req) {
-  return req.headers["x-api-key"] === API_KEY;
+  const headerKey = String(req.headers["x-api-key"] ?? "");
+  const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const presented = headerKey || bearer;
+  if (!presented || !API_KEY) return false;
+
+  const a = Buffer.from(presented);
+  const b = Buffer.from(API_KEY);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function parseBody(req) {
@@ -116,8 +130,8 @@ function listPrinters() {
     return out
       .split("\n")
       .map((line) => {
-        const match = line.match(/^printer\s+(.+?)\s+is\s+/);
-        return match ? match[1] : null;
+        const match = line.match(/^printer\s+(.+?)\s+is\s+(idle|printing|disabled)/);
+        return match ? { name: match[1], state: match[2], enabled: match[2] !== "disabled" } : null;
       })
       .filter(Boolean);
   } catch {
@@ -165,7 +179,11 @@ function printRawSocket(buffer) {
  * METHOD 2 — CUPS via lp
  * Supports text temp files and image files.
  */
-function printViaCups({ text, imagePath, printerName, copies }) {
+function printerNames(printers) {
+  return printers.map((printer) => typeof printer === "string" ? printer : printer.name).filter(Boolean);
+}
+
+function printViaCups({ text, imagePath, printerName, copies, raw }) {
   const name = printerName || PRINTER_NAME;
   const safeCopies = clampCopies(copies);
 
@@ -183,6 +201,10 @@ function printViaCups({ text, imagePath, printerName, copies }) {
 
     if (name) {
       args.push("-d", name);
+    }
+
+    if (raw && !imagePath) {
+      args.push("-o", "raw");
     }
 
     args.push("-n", String(safeCopies), fileToPrint);
@@ -246,6 +268,21 @@ async function handleHealth(req, res) {
     usbOnline,
     cupsAvailable,
     printers,
+    printerNames: printerNames(printers),
+    time: new Date().toISOString(),
+  });
+}
+
+async function handleHealthz(_req, res) {
+  const printers = listPrinters();
+  return respond(res, 200, {
+    success: true,
+    status: "ok",
+    hostname: os.hostname(),
+    port: PORT,
+    printerName: PRINTER_NAME || null,
+    cupsAvailable: printers.length > 0,
+    printerNames: printerNames(printers),
     time: new Date().toISOString(),
   });
 }
@@ -259,6 +296,7 @@ async function handlePrinters(req, res) {
   return respond(res, 200, {
     success: true,
     printers,
+    printerNames: printerNames(printers),
     configuredPrinter: PRINTER_NAME || null,
     usbDevice: USB_DEVICE || null,
   });
@@ -280,16 +318,24 @@ async function handlePrint(req, res) {
     text = "",
     imagePath = "",
     imageBase64 = "",
+    payloadBase64 = "",
     format = "text",
-    printerName = "",
+    printerName: explicitPrinterName = "",
+    printer = "",
     jobId = null,
     copies = 1,
+    role = "",
+    raw = undefined,
   } = body;
+  const printerName = explicitPrinterName || printer || "";
+  const decodedText = payloadBase64 ? Buffer.from(payloadBase64, "base64").toString("binary") : "";
+  const printableText = text || decodedText;
+  const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
 
-  if (!text && !imagePath && !imageBase64) {
+  if (!printableText && !imagePath && !imageBase64) {
     return respond(res, 400, {
       success: false,
-      error: "Missing text, imagePath, or imageBase64 payload",
+      error: "Missing text, payloadBase64, imagePath, or imageBase64 payload",
     });
   }
 
@@ -330,16 +376,17 @@ async function handlePrint(req, res) {
     requestedPrinter: printerName || null,
     configuredPrinter: PRINTER_NAME || null,
     usingPrinter: methodTargetPrinter,
-    hasText: Boolean(text),
+    hasText: Boolean(printableText),
     hasImagePath: Boolean(resolvedImagePath),
     isBase64Image: Boolean(imageBase64),
     copies: safeCopies,
+    rawMode,
   });
 
   // 1) Direct raw socket: text only
-  if (text && DIRECT_PRINTER_IP) {
+  if (printableText && DIRECT_PRINTER_IP) {
     try {
-      const payload = Buffer.from(text.repeat(safeCopies), "binary");
+      const payload = Buffer.from(printableText.repeat(safeCopies), "binary");
       await printRawSocket(payload);
 
       log("info", "Printed via direct socket", {
@@ -371,10 +418,11 @@ async function handlePrint(req, res) {
   // 2) CUPS: text or image (including decoded base64 PNG written to tempImagePath)
   try {
     printViaCups({
-      text,
+      text: printableText,
       imagePath: resolvedImagePath,
       printerName,
       copies: safeCopies,
+      raw: rawMode,
     });
 
     cleanupTemp();
@@ -399,9 +447,9 @@ async function handlePrint(req, res) {
   }
 
   // 3) Raw USB: text only
-  if (text) {
+  if (printableText) {
     try {
-      printRawUsb(text, safeCopies);
+      printRawUsb(printableText, safeCopies);
 
       cleanupTemp();
 
@@ -434,28 +482,43 @@ async function handlePrint(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
+  const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+  if (req.method === "GET" && url.pathname === "/health") {
     return handleHealth(req, res);
   }
 
-  if (req.method === "GET" && req.url === "/printers") {
+  if (req.method === "GET" && url.pathname === "/healthz") {
+    return handleHealthz(req, res);
+  }
+
+  if (req.method === "GET" && url.pathname === "/printers") {
     return handlePrinters(req, res);
   }
 
-  if (req.method === "POST" && req.url === "/print") {
+  if (req.method === "POST" && url.pathname === "/print") {
     return handlePrint(req, res);
   }
 
   return respond(res, 404, { success: false, error: "Not found" });
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+server.on("error", (err) => {
+  log("error", "Print bridge failed to start", {
+    error: err.message,
+    code: err.code,
+  });
+  process.exit(1);
+});
+
+server.listen(PORT, BIND_HOST, () => {
   log("info", "Print bridge listening", {
     port: PORT,
+    bindHost: BIND_HOST,
     directPrinter: DIRECT_PRINTER_IP
       ? `${DIRECT_PRINTER_IP}:${DIRECT_PRINTER_PORT}`
       : "not configured",
     cupsPrinter: PRINTER_NAME || "default",
     usbDevice: USB_DEVICE || "none",
+    cupsRaw: CUPS_RAW,
   });
 });

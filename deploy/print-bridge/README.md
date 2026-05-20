@@ -1,84 +1,139 @@
-# Alavont Print Bridge
+# MyOrder Print Bridge
 
-Lightweight Node.js HTTP server that runs on the Ubuntu VPS and accepts print jobs from the Alavont API server, forwarding them to a locally connected thermal printer via raw USB or CUPS.
+Production HTTP print bridge for MyOrder.fun. It runs on the Raspberry Pi over Tailscale and forwards print jobs to CUPS, raw USB, or a direct socket printer.
 
-## Requirements
+Current production target:
 
-- Node.js 18+
-- USB thermal printer (e.g. PL70e) OR a CUPS-managed printer
+- Raspberry Pi 3 B+
+- Tailscale IP: `100.83.99.2`
+- Receipt printer: `MP-POS80`
+- Receipt CUPS queue: `receipt`
+- Label printer: `PL70e-BT`
+- Mac label CUPS queue: `Label_Themal_Printer`
+- Bridge URL used by the app: `http://100.83.99.2:3100`
 
-## Quick Setup
+## API Compatibility
 
-```bash
-# 1. Copy files to VPS
-scp -r deploy/print-bridge/ user@195.35.11.5:/opt/print-bridge
+The bridge accepts both current and older app payloads:
 
-# 2. Install deps
-cd /opt/print-bridge && npm install
+- `GET /healthz` unauthenticated lightweight health check
+- `GET /health` authenticated detailed health check
+- `GET /printers` authenticated CUPS queue list
+- `POST /print` authenticated print job
 
-# 3. Configure
-cp .env.example .env
-nano .env   # set PRINT_BRIDGE_API_KEY, PRINTER_NAME, USB_DEVICE
-
-# 4. Test run
-node server.js
-
-# 5. Install as systemd service
-sudo cp print-bridge.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now print-bridge
-sudo systemctl status print-bridge
-```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `PORT` | No (default 3100) | HTTP port |
-| `PRINT_BRIDGE_API_KEY` | Yes | Must match `PRINT_BRIDGE_API_KEY` in Alavont API .env |
-| `PRINTER_NAME` | For CUPS | CUPS printer name (run `lpstat -p` to list) |
-| `USB_DEVICE` | For USB | Path to device, e.g. `/dev/usb/lp0` |
-
-At least one of `PRINTER_NAME` or `USB_DEVICE` must be set.
-
-## API
-
-### POST /print
-
-Receives a print job. Body (JSON):
+`POST /print` accepts:
 
 ```json
 {
-  "jobId": 42,
-  "printerName": "PL70e",
-  "format": "text",
-  "text": "...",
+  "role": "receipt",
+  "printer": "receipt",
+  "payloadBase64": "BASE64_ESC_POS_BYTES",
   "copies": 1
 }
 ```
 
-### GET /health
+It also accepts older keys such as `printerName`, `text`, and `imageBase64`.
 
-Returns printer status and connection info.
+## Pi Install
 
-## USB Permissions
-
-If the device file is not accessible:
+On the Pi:
 
 ```bash
-sudo usermod -aG lp $USER
-# or
-sudo chmod 666 /dev/usb/lp0
+cd /tmp
+git clone https://github.com/ldshawver/MyOrder.fun.git myorder
+cd myorder/deploy/print-bridge
+sudo bash install-pi.sh
+sudo nano /opt/print-bridge/.env
+sudo systemctl restart print-bridge
+sudo systemctl status print-bridge
 ```
 
-## Nginx (optional — for HTTPS)
+Set `/opt/print-bridge/.env` like:
 
-Add to your nginx.conf if you want to expose the bridge only internally via nginx:
-
-```nginx
-location /print-bridge/ {
-  proxy_pass http://127.0.0.1:3100/;
-  allow 127.0.0.1;
-  deny all;
-}
+```bash
+PORT=3100
+BIND_HOST=0.0.0.0
+PRINT_BRIDGE_API_KEY=the-same-key-from-vps-deploy-env
+PRINTER_NAME=receipt
+CUPS_RAW=true
 ```
+
+## Receipt Queue Check
+
+On the Pi:
+
+```bash
+lpstat -p -d
+printf '\033@MYORDER RECEIPT TEST\n\n\n\035V1' | lp -d receipt -o raw
+```
+
+If the queue is missing, create it through CUPS first. For most USB thermal printers this is done from the CUPS web UI at:
+
+```text
+http://100.83.99.2:631
+```
+
+or from the Pi shell using `lpadmin` after identifying the device URI with:
+
+```bash
+lpinfo -v
+```
+
+## Bridge Smoke Test
+
+From the Pi:
+
+```bash
+bash /opt/print-bridge/smoke-test.sh http://127.0.0.1:3100 "$PRINT_BRIDGE_API_KEY" receipt
+```
+
+From the VPS or any Tailscale machine:
+
+```bash
+curl -fsS http://100.83.99.2:3100/healthz
+curl -fsS -H "x-api-key: $PRINT_BRIDGE_API_KEY" http://100.83.99.2:3100/printers
+```
+
+## PL70e-BT Bluetooth Provisioning
+
+Bluetooth provisioning is intentionally separate from the receipt bridge because the PL70e-BT may be hosted by the Mac or the Pi.
+
+If provisioning on Linux/Pi:
+
+```bash
+cd /opt/print-bridge
+sudo DEVICE_MAC=AA:BB:CC:DD:EE:FF bash provision-pl70e-bt.sh
+```
+
+If you do not know the Bluetooth MAC:
+
+```bash
+bluetoothctl
+scan on
+```
+
+The script creates a raw CUPS queue named `Label_Themal_Printer` unless `QUEUE_NAME` is provided.
+
+## Mac Label Queue
+
+Your Mac currently has:
+
+```text
+Label_Themal_Printer
+receipt
+```
+
+If labels remain Mac-hosted, keep the app label method as local CUPS/Mac bridge according to where the API can reach the queue. If labels move to the Pi, run the Bluetooth provisioning script on the Pi and use bridge queue `Label_Themal_Printer`.
+
+## Service Logs
+
+```bash
+journalctl -u print-bridge -f
+```
+
+## Security Notes
+
+- `/print`, `/health`, and `/printers` require `x-api-key`.
+- `/healthz` is intentionally unauthenticated and returns only basic health.
+- Bind through Tailscale only when possible. Firewall port `3100` from public interfaces.
+- Keep `PRINT_BRIDGE_API_KEY` identical on the VPS API and Pi bridge.
