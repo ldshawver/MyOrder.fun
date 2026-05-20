@@ -7,6 +7,8 @@ import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, 
 import { Link } from "wouter";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
+const ZAPPY_HERO_IMAGE = "/AI-Alavont.gif";
+const ZAPPY_AVATAR_IMAGE = "/zappy-avatar.png";
 
 // ─── Background Particle Field ────────────────────────────────────────────────
 const BG_PARTICLES = [
@@ -82,7 +84,7 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
       transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
     >
       <img
-        src="/zappy-new.png"
+        src={ZAPPY_AVATAR_IMAGE}
         alt="Zappy"
         className="w-full h-full object-cover object-center"
         style={{ filter: "brightness(1.05) contrast(1.05)" }}
@@ -91,8 +93,8 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
   );
 }
 
-// Large hero avatar — full-body portrait with orbital sparks + float
-// animated=true → plays the MP4 loop; animated=false → shows the static PNG
+// Large hero avatar — full-body portrait with orbital sparks + float.
+// animated=true shows the animated Alavont GIF; animated=false uses the compact Zappy avatar.
 function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: { size?: number; mood?: ZappyMood; animated?: boolean }) {
   const shouldReduceMotion = useReducedMotion();
   const { a, b, ring } = MOOD_GLOWS[mood];
@@ -137,24 +139,12 @@ function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: 
         className="absolute rounded-2xl overflow-hidden"
         style={{ inset: 0, boxShadow: `0 0 50px ${a}, 0 0 100px ${b}, 0 24px 80px rgba(0,0,0,0.5)` }}
       >
-        {animated && !shouldReduceMotion ? (
-          <video
-            src="/zappy-animated.mp4"
-            autoPlay
-            loop
-            muted
-            playsInline
-            className="w-full h-full object-cover object-center"
-            style={{ filter: "brightness(1.08) saturate(1.1)" }}
-          />
-        ) : (
-          <img
-            src="/zappy-new.png"
-            alt="Zappy"
-            className="w-full h-full object-cover object-center"
-            style={{ filter: "brightness(1.08) saturate(1.1)" }}
-          />
-        )}
+        <img
+          src={animated && !shouldReduceMotion ? ZAPPY_HERO_IMAGE : ZAPPY_AVATAR_IMAGE}
+          alt="Zappy"
+          className="w-full h-full object-cover object-center"
+          style={{ filter: "brightness(1.08) saturate(1.1)" }}
+        />
         {/* Mood-colored energy pulse overlay */}
         <motion.div
           className="absolute inset-0 pointer-events-none"
