@@ -215,5 +215,52 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
   }
 });
 
+// ─── Concierge Intro Steps ────────────────────────────────────────────────────
+
+const DEFAULT_CONCIERGE_STEPS = [
+  { emoji: "⚡", title: "Hey! I'm Zappy", body: "Your personal shopping buddy for everything at Alavont & Lucifer Cruz. No judgment, no awkwardness — just me helping you find what you need. I know this menu inside and out.", cta: "Let's go!" },
+  { emoji: "🛍️", title: "Explore the Menu", body: "Browse hundreds of products by category or just tell me what you're into. Search it, ask me, or I'll recommend something that fits. We'll find it together.", cta: "Got it, nice!" },
+  { emoji: "🛒", title: "Order Like a Pro", body: "Take a quick look at your cart before checking out. Double-check the details — quantities, product names, the works. Once it's in, it's in. No stress though, I got you.", cta: "Sounds good!" },
+  { emoji: "📱", title: "Track It & Chill", body: "After checkout, updates come straight here — no calls needed. Sit back, relax. When your order's ready, you'll know. I'll be here if you need anything else.", cta: "I'm ready ⚡" },
+];
+
+function parseSteps(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_CONCIERGE_STEPS;
+  try { return JSON.parse(raw); } catch { return DEFAULT_CONCIERGE_STEPS; }
+}
+
+// GET /api/concierge/intro-steps — any authenticated user
+router.get("/concierge/intro-steps", async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
+  res.json(parseSteps(s.conciergeIntroSteps));
+});
+
+// GET /api/admin/concierge-steps — admin/supervisor read
+router.get("/admin/concierge-steps", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
+  res.json(parseSteps(s.conciergeIntroSteps));
+});
+
+// PUT /api/admin/concierge-steps — admin only
+router.put("/admin/concierge-steps", requireRole("admin"), async (req, res): Promise<void> => {
+  const body = req.body;
+  if (!Array.isArray(body) || body.length === 0 || body.length > 8) {
+    res.status(400).json({ error: "steps must be an array of 1–8 items" });
+    return;
+  }
+  for (const step of body) {
+    if (typeof step.emoji !== "string" || typeof step.title !== "string" || typeof step.body !== "string" || typeof step.cta !== "string") {
+      res.status(400).json({ error: "each step must have emoji, title, body, and cta strings" });
+      return;
+    }
+  }
+  const existing = await getOrCreateSettings();
+  const [updated] = await db.update(adminSettingsTable)
+    .set({ conciergeIntroSteps: JSON.stringify(body) })
+    .where(eq(adminSettingsTable.id, existing.id))
+    .returning();
+  res.json(parseSteps(updated.conciergeIntroSteps));
+});
+
 export { getOrCreateSettings, getDecryptedWooCreds };
 export default router;

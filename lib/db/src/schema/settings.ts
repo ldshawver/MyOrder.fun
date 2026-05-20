@@ -45,6 +45,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   // DEFAULT_AI_CONCIERGE_PROMPT in routes/ai.ts. Supports placeholders
   // {{itemCount}} and {{catalog}} substituted at request time.
   aiConciergePrompt: text("ai_concierge_prompt"),
+  conciergeIntroSteps: text("concierge_intro_steps"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

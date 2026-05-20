@@ -41,6 +41,7 @@ import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
+import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -340,6 +341,7 @@ function AuthenticatedApp() {
             <Route path="/admin/receipts" component={AdminReceipts} />
             <Route path="/admin/closeouts" component={AdminCloseouts} />
             <Route path="/admin/feedback" component={AdminFeedback} />
+            <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
           </>
         )}
 

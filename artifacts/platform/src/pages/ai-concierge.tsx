@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useAiConciergeChat, AiChatMessage, type CatalogItem } from "@workspace/api-client-react";
+import { useAuth } from "@clerk/react";
 import { Input } from "@/components/ui/input";
 import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw } from "lucide-react";
 import { Link } from "wouter";
@@ -81,9 +82,9 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
       transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
     >
       <img
-        src="/zappy-avatar.png"
+        src="/zappy-new.png"
         alt="Zappy"
-        className="w-full h-full object-cover object-top"
+        className="w-full h-full object-cover object-center"
         style={{ filter: "brightness(1.05) contrast(1.05)" }}
       />
     </motion.div>
@@ -91,7 +92,8 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
 }
 
 // Large hero avatar — full-body portrait with orbital sparks + float
-function ZappyHero({ size = 120, mood = "idle" as ZappyMood }: { size?: number; mood?: ZappyMood }) {
+// animated=true → plays the MP4 loop; animated=false → shows the static PNG
+function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: { size?: number; mood?: ZappyMood; animated?: boolean }) {
   const shouldReduceMotion = useReducedMotion();
   const { a, b, ring } = MOOD_GLOWS[mood];
   const h = Math.round(size * 1.42);
@@ -130,17 +132,29 @@ function ZappyHero({ size = 120, mood = "idle" as ZappyMood }: { size?: number; 
         transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut", delay: 0.4 }}
       />
 
-      {/* Image */}
+      {/* Image / video */}
       <div
         className="absolute rounded-2xl overflow-hidden"
         style={{ inset: 0, boxShadow: `0 0 50px ${a}, 0 0 100px ${b}, 0 24px 80px rgba(0,0,0,0.5)` }}
       >
-        <img
-          src="/zappy-full.png"
-          alt="Alavont AI"
-          className="w-full h-full object-cover object-top"
-          style={{ filter: "brightness(1.08) saturate(1.1)" }}
-        />
+        {animated && !shouldReduceMotion ? (
+          <video
+            src="/zappy-animated.mp4"
+            autoPlay
+            loop
+            muted
+            playsInline
+            className="w-full h-full object-cover object-center"
+            style={{ filter: "brightness(1.08) saturate(1.1)" }}
+          />
+        ) : (
+          <img
+            src="/zappy-new.png"
+            alt="Zappy"
+            className="w-full h-full object-cover object-center"
+            style={{ filter: "brightness(1.08) saturate(1.1)" }}
+          />
+        )}
         {/* Mood-colored energy pulse overlay */}
         <motion.div
           className="absolute inset-0 pointer-events-none"
@@ -171,7 +185,9 @@ function SendFlash({ show }: { show: boolean }) {
 }
 
 // ─── Welcome Modal ────────────────────────────────────────────────────────────
-const STEPS = [
+type IntroStep = { emoji: string; title: string; body: string; cta: string };
+
+const DEFAULT_STEPS: IntroStep[] = [
   {
     emoji: "⚡",
     title: "Hey! I'm Zappy",
@@ -198,11 +214,11 @@ const STEPS = [
   },
 ];
 
-function WelcomeModal({ onClose }: { onClose: () => void }) {
+function WelcomeModal({ onClose, steps }: { onClose: () => void; steps: IntroStep[] }) {
   const [step, setStep] = useState(0);
   const shouldReduceMotion = useReducedMotion();
-  const isLast = step === STEPS.length - 1;
-  const current = STEPS[step];
+  const isLast = step === steps.length - 1;
+  const current = steps[step];
 
   function finish() { localStorage.setItem(INTRO_KEY, "true"); onClose(); }
 
@@ -269,7 +285,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 
           {/* Progress dots */}
           <div className="flex justify-center gap-2 mt-6 mb-5">
-            {STEPS.map((_, i) => (
+            {steps.map((_, i) => (
               <motion.button
                 key={i}
                 onClick={() => setStep(i)}
@@ -336,6 +352,7 @@ const QUICK_PROMPTS = [
 ];
 
 export default function AiConcierge() {
+  const { getToken } = useAuth();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiChatMessage[]>([
     { role: "assistant", content: INITIAL_MSG },
@@ -344,6 +361,16 @@ export default function AiConcierge() {
   const [showIntro, setShowIntro] = useState(() => { try { return !localStorage.getItem(INTRO_KEY); } catch { return false; } });
   const [sendFlash, setSendFlash] = useState(false);
   const [zappyMood, setZappyMood] = useState<ZappyMood>("idle");
+  const [introSteps, setIntroSteps] = useState<IntroStep[]>(DEFAULT_STEPS);
+
+  useEffect(() => {
+    getToken().then(token => {
+      fetch("/api/concierge/intro-steps", { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (Array.isArray(data) && data.length > 0) setIntroSteps(data); })
+        .catch(() => {});
+    });
+  }, [getToken]);
 
   const chatMutation = useAiConciergeChat();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -384,7 +411,7 @@ export default function AiConcierge() {
       <BackgroundField />
       <SendFlash show={sendFlash} />
       <AnimatePresence>
-        {showIntro && <WelcomeModal onClose={() => setShowIntro(false)} />}
+        {showIntro && <WelcomeModal onClose={() => setShowIntro(false)} steps={introSteps} />}
       </AnimatePresence>
 
       <div className="relative h-[calc(100dvh-5rem)] flex flex-col gap-3 max-w-6xl mx-auto" style={{ zIndex: 1 }}>
@@ -615,7 +642,7 @@ export default function AiConcierge() {
                       animate={{ y: [0, -6, 0] }}
                       transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
                     >
-                      <ZappyHero size={52} mood="idle" />
+                      <ZappyHero size={52} mood="idle" animated={false} />
                     </motion.div>
                     <p className="text-[11px] text-muted-foreground/50 mt-4 leading-relaxed max-w-[140px]">
                       Ask me what you're looking for and I'll recommend something here

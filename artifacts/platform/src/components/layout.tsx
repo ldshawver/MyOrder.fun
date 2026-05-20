@@ -23,7 +23,8 @@ import {
   Bug,
   ReceiptText,
   ClipboardCheck,
-  UserCheck
+  UserCheck,
+  Bot
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -54,6 +55,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/concierge-settings", label: "Zappy Intro", icon: Bot, roles: ["admin"], mobileShow: false },
     { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
   ];
