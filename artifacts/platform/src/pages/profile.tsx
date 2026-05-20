@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { User as UserIcon } from "lucide-react";
+import { Upload, User as UserIcon } from "lucide-react";
 
 const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
 
@@ -19,7 +19,9 @@ function validatePhone(value: string): string | null {
 
 function validateAvatar(value: string): string | null {
   if (!value) return null;
-  return /^https?:\/\//i.test(value) ? null : "Must start with http:// or https://";
+  return /^https?:\/\//i.test(value) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value)
+    ? null
+    : "Must be an image URL or uploaded image.";
 }
 
 export default function Profile() {
@@ -116,6 +118,25 @@ export default function Profile() {
     });
   }
 
+  function uploadAvatar(file: File | null) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setAvatarError("Choose an image file.");
+      return;
+    }
+    if (file.size > 1_000_000) {
+      setAvatarError("Avatar image must be under 1 MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAvatarUrl(String(reader.result ?? ""));
+      setAvatarError(null);
+    };
+    reader.onerror = () => setAvatarError("Could not read avatar image.");
+    reader.readAsDataURL(file);
+  }
+
   const initials = `${(user.firstName ?? "").charAt(0)}${(user.lastName ?? "").charAt(0)}`.toUpperCase() || "U";
 
   return (
@@ -152,6 +173,17 @@ export default function Profile() {
                   className="rounded-sm font-mono text-sm h-9 mt-1"
                   data-testid="input-avatar-url"
                 />
+                <label className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-primary hover:underline cursor-pointer mt-2">
+                  <Upload size={12} />
+                  Upload image
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    className="sr-only"
+                    onChange={(e) => uploadAvatar(e.target.files?.[0] ?? null)}
+                    data-testid="input-avatar-file"
+                  />
+                </label>
                 {avatarError && (
                   <p className="text-xs text-destructive mt-1" data-testid="text-avatar-error">{avatarError}</p>
                 )}

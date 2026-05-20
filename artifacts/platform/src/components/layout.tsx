@@ -41,11 +41,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   // Staff roles that can run a shift / see the CSR queue + clock-in
   const SHIFT_ROLES = ["admin", "supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
+  const isCustomer = user.role === "user";
 
   const navItems = [
     { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
-    { href: "/orders", label: "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
-    { href: "/ai-concierge", label: "Concierge", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+    { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+    { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
     { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
@@ -165,7 +166,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             data-testid="link-account"
           >
             <Settings size={16} />
-            <span>Account</span>
+            <span>Account Settings</span>
           </Link>
           <button
             onClick={() => signOut()}
@@ -335,7 +336,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                   <div className={`p-1.5 rounded-lg transition-colors ${active ? "bg-primary/15" : ""}`}>
                     <Icon size={20} strokeWidth={active ? 2.5 : 1.8} />
                   </div>
-                  <span className="text-[10px] font-medium">{item.label}</span>
+                  <span className="text-[10px] font-medium">{item.mobileLabel ?? item.label}</span>
                 </Link>
               );
             })}

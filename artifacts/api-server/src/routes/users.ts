@@ -35,9 +35,9 @@ const UpdateCurrentUserBody = z.object({
   avatarUrl: z
     .string()
     .trim()
-    .max(2048)
-    .refine((v) => v === "" || /^https?:\/\//i.test(v), {
-      message: "avatarUrl must be an http(s) URL",
+    .max(1_500_000)
+    .refine((v) => v === "" || /^https?:\/\//i.test(v) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(v), {
+      message: "avatarUrl must be an http(s) URL or uploaded image",
     })
     .nullish(),
 });

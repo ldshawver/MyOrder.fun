@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Shield, Fingerprint, User as UserIcon } from "lucide-react";
+import { Bell, Shield, Fingerprint, User as UserIcon, Upload } from "lucide-react";
 import { Link } from "wouter";
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
@@ -18,6 +18,7 @@ export default function Account() {
   const [lastName, setLastName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [notificationMode, setNotificationMode] = useState<"silent" | "sound" | "vibrate">("sound");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -29,6 +30,13 @@ export default function Account() {
       setAvatarUrl(user.avatarUrl ?? "");
     }
   }, [user]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("notification_mode");
+    if (saved === "silent" || saved === "sound" || saved === "vibrate") {
+      setNotificationMode(saved);
+    }
+  }, []);
 
   if (isLoading) return <div className="p-8 font-mono text-xs uppercase tracking-widest text-muted-foreground animate-pulse text-center mt-20">Loading profile...</div>;
   if (!user) return null;
@@ -75,6 +83,30 @@ export default function Account() {
     setMsg(null);
   }
 
+  function uploadAvatar(file: File | null) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setMsg({ kind: "err", text: "Choose an image file." });
+      return;
+    }
+    if (file.size > 1_000_000) {
+      setMsg({ kind: "err", text: "Avatar image must be under 1 MB." });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAvatarUrl(String(reader.result ?? ""));
+      setMsg(null);
+    };
+    reader.onerror = () => setMsg({ kind: "err", text: "Could not read avatar image." });
+    reader.readAsDataURL(file);
+  }
+
+  function saveNotificationMode(mode: "silent" | "sound" | "vibrate") {
+    setNotificationMode(mode);
+    localStorage.setItem("notification_mode", mode);
+  }
+
   const initials = `${(user.firstName ?? "").charAt(0)}${(user.lastName ?? "").charAt(0)}`.toUpperCase() || (user.email ?? "U").charAt(0).toUpperCase();
 
   return (
@@ -106,6 +138,17 @@ export default function Account() {
                   className="rounded-sm font-mono text-xs h-8"
                   data-testid="input-avatar-url"
                 />
+                <label className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-primary hover:underline cursor-pointer mt-2">
+                  <Upload size={12} />
+                  Upload image
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    className="sr-only"
+                    onChange={(e) => uploadAvatar(e.target.files?.[0] ?? null)}
+                    data-testid="input-avatar-file"
+                  />
+                </label>
               </div>
             </div>
 
@@ -215,6 +258,33 @@ export default function Account() {
             )}
             <div className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest flex items-center gap-2 pt-2 border-t border-border/50">
               <UserIcon size={12} /> Member since {new Date(user.createdAt).toLocaleDateString()}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-sm border-border/50 shadow-sm h-fit md:col-span-2">
+          <CardHeader className="bg-muted/10 border-b border-border/50 pb-3 flex flex-row items-center gap-3">
+            <Bell size={16} className="text-muted-foreground" />
+            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Notification Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { value: "silent", label: "Silent" },
+                { value: "sound", label: "Sound" },
+                { value: "vibrate", label: "Vibrate" },
+              ].map((option) => (
+                <Button
+                  key={option.value}
+                  type="button"
+                  variant={notificationMode === option.value ? "default" : "outline"}
+                  className="rounded-sm text-xs uppercase tracking-wider"
+                  onClick={() => saveNotificationMode(option.value as "silent" | "sound" | "vibrate")}
+                  data-testid={`button-notification-${option.value}`}
+                >
+                  {option.label}
+                </Button>
+              ))}
             </div>
           </CardContent>
         </Card>

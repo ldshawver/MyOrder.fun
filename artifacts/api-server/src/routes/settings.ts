@@ -14,7 +14,44 @@ type RoutingRule = typeof ROUTING_RULES[number];
 // Hard cap on the admin-editable AI prompt to avoid pathological prompts
 // or accidental paste-the-whole-document mistakes blowing the model context.
 export const AI_CONCIERGE_PROMPT_MAX_CHARS = 8000;
-let importTemplateColumnEnsured = false;
+let adminSettingsSchemaEnsured = false;
+
+async function ensureAdminSettingsSchema(): Promise<void> {
+  if (adminSettingsSchemaEnsured) return;
+
+  const statements = [
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "menu_import_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "show_out_of_stock" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['stripe']::text[]`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "checkout_conversion_preview" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_image_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "auto_print_on_payment" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "receipt_template_style" text NOT NULL DEFAULT 'standard'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "label_template_style" text NOT NULL DEFAULT 'standard'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "purge_mode" text NOT NULL DEFAULT 'delayed'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "purge_delay_hours" integer NOT NULL DEFAULT 72`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "keep_audit_token" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "keep_failed_payment_logs" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "petty_cash" numeric(10, 2) DEFAULT '0'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "receipt_line_name_mode" text NOT NULL DEFAULT 'lucifer_only'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_store_url" text DEFAULT 'https://lucifercruz.com'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_consumer_key" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_consumer_secret" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "order_routing_rule" text NOT NULL DEFAULT 'round_robin'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "default_eta_minutes" integer NOT NULL DEFAULT 30`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "ai_concierge_prompt" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_intro_steps" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_promoted_item_ids" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
+  ];
+
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  adminSettingsSchemaEnsured = true;
+}
 
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
   const aiPrompt = s.aiConciergePrompt ?? null;
@@ -49,10 +86,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
 
 // Single-tenant: use the one global settings row, creating it if absent
 async function getOrCreateSettings() {
-  if (!importTemplateColumnEnsured) {
-    await db.execute(sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`);
-    importTemplateColumnEnsured = true;
-  }
+  await ensureAdminSettingsSchema();
   const [existing] = await db.select().from(adminSettingsTable).limit(1);
   if (existing) return existing;
   const tenantId = await getHouseTenantId();
