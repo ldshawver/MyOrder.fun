@@ -48,6 +48,8 @@ export const adminSettingsTable = pgTable("admin_settings", {
   conciergeIntroSteps: text("concierge_intro_steps"),
   conciergePromotedItemIds: text("concierge_promoted_item_ids"),
   importTemplateSpec: text("import_template_spec"),
+  pickupInstructionOptions: text("pickup_instruction_options"),
+  printerNetworkConfig: text("printer_network_config"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

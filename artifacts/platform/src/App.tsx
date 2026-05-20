@@ -31,6 +31,8 @@ import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
 import Profile from "@/pages/profile";
+import Credits from "@/pages/credits";
+import CsrSettings from "@/pages/csr-settings";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -42,6 +44,8 @@ import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
+import AdminCredits from "@/pages/admin/credits";
+import AdminReports from "@/pages/admin/reports";
 import Layout from "@/components/layout";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -342,17 +346,23 @@ function AuthenticatedApp() {
             <Route path="/admin/closeouts" component={AdminCloseouts} />
             <Route path="/admin/feedback" component={AdminFeedback} />
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
+            <Route path="/admin/credits" component={AdminCredits} />
+            <Route path="/admin/reports" component={AdminReports} />
           </>
         )}
 
         {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
-          <Route path="/staff" component={StaffQueue} />
+          <>
+            <Route path="/staff" component={StaffQueue} />
+            <Route path="/csr-settings" component={CsrSettings} />
+          </>
         )}
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
+        <Route path="/credits" component={Credits} />
         <Route component={NotFound} />
         </Switch>
       </Layout>

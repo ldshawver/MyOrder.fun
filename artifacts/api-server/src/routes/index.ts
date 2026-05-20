@@ -20,6 +20,8 @@ import inventoryRouter from "./inventory";
 import sessionRouter from "./session";
 import feedbackRouter from "./feedback";
 import integrationsRouter from "./integrations";
+import creditsRouter from "./credits";
+import reportsRouter from "./reports";
 
 const router: IRouter = Router();
 
@@ -44,5 +46,7 @@ router.use(inventoryRouter);
 router.use(sessionRouter);
 router.use(feedbackRouter);
 router.use(integrationsRouter);
+router.use(creditsRouter);
+router.use(reportsRouter);
 
 export default router;

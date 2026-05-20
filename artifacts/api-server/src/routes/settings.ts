@@ -44,6 +44,8 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_intro_steps" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_promoted_item_ids" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "pickup_instruction_options" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "printer_network_config" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
   ];
 
@@ -80,8 +82,41 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     wcConsumerKeySet: !!s.wcConsumerKey,
     wcConsumerSecretSet: !!s.wcConsumerSecret,
     wcEnabled: s.wcEnabled ?? true,
+    pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
+    printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
     updatedAt: s.updatedAt,
   };
+}
+
+const DEFAULT_PICKUP_INSTRUCTIONS = [
+  { id: "front-counter", label: "Front Counter", locationName: "", address: "" },
+  { id: "side-door", label: "Side Door", locationName: "", address: "" },
+  { id: "courier-handoff", label: "Courier Handoff", locationName: "", address: "" },
+];
+
+function parsePickupInstructions(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_PICKUP_INSTRUCTIONS;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : DEFAULT_PICKUP_INSTRUCTIONS;
+  } catch {
+    return DEFAULT_PICKUP_INSTRUCTIONS;
+  }
+}
+
+function parsePrinterNetworkConfig(raw: string | null | undefined) {
+  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
+      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
+      raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
+    };
+  } catch {
+    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  }
 }
 
 // Single-tenant: use the one global settings row, creating it if absent
@@ -252,6 +287,60 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
   } catch (err) {
     res.status(500).json({ error: (err as Error)?.message ?? "Failed to save WooCommerce settings" });
   }
+});
+
+// ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
+
+router.get("/admin/csr-settings", requireRole("admin", "supervisor", "customer_service_rep", "business_sitter", "sales_rep", "lab_tech"), async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
+  res.json({
+    pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
+    printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
+  });
+});
+
+router.put("/admin/csr-settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+  const pickupInstructionOptions = req.body?.pickupInstructionOptions;
+  const printerNetworkConfig = req.body?.printerNetworkConfig;
+  const update: Partial<typeof adminSettingsTable.$inferInsert> = {};
+
+  if (pickupInstructionOptions !== undefined) {
+    if (!Array.isArray(pickupInstructionOptions) || pickupInstructionOptions.length > 20) {
+      res.status(400).json({ error: "pickupInstructionOptions must be an array of up to 20 options" });
+      return;
+    }
+    update.pickupInstructionOptions = JSON.stringify(pickupInstructionOptions.map((option, index) => ({
+      id: String(option.id || `pickup-${index + 1}`),
+      label: String(option.label || "Pickup option"),
+      locationName: String(option.locationName || ""),
+      address: String(option.address || ""),
+    })));
+  }
+
+  if (printerNetworkConfig !== undefined) {
+    const cfg = printerNetworkConfig as Record<string, unknown>;
+    update.printerNetworkConfig = JSON.stringify({
+      onsiteMode: String(cfg.onsiteMode || "auto"),
+      ssid: String(cfg.ssid || ""),
+      password: String(cfg.password || ""),
+      raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
+    });
+  }
+
+  if (Object.keys(update).length === 0) {
+    res.status(400).json({ error: "No fields provided" });
+    return;
+  }
+
+  const existing = await getOrCreateSettings();
+  const [updated] = await db.update(adminSettingsTable)
+    .set(update)
+    .where(eq(adminSettingsTable.id, existing.id))
+    .returning();
+  res.json({
+    pickupInstructionOptions: parsePickupInstructions(updated.pickupInstructionOptions),
+    printerNetworkConfig: parsePrinterNetworkConfig(updated.printerNetworkConfig),
+  });
 });
 
 // ─── Concierge Promoted Items ─────────────────────────────────────────────────

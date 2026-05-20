@@ -9,3 +9,4 @@ export * from "./shifts";
 export * from "./print";
 export * from "./settings";
 export * from "./feedback";
+export * from "./credits";

@@ -24,7 +24,10 @@ import {
   ReceiptText,
   ClipboardCheck,
   UserCheck,
-  Bot
+  Bot,
+  BadgeDollarSign,
+  BarChart3,
+  MapPin
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -47,12 +50,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
     { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
     { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+    { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES, mobileShow: false },
     { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
+    { href: "/csr-settings", label: "CSR Settings", icon: MapPin, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/credits", label: "Credit Management", icon: BadgeDollarSign, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
     { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"], mobileShow: false },
+    { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
     { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
