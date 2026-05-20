@@ -874,6 +874,11 @@ export default function AdminImport() {
     const res = await fetch("/api/admin/products/import-template", {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (!res.ok) {
+      const text = await res.text();
+      setSpecError(text || `Could not download template (HTTP ${res.status})`);
+      return;
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

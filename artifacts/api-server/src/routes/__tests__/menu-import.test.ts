@@ -59,6 +59,7 @@ vi.mock("@workspace/db", () => {
   };
   return {
     db: {
+      execute: vi.fn(() => Promise.resolve()),
       select: vi.fn(() => mkChain()),
       insert: vi.fn((table: { _name?: string }) => ({
         values: (vals: Record<string, unknown>) => {

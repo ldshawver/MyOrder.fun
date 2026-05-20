@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
@@ -120,6 +120,7 @@ const DEFAULT_IMPORT_COLUMNS: ImportTemplateColumn[] = [
 ];
 
 const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = { version: 1, columns: DEFAULT_IMPORT_COLUMNS };
+let importTemplateColumnEnsured = false;
 
 // ─── Header normalization (BOM / whitespace strip only — case-sensitive) ──────
 function cleanHeader(raw: string): string {
@@ -219,7 +220,18 @@ function validateImportSpec(input: unknown): { ok: true; spec: ImportTemplateSpe
 }
 
 async function getOrCreateSettingsRow() {
-  const [existing] = await db.select().from(adminSettingsTable).limit(1);
+  if (!importTemplateColumnEnsured) {
+    await db.execute(sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`);
+    importTemplateColumnEnsured = true;
+  }
+  const [existing] = await db
+    .select({
+      id: adminSettingsTable.id,
+      tenantId: adminSettingsTable.tenantId,
+      importTemplateSpec: adminSettingsTable.importTemplateSpec,
+    })
+    .from(adminSettingsTable)
+    .limit(1);
   if (existing) return existing;
   const tenantId = await getHouseTenantId();
   const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
