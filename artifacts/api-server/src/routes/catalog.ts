@@ -36,6 +36,16 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) 
     imageUrl: resolvedImageUrl,
     tags: i.tags ?? [],
     metadata: i.metadata,
+    internalName: i.internalName ?? null,
+    internalDescription: i.internalDescription ?? null,
+    internalCategory: i.internalCategory ?? null,
+    supplierName: i.supplierName ?? null,
+    supplierCategory: i.supplierCategory ?? null,
+    backendInventoryNotes: i.backendInventoryNotes ?? null,
+    vendorSku: i.vendorSku ?? null,
+    sourceInventoryId: i.sourceInventoryId ?? null,
+    costBasis: i.costBasis ? parseFloat(i.costBasis as string) : null,
+    inventoryTrackingData: i.inventoryTrackingData ?? {},
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
     // Dual-brand fields — LC merchant names suppressed in Alavont-only mode
@@ -47,6 +57,16 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) 
     luciferCruzImageUrl: alavontOnly ? null : (i.luciferCruzImageUrl ?? null),
     luciferCruzDescription: alavontOnly ? null : (i.luciferCruzDescription ?? null),
     luciferCruzCategory: alavontOnly ? null : (i.luciferCruzCategory ?? null),
+    displayName: i.displayName ?? null,
+    displayDescription: i.displayDescription ?? null,
+    displayCategory: i.displayCategory ?? null,
+    displayImage: i.displayImage ?? null,
+    merchantBrandName: i.merchantBrandName ?? null,
+    marketingCopy: i.marketingCopy ?? null,
+    customerSafeName: i.customerSafeName ?? null,
+    customerSafeDescription: i.customerSafeDescription ?? null,
+    upsellCopy: i.upsellCopy ?? null,
+    promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
     receiptName: i.receiptName ?? null,
@@ -140,12 +160,14 @@ router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Pr
   const tenantId = await getHouseTenantId();
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
+  const { costBasis, ...createData } = body.data;
   const [row] = await db.insert(catalogItemsTable).values({
-    ...(body.data as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
+    ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
     name: body.data.name,
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
+    costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
     stockQuantity: String(body.data.stockQuantity ?? 0),
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
@@ -230,13 +252,14 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
     return;
   }
 
-  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, ...restBodyData } = body.data;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, ...restBodyData } = body.data;
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
   if (price !== undefined) updateData.price = String(price);
   if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
   if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
+  if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.

@@ -82,6 +82,19 @@ function makeAlavontItem(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const previewFields = {
+  display_name: "LC Premium Tee",
+  display_description: "Customer-safe description",
+  display_category: "Premium Goods",
+  display_image: null,
+  merchant_brand_name: "Lucifer Cruz",
+  marketing_copy: "Premium branded checkout copy.",
+  customer_safe_name: "LC Premium Tee",
+  customer_safe_description: "Customer-safe description",
+  upsell_copy: null,
+  promo_badges: [],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -155,6 +168,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
         catalog_display_name: "Alavont Brand Tee",
         merchant_name: "LC Premium Tee",
         merchant_sku: "LC-SKU-100",
+        ...previewFields,
         receipt_alavont_name: "Alavont Brand Tee",
         receipt_lucifer_name: "LC Premium Tee",
         merchant_image_url: null,
@@ -264,6 +278,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
         catalog_display_name: "Alavont Item",
         merchant_name: "LC Item",
         merchant_sku: "ALV-FORBIDDEN-88",
+        ...previewFields,
         receipt_alavont_name: "Alavont Item",
         receipt_lucifer_name: "LC Item",
         merchant_image_url: null,
@@ -348,6 +363,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
         catalog_display_name: "Alavont Distinct Name 42",
         merchant_name: "LC Real Name",
         merchant_sku: "LC-1",
+        ...previewFields,
         receipt_alavont_name: "Alavont Distinct Name 42",
         receipt_lucifer_name: "LC Real Name",
         merchant_image_url: null,

@@ -325,6 +325,12 @@ export type CreateOrderBodyItemsItem = {
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
+  checkoutConfirmation?: {
+    acceptedAllSalesFinal: true;
+    confirmedAt?: string;
+    legalDisclaimerText: string;
+    paymentMethod?: "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual";
+  };
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
 }
@@ -895,4 +901,3 @@ limit?: number;
 export type ListNotificationsParams = {
 unreadOnly?: boolean;
 };
-

@@ -130,6 +130,131 @@ router.get(
 
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+const PreviewCartLineInput = z.object({
+  catalogItemId: z.number().int().positive(),
+  quantity: z.number().int().positive(),
+}).strict();
+
+const PreviewConversionBody = z.object({
+  items: z.array(PreviewCartLineInput).min(1),
+  confirmation: z.object({
+    acceptedAllSalesFinal: z.literal(true),
+    confirmedAt: z.string().datetime().optional(),
+    legalDisclaimerText: z.string().min(1).max(1000),
+  }),
+}).strict();
+
+function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"]) {
+  const totals = computeCheckoutTotals(lines);
+  return {
+    confirmation: {
+      acceptedAllSalesFinal: true,
+      confirmedAt: confirmation.confirmedAt ?? new Date().toISOString(),
+      legalDisclaimerText: confirmation.legalDisclaimerText,
+    },
+    cartSnapshot: lines.map(line => ({
+      catalogItemId: line.catalog_item_id,
+      internalName: line.catalog_display_name,
+      merchantSku: line.merchant_sku,
+      sourceType: line.source_type,
+      quantity: line.quantity,
+      unitPrice: line.unit_price,
+      lineSubtotal: line.line_subtotal,
+    })),
+    pricingSnapshot: {
+      subtotal: totals.subtotal,
+      tax: totals.tax,
+      total: totals.total,
+      taxRate: totals.taxRate,
+    },
+    converted: {
+      stage: "customer_facing_product_conversion",
+      brandName: lines[0]?.merchant_brand_name ?? "Lucifer Cruz",
+      headline: "Your order has been converted into a branded checkout experience.",
+      zappyMessage: "I transformed the internal cart into customer-ready merchandise, checked the merchant mapping, and prepared payment options. Cash orders may qualify for exclusive discounts when enabled.",
+      paymentMethods: [
+        { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
+        { id: "cash_app", label: "Cash App", promoted: false },
+        { id: "stripe", label: "Stripe card", promoted: false },
+        { id: "venmo", label: "Venmo", promoted: false },
+        { id: "gift_card", label: "Gift Card", promoted: false },
+        { id: "manual", label: "Other/manual", promoted: false },
+      ],
+      items: lines.map(line => ({
+        catalogItemId: line.catalog_item_id,
+        displayName: line.display_name,
+        customerSafeName: line.customer_safe_name,
+        displayDescription: line.display_description,
+        customerSafeDescription: line.customer_safe_description,
+        displayCategory: line.display_category,
+        displayImage: line.display_image,
+        merchantBrandName: line.merchant_brand_name,
+        marketingCopy: line.marketing_copy,
+        upsellCopy: line.upsell_copy,
+        promoBadges: line.promo_badges,
+        quantity: line.quantity,
+        unitPrice: line.unit_price,
+        lineSubtotal: line.line_subtotal,
+      })),
+    },
+  };
+}
+
+// POST /api/orders/preview-conversion
+// Mandatory pre-payment conversion stage. Zappy/customer clients call this
+// after the final cart confirmation and before any payment UI appears.
+router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const body = PreviewConversionBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message, details: body.error.issues });
+    return;
+  }
+
+  let normalizedLines: NormalizedCartLine[];
+  try {
+    normalizedLines = await normalizeCheckoutCart(body.data.items);
+  } catch (normErr) {
+    if (normErr instanceof CheckoutMappingError) {
+      await writeAuditLog({
+        actorId: actor.id,
+        actorEmail: actor.email,
+        actorRole: actor.role,
+        action: "ITEM_CONVERSION_FAILED",
+        resourceType: "catalog_item",
+        resourceId: String(normErr.catalogItemId),
+        metadata: { stage: "preview_conversion", reason: normErr.reason, items: body.data.items },
+        ipAddress: req.ip,
+      });
+      res.status(422).json({
+        error: "Item not available for branded checkout conversion",
+        catalogItemId: normErr.catalogItemId,
+      });
+      return;
+    }
+    res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
+    return;
+  }
+
+  const preview = buildConversionPreview(normalizedLines, body.data.confirmation);
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "ORDER_CONVERSION_PREVIEWED",
+    resourceType: "order",
+    metadata: {
+      itemCount: normalizedLines.length,
+      acceptedAllSalesFinal: true,
+      confirmedAt: preview.confirmation.confirmedAt,
+      total: preview.pricingSnapshot.total,
+    },
+    ipAddress: req.ip,
+  });
+
+  res.json(preview);
+});
+
 async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const customer = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
@@ -269,6 +394,10 @@ router.post("/orders", async (req, res): Promise<void> => {
   const subtotal = totals.subtotal;
   const tax = totals.tax;
   const total = totals.total;
+  const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
+  const finalConfirmationAt = checkoutConfirmation?.confirmedAt
+    ? new Date(checkoutConfirmation.confirmedAt)
+    : null;
 
   const houseTenantId = await getHouseTenantId();
 
@@ -303,6 +432,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     customerId: actor.id,
     status: "pending",
     paymentStatus: "unpaid",
+    paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
     subtotal: String(subtotal.toFixed(2)),
     tax: String(tax.toFixed(2)),
     total: String(total.toFixed(2)),
@@ -316,6 +446,10 @@ router.post("/orders", async (req, res): Promise<void> => {
     promisedMinutes: routing.promisedMinutes,
     estimatedReadyAt: routing.estimatedReadyAt,
     fulfillmentStatus: "submitted",
+    finalConfirmationAt,
+    legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
+    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
+    selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
   }).returning();
 
   // Persist dual-brand snapshots on the order for auditability
@@ -334,8 +468,17 @@ router.post("/orders", async (req, res): Promise<void> => {
     quantity: l.quantity,
     unitPrice: l.unit_price,
   }));
+  const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
+    acceptedAllSalesFinal: true,
+    confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+  });
 
-  await db.update(ordersTable).set({ alavontCartSnapshot, luciferCheckoutSnapshot }).where(eq(ordersTable.id, order.id));
+  await db.update(ordersTable).set({
+    alavontCartSnapshot,
+    luciferCheckoutSnapshot,
+    checkoutConversionSnapshot,
+  }).where(eq(ordersTable.id, order.id));
 
   // Insert order items using normalized line data
   // catalogItemName = Alavont display name (internal), luciferCruzName = LC merchant name (processor)
@@ -375,7 +518,15 @@ router.post("/orders", async (req, res): Promise<void> => {
     action: "CREATE_ORDER",
     resourceType: "order",
     resourceId: String(order.id),
-    metadata: { total, itemCount: normalizedLines.length, routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId },
+    metadata: {
+      total,
+      itemCount: normalizedLines.length,
+      routeSource: routing.routeSource,
+      assignedCsrUserId: routing.assignedCsrUserId,
+      finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
+      legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
+      selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+    },
     ipAddress: req.ip,
   });
   await writeAuditLog({

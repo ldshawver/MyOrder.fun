@@ -56,6 +56,11 @@ export const ordersTable = pgTable("orders", {
   // Dual-brand checkout snapshots
   alavontCartSnapshot: jsonb("alavont_cart_snapshot"),
   luciferCheckoutSnapshot: jsonb("lucifer_checkout_snapshot"),
+  finalConfirmationAt: timestamp("final_confirmation_at", { withTimezone: true }),
+  legalDisclaimerAccepted: boolean("legal_disclaimer_accepted").notNull().default(false),
+  legalDisclaimerText: text("legal_disclaimer_text"),
+  checkoutConversionSnapshot: jsonb("checkout_conversion_snapshot"),
+  selectedPaymentMethod: text("selected_payment_method"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

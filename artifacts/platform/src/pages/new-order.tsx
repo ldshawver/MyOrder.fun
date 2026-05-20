@@ -1,16 +1,52 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
+import { useAuth } from "@clerk/react";
 import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, type CatalogItem } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles } from "lucide-react";
+import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
 type CartItem = { id: number; name: string; price: number; quantity: number };
+type ConversionPreview = {
+  confirmation: {
+    acceptedAllSalesFinal: true;
+    confirmedAt: string;
+    legalDisclaimerText: string;
+  };
+  pricingSnapshot: {
+    subtotal: number;
+    tax: number;
+    total: number;
+    taxRate: number;
+  };
+  converted: {
+    brandName: string;
+    headline: string;
+    zappyMessage: string;
+    paymentMethods: Array<{ id: string; label: string; promoted?: boolean; message?: string }>;
+    items: Array<{
+      catalogItemId: number;
+      displayName: string;
+      displayDescription: string;
+      displayCategory: string;
+      displayImage: string | null;
+      merchantBrandName: string;
+      marketingCopy: string;
+      upsellCopy: string | null;
+      promoBadges: string[];
+      quantity: number;
+      unitPrice: number;
+      lineSubtotal: number;
+    }>;
+  };
+};
+
+const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
 
 export default function NewOrder() {
   const [, setLocation] = useLocation();
@@ -30,8 +66,14 @@ export default function NewOrder() {
   };
   const [shippingAddress, setShippingAddress] = useState("");
   const [notes, setNotes] = useState("");
+  const [acceptedFinalSale, setAcceptedFinalSale] = useState(false);
+  const [conversionPreview, setConversionPreview] = useState<ConversionPreview | null>(null);
+  const [conversionError, setConversionError] = useState<string | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
+  const { getToken } = useAuth();
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
@@ -60,6 +102,11 @@ export default function NewOrder() {
 
   const createOrderMutation = useCreateOrder();
   const upsellMutation = useAiUpsellSuggestions();
+
+  useEffect(() => {
+    setConversionPreview(null);
+    setConversionError(null);
+  }, [cart, shippingAddress, notes]);
 
   useEffect(() => {
     const cartStr = cart.map(c=>c.id).sort().join(",");
@@ -93,15 +140,55 @@ export default function NewOrder() {
     setCart(prev => prev.filter(i => i.id !== id));
   };
 
+  const handlePreviewConversion = async () => {
+    if (cart.length === 0 || !acceptedFinalSale) return;
+    setIsConverting(true);
+    setConversionError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/orders/preview-conversion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          confirmation: {
+            acceptedAllSalesFinal: true,
+            confirmedAt: new Date().toISOString(),
+            legalDisclaimerText: FINAL_SALE_TEXT,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Product conversion failed.");
+      }
+      setConversionPreview(data as ConversionPreview);
+      setSelectedPaymentMethod((data as ConversionPreview).converted.paymentMethods[0]?.id ?? "cash");
+    } catch (e) {
+      setConversionError(e instanceof Error ? e.message : "Product conversion failed.");
+    } finally {
+      setIsConverting(false);
+    }
+  };
+
   const handleSubmit = () => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || !conversionPreview) return;
     
     createOrderMutation.mutate(
       {
         data: {
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
           shippingAddress,
-          notes
+          notes,
+          checkoutConfirmation: {
+            acceptedAllSalesFinal: true,
+            confirmedAt: conversionPreview.confirmation.confirmedAt,
+            legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
+            paymentMethod: selectedPaymentMethod as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual",
+          },
         }
       },
       {
@@ -119,6 +206,7 @@ export default function NewOrder() {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const displayedTotal = conversionPreview?.pricingSnapshot.total ?? subtotal;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
@@ -173,7 +261,7 @@ export default function NewOrder() {
         {/* Cart & Checkout */}
         <Card className="lg:col-span-5 flex flex-col overflow-hidden rounded-sm border-border/50 shadow-sm">
           <CardHeader className="pb-3 shrink-0 bg-muted/10 border-b border-border/50">
-            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Current Build</CardTitle>
+            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Final Confirmation</CardTitle>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col overflow-hidden p-0">
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -223,32 +311,125 @@ export default function NewOrder() {
 
               <CatalogNotice />
 
+              <div className="rounded-sm border border-border/50 bg-background p-3 space-y-3">
+                <label className="flex items-start gap-3 text-sm leading-relaxed">
+                  <input
+                    type="checkbox"
+                    checked={acceptedFinalSale}
+                    onChange={(e) => setAcceptedFinalSale(e.target.checked)}
+                    className="mt-1 size-4 accent-primary"
+                    data-testid="checkbox-all-sales-final"
+                  />
+                  <span>
+                    <span className="font-semibold">All Sales Final confirmation.</span>{" "}
+                    <span className="text-muted-foreground">{FINAL_SALE_TEXT}</span>
+                  </span>
+                </label>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full rounded-sm h-10 text-xs font-semibold uppercase tracking-wider"
+                  disabled={cart.length === 0 || !acceptedFinalSale || isConverting}
+                  onClick={handlePreviewConversion}
+                  data-testid="button-preview-conversion"
+                >
+                  <Wand2 size={15} className="mr-2" />
+                  {isConverting ? "Converting..." : "Convert Products Before Payment"}
+                </Button>
+                {conversionError && (
+                  <div className="text-xs text-destructive" data-testid="text-conversion-error">{conversionError}</div>
+                )}
+              </div>
+
               <div className="flex items-center justify-between text-lg pt-2 border-t border-border/50">
                 <span className="font-medium text-muted-foreground">Total</span>
-                <span className="font-bold tracking-tight" data-testid="text-total">${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                <span className="font-bold tracking-tight" data-testid="text-total">${displayedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
 
               <Button 
                 className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider" 
-                disabled={cart.length === 0 || createOrderMutation.isPending}
+                disabled={cart.length === 0 || !conversionPreview || createOrderMutation.isPending}
                 onClick={handleSubmit}
                 data-testid="button-submit-order"
               >
-                {createOrderMutation.isPending ? "Processing..." : "Commit Order"}
+                {createOrderMutation.isPending ? "Processing..." : "Create Order After Conversion"}
               </Button>
             </div>
           </CardContent>
         </Card>
 
-        {/* AI Upsell Suggestions */}
+        {/* AI Upsell + Product Conversion */}
         <Card className="lg:col-span-3 flex flex-col overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20">
           <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
-              <Sparkles size={16} /> Intelligence
+              <Sparkles size={16} /> Zappy Checkout
             </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-y-auto p-4">
-            {upsellMutation.isPending ? (
+            {conversionPreview ? (
+              <div className="space-y-4" data-testid="conversion-preview">
+                <div className="rounded-sm border border-primary/25 bg-background/95 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-primary text-xs font-semibold uppercase tracking-wider">
+                    <ShieldCheck size={15} /> {conversionPreview.converted.brandName}
+                  </div>
+                  <div className="text-base font-semibold leading-tight">{conversionPreview.converted.headline}</div>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{conversionPreview.converted.zappyMessage}</p>
+                </div>
+                <div className="space-y-3">
+                  {conversionPreview.converted.items.map(item => (
+                    <div key={item.catalogItemId} className="rounded-sm overflow-hidden border border-primary/20 bg-background shadow-sm" data-testid={`converted-item-${item.catalogItemId}`}>
+                      {item.displayImage && (
+                        <div className="h-24 bg-muted/30 overflow-hidden">
+                          <img src={item.displayImage} alt={item.displayName} className="h-full w-full object-cover" />
+                        </div>
+                      )}
+                      <div className="p-3 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-widest text-primary">{item.displayCategory}</div>
+                            <div className="font-semibold text-sm leading-tight">{item.displayName}</div>
+                          </div>
+                          <div className="font-mono text-xs">${item.lineSubtotal.toFixed(2)}</div>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-relaxed">{item.displayDescription}</p>
+                        <p className="text-xs text-primary/90 leading-relaxed">{item.marketingCopy}</p>
+                        {item.promoBadges.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {item.promoBadges.map(badge => (
+                              <span key={badge} className="rounded-sm border border-primary/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+                                {badge}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-2 pt-2 border-t border-primary/20">
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-primary">Payment appears after conversion</div>
+                  {conversionPreview.converted.paymentMethods.map(method => {
+                    const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
+                    const active = selectedPaymentMethod === method.id;
+                    return (
+                      <button
+                        key={method.id}
+                        type="button"
+                        onClick={() => setSelectedPaymentMethod(method.id)}
+                        className={`w-full rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
+                        data-testid={`payment-method-${method.id}`}
+                      >
+                        <span className="flex items-center gap-2 text-sm font-semibold">
+                          <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
+                          {method.label}
+                        </span>
+                        {method.message && <span className="block mt-1 text-xs text-emerald-600">{method.message}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : upsellMutation.isPending ? (
               <div className="flex flex-col items-center justify-center h-full text-primary/60 space-y-3">
                 <div className="flex gap-1">
                   <div className="w-1.5 h-1.5 rounded-full bg-primary/40 animate-pulse"></div>

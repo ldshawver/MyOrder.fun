@@ -271,6 +271,16 @@ export const CreateCatalogItemBody = zod.object({
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "tags": zod.array(zod.string()).optional(),
+  "internalName": zod.string().nullish(),
+  "internalDescription": zod.string().nullish(),
+  "internalCategory": zod.string().nullish(),
+  "supplierName": zod.string().nullish(),
+  "supplierCategory": zod.string().nullish(),
+  "backendInventoryNotes": zod.string().nullish(),
+  "vendorSku": zod.string().nullish(),
+  "sourceInventoryId": zod.string().nullish(),
+  "costBasis": zod.number().nullish(),
+  "inventoryTrackingData": zod.record(zod.string(), zod.unknown()).optional(),
   "luciferCruzName": zod.string().nullish(),
   "luciferCruzImageUrl": zod.string().nullish(),
   "luciferCruzDescription": zod.string().nullish(),
@@ -285,6 +295,16 @@ export const CreateCatalogItemBody = zod.object({
   "alavontCategory": zod.string().nullish(),
   "alavontImageUrl": zod.string().nullish(),
   "alavontInStock": zod.boolean().nullish(),
+  "displayName": zod.string().nullish(),
+  "displayDescription": zod.string().nullish(),
+  "displayCategory": zod.string().nullish(),
+  "displayImage": zod.string().nullish(),
+  "merchantBrandName": zod.string().nullish(),
+  "marketingCopy": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
+  "upsellCopy": zod.string().nullish(),
+  "promoBadges": zod.array(zod.string()).optional(),
   "labName": zod.string().nullish(),
   "receiptName": zod.string().nullish()
 })
@@ -336,6 +356,16 @@ export const UpdateCatalogItemBody = zod.object({
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "tags": zod.array(zod.string()).optional(),
+  "internalName": zod.string().nullish(),
+  "internalDescription": zod.string().nullish(),
+  "internalCategory": zod.string().nullish(),
+  "supplierName": zod.string().nullish(),
+  "supplierCategory": zod.string().nullish(),
+  "backendInventoryNotes": zod.string().nullish(),
+  "vendorSku": zod.string().nullish(),
+  "sourceInventoryId": zod.string().nullish(),
+  "costBasis": zod.number().nullish(),
+  "inventoryTrackingData": zod.record(zod.string(), zod.unknown()).optional(),
   "luciferCruzName": zod.string().nullish(),
   "luciferCruzImageUrl": zod.string().nullish(),
   "luciferCruzDescription": zod.string().nullish(),
@@ -350,6 +380,16 @@ export const UpdateCatalogItemBody = zod.object({
   "alavontCategory": zod.string().nullish(),
   "alavontImageUrl": zod.string().nullish(),
   "alavontInStock": zod.boolean().nullish(),
+  "displayName": zod.string().nullish(),
+  "displayDescription": zod.string().nullish(),
+  "displayCategory": zod.string().nullish(),
+  "displayImage": zod.string().nullish(),
+  "merchantBrandName": zod.string().nullish(),
+  "marketingCopy": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
+  "upsellCopy": zod.string().nullish(),
+  "promoBadges": zod.array(zod.string()).optional(),
   "labName": zod.string().nullish(),
   "receiptName": zod.string().nullish()
 })
@@ -454,6 +494,12 @@ export const ListOrdersResponse = zod.object({
 export const CreateOrderBody = zod.object({
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.literal(true),
+  "confirmedAt": zod.string().datetime().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(["cash", "cash_app", "stripe", "venmo", "gift_card", "manual"]).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "catalogItemId": zod.number().min(1),
   "quantity": zod.number().min(1)
@@ -1481,5 +1527,3 @@ export const AddOrderNoteBody = zod.object({
   "isEncrypted": zod.boolean().optional(),
   "isInternal": zod.boolean().optional()
 })
-
-

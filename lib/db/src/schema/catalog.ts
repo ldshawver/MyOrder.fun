@@ -18,6 +18,18 @@ export const catalogItemsTable = pgTable("catalog_items", {
   description: text("description"),
   category: text("category").notNull(),
   sku: text("sku"),
+  // Internal/source-facing fields used by operations, custody, imports, and
+  // supplier reconciliation. These must never be required for checkout copy.
+  internalName: text("internal_name"),
+  internalDescription: text("internal_description"),
+  internalCategory: text("internal_category"),
+  supplierName: text("supplier_name"),
+  supplierCategory: text("supplier_category"),
+  backendInventoryNotes: text("backend_inventory_notes"),
+  vendorSku: text("vendor_sku"),
+  sourceInventoryId: text("source_inventory_id"),
+  costBasis: numeric("cost_basis", { precision: 10, scale: 2 }),
+  inventoryTrackingData: jsonb("inventory_tracking_data").default({}),
   price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   compareAtPrice: numeric("compare_at_price", { precision: 10, scale: 2 }),
   stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
@@ -46,6 +58,18 @@ export const catalogItemsTable = pgTable("catalog_items", {
   luciferCruzImageUrl: text("lucifer_cruz_image_url"),
   luciferCruzDescription: text("lucifer_cruz_description"),
   luciferCruzCategory: text("lucifer_cruz_category"),
+  // Customer-facing converted checkout presentation. Admins can override
+  // these fields without changing the operational/source inventory record.
+  displayName: text("display_name"),
+  displayDescription: text("display_description"),
+  displayCategory: text("display_category"),
+  displayImage: text("display_image"),
+  merchantBrandName: text("merchant_brand_name"),
+  marketingCopy: text("marketing_copy"),
+  customerSafeName: text("customer_safe_name"),
+  customerSafeDescription: text("customer_safe_description"),
+  upsellCopy: text("upsell_copy"),
+  promoBadges: text("promo_badges").array().default([]),
   // Merchant routing / dual-brand processing
   merchantProcessingMode: text("merchant_processing_mode").default("mapped_lucifer"),
   merchantProductSource: text("merchant_product_source").default("local_mapped"),

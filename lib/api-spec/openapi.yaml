@@ -1426,6 +1426,36 @@ components:
           type: array
           items:
             type: string
+        internalName:
+          type: string
+          nullable: true
+        internalDescription:
+          type: string
+          nullable: true
+        internalCategory:
+          type: string
+          nullable: true
+        supplierName:
+          type: string
+          nullable: true
+        supplierCategory:
+          type: string
+          nullable: true
+        backendInventoryNotes:
+          type: string
+          nullable: true
+        vendorSku:
+          type: string
+          nullable: true
+        sourceInventoryId:
+          type: string
+          nullable: true
+        costBasis:
+          type: number
+          nullable: true
+        inventoryTrackingData:
+          type: object
+          additionalProperties: true
         luciferCruzName:
           type: string
           nullable: true
@@ -1467,6 +1497,37 @@ components:
         alavontInStock:
           type: boolean
           nullable: true
+        displayName:
+          type: string
+          nullable: true
+        displayDescription:
+          type: string
+          nullable: true
+        displayCategory:
+          type: string
+          nullable: true
+        displayImage:
+          type: string
+          nullable: true
+        merchantBrandName:
+          type: string
+          nullable: true
+        marketingCopy:
+          type: string
+          nullable: true
+        customerSafeName:
+          type: string
+          nullable: true
+        customerSafeDescription:
+          type: string
+          nullable: true
+        upsellCopy:
+          type: string
+          nullable: true
+        promoBadges:
+          type: array
+          items:
+            type: string
         labName:
           type: string
           nullable: true
@@ -1506,6 +1567,36 @@ components:
           type: array
           items:
             type: string
+        internalName:
+          type: string
+          nullable: true
+        internalDescription:
+          type: string
+          nullable: true
+        internalCategory:
+          type: string
+          nullable: true
+        supplierName:
+          type: string
+          nullable: true
+        supplierCategory:
+          type: string
+          nullable: true
+        backendInventoryNotes:
+          type: string
+          nullable: true
+        vendorSku:
+          type: string
+          nullable: true
+        sourceInventoryId:
+          type: string
+          nullable: true
+        costBasis:
+          type: number
+          nullable: true
+        inventoryTrackingData:
+          type: object
+          additionalProperties: true
         luciferCruzName:
           type: string
           nullable: true
@@ -1547,6 +1638,37 @@ components:
         alavontInStock:
           type: boolean
           nullable: true
+        displayName:
+          type: string
+          nullable: true
+        displayDescription:
+          type: string
+          nullable: true
+        displayCategory:
+          type: string
+          nullable: true
+        displayImage:
+          type: string
+          nullable: true
+        merchantBrandName:
+          type: string
+          nullable: true
+        marketingCopy:
+          type: string
+          nullable: true
+        customerSafeName:
+          type: string
+          nullable: true
+        customerSafeDescription:
+          type: string
+          nullable: true
+        upsellCopy:
+          type: string
+          nullable: true
+        promoBadges:
+          type: array
+          items:
+            type: string
         labName:
           type: string
           nullable: true
@@ -1627,6 +1749,23 @@ components:
           type: string
         notes:
           type: string
+        checkoutConfirmation:
+          type: object
+          additionalProperties: false
+          properties:
+            acceptedAllSalesFinal:
+              type: boolean
+              const: true
+            confirmedAt:
+              type: string
+              format: date-time
+            legalDisclaimerText:
+              type: string
+              minLength: 1
+            paymentMethod:
+              type: string
+              enum: [cash, cash_app, stripe, venmo, gift_card, manual]
+          required: [acceptedAllSalesFinal, legalDisclaimerText]
         items:
           type: array
           items:

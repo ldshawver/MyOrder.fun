@@ -28,6 +28,16 @@ export interface NormalizedCartLine {
   catalog_display_name: string;
   merchant_name: string;
   merchant_sku: string | null;
+  display_name: string;
+  display_description: string;
+  display_category: string;
+  display_image: string | null;
+  merchant_brand_name: string;
+  marketing_copy: string;
+  customer_safe_name: string;
+  customer_safe_description: string;
+  upsell_copy: string | null;
+  promo_badges: string[];
   receipt_alavont_name: string;
   receipt_lucifer_name: string;
   merchant_image_url: string | null;
@@ -40,6 +50,14 @@ export interface NormalizedCartLine {
   lab_name: string | null;
   receipt_name: string | null;
   label_name: string | null;
+}
+
+function firstNonEmpty(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 export interface CheckoutTotals {
@@ -177,6 +195,26 @@ export async function normalizeCheckoutCart(
       merchantBrand === "alavont"
         ? ci.merchantSku!
         : (ci.merchantSku ?? ci.wooProductId ?? ci.sku ?? null);
+    const display_name = firstNonEmpty(ci.displayName, ci.customerSafeName, ci.luciferCruzName, ci.alavontName, ci.name) ?? ci.name;
+    const display_description = firstNonEmpty(
+      ci.displayDescription,
+      ci.customerSafeDescription,
+      ci.marketingCopy,
+      ci.luciferCruzDescription,
+      ci.alavontDescription,
+      ci.description,
+    ) ?? "Curated by Zappy for a premium checkout experience.";
+    const display_category = firstNonEmpty(ci.displayCategory, ci.luciferCruzCategory, ci.alavontCategory, ci.category) ?? ci.category;
+    const display_image = firstNonEmpty(ci.displayImage, ci.luciferCruzImageUrl, ci.alavontImageUrl, ci.imageUrl);
+    const merchant_brand_name = firstNonEmpty(ci.merchantBrandName, ci.merchantName, "Lucifer Cruz") ?? "Lucifer Cruz";
+    const marketing_copy = firstNonEmpty(
+      ci.marketingCopy,
+      ci.upsellCopy,
+      ci.luciferCruzDescription,
+      "Converted into a customer-ready branded checkout presentation.",
+    ) ?? "Converted into a customer-ready branded checkout presentation.";
+    const customer_safe_name = firstNonEmpty(ci.customerSafeName, ci.displayName, ci.luciferCruzName, ci.alavontName, ci.name) ?? ci.name;
+    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription, ci.displayDescription, ci.luciferCruzDescription, ci.alavontDescription, ci.description) ?? display_description;
 
     const unit_price = parseFloat(ci.price as string);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
@@ -188,6 +226,16 @@ export async function normalizeCheckoutCart(
       catalog_display_name,
       merchant_name,
       merchant_sku,
+      display_name,
+      display_description,
+      display_category,
+      display_image,
+      merchant_brand_name,
+      marketing_copy,
+      customer_safe_name,
+      customer_safe_description,
+      upsell_copy: firstNonEmpty(ci.upsellCopy),
+      promo_badges: ci.promoBadges ?? [],
       receipt_alavont_name,
       receipt_lucifer_name,
       merchant_image_url,
