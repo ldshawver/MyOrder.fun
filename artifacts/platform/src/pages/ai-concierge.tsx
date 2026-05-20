@@ -362,12 +362,18 @@ export default function AiConcierge() {
   const [sendFlash, setSendFlash] = useState(false);
   const [zappyMood, setZappyMood] = useState<ZappyMood>("idle");
   const [introSteps, setIntroSteps] = useState<IntroStep[]>(DEFAULT_STEPS);
+  const [promotedItems, setPromotedItems] = useState<CatalogItem[]>([]);
 
   useEffect(() => {
     getToken().then(token => {
-      fetch("/api/concierge/intro-steps", { headers: { Authorization: `Bearer ${token}` } })
+      const h = { Authorization: `Bearer ${token}` };
+      fetch("/api/concierge/intro-steps", { headers: h })
         .then(r => r.ok ? r.json() : null)
         .then(data => { if (Array.isArray(data) && data.length > 0) setIntroSteps(data); })
+        .catch(() => {});
+      fetch("/api/concierge/promoted", { headers: h })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => { if (Array.isArray(data)) setPromotedItems(data as CatalogItem[]); })
         .catch(() => {});
     });
   }, [getToken]);
@@ -627,64 +633,80 @@ export default function AiConcierge() {
               </div>
             </div>
 
-            {/* Suggested products */}
-            <div
-              className="rounded-3xl flex flex-col flex-1 overflow-hidden"
-              style={{ background: "linear-gradient(160deg, hsl(220 38% 10% / 0.95), hsl(225 40% 8% / 0.95))", border: "1px solid rgba(59,130,246,0.16)" }}
-            >
-              <div className="px-4 pt-4 pb-2 shrink-0">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.2em]" style={{ color: "rgba(148,163,184,0.6)" }}>Suggested by Zappy</div>
-              </div>
-              <div className="flex-1 overflow-y-auto px-3 pb-4">
-                {suggestedItems.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center text-center py-10">
-                    <motion.div
-                      animate={{ y: [0, -6, 0] }}
-                      transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                    >
-                      <ZappyHero size={52} mood="idle" animated={false} />
-                    </motion.div>
-                    <p className="text-[11px] text-muted-foreground/50 mt-4 leading-relaxed max-w-[140px]">
-                      Ask me what you're looking for and I'll recommend something here
-                    </p>
+            {/* Suggested products / Featured shelf */}
+            {(() => {
+              const displayItems = suggestedItems.length > 0 ? suggestedItems : promotedItems;
+              const isAiSuggested = suggestedItems.length > 0;
+              const isEmpty = displayItems.length === 0;
+              return (
+                <div
+                  className="rounded-3xl flex flex-col flex-1 overflow-hidden"
+                  style={{ background: "linear-gradient(160deg, hsl(220 38% 10% / 0.95), hsl(225 40% 8% / 0.95))", border: "1px solid rgba(59,130,246,0.16)" }}
+                >
+                  <div className="px-4 pt-4 pb-2 shrink-0 flex items-center gap-2">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em]" style={{ color: "rgba(148,163,184,0.6)" }}>
+                      {isAiSuggested ? "Suggested by Zappy" : "⭐ Featured Picks"}
+                    </div>
+                    {!isAiSuggested && !isEmpty && (
+                      <motion.div
+                        className="text-[8px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ background: "rgba(59,130,246,0.15)", border: "1px solid rgba(59,130,246,0.3)", color: "#93C5FD" }}
+                        animate={{ opacity: [0.7, 1, 0.7] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                      >
+                        PROMO
+                      </motion.div>
+                    )}
                   </div>
-                ) : (
-                  <div className="space-y-2">
-                    <AnimatePresence>
-                      {suggestedItems.map((item, i) => (
-                        <motion.div
-                          key={item.id}
-                          initial={{ opacity: 0, scale: 0.9, y: 8 }}
-                          animate={{ opacity: 1, scale: 1, y: 0 }}
-                          transition={{ delay: i * 0.06, type: "spring", stiffness: 340 }}
-                        >
-                          <Link
-                            href={`/catalog/${item.id}`}
-                            className="flex items-center gap-3 p-2.5 rounded-2xl border border-border/20 hover:border-primary/35 bg-white/3 hover:bg-primary/5 transition-all group"
-                          >
-                            <div className="w-11 h-11 rounded-xl bg-muted/20 shrink-0 overflow-hidden">
-                              {item.imageUrl ? (
-                                <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center"><ImageOff size={12} className="text-muted-foreground/20" /></div>
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">{item.category}</div>
-                              <div className="text-xs font-bold truncate mt-0.5">{item.name}</div>
-                              <div className="text-xs font-black mt-0.5" style={{ color: "#60A5FA" }}>${(+item.price).toFixed(2)}</div>
-                            </div>
-                          </Link>
+                  <div className="flex-1 overflow-y-auto px-3 pb-4">
+                    {isEmpty ? (
+                      <div className="flex flex-col items-center justify-center text-center py-10">
+                        <motion.div animate={{ y: [0, -6, 0] }} transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}>
+                          <ZappyHero size={52} mood="idle" animated={false} />
                         </motion.div>
-                      ))}
-                    </AnimatePresence>
-                    <Link href="/catalog" className="block text-center text-xs font-bold py-2 mt-1 transition-colors" style={{ color: "rgba(96,165,250,0.7)" }}>
-                      Browse full menu →
-                    </Link>
+                        <p className="text-[11px] text-muted-foreground/50 mt-4 leading-relaxed max-w-[140px]">
+                          Ask me what you're looking for and I'll recommend something here
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <AnimatePresence>
+                          {displayItems.map((item, i) => (
+                            <motion.div
+                              key={item.id}
+                              initial={{ opacity: 0, scale: 0.9, y: 8 }}
+                              animate={{ opacity: 1, scale: 1, y: 0 }}
+                              transition={{ delay: i * 0.06, type: "spring", stiffness: 340 }}
+                            >
+                              <Link
+                                href={`/catalog/${item.id}`}
+                                className="flex items-center gap-3 p-2.5 rounded-2xl border border-border/20 hover:border-primary/35 bg-white/3 hover:bg-primary/5 transition-all group"
+                              >
+                                <div className="w-11 h-11 rounded-xl bg-muted/20 shrink-0 overflow-hidden">
+                                  {item.imageUrl ? (
+                                    <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center"><ImageOff size={12} className="text-muted-foreground/20" /></div>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-widest">{item.category}</div>
+                                  <div className="text-xs font-bold truncate mt-0.5">{item.name}</div>
+                                  <div className="text-xs font-black mt-0.5" style={{ color: "#60A5FA" }}>${(+item.price).toFixed(2)}</div>
+                                </div>
+                              </Link>
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                        <Link href="/catalog" className="block text-center text-xs font-bold py-2 mt-1 transition-colors" style={{ color: "rgba(96,165,250,0.7)" }}>
+                          Browse full menu →
+                        </Link>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
+              );
+            })()}
           </motion.div>
         </div>
       </div>

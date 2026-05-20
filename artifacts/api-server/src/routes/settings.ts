@@ -215,6 +215,52 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
   }
 });
 
+// ─── Concierge Promoted Items ─────────────────────────────────────────────────
+
+function parseIds(raw: string | null | undefined): number[] {
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch { return []; }
+}
+
+// GET /api/concierge/promoted — authenticated users: returns full catalog items
+router.get("/concierge/promoted", async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
+  const ids = parseIds(s.conciergePromotedItemIds);
+  if (ids.length === 0) { res.json([]); return; }
+  const { catalogItemsTable } = await import("@workspace/db");
+  const { inArray } = await import("drizzle-orm");
+  const rows = await db.select().from(catalogItemsTable).where(inArray(catalogItemsTable.id, ids));
+  const ordered = ids.map(id => rows.find(r => r.id === id)).filter(Boolean);
+  res.json(ordered.map(i => ({
+    id: i!.id,
+    name: i!.alavontName ?? i!.name,
+    category: i!.alavontCategory ?? i!.category,
+    price: parseFloat(i!.price as string),
+    imageUrl: i!.alavontImageUrl ?? i!.imageUrl ?? null,
+    isAvailable: i!.isAvailable,
+  })));
+});
+
+// GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
+router.get("/admin/concierge/promoted", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings();
+  res.json({ ids: parseIds(s.conciergePromotedItemIds) });
+});
+
+// PUT /api/admin/concierge/promoted — admin: sets promoted item IDs
+router.put("/admin/concierge/promoted", requireRole("admin"), async (req, res): Promise<void> => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids) || ids.length > 8 || !ids.every(x => Number.isInteger(x) && x > 0)) {
+    res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });
+    return;
+  }
+  const existing = await getOrCreateSettings();
+  await db.update(adminSettingsTable)
+    .set({ conciergePromotedItemIds: JSON.stringify(ids) })
+    .where(eq(adminSettingsTable.id, existing.id));
+  res.json({ ids });
+});
+
 // ─── Concierge Intro Steps ────────────────────────────────────────────────────
 
 const DEFAULT_CONCIERGE_STEPS = [
