@@ -1,9 +1,10 @@
-import { useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import {
   Upload, Download, FileText, CheckCircle2, AlertCircle,
   RotateCcw, ChevronRight, RefreshCw, ShoppingBag,
   FlaskConical, ArrowRight, Table2, Settings, HelpCircle,
   ChevronDown, ChevronUp, Columns, AlertTriangle, Loader2,
+  Plus, Save, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +13,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-// ─── Template column reference (15-column Alavont import spec) ────────────────
-const TEMPLATE_HEADERS = [
+// ─── Template column reference (Alavont import spec) ─────────────────────────
+const REQUIRED_TEMPLATE_HEADERS = [
   "regular_price",
   "alavont_image",
   "alavont_name",
@@ -23,17 +24,46 @@ const TEMPLATE_HEADERS = [
   "alavont_id",
   "Quantity",
   "Unit",
-  "Sale_price",
-  "lucifer_cruz_image",
   "lucifer_cruz_name",
+  "lucifer_cruz_image",
   "lucifer_cruz_desc",
   "lucifer_cruz_category",
   "lucifer_cruz_Inventory",
 ];
 
-const REQUIRED_COLS = TEMPLATE_HEADERS.map(h => ({ friendly: h, canonical: h }));
+const OPTIONAL_TEMPLATE_HEADERS = ["Sale_price"];
 
-const OPTIONAL_COLS: string[] = [];
+const TEMPLATE_HEADERS = [
+  ...REQUIRED_TEMPLATE_HEADERS.slice(0, 9),
+  ...OPTIONAL_TEMPLATE_HEADERS,
+  ...REQUIRED_TEMPLATE_HEADERS.slice(9),
+];
+
+type ImportTemplateColumn = {
+  id: string;
+  header: string;
+  canonical: string;
+  required: boolean;
+  sampleValue: string;
+  locked?: boolean;
+};
+
+type ImportTemplateSpec = {
+  version: 1;
+  columns: ImportTemplateColumn[];
+};
+
+const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = {
+  version: 1,
+  columns: TEMPLATE_HEADERS.map(header => ({
+    id: header.replace(/[^a-zA-Z0-9_-]/g, "-"),
+    header,
+    canonical: header,
+    required: REQUIRED_TEMPLATE_HEADERS.includes(header),
+    sampleValue: "",
+    locked: REQUIRED_TEMPLATE_HEADERS.includes(header),
+  })),
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type HeaderMapping = { original: string; canonical: string; recognized: boolean };
@@ -58,6 +88,7 @@ type ParsedHeaders = {
   requiredFields: RequiredField[];
   allCanonicals: CanonicalInfo[];
   fileColumns: string[];
+  spec?: ImportTemplateSpec;
 };
 
 type ImportError = { row: number; message: string };
@@ -243,8 +274,10 @@ function ResultCards({ result }: { result: ImportResult }) {
 }
 
 // ─── Expected columns reference (collapsible) ─────────────────────────────────
-function ExpectedColumnsRef() {
+function ExpectedColumnsRef({ spec }: { spec: ImportTemplateSpec }) {
   const [open, setOpen] = useState(false);
+  const requiredColumns = spec.columns.filter(c => c.required);
+  const optionalColumns = spec.columns.filter(c => !c.required);
   return (
     <div className="rounded-xl border border-border/40 overflow-hidden">
       <button
@@ -261,26 +294,26 @@ function ExpectedColumnsRef() {
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-red-400 mb-1.5">Required</div>
             <div className="flex flex-wrap gap-1.5">
-              {REQUIRED_COLS.map(c => (
+              {requiredColumns.map(c => (
                 <span key={c.canonical} className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-300">
                   <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-                  {c.friendly}
+                  {c.header}
                 </span>
               ))}
             </div>
           </div>
-          {OPTIONAL_COLS.length > 0 && (
+          {optionalColumns.length > 0 && (
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Optional</div>
               <div className="flex flex-wrap gap-1.5">
-                {OPTIONAL_COLS.map(c => (
-                  <span key={c} className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-border/40 bg-muted/20 text-muted-foreground">{c}</span>
+                {optionalColumns.map(c => (
+                  <span key={c.canonical} className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-border/40 bg-muted/20 text-muted-foreground">{c.header}</span>
                 ))}
               </div>
             </div>
           )}
           <p className="text-[11px] text-muted-foreground/60">
-            Column names must match exactly (case-sensitive) — extra or misspelled columns will be rejected. Order does not matter. Download the template above for an exact starting point. Both CSV and TSV are accepted.
+            Column names are case-sensitive. Order does not matter. The importer also accepts the older friendly labels like Menu Name and Merchant Sku, but the template above is the preferred format.
           </p>
         </div>
       )}
@@ -442,8 +475,153 @@ function ColumnMapper({ parsedData, userMapping, onMap, onUnmap }: ColumnMapperP
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground/60">
-              These columns are not part of the 14-column menu spec. Remove them from your file before importing — the server will reject any file with extra columns.
+              These columns are not part of the menu import spec. Remove them from your file before importing — the server will reject any file with extra columns.
             </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImportTemplateEditor({
+  spec,
+  isAdmin,
+  saving,
+  error,
+  onChange,
+  onSave,
+  onReset,
+}: {
+  spec: ImportTemplateSpec;
+  isAdmin: boolean;
+  saving: boolean;
+  error: string | null;
+  onChange: (spec: ImportTemplateSpec) => void;
+  onSave: () => void;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function updateColumn(index: number, patch: Partial<ImportTemplateColumn>) {
+    onChange({
+      ...spec,
+      columns: spec.columns.map((column, i) => i === index ? { ...column, ...patch } : column),
+    });
+  }
+
+  function addColumn() {
+    const next = spec.columns.length + 1;
+    onChange({
+      ...spec,
+      columns: [
+        ...spec.columns,
+        {
+          id: `custom-${Date.now()}`,
+          canonical: `custom:extra_${next}`,
+          header: `Extra Column ${next}`,
+          required: false,
+          sampleValue: "",
+          locked: false,
+        },
+      ],
+    });
+    setOpen(true);
+  }
+
+  function removeColumn(index: number) {
+    onChange({ ...spec, columns: spec.columns.filter((_, i) => i !== index) });
+  }
+
+  return (
+    <div className="rounded-2xl border border-border/50 bg-card/50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-5 py-4 text-left bg-muted/10 hover:bg-muted/20 transition-colors"
+      >
+        <Settings size={16} className="text-primary" />
+        <div className="flex-1">
+          <div className="text-sm font-bold">Import Template Headers</div>
+          <div className="text-xs text-muted-foreground">{spec.columns.length} template columns · required backend fields stay protected</div>
+        </div>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {open && (
+        <div className="p-5 space-y-4">
+          {error && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {error}
+            </div>
+          )}
+          <div className="rounded-xl border border-border/40 overflow-auto">
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="bg-muted/20 text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left">Template header</th>
+                  <th className="px-3 py-2 text-left">Backend field</th>
+                  <th className="px-3 py-2 text-left">Sample value</th>
+                  <th className="px-3 py-2 text-center">Required</th>
+                  <th className="px-3 py-2 text-right">Remove</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/30">
+                {spec.columns.map((column, index) => (
+                  <tr key={column.id}>
+                    <td className="px-3 py-2">
+                      <input
+                        value={column.header}
+                        disabled={!isAdmin}
+                        onChange={e => updateColumn(index, { header: e.target.value })}
+                        className="w-full rounded-lg border border-border/50 bg-background px-2 py-1.5 font-mono disabled:opacity-70"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-[11px] text-muted-foreground">{column.canonical}</div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        value={column.sampleValue}
+                        disabled={!isAdmin}
+                        onChange={e => updateColumn(index, { sampleValue: e.target.value })}
+                        className="w-full rounded-lg border border-border/50 bg-background px-2 py-1.5 font-mono disabled:opacity-70"
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <Badge className={`text-[10px] ${column.required ? "bg-red-500/10 text-red-300 border-red-500/30" : "bg-muted/20 text-muted-foreground border-border/40"}`}>
+                        {column.required ? "required" : "optional"}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={!isAdmin || column.locked}
+                        onClick={() => removeColumn(index)}
+                        className="h-8 w-8 p-0 text-muted-foreground"
+                      >
+                        <Trash2 size={13} />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={addColumn} disabled={!isAdmin} className="gap-2 rounded-xl">
+              <Plus size={13} /> Add Header Row
+            </Button>
+            <Button type="button" size="sm" onClick={onSave} disabled={!isAdmin || saving} className="gap-2 rounded-xl">
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+              Save Template
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={onReset} disabled={!isAdmin || saving} className="gap-2 rounded-xl">
+              <RotateCcw size={13} /> Reset Defaults
+            </Button>
           </div>
         </div>
       )}
@@ -459,6 +637,9 @@ export default function AdminImport() {
   const isAdmin = currentUser?.role === "admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [importSpec, setImportSpec] = useState<ImportTemplateSpec>(DEFAULT_IMPORT_SPEC);
+  const [specSaving, setSpecSaving] = useState(false);
+  const [specError, setSpecError] = useState<string | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
   const [isXlsx, setIsXlsx] = useState(false);
@@ -476,6 +657,24 @@ export default function AdminImport() {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const loadImportSpec = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/products/import-spec", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.spec?.columns) setImportSpec(data.spec);
+    } catch {
+      // Fall back to the baked-in defaults; import validation still happens server-side.
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    void loadImportSpec();
+  }, [loadImportSpec]);
 
   // Compute effective required field state
   const effectiveRequiredFields = parsedData?.requiredFields.map(f => ({
@@ -641,15 +840,41 @@ export default function AdminImport() {
     }
   }
 
-  function downloadTemplate() {
-    const sampleRow = [
-      "29.99", "https://example.com/menu.jpg", "Midnight Recovery Complex",
-      "Advanced cellular recovery blend", "Dermatology", "true", "ALV-001",
-      "10", "ml", "Velvet Restore Set", "https://example.com/merchant.jpg",
-      "Luxurious overnight treatment", "Skin Care", "MRC-LAB-001",
-    ];
-    const csv = [TEMPLATE_HEADERS.join(","), sampleRow.join(",")].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
+  async function saveImportSpec(nextSpec = importSpec) {
+    setSpecSaving(true);
+    setSpecError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/products/import-spec", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ spec: nextSpec }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSpecError(data.error ?? "Could not save template headers");
+        return;
+      }
+      setImportSpec(data.spec);
+      if (file) void callParseHeaders(file);
+    } catch {
+      setSpecError("Could not reach the server to save template headers.");
+    } finally {
+      setSpecSaving(false);
+    }
+  }
+
+  async function resetImportSpec() {
+    setImportSpec(DEFAULT_IMPORT_SPEC);
+    await saveImportSpec(DEFAULT_IMPORT_SPEC);
+  }
+
+  async function downloadTemplate() {
+    const token = await getToken();
+    const res = await fetch("/api/admin/products/import-template", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = "menu_import_template.csv"; a.click();
@@ -684,6 +909,16 @@ export default function AdminImport() {
       {/* WooCommerce Sync */}
       <WooCommerceSync />
 
+      <ImportTemplateEditor
+        spec={importSpec}
+        isAdmin={isAdmin}
+        saving={specSaving}
+        error={specError}
+        onChange={setImportSpec}
+        onSave={() => void saveImportSpec()}
+        onReset={() => void resetImportSpec()}
+      />
+
       {/* Divider */}
       <div className="flex items-center gap-3">
         <div className="flex-1 border-t border-border/30" />
@@ -693,7 +928,7 @@ export default function AdminImport() {
 
       {/* Action row */}
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="outline" size="sm" className="gap-2 rounded-xl" onClick={downloadTemplate}>
+        <Button variant="outline" size="sm" className="gap-2 rounded-xl" onClick={() => void downloadTemplate()}>
           <Download size={14} /> Download Template CSV
         </Button>
 
@@ -731,10 +966,10 @@ export default function AdminImport() {
             <p className="font-semibold text-sm mb-1">Drop your CSV or Excel file here, or click to browse</p>
             <p className="text-xs text-muted-foreground mb-4">Accepts .csv and .xlsx · Max 10 MB</p>
             <div className="flex flex-wrap justify-center gap-1.5">
-              {REQUIRED_COLS.map(c => (
+              {importSpec.columns.filter(c => c.required).map(c => (
                 <span key={c.canonical} className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-300">
                   <span className="w-1 h-1 rounded-full bg-red-400 shrink-0" />
-                  {c.friendly}
+                  {c.header}
                 </span>
               ))}
             </div>
@@ -745,7 +980,7 @@ export default function AdminImport() {
               onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
             />
           </div>
-          <ExpectedColumnsRef />
+          <ExpectedColumnsRef spec={importSpec} />
         </div>
       )}
 

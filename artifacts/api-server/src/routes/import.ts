@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq } from "drizzle-orm";
-import { db, catalogItemsTable, auditLogsTable } from "@workspace/db";
+import { db, catalogItemsTable, auditLogsTable, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import multer from "multer";
@@ -23,51 +23,221 @@ const upload = multer({
   },
 });
 
-// ─── Exact 14-column header set ───────────────────────────────────────────────
-// Order matches the downloadable template; on import, headers are matched
-// case-sensitively but the column order in the user's file does not matter.
+// ─── Canonical Alavont menu import headers ───────────────────────────────────
+// The downloadable template uses these canonical names. For backwards
+// compatibility, the importer also accepts the older friendly "Menu ..." /
+// "Merchant ..." column labels and maps them to the same canonical fields.
 export const EXPECTED_HEADERS = [
-  "Menu Regular Price",
-  "Menu Image",
-  "Menu Name",
-  "Menu Description",
-  "Menu Category",
-  "Menu In Stock",
-  "Menu ID",
-  "Amount",
-  "Unit Measurement",
-  "Merchant Name",
-  "Merchant Image",
-  "Merchant Description",
-  "Merchant Category",
-  "Merchant Sku",
+  "regular_price",
+  "alavont_image",
+  "alavont_name",
+  "alavont_desc",
+  "alavont_category",
+  "alavont_in_stock",
+  "alavont_id",
+  "Quantity",
+  "Unit",
+  "lucifer_cruz_name",
+  "lucifer_cruz_image",
+  "lucifer_cruz_desc",
+  "lucifer_cruz_category",
+  "lucifer_cruz_Inventory",
 ] as const;
 
 export type ExpectedHeader = (typeof EXPECTED_HEADERS)[number];
 
-// Header → record field name (per spec)
+const OPTIONAL_HEADERS = ["Sale_price"] as const;
+const ALL_CANONICAL_HEADERS = [...EXPECTED_HEADERS, ...OPTIONAL_HEADERS] as const;
+type OptionalHeader = (typeof OPTIONAL_HEADERS)[number];
+type ImportCanonical = ExpectedHeader | OptionalHeader;
+type ImportTemplateColumn = {
+  id: string;
+  header: string;
+  canonical: ImportCanonical | `custom:${string}`;
+  required: boolean;
+  sampleValue: string;
+  locked?: boolean;
+};
+type ImportTemplateSpec = {
+  version: 1;
+  columns: ImportTemplateColumn[];
+};
+
+// Canonical header → record field name
 export const HEADER_TO_FIELD: Record<ExpectedHeader, string> = {
-  "Menu Regular Price": "regularPrice",
-  "Menu Image":         "alavontImage",
-  "Menu Name":          "alavontName",
-  "Menu Description":   "alavontDesc",
-  "Menu Category":      "alavontCategory",
-  "Menu In Stock":      "alavontInStock",
-  "Menu ID":            "alavontId",
-  "Amount":             "quantity",
-  "Unit Measurement":   "unit",
-  "Merchant Name":      "luciferCruzName",
-  "Merchant Image":     "luciferCruzImage",
-  "Merchant Description": "luciferCruzDesc",
-  "Merchant Category":  "luciferCruzCategory",
-  "Merchant Sku":       "luciferCruzInventory",
+  "regular_price": "regularPrice",
+  "alavont_image": "alavontImage",
+  "alavont_name": "alavontName",
+  "alavont_desc": "alavontDesc",
+  "alavont_category": "alavontCategory",
+  "alavont_in_stock": "alavontInStock",
+  "alavont_id": "alavontId",
+  "Quantity": "quantity",
+  "Unit": "unit",
+  "lucifer_cruz_name": "luciferCruzName",
+  "lucifer_cruz_image": "luciferCruzImage",
+  "lucifer_cruz_desc": "luciferCruzDesc",
+  "lucifer_cruz_category": "luciferCruzCategory",
+  "lucifer_cruz_Inventory": "luciferCruzInventory",
 };
 
 const EXPECTED_SET = new Set<string>(EXPECTED_HEADERS);
+const KNOWN_CANONICAL_SET = new Set<string>(ALL_CANONICAL_HEADERS);
+
+const HEADER_ALIASES: Record<string, ExpectedHeader | (typeof OPTIONAL_HEADERS)[number]> = {
+  "Menu Regular Price": "regular_price",
+  "Menu Image": "alavont_image",
+  "Menu Name": "alavont_name",
+  "Menu Description": "alavont_desc",
+  "Menu Category": "alavont_category",
+  "Menu In Stock": "alavont_in_stock",
+  "Menu ID": "alavont_id",
+  "Amount": "Quantity",
+  "Unit Measurement": "Unit",
+  "Merchant Name": "lucifer_cruz_name",
+  "Merchant Image": "lucifer_cruz_image",
+  "Merchant Description": "lucifer_cruz_desc",
+  "Merchant Category": "lucifer_cruz_category",
+  "Merchant Sku": "lucifer_cruz_Inventory",
+};
+
+const DEFAULT_IMPORT_COLUMNS: ImportTemplateColumn[] = [
+  { id: "regular-price", canonical: "regular_price", header: "regular_price", required: true, sampleValue: "29.99", locked: true },
+  { id: "alavont-image", canonical: "alavont_image", header: "alavont_image", required: true, sampleValue: "https://example.com/alavont.jpg", locked: true },
+  { id: "alavont-name", canonical: "alavont_name", header: "alavont_name", required: true, sampleValue: "Midnight Recovery Complex", locked: true },
+  { id: "alavont-desc", canonical: "alavont_desc", header: "alavont_desc", required: true, sampleValue: "Advanced cellular recovery blend", locked: true },
+  { id: "alavont-category", canonical: "alavont_category", header: "alavont_category", required: true, sampleValue: "Dermatology", locked: true },
+  { id: "alavont-in-stock", canonical: "alavont_in_stock", header: "alavont_in_stock", required: true, sampleValue: "true", locked: true },
+  { id: "alavont-id", canonical: "alavont_id", header: "alavont_id", required: true, sampleValue: "ALV-001", locked: true },
+  { id: "quantity", canonical: "Quantity", header: "Quantity", required: true, sampleValue: "10", locked: true },
+  { id: "unit", canonical: "Unit", header: "Unit", required: true, sampleValue: "ml", locked: true },
+  { id: "sale-price", canonical: "Sale_price", header: "Sale_price", required: false, sampleValue: "", locked: false },
+  { id: "lucifer-cruz-name", canonical: "lucifer_cruz_name", header: "lucifer_cruz_name", required: true, sampleValue: "Velvet Restore Set", locked: true },
+  { id: "lucifer-cruz-image", canonical: "lucifer_cruz_image", header: "lucifer_cruz_image", required: true, sampleValue: "https://example.com/lc.jpg", locked: true },
+  { id: "lucifer-cruz-desc", canonical: "lucifer_cruz_desc", header: "lucifer_cruz_desc", required: true, sampleValue: "Luxurious overnight treatment", locked: true },
+  { id: "lucifer-cruz-category", canonical: "lucifer_cruz_category", header: "lucifer_cruz_category", required: true, sampleValue: "Skin Care", locked: true },
+  { id: "lucifer-cruz-inventory", canonical: "lucifer_cruz_Inventory", header: "lucifer_cruz_Inventory", required: true, sampleValue: "MRC-LAB-001", locked: true },
+];
+
+const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = { version: 1, columns: DEFAULT_IMPORT_COLUMNS };
 
 // ─── Header normalization (BOM / whitespace strip only — case-sensitive) ──────
 function cleanHeader(raw: string): string {
   return raw.replace(/^\uFEFF/, "").trim();
+}
+
+function canonicalizeHeader(raw: string, spec = DEFAULT_IMPORT_SPEC): string {
+  const cleaned = cleanHeader(raw);
+  const configured = spec.columns.find(c => c.header === cleaned);
+  if (configured) return configured.canonical;
+  return HEADER_ALIASES[cleaned] ?? cleaned;
+}
+
+function normalizeCustomCanonical(header: string, existing: Set<string>): `custom:${string}` {
+  const base = cleanHeader(header)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48) || "column";
+  let candidate = `custom:${base}` as `custom:${string}`;
+  let i = 2;
+  while (existing.has(candidate)) {
+    candidate = `custom:${base}_${i}` as `custom:${string}`;
+    i++;
+  }
+  return candidate;
+}
+
+function isKnownCanonical(value: string): value is ImportCanonical {
+  return KNOWN_CANONICAL_SET.has(value);
+}
+
+function normalizeImportSpec(input: unknown): ImportTemplateSpec {
+  const rawColumns = typeof input === "object" && input !== null && !Array.isArray(input)
+    ? (input as { columns?: unknown }).columns
+    : null;
+  const incoming = Array.isArray(rawColumns) ? rawColumns : DEFAULT_IMPORT_COLUMNS;
+  const columns: ImportTemplateColumn[] = [];
+  const seenCanonicals = new Set<string>();
+  const seenHeaders = new Set<string>();
+
+  for (const raw of incoming) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    const header = cleanHeader(String(item.header ?? ""));
+    if (!header || seenHeaders.has(header)) continue;
+    const canonicalRaw = typeof item.canonical === "string" ? item.canonical : "";
+    const isKnown = isKnownCanonical(canonicalRaw);
+    const canonical = isKnown
+      ? canonicalRaw
+      : normalizeCustomCanonical(header, seenCanonicals);
+
+    if (seenCanonicals.has(canonical)) continue;
+    seenCanonicals.add(canonical);
+    seenHeaders.add(header);
+    const required = EXPECTED_SET.has(canonical);
+    columns.push({
+      id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : String(canonical).replace(/[^a-zA-Z0-9_-]/g, "-"),
+      header,
+      canonical,
+      required,
+      sampleValue: typeof item.sampleValue === "string" ? item.sampleValue : "",
+      locked: required,
+    });
+  }
+
+  for (const defaultColumn of DEFAULT_IMPORT_COLUMNS) {
+    if (!EXPECTED_SET.has(defaultColumn.canonical) || seenCanonicals.has(defaultColumn.canonical)) continue;
+    columns.push(defaultColumn);
+    seenCanonicals.add(defaultColumn.canonical);
+  }
+
+  return { version: 1, columns };
+}
+
+function validateImportSpec(input: unknown): { ok: true; spec: ImportTemplateSpec } | { ok: false; error: string } {
+  const rawColumns = typeof input === "object" && input !== null && !Array.isArray(input)
+    ? (input as { columns?: unknown }).columns
+    : null;
+  if (!Array.isArray(rawColumns)) {
+    return { ok: false, error: "columns must be an array" };
+  }
+  const spec = normalizeImportSpec(input);
+  const headers = spec.columns.map(c => c.header);
+  if (new Set(headers).size !== headers.length) {
+    return { ok: false, error: "Header labels must be unique" };
+  }
+  const present = new Set(spec.columns.map(c => c.canonical));
+  const missing = EXPECTED_HEADERS.filter(c => !present.has(c));
+  if (missing.length > 0) {
+    return { ok: false, error: `Required backend fields cannot be removed: ${missing.join(", ")}` };
+  }
+  if (spec.columns.length > 60) {
+    return { ok: false, error: "Import template cannot exceed 60 columns" };
+  }
+  return { ok: true, spec };
+}
+
+async function getOrCreateSettingsRow() {
+  const [existing] = await db.select().from(adminSettingsTable).limit(1);
+  if (existing) return existing;
+  const tenantId = await getHouseTenantId();
+  const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
+  return created;
+}
+
+async function loadImportSpec(): Promise<ImportTemplateSpec> {
+  const settings = await getOrCreateSettingsRow();
+  if (!settings.importTemplateSpec) return DEFAULT_IMPORT_SPEC;
+  try {
+    return normalizeImportSpec(JSON.parse(settings.importTemplateSpec));
+  } catch {
+    return DEFAULT_IMPORT_SPEC;
+  }
+}
+
+function specRecognizedSet(spec: ImportTemplateSpec): Set<string> {
+  return new Set(spec.columns.map(c => c.canonical));
 }
 
 // ─── Delimited (CSV / TSV) parser ─────────────────────────────────────────────
@@ -97,7 +267,7 @@ type ParsedFile = {
   rows: string[][];           // values aligned with headers
 };
 
-function parseBuffer(buffer: Buffer, originalName: string): ParsedFile {
+function parseBuffer(buffer: Buffer, originalName: string, spec = DEFAULT_IMPORT_SPEC): ParsedFile {
   const ext = originalName.split(".").pop()?.toLowerCase() ?? "csv";
 
   if (ext === "xlsx" || ext === "xls") {
@@ -108,7 +278,7 @@ function parseBuffer(buffer: Buffer, originalName: string): ParsedFile {
     const rawHeaders = (data[0] as unknown[]).map(String);
     const rows = (data.slice(1) as unknown[][]).map(r => r.map(v => String(v ?? "")));
     return {
-      headers: rawHeaders.map(cleanHeader),
+      headers: rawHeaders.map(h => canonicalizeHeader(h, spec)),
       rawHeaders,
       rows,
     };
@@ -130,7 +300,7 @@ function parseBuffer(buffer: Buffer, originalName: string): ParsedFile {
   const rawHeaders = parseDelimitedLine(firstLine, delim);
   const rows = nonBlank.slice(1).map(l => parseDelimitedLine(l, delim));
   return {
-    headers: rawHeaders.map(cleanHeader),
+    headers: rawHeaders.map(h => canonicalizeHeader(h, spec)),
     rawHeaders,
     rows,
   };
@@ -165,35 +335,74 @@ type HeaderValidation = {
   extra: string[];     // present headers not in expected set (cleaned form)
 };
 
-function validateHeaders(headers: string[]): HeaderValidation {
+function validateHeaders(headers: string[], spec: ImportTemplateSpec): HeaderValidation {
   const present = new Set(headers);
   const missing = EXPECTED_HEADERS.filter(h => !present.has(h));
-  const extra = headers.filter(h => !EXPECTED_SET.has(h));
+  const recognized = specRecognizedSet(spec);
+  const extra = headers.filter(h => !recognized.has(h));
   return { ok: missing.length === 0 && extra.length === 0, missing, extra };
+}
+
+function parseUserMapping(raw: unknown, spec: ImportTemplateSpec): Record<string, string> {
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [original, canonical] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof original === "string" && typeof canonical === "string") {
+        out[cleanHeader(original)] = canonicalizeHeader(canonical, spec);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function applyUserMapping(headers: string[], rawHeaders: string[], userMapping: Record<string, string>): string[] {
+  if (Object.keys(userMapping).length === 0) return headers;
+  return headers.map((canonical, i) => {
+    const raw = cleanHeader(rawHeaders[i] ?? canonical);
+    return userMapping[raw] ?? canonical;
+  });
 }
 
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
 router.get(
+  "/admin/products/import-spec",
+  requireRole("admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    const spec = await loadImportSpec();
+    res.json({ spec, defaultSpec: DEFAULT_IMPORT_SPEC });
+  }
+);
+
+router.put(
+  "/admin/products/import-spec",
+  requireRole("admin"),
+  async (req, res): Promise<void> => {
+    const validation = validateImportSpec(req.body?.spec ?? req.body);
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const settings = await getOrCreateSettingsRow();
+    await db.update(adminSettingsTable)
+      .set({ importTemplateSpec: JSON.stringify(validation.spec) })
+      .where(eq(adminSettingsTable.id, settings.id));
+    res.json({ spec: validation.spec });
+  }
+);
+
+router.get(
   "/admin/products/import-template",
   requireRole("admin", "supervisor"),
-  (_req, res): void => {
-    const sampleRow = [
-      "29.99",                              // Menu Regular Price
-      "https://example.com/alavont.jpg",    // Menu Image
-      "Midnight Recovery Complex",          // Menu Name
-      "Advanced cellular recovery blend",   // Menu Description
-      "Dermatology",                        // Menu Category
-      "true",                               // Menu In Stock
-      "ALV-001",                            // Menu ID
-      "10",                                 // Amount
-      "ml",                                 // Unit Measurement
-      "Velvet Restore Set",                 // Merchant Name
-      "https://example.com/lc.jpg",         // Merchant Image
-      "Luxurious overnight treatment",      // Merchant Description
-      "Skin Care",                          // Merchant Category
-      "MRC-LAB-001",                        // Merchant Sku
-    ];
-    const csv = [EXPECTED_HEADERS.join(","), sampleRow.join(",")].join("\n");
+  async (_req, res): Promise<void> => {
+    const spec = await loadImportSpec();
+    const headers = spec.columns.map(c => c.header);
+    const sampleRow = spec.columns.map(c => c.sampleValue ?? "");
+    const csv = [headers.join(","), sampleRow.join(",")].join("\n");
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", 'attachment; filename="menu_import_template.csv"');
     res.send(csv);
@@ -208,28 +417,31 @@ router.post(
   requireRole("admin", "supervisor"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("file") as any,
-  (req, res): void => {
+  async (req, res): Promise<void> => {
     if (!req.file?.buffer) {
       res.status(400).json({ error: "No file provided" });
       return;
     }
 
+    const spec = await loadImportSpec();
     let parsed: ParsedFile;
     try {
-      parsed = parseBuffer(req.file.buffer, req.file.originalname);
+      parsed = parseBuffer(req.file.buffer, req.file.originalname, spec);
     } catch (e) {
       res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
       return;
     }
 
     const { headers, rawHeaders } = parsed;
-    const v = validateHeaders(headers);
+    const v = validateHeaders(headers, spec);
+    const recognized = specRecognizedSet(spec);
+    const specByCanonical = new Map(spec.columns.map(c => [c.canonical, c]));
 
     // Provide a structured view tailored to the existing UI.
     const headerMappings = headers.map((h, i) => ({
       original: rawHeaders[i] ?? h,
       canonical: h,
-      recognized: EXPECTED_SET.has(h),
+      recognized: recognized.has(h),
     }));
 
     res.json({
@@ -238,16 +450,17 @@ router.post(
       unknownHeaders: v.extra,
       requiredFields: EXPECTED_HEADERS.map(h => ({
         canonical: h,
-        friendlyName: h,
+        friendlyName: specByCanonical.get(h)?.header ?? h,
         found: !v.missing.includes(h),
-        mappedFrom: headers.includes(h) ? h : null,
+        mappedFrom: headers.includes(h) ? (rawHeaders[headers.indexOf(h)] ?? h) : null,
       })),
-      allCanonicals: EXPECTED_HEADERS.map(h => ({
-        canonical: h,
-        friendlyName: h,
-        required: true,
+      allCanonicals: spec.columns.map(c => ({
+        canonical: c.canonical,
+        friendlyName: c.header,
+        required: c.required,
       })),
       fileColumns: rawHeaders,
+      spec,
     });
   }
 );
@@ -277,20 +490,20 @@ function buildRecord(row: string[], headerIndex: Record<string, number>): RowRec
     return (row[idx] ?? "").trim();
   };
   return {
-    regularPrice:        get("Menu Regular Price"),
-    alavontImage:        get("Menu Image"),
-    alavontName:         get("Menu Name"),
-    alavontDesc:         get("Menu Description"),
-    alavontCategory:     get("Menu Category"),
-    alavontInStock:      get("Menu In Stock"),
-    alavontId:           get("Menu ID"),
-    quantity:            get("Amount"),
-    unit:                get("Unit Measurement"),
-    luciferCruzName:     get("Merchant Name"),
-    luciferCruzImage:    get("Merchant Image"),
-    luciferCruzDesc:     get("Merchant Description"),
-    luciferCruzCategory: get("Merchant Category"),
-    luciferCruzInventory:get("Merchant Sku"),
+    regularPrice:        get("regular_price"),
+    alavontImage:        get("alavont_image"),
+    alavontName:         get("alavont_name"),
+    alavontDesc:         get("alavont_desc"),
+    alavontCategory:     get("alavont_category"),
+    alavontInStock:      get("alavont_in_stock"),
+    alavontId:           get("alavont_id"),
+    quantity:            get("Quantity"),
+    unit:                get("Unit"),
+    luciferCruzName:     get("lucifer_cruz_name"),
+    luciferCruzImage:    get("lucifer_cruz_image"),
+    luciferCruzDesc:     get("lucifer_cruz_desc"),
+    luciferCruzCategory: get("lucifer_cruz_category"),
+    luciferCruzInventory:get("lucifer_cruz_Inventory"),
   };
 }
 
@@ -310,16 +523,18 @@ router.post(
       return;
     }
 
+    const spec = await loadImportSpec();
     let parsed: ParsedFile;
     try {
-      parsed = parseBuffer(req.file.buffer, req.file.originalname);
+      parsed = parseBuffer(req.file.buffer, req.file.originalname, spec);
     } catch (e) {
       res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
       return;
     }
 
-    const { headers, rows } = parsed;
-    const v = validateHeaders(headers);
+    const { rows } = parsed;
+    const headers = applyUserMapping(parsed.headers, parsed.rawHeaders, parseUserMapping(req.body?.userMapping, spec));
+    const v = validateHeaders(headers, spec);
 
     if (v.missing.length > 0) {
       res.status(400).json({

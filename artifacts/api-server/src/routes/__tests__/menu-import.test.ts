@@ -2,8 +2,8 @@
  * Tests for /api/admin/products/import — Task #10 (14-column menu import).
  *
  * Verifies:
- *   - Downloaded template has the 14 expected headers in the exact spec order.
- *   - A 14-header CSV imports cleanly.
+ *   - Downloaded template has the canonical headers in the exact spec order.
+ *   - A CSV with legacy friendly headers imports cleanly.
  *   - A reordered (column-shuffled) CSV is accepted.
  *   - A BOM-prefixed CSV is accepted.
  *   - A TSV with the same 14 headers is accepted.
@@ -46,11 +46,15 @@ const state: { inserted: Record<string, unknown>[]; updated: Record<string, unkn
 };
 
 vi.mock("@workspace/db", () => {
+  const adminSettingsTable = { _name: "admin_settings" };
   const mkChain = () => {
-    const chain: Record<string, unknown> = {};
-    chain.from = vi.fn(() => chain);
+    const chain: Record<string, unknown> & { _table?: unknown } = {};
+    chain.from = vi.fn((table: unknown) => {
+      chain._table = table;
+      return chain;
+    });
     chain.where = vi.fn(() => chain);
-    chain.limit = vi.fn(() => Promise.resolve([])); // never finds existing — always insert
+    chain.limit = vi.fn(() => Promise.resolve(chain._table === adminSettingsTable ? [{ id: 1, tenantId: 1, importTemplateSpec: null }] : []));
     return chain;
   };
   return {
@@ -59,7 +63,10 @@ vi.mock("@workspace/db", () => {
       insert: vi.fn((table: { _name?: string }) => ({
         values: (vals: Record<string, unknown>) => {
           if (table === catalogItemsTable) state.inserted.push(vals);
-          return Promise.resolve();
+          return {
+            returning: () => Promise.resolve([vals]),
+            then: (resolve: (value: unknown) => void) => resolve(undefined),
+          };
         },
       })),
       update: vi.fn(() => ({
@@ -71,6 +78,7 @@ vi.mock("@workspace/db", () => {
         }),
       })),
     },
+    adminSettingsTable,
     catalogItemsTable: { id: "id", tenantId: "tenantId", sku: "sku", externalMenuId: "externalMenuId" },
     auditLogsTable: { id: "id" },
   };
@@ -96,30 +104,31 @@ beforeEach(() => {
   state.updated = [];
 });
 
-describe("menu import — 14-column spec (Task #10)", () => {
-  it("template has the 14 expected headers in spec order", async () => {
+describe("menu import — Alavont canonical import spec", () => {
+  it("template has the canonical headers in spec order", async () => {
     const res = await supertest(buildApp()).get("/api/admin/products/import-template");
     expect(res.status).toBe(200);
     const headerLine = res.text.split("\n")[0];
     expect(headerLine).toBe([
-      "Menu Regular Price",
-      "Menu Image",
-      "Menu Name",
-      "Menu Description",
-      "Menu Category",
-      "Menu In Stock",
-      "Menu ID",
-      "Amount",
-      "Unit Measurement",
-      "Merchant Name",
-      "Merchant Image",
-      "Merchant Description",
-      "Merchant Category",
-      "Merchant Sku",
+      "regular_price",
+      "alavont_image",
+      "alavont_name",
+      "alavont_desc",
+      "alavont_category",
+      "alavont_in_stock",
+      "alavont_id",
+      "Quantity",
+      "Unit",
+      "Sale_price",
+      "lucifer_cruz_name",
+      "lucifer_cruz_image",
+      "lucifer_cruz_desc",
+      "lucifer_cruz_category",
+      "lucifer_cruz_Inventory",
     ].join(","));
   });
 
-  it("imports a 14-header CSV cleanly", async () => {
+  it("imports a legacy friendly-header CSV cleanly", async () => {
     const res = await supertest(buildApp())
       .post("/api/admin/products/import")
       .attach("file", fixture("menu-import-14col.csv"), "menu.csv");
@@ -140,6 +149,22 @@ describe("menu import — 14-column spec (Task #10)", () => {
     expect(state.inserted[0].unitMeasurement).toBe("ml");
   });
 
+  it("imports a canonical-header CSV with optional Sale_price cleanly", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "29.99,https://example.com/a.jpg,Canonical Item,Safe desc,Category,true,ALV-CAN-1,5,ml,24.99,LC Canonical,https://example.com/lc.jpg,Merchant desc,LC Category,LC-CAN-1\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "canonical-menu.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(1);
+    expect(state.inserted[0].name).toBe("Canonical Item");
+    expect(state.inserted[0].sku).toBe("LC-CAN-1");
+    expect(state.inserted[0].merchantName).toBe("LC Canonical");
+  });
+
   it("returns JSON 400 with the missing column name", async () => {
     const res = await supertest(buildApp())
       .post("/api/admin/products/import")
@@ -147,8 +172,8 @@ describe("menu import — 14-column spec (Task #10)", () => {
 
     expect(res.status).toBe(400);
     expect(res.headers["content-type"]).toMatch(/json/);
-    expect(res.body.missingColumns).toContain("Merchant Sku");
-    expect(res.body.error).toMatch(/Merchant Sku/);
+    expect(res.body.missingColumns).toContain("lucifer_cruz_Inventory");
+    expect(res.body.error).toMatch(/lucifer_cruz_Inventory/);
   });
 
   it("accepts a CSV with reordered columns", async () => {

@@ -47,6 +47,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   aiConciergePrompt: text("ai_concierge_prompt"),
   conciergeIntroSteps: text("concierge_intro_steps"),
   conciergePromotedItemIds: text("concierge_promoted_item_ids"),
+  importTemplateSpec: text("import_template_spec"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
