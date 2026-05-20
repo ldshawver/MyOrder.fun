@@ -38,7 +38,7 @@ function FeaturedPanel({ token }: { token: string | null }) {
         id: i.id,
         name: i.alavontName ?? i.name,
         category: i.alavontCategory ?? i.category,
-        price: parseFloat(i.price),
+        price: parseFloat(String(i.price ?? 0)),
         imageUrl: i.alavontImageUrl ?? i.imageUrl ?? null,
         isAvailable: i.isAvailable,
       }));
