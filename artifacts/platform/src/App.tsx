@@ -93,7 +93,7 @@ function SignInPage() {
       <SignIn
         routing="path"
         path={`${basePath}/sign-in`}
-        signUpUrl={`${basePath}/waitlist`}
+        signUpUrl={`${basePath}/sign-up`}
         forceRedirectUrl={`${basePath}/ai-concierge`}
       />
     </AuthBrandWrapper>
