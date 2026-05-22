@@ -1,0 +1,58 @@
+name: VPS Edge Restart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/vps-edge-restart.yml"
+  workflow_dispatch:
+
+jobs:
+  restart-edge:
+    name: Reopen web ports and restart nginx
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Non-interactive edge restart
+        run: |
+          timeout 180s ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=2 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -eux
+            cd /opt/alavont/deploy
+
+            echo "== force allow web ports at host firewall layer =="
+            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
+            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
+            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+
+            echo "== restart compose edge =="
+            docker compose up -d db api platform nginx
+            docker compose restart nginx
+
+            echo "== ps =="
+            docker compose ps
+
+            echo "== host listening sockets =="
+            ss -ltnp | grep -E '(:80|:443|:8080|:3000)' || ss -ltnp || true
+
+            echo "== local probes =="
+            curl -v --connect-timeout 3 --max-time 8 http://127.0.0.1/health || true
+            curl -v --connect-timeout 3 --max-time 8 http://127.0.0.1/api/healthz || true
+          ENDSSH
+
+      - name: External verification from GitHub runner
+        run: |
+          sleep 5
+          curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
+          curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
