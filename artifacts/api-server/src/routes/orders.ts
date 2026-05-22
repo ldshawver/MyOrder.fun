@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, desc, lt, isNotNull, notInArray, or, sql } from "drizzle-orm";
+import { eq, and, desc, lt, isNotNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -44,6 +44,7 @@ import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRoutin
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 
 const router: IRouter = Router();
+const SUPERVISOR_FALLBACK_PHONE = "19165989519";
 
 // ─── SSE: realtime order events ──────────────────────────────────────────────
 // Mounted BEFORE the global router.use() auth chain so we can short-circuit
@@ -295,6 +296,33 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
   };
+}
+
+function smsSupervisorFallbackOrderAlert(orderId: number, customerName: string, total: number, itemCount: number): string {
+  return `[Alavont] A customer has placed an order online. Order #${orderId} from ${customerName || "a customer"}: ${itemCount} item${itemCount !== 1 ? "s" : ""}, $${total.toFixed(2)}. No CSR accepted ownership yet; check the supervisor queue.`;
+}
+
+async function notifyLowStockIfNeeded(tmpl: typeof inventoryTemplatesTable.$inferSelect, newStock: number): Promise<void> {
+  const parLevel = tmpl.parLevel != null ? parseFloat(String(tmpl.parLevel)) : 0;
+  if (!Number.isFinite(parLevel) || parLevel <= 0 || newStock > parLevel) return;
+
+  const recipients = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(and(
+      inArray(usersTable.role, ["admin", "supervisor", "business_sitter"]),
+      eq(usersTable.isActive, true),
+    ));
+
+  if (!recipients.length) return;
+  await db.insert(notificationsTable).values(recipients.map(r => ({
+    userId: r.id,
+    type: "inventory_low_stock",
+    title: "Low stock alert",
+    message: `${tmpl.itemName} is at ${newStock.toFixed(2)} ${tmpl.unitType ?? ""} (par ${parLevel}).`,
+    resourceType: "inventory_template",
+    resourceId: tmpl.id,
+  })));
 }
 
 // GET /api/orders
@@ -550,7 +578,9 @@ router.post("/orders", async (req, res): Promise<void> => {
     customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
     await sendSms(customerPhone, smsOrderConfirmation(order.id, total, itemCount));
 
-    if (assignedTechId) {
+    if (routing.routeSource === "general_account") {
+      await sendSms(SUPERVISOR_FALLBACK_PHONE, smsSupervisorFallbackOrderAlert(order.id, customerName, total, itemCount));
+    } else if (assignedTechId) {
       const [tech] = await db.select({ contactPhone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, assignedTechId)).limit(1);
       await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, total, itemCount));
     }
@@ -569,6 +599,8 @@ router.post("/orders", async (req, res): Promise<void> => {
       total: order.total as string,
       createdAt: order.createdAt,
       customerName,
+      fulfillmentType: body.data.shippingAddress ? "delivery" : "pickup",
+      shippingAddress: body.data.shippingAddress ?? null,
       items: normalizedLines.map(l => ({
         quantity: l.quantity,
         catalogItemName: l.catalog_display_name,  // Alavont display name (internal)
@@ -987,6 +1019,7 @@ router.patch("/orders/:id", requireRole("business_sitter", "supervisor", "admin"
             .update(inventoryTemplatesTable)
             .set({ currentStock: String(newStock) })
             .where(eq(inventoryTemplatesTable.id, tmpl.id));
+          await notifyLowStockIfNeeded(tmpl, newStock);
         }
       }
     } catch { /* non-critical */ }

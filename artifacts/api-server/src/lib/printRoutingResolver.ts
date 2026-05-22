@@ -8,7 +8,7 @@
  *     3. Health fallback: if preferred bridge is unreachable, try the other active bridge
  *
  *   Labels:
- *     1. Only print for delivery orders OR Lucifer Cruz shipment orders (tenantId=1 + shippingAddress set)
+ *     1. Only print for to-go/pickup/delivery orders OR Lucifer Cruz shipment orders (tenantId=1 + shippingAddress set)
  *     2. If operator on Mac network and Mac bridge supports labels → use Mac
  *     3. If operator NOT on Mac network → route to Pi bridge if configured, else skip with reason
  *     4. Never silently fail — always return a blockedReason when not printing
@@ -63,11 +63,14 @@ export type RoutingDecision = {
  * Returns whether a label should be printed for this order.
  *
  * Label is eligible when:
- *   - fulfillmentType is "delivery" (case-insensitive), OR
+ *   - fulfillmentType is to-go/pickup/delivery (case-insensitive), OR
  *   - tenantId === 1 (Lucifer Cruz) AND shippingAddress is non-empty
  */
 export function shouldPrintLabel(order: PrintOrderContext): LabelEligibility {
   const ft = order.fulfillmentType?.toLowerCase().trim();
+  if (ft && ["to-go", "togo", "takeout", "pickup", "pick-up"].includes(ft)) {
+    return { eligible: true, reason: "to-go order" };
+  }
   if (ft === "delivery") {
     return { eligible: true, reason: "delivery order" };
   }

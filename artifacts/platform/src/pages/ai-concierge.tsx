@@ -5,6 +5,7 @@ import { useAuth } from "@clerk/react";
 import { Input } from "@/components/ui/input";
 import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw } from "lucide-react";
 import { Link } from "wouter";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
 const ZAPPY_HERO_IMAGE = "/AI-Alavont.gif";
@@ -86,8 +87,13 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
       <img
         src={ZAPPY_AVATAR_IMAGE}
         alt="Zappy"
-        className="w-full h-full object-cover object-center"
-        style={{ filter: "brightness(1.05) contrast(1.05)" }}
+        className="w-full h-full object-cover"
+        style={{
+          filter: "brightness(1.05) contrast(1.05)",
+          objectPosition: "50% 28%",
+          transform: "scale(1.55)",
+          transformOrigin: "50% 28%",
+        }}
       />
     </motion.div>
   );
@@ -97,6 +103,8 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
 // animated=true shows the animated Alavont GIF; animated=false uses the compact Zappy avatar.
 function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: { size?: number; mood?: ZappyMood; animated?: boolean }) {
   const shouldReduceMotion = useReducedMotion();
+  const isMobile = useIsMobile();
+  const useAnimatedHero = animated && isMobile && !shouldReduceMotion;
   const { a, b, ring } = MOOD_GLOWS[mood];
   const h = Math.round(size * 1.42);
 
@@ -140,10 +148,15 @@ function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: 
         style={{ inset: 0, boxShadow: `0 0 50px ${a}, 0 0 100px ${b}, 0 24px 80px rgba(0,0,0,0.5)` }}
       >
         <img
-          src={animated && !shouldReduceMotion ? ZAPPY_HERO_IMAGE : ZAPPY_AVATAR_IMAGE}
+          src={useAnimatedHero ? ZAPPY_HERO_IMAGE : ZAPPY_AVATAR_IMAGE}
           alt="Zappy"
-          className="w-full h-full object-cover object-center"
-          style={{ filter: "brightness(1.08) saturate(1.1)" }}
+          className="w-full h-full object-cover"
+          style={{
+            filter: "brightness(1.08) saturate(1.1)",
+            objectPosition: useAnimatedHero ? "center" : "50% 28%",
+            transform: useAnimatedHero ? "none" : "scale(1.35)",
+            transformOrigin: "50% 28%",
+          }}
         />
         {/* Mood-colored energy pulse overlay */}
         <motion.div

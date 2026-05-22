@@ -22,7 +22,7 @@ import {
 } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
-import { renderTextLabel } from "./labelRenderer";
+import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
   selectActiveOperator,
   resolveReceiptPrinters,
@@ -569,23 +569,18 @@ export async function enqueueOrderPrintJobs(order: {
         // Routing explicitly blocked label (e.g. operator not on Mac network, no Pi label bridge)
         pLog.warn({ event: "label_blocked", orderId: order.id, reason: routingDecision.blockedReason }, "label blocked by routing policy");
       } else if (labelPrinter) {
-        const labelTemplate = {
-          name: "Order Label",
-          paperWidth: labelPrinter.paperWidth ?? "58mm",
-          fields: [
-            { key: "id", label: "Order #", fontWeight: "bold" as const, fontSize: 20, align: "center" as const },
-            { key: "customerName", label: "Customer", fontSize: 14 },
-            { key: "total", label: "Total", fontSize: 14 },
-            { key: "createdAt", label: "Time", fontSize: 12 },
-          ],
-        };
+        const customerName = order.customerName ?? "Walk-in";
+        const customerFirstName = customerName.trim().split(/\s+/)[0] || "Friend";
         const labelData = {
           id: order.id,
-          customerName: order.customerName ?? "Walk-in",
+          customerName,
+          customerFirstName,
           total: `$${printOrder.total.toFixed(2)}`,
           createdAt: new Date(order.createdAt).toLocaleTimeString(),
         };
-        const renderedText = renderTextLabel(labelTemplate, labelData);
+        const png = await generateThankYouLabel(customerFirstName);
+        const imageData = png.toString("base64");
+        const renderedText = `Thank you label for ${customerFirstName} — Order #${order.id}`;
         const key = makeIdempotencyKey(order.id, labelPrinter.id, "label");
         const existing = await db.select().from(printJobsTable)
           .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
@@ -597,8 +592,13 @@ export async function enqueueOrderPrintJobs(order: {
             jobType: "label",
             status: "queued",
             idempotencyKey: key,
-            renderFormat: "text",
-            payloadJson: { ...labelData, _routingDecision: { decisionReason: routingDecision.decisionReason, fallbackUsed: routingDecision.fallbackUsed } },
+            renderFormat: "png",
+            payloadJson: {
+              ...labelData,
+              imageData,
+              template: "thank_you_personalized",
+              _routingDecision: { decisionReason: routingDecision.decisionReason, fallbackUsed: routingDecision.fallbackUsed },
+            },
             renderedText,
             operatorUserId: operator?.userId ?? null,
           }).returning();

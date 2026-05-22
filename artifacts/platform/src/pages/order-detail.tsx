@@ -60,6 +60,11 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
         className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
         data-testid="customer-ready-banner"
       >
+        <AnimatedHourglass
+          size={150}
+          message={isCompleted ? "Thank you — your order is complete." : "Ready now — the hourglass is out of sand."}
+          progress={1}
+        />
         <CheckCircle2 size={56} className="text-emerald-400" />
         <div className="mt-4 text-2xl font-bold text-emerald-300">
           {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
