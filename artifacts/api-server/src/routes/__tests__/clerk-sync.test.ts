@@ -28,6 +28,7 @@ vi.mock("@clerk/express", () => {
 
 const dbState = {
   users: [] as Array<Record<string, unknown>>,
+  onboardingRequests: [] as Array<Record<string, unknown>>,
   notifications: [] as Array<Record<string, unknown>>,
   audits: [] as Array<Record<string, unknown>>,
 };
@@ -39,6 +40,7 @@ vi.mock("@workspace/db", () => {
     status: "status",
     createdAt: "createdAt",
   };
+  const onboardingRequestsTable = {};
   const notificationsTable = {};
   const auditLogsTable = {};
 
@@ -50,7 +52,8 @@ vi.mock("@workspace/db", () => {
     let table: keyof typeof dbState = "users";
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: unknown) => {
-      if (t === notificationsTable) table = "notifications";
+      if (t === onboardingRequestsTable) table = "onboardingRequests";
+      else if (t === notificationsTable) table = "notifications";
       else if (t === auditLogsTable) table = "audits";
       else table = "users";
       return chain;
@@ -106,6 +109,7 @@ vi.mock("@workspace/db", () => {
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, update, insert, delete: delete_ },
     usersTable,
+    onboardingRequestsTable,
     notificationsTable,
     auditLogsTable,
   };
@@ -182,6 +186,7 @@ function seedPending(id: number, clerkId: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   dbState.users = [];
+  dbState.onboardingRequests = [];
   dbState.notifications = [];
   dbState.audits = [];
   mockUserId = "admin-clerk-id";

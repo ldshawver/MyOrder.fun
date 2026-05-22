@@ -38,10 +38,11 @@ const makeDrizzleChain = (resolvedValue: unknown[]) => {
   const chain: Record<string, unknown> = {};
   const terminal = () => Promise.resolve(resolvedValue);
   // Support: .from().where().limit() | .from().where() | .from().orderBy() | .from()
-  chain.where = vi.fn(() => ({ ...chain, limit: terminal, orderBy: () => Promise.resolve(resolvedValue) }));
+  chain.where = vi.fn(() => chain);
   chain.limit = terminal;
   chain.orderBy = vi.fn(() => Promise.resolve(resolvedValue));
   chain.from = vi.fn(() => chain);
+  chain.then = (resolve: (value: unknown[]) => unknown) => Promise.resolve(resolvedValue).then(resolve);
   return chain;
 };
 
@@ -64,7 +65,11 @@ vi.mock("@workspace/db", () => {
     email: "email_col",
   };
   const labTechShiftsTable = {};
-  const inventoryTemplatesTable = {};
+  const inventoryTemplatesTable = {
+    isActive: "inventory_isActive_col",
+    catalogItemId: "inventory_catalogItemId_col",
+    rowType: "inventory_rowType_col",
+  };
 
   // Additional tables used by the 10 new routers under test
   const adminSettingsTable = {};

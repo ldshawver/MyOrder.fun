@@ -125,9 +125,9 @@ describe("/api/admin/printers/settings round-trip", () => {
     expect(get1.status).toBe(200);
     expect(get1.body.ok).toBe(true);
     expect(get1.body.settings.receiptEnabled).toBe(true);
-    expect(get1.body.settings.receiptMethod).toBe("local_cups");
+    expect(get1.body.settings.receiptMethod).toBe("bridge");
     expect(get1.body.settings.receiptPrinterName).toBe("receipt");
-    expect(get1.body.settings.labelPrinterName).toBe("label");
+    expect(get1.body.settings.labelPrinterName).toBe("Label_Themal_Printer");
     expect(get1.body.settings.autoPrintReceipts).toBe(false);
     expect(get1.body.settings.bridgeUrl).toMatch(/^http:\/\//);
 
@@ -172,6 +172,9 @@ describe("/api/admin/printers/test-receipt", () => {
   it("uses local_cups by default, runs lp -d <queue>, and returns command/stdout/stderr/exitCode", async () => {
     const app = makeApp();
     await supertest(app).get("/api/admin/printers/settings"); // seed
+    await supertest(app)
+      .patch("/api/admin/printers/settings")
+      .send({ receiptMethod: "local_cups", receiptPrinterName: "receipt" });
 
     spawnMock.mockImplementationOnce(() => {
       const proc = makeFakeProc();
