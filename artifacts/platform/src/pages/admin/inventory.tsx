@@ -36,6 +36,7 @@ type CatalogOption = {
   id: number;
   label: string;
   category: string;
+  secondaryLabel?: string | null;
 };
 
 type TemplateRow = {
@@ -114,7 +115,7 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
 
       const [tmplRes, catRes] = await Promise.all([
         fetch("/api/admin/inventory-template", { headers }),
-        fetch("/api/admin/inventory", { headers }),
+        fetch("/api/catalog?limit=500&mode=alavont", { headers }),
       ]);
 
       if (!tmplRes.ok) throw new Error("Failed to load template");
@@ -141,10 +142,11 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
 
       if (catRes.ok) {
         const catData = await catRes.json();
-        const opts: CatalogOption[] = (catData.items ?? []).map((it: InvItem) => ({
+        const opts: CatalogOption[] = (catData.items ?? []).map((it: InvItem & { alavontCategory?: string | null }) => ({
           id: it.id,
           label: it.alavontName || it.luciferCruzName || it.name,
-          category: it.category,
+          category: it.alavontCategory || it.category,
+          secondaryLabel: it.name,
         }));
         opts.sort((a, b) => categoryOrder(a.category) - categoryOrder(b.category) || a.label.localeCompare(b.label));
         setCatalogOptions(opts);
@@ -483,7 +485,9 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
                     >
                       <option value="">— None —</option>
                       {catalogOptions.map(opt => (
-                        <option key={opt.id} value={opt.id}>{opt.label}</option>
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}{opt.secondaryLabel && opt.secondaryLabel !== opt.label ? ` (${opt.secondaryLabel})` : ""}
+                        </option>
                       ))}
                     </select>
                     {linkedLabel && (

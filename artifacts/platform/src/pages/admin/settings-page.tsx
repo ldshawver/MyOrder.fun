@@ -270,8 +270,9 @@ export default function AdminSettingsPage() {
 
             <SettingRow label="Enabled Payment Processors" description="Active payment methods available at checkout.">
               <div className="flex flex-wrap gap-2">
-                {["stripe", "paypal", "cashapp", "venmo"].map(p => {
+                {["stripe", "apple_pay", "paypal", "cashapp", "venmo"].map(p => {
                   const active = settings.enabledProcessors.includes(p);
+                  const label = p === "apple_pay" ? "Apple Pay" : p === "cashapp" ? "Cash App" : p;
                   return (
                     <button
                       key={p}
@@ -281,7 +282,7 @@ export default function AdminSettingsPage() {
                       )}
                       className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all capitalize ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground hover:border-border"}`}
                     >
-                      {p}
+                      {label}
                     </button>
                   );
                 })}

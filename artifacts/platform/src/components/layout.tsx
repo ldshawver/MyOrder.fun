@@ -27,15 +27,43 @@ import {
   Bot,
   BadgeDollarSign,
   BarChart3,
-  MapPin
+  MapPin,
+  ChevronDown,
+  PackageOpen,
+  Store,
+  Wifi,
+  Zap
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
+
+type NavItem = {
+  href: string;
+  label: string;
+  mobileLabel?: string;
+  icon: typeof FlaskConical;
+  roles: string[];
+  mobileShow?: boolean;
+  children?: NavItem[];
+};
+
+type NavSection = {
+  title: string;
+  roles: string[];
+  defaultOpen?: boolean;
+  items: NavItem[];
+};
 
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
   const { signOut } = useClerk();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    navigation: true,
+    csr: true,
+    supervisor: false,
+    platform: false,
+  });
   const { brand } = useBrand();
   const isLC = brand === "lucifer_cruz";
 
@@ -46,33 +74,165 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = user.role === "user";
 
-  const navItems = [
-    { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
-    { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
-    { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
-    { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES, mobileShow: false },
-    { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES, mobileShow: false },
-    { href: "/csr-settings", label: "CSR Settings", icon: MapPin, roles: SHIFT_ROLES, mobileShow: false },
-    { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/credits", label: "Credit Management", icon: BadgeDollarSign, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/inventory", label: "Inventory Par", icon: ClipboardList, roles: SHIFT_ROLES, mobileShow: false },
-    { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/admin/concierge-settings", label: "Zappy Intro", icon: Bot, roles: ["admin"], mobileShow: false },
-    { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"], mobileShow: false },
-    { href: "/global-admin", label: "Platform Admin", icon: ShieldAlert, roles: ["admin"], mobileShow: false },
+  const navSections: NavSection[] = [
+    {
+      title: "Navigation",
+      roles: ALL_ROLES,
+      items: [
+        { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+        { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+        { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+        {
+          href: "/account",
+          label: "Account Settings",
+          icon: User,
+          roles: ALL_ROLES,
+          children: [
+            { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
+            { href: "/profile", label: "Profile", icon: User, roles: ALL_ROLES },
+            { href: "/notifications", label: "Notification Settings", icon: Bell, roles: ALL_ROLES },
+          ],
+        },
+      ],
+    },
+    {
+      title: "Customer Service Rep",
+      roles: SHIFT_ROLES,
+      defaultOpen: true,
+      items: [
+        { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
+        {
+          href: "/csr-settings",
+          label: "CSR Settings",
+          icon: MapPin,
+          roles: SHIFT_ROLES,
+          children: [
+            { href: "/csr-settings", label: "Pickup Instructions", icon: ClipboardList, roles: SHIFT_ROLES },
+            { href: "/csr-settings", label: "Shift Settings", icon: Settings, roles: SHIFT_ROLES },
+            { href: "/admin/print", label: "Test Print", icon: Printer, roles: ["admin", "supervisor"] },
+            { href: "/csr-settings", label: "WIFI", icon: Wifi, roles: SHIFT_ROLES },
+            { href: "/csr-settings", label: "Shift Location", icon: Store, roles: SHIFT_ROLES },
+          ],
+        },
+      ],
+    },
+    {
+      title: "Supervisor",
+      roles: ["admin", "supervisor"],
+      items: [
+        { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"] },
+        {
+          href: "/admin/settings",
+          label: "Supervisor Settings",
+          icon: Settings,
+          roles: ["admin", "supervisor"],
+          children: [
+            { href: "/admin/print", label: "Printing", icon: Printer, roles: ["admin", "supervisor"] },
+            { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"] },
+            { href: "/admin/receipts", label: "Reprint Receipts", icon: ReceiptText, roles: ["admin", "supervisor"] },
+          ],
+        },
+        {
+          href: "/admin/catalog-debug",
+          label: "Products",
+          icon: PackageOpen,
+          roles: ["admin", "supervisor"],
+          children: [
+            { href: "/admin/catalog-debug", label: "Edit Catalog", icon: Bug, roles: ["admin", "supervisor"] },
+            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"] },
+          ],
+        },
+        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"] },
+        { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["admin", "supervisor"] },
+        {
+          href: "/admin/concierge-settings",
+          label: "AI Concierge",
+          icon: Bot,
+          roles: ["admin", "supervisor"],
+          children: [
+            { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["admin", "supervisor"] },
+            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["admin", "supervisor"] },
+          ],
+        },
+        { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
+        { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["admin", "supervisor"] },
+      ],
+    },
+    {
+      title: "Platform Admin",
+      roles: ["admin"],
+      items: [
+        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin"] },
+        { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin"] },
+        {
+          href: "/admin/settings",
+          label: "Admin Settings",
+          icon: ShieldAlert,
+          roles: ["admin"],
+          children: [
+            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin"] },
+            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin"] },
+            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin"] },
+            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["admin"] },
+            { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["admin"] },
+            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["admin"] },
+            { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["admin"] },
+          ],
+        },
+      ],
+    },
   ];
 
-  const visibleNavItems = navItems.filter(item => item.roles.includes(user.role));
+  const visibleSections = navSections
+    .filter(section => section.roles.includes(user.role))
+    .map(section => ({
+      ...section,
+      items: section.items
+        .filter(item => item.roles.includes(user.role))
+        .map(item => ({
+          ...item,
+          children: item.children?.filter(child => child.roles.includes(user.role)),
+        })),
+    }))
+    .filter(section => section.items.length > 0);
+  const visibleNavItems = visibleSections.flatMap(section => section.items.flatMap(item => [item, ...(item.children ?? [])]));
   const mobileNavItems = visibleNavItems.filter(item => item.mobileShow);
 
   function isActive(href: string) {
     return location === href || (location.startsWith(href + "/") && href !== "/global-admin");
+  }
+
+  function sectionKey(title: string) {
+    return title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  }
+
+  function renderNavItem(item: NavItem, closeMobile = false, nested = false) {
+    const active = isActive(item.href);
+    const childActive = item.children?.some(child => isActive(child.href)) ?? false;
+    const Icon = item.icon;
+    return (
+      <div key={`${item.href}-${item.label}`} className={nested ? "" : "space-y-0.5"}>
+        <Link
+          href={item.href}
+          onClick={closeMobile ? () => setMobileMenuOpen(false) : undefined}
+          className={`flex items-center gap-3 px-3 py-2 rounded-md transition-all text-sm group relative ${
+            active || childActive
+              ? "bg-primary/15 text-primary font-semibold"
+              : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-foreground"
+          } ${nested ? "ml-6 py-1.5 text-xs" : ""}`}
+          data-testid={`link-nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
+        >
+          {(active || childActive) && (
+            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-primary rounded-r-full" />
+          )}
+          <Icon size={nested ? 13 : 15} className={active || childActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"} />
+          <span className="truncate">{item.label}</span>
+          {active && <ChevronRight size={13} className="ml-auto text-primary/60" />}
+        </Link>
+        {item.children?.map(child => renderNavItem(child, closeMobile, true))}
+      </div>
+    );
   }
 
   return (
@@ -109,29 +269,22 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
-          <div className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest mb-2 px-3 pt-2">Navigation</div>
-          {visibleNavItems.map((item) => {
-            const active = isActive(item.href);
-            const Icon = item.icon;
+        <nav className="flex-1 p-3 space-y-2 overflow-y-auto">
+          {visibleSections.map((section) => {
+            const key = sectionKey(section.title);
+            const open = openSections[key] ?? section.defaultOpen ?? section.title === "Navigation";
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-sm group relative ${
-                  active
-                    ? "bg-primary/15 text-primary font-semibold"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-foreground"
-                }`}
-                data-testid={`link-nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
-              >
-                {active && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-primary rounded-r-full" />
-                )}
-                <Icon size={16} className={active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"} />
-                <span>{item.label}</span>
-                {active && <ChevronRight size={14} className="ml-auto text-primary/60" />}
-              </Link>
+              <div key={section.title}>
+                <button
+                  type="button"
+                  onClick={() => setOpenSections(prev => ({ ...prev, [key]: !open }))}
+                  className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest hover:text-foreground"
+                >
+                  <span>{section.title}</span>
+                  <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+                </button>
+                {open && <div className="space-y-0.5">{section.items.map(item => renderNavItem(item))}</div>}
+              </div>
             );
           })}
         </nav>
@@ -218,24 +371,15 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               </div>
             )}
 
-            <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
-              {visibleNavItems.map((item) => {
-                const active = isActive(item.href);
-                const Icon = item.icon;
+            <nav className="flex-1 p-3 space-y-3 overflow-y-auto">
+              {visibleSections.map((section) => {
                 return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileMenuOpen(false)}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-sm ${
-                      active
-                        ? "bg-primary/15 text-primary font-semibold"
-                        : "text-foreground/70 hover:bg-sidebar-accent/60"
-                    }`}
-                  >
-                    <Icon size={18} className={active ? "text-primary" : "text-muted-foreground"} />
-                    <span>{item.label}</span>
-                  </Link>
+                  <div key={section.title}>
+                    <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest px-3 py-1.5">
+                      {section.title}
+                    </div>
+                    <div className="space-y-0.5">{section.items.map(item => renderNavItem(item, true))}</div>
+                  </div>
                 );
               })}
             </nav>

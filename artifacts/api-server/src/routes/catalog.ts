@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, asc } from "drizzle-orm";
-import { db, catalogItemsTable } from "@workspace/db";
+import { db, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -19,7 +19,11 @@ import { getHouseTenantId } from "../lib/singleTenant";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) {
+function mapItem(
+  i: typeof catalogItemsTable.$inferSelect,
+  alavontOnly = false,
+  linkedInventoryStock?: number,
+) {
   // Prefer alavont_image_url for the primary imageUrl; fall back to image_url
   const resolvedImageUrl = i.alavontImageUrl ?? i.imageUrl ?? undefined;
   return {
@@ -31,7 +35,7 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) 
     sku: i.sku,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
-    stockQuantity: i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null,
+    stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
     imageUrl: resolvedImageUrl,
     tags: i.tags ?? [],
@@ -79,6 +83,31 @@ function mapItem(i: typeof catalogItemsTable.$inferSelect, alavontOnly = false) 
     wooProductId: alavontOnly ? null : (i.wooProductId ?? null),
     wooVariationId: alavontOnly ? null : (i.wooVariationId ?? null),
   };
+}
+
+async function getLinkedInventoryStockByCatalogId() {
+  const templateRows = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.isActive, true));
+
+  const stockByCatalogId = new Map<number, number>();
+  for (const row of templateRows) {
+    if (!row.catalogItemId || (row.rowType !== "item" && row.rowType !== "cash")) continue;
+
+    const currentStock = row.currentStock != null
+      ? parseFloat(String(row.currentStock))
+      : parseFloat(String(row.startingQuantityDefault ?? 0));
+    const deductPerSale = parseFloat(String(row.deductionQuantityPerSale ?? 1));
+    const sellableUnits = deductPerSale > 0
+      ? Math.floor(currentStock / deductPerSale)
+      : Math.floor(currentStock);
+
+    const existing = stockByCatalogId.get(row.catalogItemId);
+    stockByCatalogId.set(row.catalogItemId, existing === undefined ? sellableUnits : Math.min(existing, sellableUnits));
+  }
+
+  return stockByCatalogId;
 }
 
 // GET /api/catalog
@@ -133,11 +162,13 @@ router.get("/catalog", async (req, res): Promise<void> => {
     rows = rows.filter(r => !!r.luciferCruzName?.trim() || r.isWooManaged);
   }
 
-  // In Alavont mode (non-admin): exclude WooCommerce-only items — they belong under Lucifer Cruz
+  // In Alavont mode (non-admin): exclude WooCommerce-only items — imported CSV/local
+  // items stay in Alavont even when they have merchant mapping fields for checkout.
   if (!isLuciferMode && !isAdminActor) {
-    rows = rows.filter(r => !r.isWooManaged);
+    rows = rows.filter(r => r.isLocalAlavont !== false);
   }
 
+  const stockByCatalogId = await getLinkedInventoryStockByCatalogId();
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
@@ -147,7 +178,12 @@ router.get("/catalog", async (req, res): Promise<void> => {
     "catalog list"
   );
 
-  res.json(ListCatalogItemsResponse.parse({ items: paged.map(i => mapItem(i, alavontOnly)), total, page, limit }));
+  res.json(ListCatalogItemsResponse.parse({
+    items: paged.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id))),
+    total,
+    page,
+    limit,
+  }));
 });
 
 // POST /api/catalog
