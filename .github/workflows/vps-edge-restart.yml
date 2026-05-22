@@ -1,4 +1,5 @@
 name: VPS Edge Restart
+# Triggered during incident response to restart the public nginx edge.
 
 on:
   push:
