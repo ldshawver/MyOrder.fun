@@ -92,6 +92,7 @@ vi.mock("@workspace/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   asc: vi.fn(() => ({})),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
 vi.mock("../../lib/logger", () => ({

@@ -213,6 +213,7 @@ vi.mock("drizzle-orm", () => ({
   gte: (col: unknown, val: unknown) => ({ op: "gte", col, val }),
   lte: (col: unknown, val: unknown) => ({ op: "lte", col, val }),
   inArray: (col: unknown, values: unknown[]) => ({ op: "in", col, values }),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
 import feedbackRouter from "../feedback";

@@ -116,6 +116,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args) => args),
   desc: vi.fn((col) => col),
   asc: vi.fn((col) => col),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
 vi.mock("../../lib/sms", () => ({

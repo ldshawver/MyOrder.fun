@@ -42,6 +42,11 @@ vi.mock("@workspace/db", () => {
   };
 });
 
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((col, val) => ({ col, val })),
+  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
+}));
+
 async function buildApp() {
   const settingsRouter = (await import("../settings")).default;
   const app = express();
