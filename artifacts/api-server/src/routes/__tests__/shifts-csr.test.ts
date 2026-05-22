@@ -46,6 +46,7 @@ vi.mock("@workspace/db", () => {
   const auditLogsTable = {};
 
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     insert: vi.fn((table: unknown) => {
       if (table === auditLogsTable) {

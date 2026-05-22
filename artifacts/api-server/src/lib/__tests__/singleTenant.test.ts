@@ -6,6 +6,7 @@ const loggerInfo = vi.fn();
 
 vi.mock("@workspace/db", () => ({
   db: {
+    execute: vi.fn(() => Promise.resolve()),
     select: (...args: unknown[]) => selectMock(...args),
     insert: (...args: unknown[]) => insertMock(...args),
   },

@@ -119,6 +119,7 @@ const hoistedDb = vi.hoisted(() => {
   }
 
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select(_cols?: unknown) {
       let table: keyof typeof state = "tickets";
       let pred: Pred | undefined;

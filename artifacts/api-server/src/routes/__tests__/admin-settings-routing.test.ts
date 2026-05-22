@@ -27,6 +27,7 @@ vi.mock("@workspace/db", () => {
   const adminSettingsTable = { id: { name: "id" } } as unknown;
   return {
     db: {
+      execute: vi.fn(() => Promise.resolve()),
       select: () => ({ from: () => ({ limit: async () => [settingsRow] }) }),
       update: () => ({
         set: (vals: Record<string, unknown>) => ({

@@ -6,7 +6,7 @@ vi.mock("@clerk/express", () => ({
 }));
 
 vi.mock("@workspace/db", () => ({
-  db: { select: vi.fn(), insert: vi.fn() },
+  db: { execute: vi.fn(() => Promise.resolve()), select: vi.fn(), insert: vi.fn() },
   usersTable: { clerkId: "clerkId", id: "id", email: "email" },
 }));
 

@@ -78,7 +78,7 @@ vi.mock("@workspace/db", () => {
       }),
     }),
   }));
-  return { db: { select, insert, update }, printSettingsTable };
+  return { db: { execute: vi.fn(() => Promise.resolve()), select, insert, update }, printSettingsTable };
 });
 
 vi.mock("drizzle-orm", () => ({

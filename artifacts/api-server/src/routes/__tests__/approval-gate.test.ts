@@ -81,6 +81,7 @@ vi.mock("@workspace/db", () => {
   const printAssetsTable = {};
 
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),

@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@workspace/db", () => {
   const catalogItemsTable = { id: "catalog_items_id" };
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
   };
   return { db, catalogItemsTable };

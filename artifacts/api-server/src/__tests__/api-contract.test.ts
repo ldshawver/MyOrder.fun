@@ -27,7 +27,7 @@ vi.mock("../lib/printService", () => ({
 }));
 
 vi.mock("@workspace/db", () => ({
-  db: {},
+  db: { execute: vi.fn(() => Promise.resolve()) },
 }));
 
 // Bypass the auth middleware chain so unknown /api/* paths actually reach

@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from "vitest";
 // exercises pure prompt-rendering helpers, so we stub the db module to
 // avoid the connection requirement.
 vi.mock("@workspace/db", () => ({
-  db: {},
+  db: { execute: vi.fn(() => Promise.resolve()) },
   catalogItemsTable: {},
   adminSettingsTable: {},
 }));

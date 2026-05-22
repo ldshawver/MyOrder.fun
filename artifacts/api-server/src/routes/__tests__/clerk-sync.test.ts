@@ -104,7 +104,7 @@ vi.mock("@workspace/db", () => {
   void lastPred;
 
   return {
-    db: { select, update, insert, delete: delete_ },
+    db: { execute: vi.fn(() => Promise.resolve()), select, update, insert, delete: delete_ },
     usersTable,
     notificationsTable,
     auditLogsTable,

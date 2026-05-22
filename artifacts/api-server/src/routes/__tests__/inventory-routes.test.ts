@@ -55,6 +55,7 @@ vi.mock("@workspace/db", () => {
   const auditLogsTable = {};
 
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select: vi.fn(),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({ returning: () => Promise.resolve([]) })),

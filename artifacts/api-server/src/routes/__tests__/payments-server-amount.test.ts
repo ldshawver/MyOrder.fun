@@ -132,7 +132,7 @@ vi.mock("@workspace/db", () => {
   }));
 
   return {
-    db: { select, update },
+    db: { execute: vi.fn(() => Promise.resolve()), select, update },
     ordersTable,
     orderItemsTable,
   };

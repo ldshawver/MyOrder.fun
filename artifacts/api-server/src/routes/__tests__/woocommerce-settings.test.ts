@@ -85,7 +85,7 @@ vi.mock("@workspace/db", () => {
     }),
   }));
 
-  const db = { select, insert, update };
+  const db = { execute: vi.fn(() => Promise.resolve()), select, insert, update };
   return { db, adminSettingsTable, tenantsTable, catalogItemsTable };
 });
 

@@ -57,6 +57,7 @@ vi.mock("@workspace/db", () => {
   }
 
   const db = {
+    execute: vi.fn(() => Promise.resolve()),
     select: vi.fn((cols?: Record<string, unknown>) => {
       if (cols && "userId" in cols && "last" in cols) {
         const stats = adminSettings.orderRoutingRule === "least_recent_order"
