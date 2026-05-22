@@ -57,9 +57,6 @@ async function getPlugins(): Promise<PluginOption[]> {
   if (isReplitDev) {
     const { cartographer } = await import("@replit/vite-plugin-cartographer");
     plugins.push(cartographer({ root: repoRoot }));
-    // devBanner omitted — it signals port readiness to Replit's workflow
-    // health check and was causing DIDNT_OPEN_A_PORT failures when the
-    // reported port didn't match the artifact router's expectation.
   }
 
   return plugins;
