@@ -700,6 +700,11 @@ router.post(
         merchantDescription: rec.luciferCruzDesc || null,
         merchantCategory: rec.luciferCruzCategory || null,
         merchantSku: rec.luciferCruzInventory || null,
+        merchantBrand: "alavont",
+        merchantProcessingMode: "mapped_lucifer",
+        merchantProductSource: "local_mapped",
+        isWooManaged: false,
+        isLocalAlavont: true,
         // Print names
         receiptName: lcName,
         labelName: lcName,

@@ -151,6 +151,8 @@ async function syncHandler(_req: import("express").Request, res: import("express
           isLocalAlavont: false,
           merchantProcessingMode: "woo_native",
           merchantProductSource: "woo",
+          merchantBrand: "lucifer_cruz",
+          merchantSku: wcSku,
           wooProductId: wcId,
         };
 

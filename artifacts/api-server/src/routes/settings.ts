@@ -10,6 +10,10 @@ router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
 type RoutingRule = typeof ROUTING_RULES[number];
+type AdminSettingsWithCsr = typeof adminSettingsTable.$inferSelect & {
+  shiftLocationOptions?: string | null;
+  deliveryOptions?: string | null;
+};
 
 // Hard cap on the admin-editable AI prompt to avoid pathological prompts
 // or accidental paste-the-whole-document mistakes blowing the model context.
@@ -45,6 +49,8 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_promoted_item_ids" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "pickup_instruction_options" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "shift_location_options" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "delivery_options" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "printer_network_config" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
   ];
@@ -56,6 +62,7 @@ async function ensureAdminSettingsSchema(): Promise<void> {
 }
 
 function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
+  const csrSettings = s as AdminSettingsWithCsr;
   const aiPrompt = s.aiConciergePrompt ?? null;
   return {
     id: s.id,
@@ -83,15 +90,26 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     wcConsumerSecretSet: !!s.wcConsumerSecret,
     wcEnabled: s.wcEnabled ?? true,
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
+    shiftLocationOptions: parseShiftLocations(csrSettings.shiftLocationOptions),
+    deliveryOptions: parseDeliveryOptions(csrSettings.deliveryOptions),
     printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
     updatedAt: s.updatedAt,
   };
 }
 
 const DEFAULT_PICKUP_INSTRUCTIONS = [
-  { id: "front-counter", label: "Front Counter", locationName: "", address: "" },
-  { id: "side-door", label: "Side Door", locationName: "", address: "" },
-  { id: "courier-handoff", label: "Courier Handoff", locationName: "", address: "" },
+  { id: "front-counter", label: "Front Counter", instructions: "Please come to the front counter and show your order confirmation." },
+  { id: "side-door", label: "Side Door", instructions: "Please wait by the side-door pickup area and have your order confirmation ready." },
+  { id: "courier-handoff", label: "Courier Handoff", instructions: "Your order will be handed to the assigned courier at the pickup location." },
+];
+
+const DEFAULT_SHIFT_LOCATIONS = [
+  { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+];
+
+const DEFAULT_DELIVERY_OPTIONS = [
+  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
+  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
 ];
 
 function parsePickupInstructions(raw: string | null | undefined) {
@@ -101,6 +119,26 @@ function parsePickupInstructions(raw: string | null | undefined) {
     return Array.isArray(parsed) ? parsed : DEFAULT_PICKUP_INSTRUCTIONS;
   } catch {
     return DEFAULT_PICKUP_INSTRUCTIONS;
+  }
+}
+
+function parseShiftLocations(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_SHIFT_LOCATIONS;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : DEFAULT_SHIFT_LOCATIONS;
+  } catch {
+    return DEFAULT_SHIFT_LOCATIONS;
+  }
+}
+
+function parseDeliveryOptions(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_DELIVERY_OPTIONS;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : DEFAULT_DELIVERY_OPTIONS;
+  } catch {
+    return DEFAULT_DELIVERY_OPTIONS;
   }
 }
 
@@ -116,6 +154,16 @@ function parsePrinterNetworkConfig(raw: string | null | undefined) {
     };
   } catch {
     return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  }
+}
+
+function parseStoredPrinterNetworkConfig(raw: string | null | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
   }
 }
 
@@ -292,17 +340,22 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
 router.get("/admin/csr-settings", requireRole("admin", "supervisor", "customer_service_rep", "business_sitter", "sales_rep", "lab_tech"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings() as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
+    shiftLocationOptions: parseShiftLocations(s.shiftLocationOptions),
+    deliveryOptions: parseDeliveryOptions(s.deliveryOptions),
     printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
   });
 });
 
 router.put("/admin/csr-settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
+  const shiftLocationOptions = req.body?.shiftLocationOptions;
+  const deliveryOptions = req.body?.deliveryOptions;
   const printerNetworkConfig = req.body?.printerNetworkConfig;
-  const update: Partial<typeof adminSettingsTable.$inferInsert> = {};
+  const update: Record<string, unknown> = {};
+  const existing = await getOrCreateSettings() as AdminSettingsWithCsr;
 
   if (pickupInstructionOptions !== undefined) {
     if (!Array.isArray(pickupInstructionOptions) || pickupInstructionOptions.length > 20) {
@@ -312,17 +365,44 @@ router.put("/admin/csr-settings", requireRole("admin", "supervisor"), async (req
     update.pickupInstructionOptions = JSON.stringify(pickupInstructionOptions.map((option, index) => ({
       id: String(option.id || `pickup-${index + 1}`),
       label: String(option.label || "Pickup option"),
-      locationName: String(option.locationName || ""),
+      instructions: String(option.instructions || option.address || ""),
+    })));
+  }
+
+  if (shiftLocationOptions !== undefined) {
+    if (!Array.isArray(shiftLocationOptions) || shiftLocationOptions.length > 20) {
+      res.status(400).json({ error: "shiftLocationOptions must be an array of up to 20 locations" });
+      return;
+    }
+    update.shiftLocationOptions = JSON.stringify(shiftLocationOptions.map((option, index) => ({
+      id: String(option.id || `location-${index + 1}`),
+      label: String(option.label || "Shift location"),
       address: String(option.address || ""),
+      pickupInstructionId: String(option.pickupInstructionId || ""),
+      deliveryOptionId: String(option.deliveryOptionId || ""),
+    })));
+  }
+
+  if (deliveryOptions !== undefined) {
+    if (!Array.isArray(deliveryOptions) || deliveryOptions.length > 20) {
+      res.status(400).json({ error: "deliveryOptions must be an array of up to 20 options" });
+      return;
+    }
+    update.deliveryOptions = JSON.stringify(deliveryOptions.map((option, index) => ({
+      id: String(option.id || `delivery-${index + 1}`),
+      label: String(option.label || "Delivery option"),
+      instructions: String(option.instructions || ""),
+      separatePaymentRequired: option.separatePaymentRequired === true,
     })));
   }
 
   if (printerNetworkConfig !== undefined) {
     const cfg = printerNetworkConfig as Record<string, unknown>;
+    const storedCfg = parseStoredPrinterNetworkConfig(existing.printerNetworkConfig);
     update.printerNetworkConfig = JSON.stringify({
       onsiteMode: String(cfg.onsiteMode || "auto"),
       ssid: String(cfg.ssid || ""),
-      password: String(cfg.password || ""),
+      password: typeof cfg.password === "string" ? cfg.password : String(storedCfg.password || ""),
       raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
     });
   }
@@ -332,13 +412,14 @@ router.put("/admin/csr-settings", requireRole("admin", "supervisor"), async (req
     return;
   }
 
-  const existing = await getOrCreateSettings();
   const [updated] = await db.update(adminSettingsTable)
     .set(update)
     .where(eq(adminSettingsTable.id, existing.id))
-    .returning();
+    .returning() as AdminSettingsWithCsr[];
   res.json({
     pickupInstructionOptions: parsePickupInstructions(updated.pickupInstructionOptions),
+    shiftLocationOptions: parseShiftLocations(updated.shiftLocationOptions),
+    deliveryOptions: parseDeliveryOptions(updated.deliveryOptions),
     printerNetworkConfig: parsePrinterNetworkConfig(updated.printerNetworkConfig),
   });
 });

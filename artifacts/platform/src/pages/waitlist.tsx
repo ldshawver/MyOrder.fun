@@ -1,38 +1,147 @@
 import { useState } from "react";
+import { useSignUp } from "@clerk/react/legacy";
 import { Link } from "wouter";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+type WaitlistForm = {
+  name: string;
+  email: string;
+  phone: string;
+  password: string;
+  confirmPassword: string;
+  message: string;
+};
+
+type ClerkSignUpLike = {
+  status?: string | null;
+  createdSessionId?: string | null;
+  missingFields?: string[];
+};
+
+function getClerkErrorMessage(err: unknown): string {
+  const errors = (err as { errors?: Array<{ longMessage?: string; message?: string }> })?.errors;
+  const clerkMessage = errors?.[0]?.longMessage ?? errors?.[0]?.message;
+  if (clerkMessage) return clerkMessage;
+  return err instanceof Error ? err.message : "Something went wrong";
+}
+
+function splitName(fullName: string): { firstName: string; lastName?: string } {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  const [firstName = "", ...rest] = parts;
+  return {
+    firstName,
+    lastName: rest.length > 0 ? rest.join(" ") : undefined,
+  };
+}
+
 export default function WaitlistPage() {
-  const [form, setForm] = useState({ name: "", email: "", phone: "", message: "" });
+  const { isLoaded, signUp, setActive } = useSignUp();
+  const [form, setForm] = useState<WaitlistForm>({
+    name: "",
+    email: "",
+    phone: "",
+    password: "",
+    confirmPassword: "",
+    message: "",
+  });
+  const [verificationCode, setVerificationCode] = useState("");
+  const [awaitingVerification, setAwaitingVerification] = useState(false);
+  const [submittedForm, setSubmittedForm] = useState<WaitlistForm | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setStatus("loading");
-    setErrorMsg("");
-    try {
-      const res = await fetch(`${BASE_API}/api/onboarding/request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contactName: form.name,
-          contactEmail: form.email,
-          contactPhone: form.phone || undefined,
-          description: form.message || undefined,
-          companyName: "Individual",
-          businessType: "customer",
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? "Request failed");
+  async function submitAccessRequest(values: WaitlistForm) {
+    const res = await fetch(`${BASE_API}/api/onboarding/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contactName: values.name,
+        contactEmail: values.email,
+        contactPhone: values.phone || undefined,
+        description: values.message || undefined,
+        companyName: "Individual",
+        businessType: "customer",
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ?? "Request failed");
+    }
+  }
+
+  async function finishClerkSignUp(result: ClerkSignUpLike, values: WaitlistForm) {
+    if (result.status === "complete") {
+      await submitAccessRequest(values);
+      if (result.createdSessionId && setActive) {
+        await setActive({ session: result.createdSessionId });
       }
       setStatus("success");
+      return;
+    }
+
+    if (result.status === "missing_requirements" || result.missingFields?.includes("email_address_verification")) {
+      await signUp?.prepareEmailAddressVerification({ strategy: "email_code" });
+      setSubmittedForm(values);
+      setAwaitingVerification(true);
+      setStatus("idle");
+      return;
+    }
+
+    throw new Error("Sign up needs additional verification. Please use the Clerk sign up link below.");
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isLoaded || !signUp) return;
+    setStatus("loading");
+    setErrorMsg("");
+
+    const password = form.password.trim();
+    if (password.length < 8) {
+      setErrorMsg("Password must be at least 8 characters.");
+      setStatus("error");
+      return;
+    }
+    if (password !== form.confirmPassword.trim()) {
+      setErrorMsg("Passwords do not match.");
+      setStatus("error");
+      return;
+    }
+
+    try {
+      const { firstName, lastName } = splitName(form.name);
+      const result = await signUp.create({
+        emailAddress: form.email.trim(),
+        password,
+        firstName,
+        lastName,
+        unsafeMetadata: {
+          contactPhone: form.phone.trim() || undefined,
+          accessRequest: true,
+        },
+      });
+      await finishClerkSignUp(result, form);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Something went wrong");
+      setErrorMsg(getClerkErrorMessage(err));
+      setStatus("error");
+    }
+  }
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isLoaded || !signUp || !submittedForm) return;
+    setStatus("loading");
+    setErrorMsg("");
+
+    try {
+      const result = await signUp.attemptEmailAddressVerification({
+        code: verificationCode.trim(),
+      });
+      await finishClerkSignUp(result, submittedForm);
+    } catch (err) {
+      setErrorMsg(getClerkErrorMessage(err));
       setStatus("error");
     }
   }
@@ -91,10 +200,10 @@ export default function WaitlistPage() {
           >
             <div className="text-2xl">✓</div>
             <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>
-              Access request received.
+              Account created.
             </p>
             <p className="text-xs font-mono" style={{ color: "#555" }}>
-              You'll hear from us once your account is approved.
+              Your access request is waiting for approval.
             </p>
             <Link
               href={`${basePath}/sign-in`}
@@ -104,6 +213,55 @@ export default function WaitlistPage() {
               Already approved? Sign in
             </Link>
           </div>
+        ) : awaitingVerification ? (
+          <form
+            onSubmit={handleVerify}
+            className="w-full flex flex-col gap-3"
+            style={{
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(220,20,60,0.15)",
+              borderRadius: "0.75rem",
+              padding: "1.5rem",
+            }}
+          >
+            <p className="text-xs font-mono tracking-widest uppercase mb-1" style={{ color: "#555" }}>
+              Verify Email
+            </p>
+
+            <input
+              required
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Verification code"
+              value={verificationCode}
+              onChange={(e) => setVerificationCode(e.target.value)}
+              className="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "#C0C0C0",
+              }}
+            />
+
+            {status === "error" && (
+              <p className="text-xs font-mono" style={{ color: "#DC143C" }}>
+                {errorMsg}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={status === "loading"}
+              className="w-full rounded-lg py-2 text-sm font-mono tracking-widest uppercase transition-opacity"
+              style={{
+                background: "#8B0000",
+                color: "#C0C0C0",
+                opacity: status === "loading" ? 0.6 : 1,
+              }}
+            >
+              {status === "loading" ? "Verifying…" : "Verify & Request Access"}
+            </button>
+          </form>
         ) : (
           <form
             onSubmit={handleSubmit}
@@ -149,9 +307,39 @@ export default function WaitlistPage() {
 
             <input
               type="tel"
-              placeholder="Phone (optional)"
+              placeholder="Phone"
               value={form.phone}
               onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              className="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "#C0C0C0",
+              }}
+            />
+
+            <input
+              required
+              type="password"
+              autoComplete="new-password"
+              placeholder="Password"
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              className="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "#C0C0C0",
+              }}
+            />
+
+            <input
+              required
+              type="password"
+              autoComplete="new-password"
+              placeholder="Confirm password"
+              value={form.confirmPassword}
+              onChange={(e) => setForm((f) => ({ ...f, confirmPassword: e.target.value }))}
               className="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none"
               style={{
                 background: "rgba(255,255,255,0.05)",

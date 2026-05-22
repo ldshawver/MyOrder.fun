@@ -481,7 +481,9 @@ export default function Catalog() {
 
   const allItems = data?.items ?? [];
 
-  // In LC mode the API already filters to only items with luciferCruzName or woo-managed
+  // In LC mode the API returns only WooCommerce-synced Lucifer Cruz products.
+  // Alavont rows can still carry LC mapping fields for payment conversion,
+  // but those mapped fields do not make them Lucifer Cruz storefront items.
   const displayItems = allItems;
 
   // Determine empty-state reason for better messaging

@@ -83,13 +83,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
         {
-          href: "/account",
-          label: "Account Settings",
+          href: "/profile",
+          label: "User Account",
           icon: User,
           roles: ALL_ROLES,
           children: [
-            { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
             { href: "/profile", label: "Profile", icon: User, roles: ALL_ROLES },
+            { href: "/account", label: "Account Settings", icon: Settings, roles: ALL_ROLES },
+            { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
             { href: "/notifications", label: "Notification Settings", icon: Bell, roles: ALL_ROLES },
           ],
         },
@@ -107,11 +108,11 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           icon: MapPin,
           roles: SHIFT_ROLES,
           children: [
-            { href: "/csr-settings", label: "Pickup Instructions", icon: ClipboardList, roles: SHIFT_ROLES },
-            { href: "/csr-settings", label: "Shift Settings", icon: Settings, roles: SHIFT_ROLES },
+            { href: "/csr-settings/pickup", label: "Pickup Instructions", icon: ClipboardList, roles: SHIFT_ROLES },
+            { href: "/csr-settings/shift", label: "Shift Settings", icon: Settings, roles: SHIFT_ROLES },
             { href: "/admin/print", label: "Test Print", icon: Printer, roles: ["admin", "supervisor"] },
-            { href: "/csr-settings", label: "WIFI", icon: Wifi, roles: SHIFT_ROLES },
-            { href: "/csr-settings", label: "Shift Location", icon: Store, roles: SHIFT_ROLES },
+            { href: "/csr-settings/wifi", label: "WIFI", icon: Wifi, roles: SHIFT_ROLES },
+            { href: "/csr-settings/location", label: "Shift Location", icon: Store, roles: SHIFT_ROLES },
           ],
         },
       ],
@@ -292,14 +293,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         {/* User footer */}
         <div className="p-3 border-t border-border/40 space-y-1">
           <Link
-            href="/notifications"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground transition-all"
-            data-testid="link-notifications"
-          >
-            <Bell size={16} />
-            <span>Notifications</span>
-          </Link>
-          <Link
             href="/profile"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group hover:bg-sidebar-accent/60"
             data-testid="link-profile"
@@ -319,14 +312,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
                 {user.role.replace(/_/g, " ")}
               </div>
             </div>
-          </Link>
-          <Link
-            href="/account"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground transition-all"
-            data-testid="link-account"
-          >
-            <Settings size={16} />
-            <span>Account Settings</span>
           </Link>
           <button
             onClick={() => signOut()}

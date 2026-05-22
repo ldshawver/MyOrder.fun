@@ -157,15 +157,19 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 20;
 
-  // In Lucifer mode: only show items with a luciferCruzName or that are woo-managed
+  // Lucifer Cruz mode is the ecommerce storefront: only WooCommerce-synced
+  // Lucifer Cruz products belong here. Alavont rows may have lucifer_cruz_*
+  // mapping fields, but those are checkout/payment conversion fields, not
+  // storefront membership.
   if (isLuciferMode) {
-    rows = rows.filter(r => !!r.luciferCruzName?.trim() || r.isWooManaged);
+    rows = rows.filter(r => r.isWooManaged === true && r.merchantProductSource === "woo" && !!r.wooProductId);
   }
 
-  // In Alavont mode (non-admin): exclude WooCommerce-only items — imported CSV/local
-  // items stay in Alavont even when they have merchant mapping fields for checkout.
-  if (!isLuciferMode && !isAdminActor) {
-    rows = rows.filter(r => r.isLocalAlavont !== false);
+  // Alavont Therapeutics mode is the uploaded/imported vendor menu. It shows
+  // local Alavont rows only, even though those rows carry Lucifer Cruz mapped
+  // fields used later for merchant processing.
+  if (!isLuciferMode) {
+    rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
   }
 
   const stockByCatalogId = await getLinkedInventoryStockByCatalogId();

@@ -355,6 +355,7 @@ function AuthenticatedApp() {
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
+            <Route path="/csr-settings/:section" component={CsrSettings} />
           </>
         )}
 
