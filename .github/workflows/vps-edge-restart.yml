@@ -20,14 +20,15 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
 
-      - name: Add VPS to known_hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-
       - name: Non-interactive edge restart
         run: |
-          timeout 180s ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=2 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+          timeout 180s ssh \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -eux
             cd /opt/alavont/deploy
 
@@ -36,7 +37,7 @@ jobs:
             iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
             command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
-            echo "== restart compose edge =="
+            echo "== start compose services =="
             docker compose up -d db api platform nginx
             docker compose restart nginx
 
@@ -53,6 +54,6 @@ jobs:
 
       - name: External verification from GitHub runner
         run: |
-          sleep 5
+          sleep 8
           curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
           curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
