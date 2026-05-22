@@ -160,6 +160,8 @@ export interface CatalogItem {
   updatedAt: string;
 }
 
+export type CreateCatalogItemBodyInventoryTrackingData = { [key: string]: unknown };
+
 export interface CreateCatalogItemBody {
   name: string;
   description?: string;
@@ -173,6 +175,16 @@ export interface CreateCatalogItemBody {
   isAvailable?: boolean;
   imageUrl?: string;
   tags?: string[];
+  internalName?: string | null;
+  internalDescription?: string | null;
+  internalCategory?: string | null;
+  supplierName?: string | null;
+  supplierCategory?: string | null;
+  backendInventoryNotes?: string | null;
+  vendorSku?: string | null;
+  sourceInventoryId?: string | null;
+  costBasis?: number | null;
+  inventoryTrackingData?: CreateCatalogItemBodyInventoryTrackingData;
   luciferCruzName?: string | null;
   luciferCruzImageUrl?: string | null;
   luciferCruzDescription?: string | null;
@@ -187,9 +199,21 @@ export interface CreateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  displayName?: string | null;
+  displayDescription?: string | null;
+  displayCategory?: string | null;
+  displayImage?: string | null;
+  merchantBrandName?: string | null;
+  marketingCopy?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
+  upsellCopy?: string | null;
+  promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
 }
+
+export type UpdateCatalogItemBodyInventoryTrackingData = { [key: string]: unknown };
 
 export interface UpdateCatalogItemBody {
   name?: string;
@@ -204,6 +228,16 @@ export interface UpdateCatalogItemBody {
   isAvailable?: boolean;
   imageUrl?: string;
   tags?: string[];
+  internalName?: string | null;
+  internalDescription?: string | null;
+  internalCategory?: string | null;
+  supplierName?: string | null;
+  supplierCategory?: string | null;
+  backendInventoryNotes?: string | null;
+  vendorSku?: string | null;
+  sourceInventoryId?: string | null;
+  costBasis?: number | null;
+  inventoryTrackingData?: UpdateCatalogItemBodyInventoryTrackingData;
   luciferCruzName?: string | null;
   luciferCruzImageUrl?: string | null;
   luciferCruzDescription?: string | null;
@@ -218,6 +252,16 @@ export interface UpdateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  displayName?: string | null;
+  displayDescription?: string | null;
+  displayCategory?: string | null;
+  displayImage?: string | null;
+  merchantBrandName?: string | null;
+  marketingCopy?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
+  upsellCopy?: string | null;
+  promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
 }
@@ -266,6 +310,26 @@ export const OrderPaymentStatus = {
   failed: 'failed',
 } as const;
 
+export type OrderCheckoutConfirmationPaymentMethod = typeof OrderCheckoutConfirmationPaymentMethod[keyof typeof OrderCheckoutConfirmationPaymentMethod];
+
+
+export const OrderCheckoutConfirmationPaymentMethod = {
+  cash: 'cash',
+  cash_app: 'cash_app',
+  stripe: 'stripe',
+  venmo: 'venmo',
+  gift_card: 'gift_card',
+  manual: 'manual',
+} as const;
+
+export type OrderCheckoutConfirmation = {
+  acceptedAllSalesFinal: true;
+  confirmedAt?: string;
+  /** @minLength 1 */
+  legalDisclaimerText: string;
+  paymentMethod?: OrderCheckoutConfirmationPaymentMethod;
+};
+
 export type OrderRouteSource = typeof OrderRouteSource[keyof typeof OrderRouteSource] | null;
 
 
@@ -301,6 +365,7 @@ export interface Order {
   total: number;
   shippingAddress?: string;
   notes?: string;
+  checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];
   assignedCsrUserId?: number | null;
   routeSource?: OrderRouteSource;
@@ -322,17 +387,32 @@ export type CreateOrderBodyItemsItem = {
   quantity: number;
 };
 
+export type CreateOrderBodyCheckoutConfirmationPaymentMethod = typeof CreateOrderBodyCheckoutConfirmationPaymentMethod[keyof typeof CreateOrderBodyCheckoutConfirmationPaymentMethod];
+
+
+export const CreateOrderBodyCheckoutConfirmationPaymentMethod = {
+  cash: 'cash',
+  cash_app: 'cash_app',
+  stripe: 'stripe',
+  venmo: 'venmo',
+  gift_card: 'gift_card',
+  manual: 'manual',
+} as const;
+
+export type CreateOrderBodyCheckoutConfirmation = {
+  acceptedAllSalesFinal: true;
+  confirmedAt?: string;
+  /** @minLength 1 */
+  legalDisclaimerText: string;
+  paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
+};
+
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
-  checkoutConfirmation?: {
-    acceptedAllSalesFinal: true;
-    confirmedAt?: string;
-    legalDisclaimerText: string;
-    paymentMethod?: "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual";
-  };
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
+  checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
 }
 
 export type UpdateOrderStatusBodyStatus = typeof UpdateOrderStatusBodyStatus[keyof typeof UpdateOrderStatusBodyStatus];
@@ -901,3 +981,4 @@ limit?: number;
 export type ListNotificationsParams = {
 unreadOnly?: boolean;
 };
+

@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { CreateOrderBodyCheckoutConfirmation } from './createOrderBodyCheckoutConfirmation';
 import type { CreateOrderBodyItemsItem } from './createOrderBodyItemsItem';
 
 export interface CreateOrderBody {
@@ -12,4 +13,5 @@ export interface CreateOrderBody {
   notes?: string;
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
+  checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
 }

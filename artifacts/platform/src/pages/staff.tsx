@@ -1201,10 +1201,21 @@ export default function CustomerServiceRepQueue() {
     }
   };
 
-  const isStaff = user?.role === "business_sitter" || user?.role === "supervisor" || user?.role === "admin";
+  // All roles that can clock in — must match SHIFT_OPERATOR_ROLES in shifts.ts
+  const isStaff =
+    user?.role === "business_sitter" ||
+    user?.role === "customer_service_rep" ||
+    user?.role === "sales_rep" ||
+    user?.role === "lab_tech" ||
+    user?.role === "supervisor" ||
+    user?.role === "admin";
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
-  const isCsrOnly = user?.role === "customer_service_rep" || user?.role === "lab_tech" || user?.role === "sales_rep";
+  const isCsrOnly =
+    user?.role === "customer_service_rep" ||
+    user?.role === "sales_rep" ||
+    user?.role === "lab_tech" ||
+    user?.role === "business_sitter";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

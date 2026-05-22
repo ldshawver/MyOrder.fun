@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { UpdateCatalogItemBodyInventoryTrackingData } from './updateCatalogItemBodyInventoryTrackingData';
 
 export interface UpdateCatalogItemBody {
   name?: string;
@@ -19,6 +20,16 @@ export interface UpdateCatalogItemBody {
   isAvailable?: boolean;
   imageUrl?: string;
   tags?: string[];
+  internalName?: string | null;
+  internalDescription?: string | null;
+  internalCategory?: string | null;
+  supplierName?: string | null;
+  supplierCategory?: string | null;
+  backendInventoryNotes?: string | null;
+  vendorSku?: string | null;
+  sourceInventoryId?: string | null;
+  costBasis?: number | null;
+  inventoryTrackingData?: UpdateCatalogItemBodyInventoryTrackingData;
   luciferCruzName?: string | null;
   luciferCruzImageUrl?: string | null;
   luciferCruzDescription?: string | null;
@@ -33,6 +44,16 @@ export interface UpdateCatalogItemBody {
   alavontCategory?: string | null;
   alavontImageUrl?: string | null;
   alavontInStock?: boolean | null;
+  displayName?: string | null;
+  displayDescription?: string | null;
+  displayCategory?: string | null;
+  displayImage?: string | null;
+  merchantBrandName?: string | null;
+  marketingCopy?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
+  upsellCopy?: string | null;
+  promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
 }

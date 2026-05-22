@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { OrderCheckoutConfirmation } from './orderCheckoutConfirmation';
 import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
 import type { OrderPaymentStatus } from './orderPaymentStatus';
@@ -25,6 +26,7 @@ export interface Order {
   total: number;
   shippingAddress?: string;
   notes?: string;
+  checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];
   assignedCsrUserId?: number | null;
   routeSource?: OrderRouteSource;

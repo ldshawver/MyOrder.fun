@@ -442,6 +442,9 @@ export const ListOrdersQueryParams = zod.object({
   "limit": zod.coerce.number().default(listOrdersQueryLimitDefault)
 })
 
+
+
+
 export const ListOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -457,6 +460,12 @@ export const ListOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -491,19 +500,20 @@ export const ListOrdersResponse = zod.object({
 
 
 
+
 export const CreateOrderBody = zod.object({
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
-  "checkoutConfirmation": zod.object({
-  "acceptedAllSalesFinal": zod.literal(true),
-  "confirmedAt": zod.string().datetime().optional(),
-  "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(["cash", "cash_app", "stripe", "venmo", "gift_card", "manual"]).optional()
-}).optional(),
   "items": zod.array(zod.object({
   "catalogItemId": zod.number().min(1),
   "quantity": zod.number().min(1)
-})).min(1)
+})).min(1),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.string().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional()
 })
 
 
@@ -513,6 +523,9 @@ export const CreateOrderBody = zod.object({
 export const GetOrderParams = zod.object({
   "id": zod.coerce.number()
 })
+
+
+
 
 export const GetOrderResponse = zod.object({
   "id": zod.number(),
@@ -528,6 +541,12 @@ export const GetOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -562,6 +581,9 @@ export const UpdateOrderStatusBody = zod.object({
   "notes": zod.string().optional()
 })
 
+
+
+
 export const UpdateOrderStatusResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -576,6 +598,12 @@ export const UpdateOrderStatusResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -621,6 +649,9 @@ export const AcceptOrderParams = zod.object({
   "id": zod.coerce.number()
 })
 
+
+
+
 export const AcceptOrderResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -635,6 +666,12 @@ export const AcceptOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -676,6 +713,9 @@ export const AdjustOrderEtaBody = zod.object({
   "promisedMinutes": zod.number().optional().describe('Resets ETA to now() + promisedMinutes. Does not stack with current ETA.')
 })
 
+
+
+
 export const AdjustOrderEtaResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -690,6 +730,12 @@ export const AdjustOrderEtaResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -719,6 +765,9 @@ export const MarkOrderReadyParams = zod.object({
   "id": zod.coerce.number()
 })
 
+
+
+
 export const MarkOrderReadyResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -733,6 +782,12 @@ export const MarkOrderReadyResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -766,6 +821,9 @@ export const ReassignOrderBody = zod.object({
   "assignedCsrUserId": zod.number().nullable()
 })
 
+
+
+
 export const ReassignOrderResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -780,6 +838,12 @@ export const ReassignOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -837,6 +901,9 @@ export const GetRecentOrderEventsResponse = zod.object({
 /**
  * @summary Orders that have passed their estimatedReadyAt without completion
  */
+
+
+
 export const ListDelayedOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -852,6 +919,12 @@ export const ListDelayedOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -885,6 +958,9 @@ export const GetRecentOrdersQueryParams = zod.object({
   "limit": zod.coerce.number().default(getRecentOrdersQueryLimitDefault)
 })
 
+
+
+
 export const GetRecentOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -900,6 +976,12 @@ export const GetRecentOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -1458,6 +1540,9 @@ export const ConfirmPaymentBody = zod.object({
   "paymentIntentId": zod.string()
 })
 
+
+
+
 export const ConfirmPaymentResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -1472,6 +1557,12 @@ export const ConfirmPaymentResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "checkoutConfirmation": zod.object({
+  "acceptedAllSalesFinal": zod.boolean(),
+  "confirmedAt": zod.coerce.date().optional(),
+  "legalDisclaimerText": zod.string().min(1),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
   "catalogItemId": zod.number(),
@@ -1527,3 +1618,5 @@ export const AddOrderNoteBody = zod.object({
   "isEncrypted": zod.boolean().optional(),
   "isInternal": zod.boolean().optional()
 })
+
+

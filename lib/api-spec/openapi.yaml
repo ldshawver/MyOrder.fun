@@ -1832,6 +1832,22 @@ components:
                 type: integer
                 minimum: 1
             required: [catalogItemId, quantity]
+        checkoutConfirmation:
+          type: object
+          additionalProperties: false
+          properties:
+            acceptedAllSalesFinal:
+              type: boolean
+              const: true
+            confirmedAt:
+              type: string
+            legalDisclaimerText:
+              type: string
+              minLength: 1
+            paymentMethod:
+              type: string
+              enum: [cash, cash_app, stripe, venmo, gift_card, manual]
+          required: [acceptedAllSalesFinal, legalDisclaimerText]
       required: [items]
 
     UpdateOrderStatusBody:
