@@ -40,6 +40,10 @@ const UpdateCurrentUserBody = z.object({
       message: "avatarUrl must be an http(s) URL or uploaded image",
     })
     .nullish(),
+  notificationPreferences: z.object({
+    orderAlerts: z.enum(["in_app", "silent", "sound", "vibrate"]).default("sound"),
+    platformUpdates: z.enum(["in_app", "silent", "sound", "vibrate"]).default("in_app"),
+  }).nullish(),
 });
 
 const router: IRouter = Router();
@@ -84,6 +88,7 @@ async function ensureUsersListSchema(): Promise<void> {
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "notification_preferences" jsonb DEFAULT '{"orderAlerts":"sound","platformUpdates":"in_app"}'::jsonb`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
@@ -160,6 +165,7 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
     avatarUrl: user.avatarUrl ?? undefined,
+    notificationPreferences: user.notificationPreferences ?? { orderAlerts: "sound", platformUpdates: "in_app" },
     role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
@@ -201,6 +207,9 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   if ("avatarUrl" in body.data) {
     const v = body.data.avatarUrl;
     updates.avatarUrl = v == null || v === "" ? null : v;
+  }
+  if ("notificationPreferences" in body.data && body.data.notificationPreferences) {
+    updates.notificationPreferences = body.data.notificationPreferences;
   }
 
   if (Object.keys(updates).length === 0) {

@@ -15,7 +15,7 @@ export interface OnboardingRequestBody {
   companyName: string;
   contactName: string;
   contactEmail: string;
-  contactPhone?: string;
+  contactPhone?: string | null;
   businessType: string;
   website?: string;
   description?: string;
@@ -140,6 +140,20 @@ export interface TenantSummary {
   topProducts: TenantSummaryTopProductsItem[];
 }
 
+export type CatalogItemMediaGalleryItemType = typeof CatalogItemMediaGalleryItemType[keyof typeof CatalogItemMediaGalleryItemType];
+
+
+export const CatalogItemMediaGalleryItemType = {
+  image: 'image',
+  video: 'video',
+} as const;
+
+export type CatalogItemMediaGalleryItem = {
+  type: CatalogItemMediaGalleryItemType;
+  src: string;
+  alt?: string | null;
+};
+
 export type CatalogItemMetadata = { [key: string]: unknown };
 
 export interface CatalogItem {
@@ -154,11 +168,47 @@ export interface CatalogItem {
   stockQuantity?: number;
   isAvailable: boolean;
   imageUrl?: string;
+  mediaGallery?: CatalogItemMediaGalleryItem[];
   tags?: string[];
   metadata?: CatalogItemMetadata;
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
+  alavontName?: string | null;
+  alavontDescription?: string | null;
+  alavontCategory?: string | null;
+  alavontImageUrl?: string | null;
+  alavontInStock?: boolean | null;
+  luciferCruzName?: string | null;
+  luciferCruzImageUrl?: string | null;
+  luciferCruzDescription?: string | null;
+  luciferCruzCategory?: string | null;
+  regularPrice?: number | null;
+  homiePrice?: number | null;
+  merchantProcessingMode?: string | null;
+  merchantProductSource?: string | null;
+  isWooManaged?: boolean;
+  isLocalAlavont?: boolean;
+  wooProductId?: string | null;
+  wooVariationId?: string | null;
+  receiptName?: string | null;
+  labName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export type CreateCatalogItemBodyMediaGalleryItemType = typeof CreateCatalogItemBodyMediaGalleryItemType[keyof typeof CreateCatalogItemBodyMediaGalleryItemType];
+
+
+export const CreateCatalogItemBodyMediaGalleryItemType = {
+  image: 'image',
+  video: 'video',
+} as const;
+
+export type CreateCatalogItemBodyMediaGalleryItem = {
+  type: CreateCatalogItemBodyMediaGalleryItemType;
+  src: string;
+  alt?: string | null;
+};
 
 export type CreateCatalogItemBodyInventoryTrackingData = { [key: string]: unknown };
 
@@ -174,6 +224,9 @@ export interface CreateCatalogItemBody {
   stockQuantity?: number;
   isAvailable?: boolean;
   imageUrl?: string;
+  mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;
@@ -213,6 +266,20 @@ export interface CreateCatalogItemBody {
   receiptName?: string | null;
 }
 
+export type UpdateCatalogItemBodyMediaGalleryItemType = typeof UpdateCatalogItemBodyMediaGalleryItemType[keyof typeof UpdateCatalogItemBodyMediaGalleryItemType];
+
+
+export const UpdateCatalogItemBodyMediaGalleryItemType = {
+  image: 'image',
+  video: 'video',
+} as const;
+
+export type UpdateCatalogItemBodyMediaGalleryItem = {
+  type: UpdateCatalogItemBodyMediaGalleryItemType;
+  src: string;
+  alt?: string | null;
+};
+
 export type UpdateCatalogItemBodyInventoryTrackingData = { [key: string]: unknown };
 
 export interface UpdateCatalogItemBody {
@@ -227,6 +294,9 @@ export interface UpdateCatalogItemBody {
   stockQuantity?: number;
   isAvailable?: boolean;
   imageUrl?: string;
+  mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;
@@ -576,6 +646,31 @@ export const UserProfileStatus = {
   deactivated: 'deactivated',
 } as const;
 
+export type UserProfileNotificationPreferencesOrderAlerts = typeof UserProfileNotificationPreferencesOrderAlerts[keyof typeof UserProfileNotificationPreferencesOrderAlerts];
+
+
+export const UserProfileNotificationPreferencesOrderAlerts = {
+  in_app: 'in_app',
+  silent: 'silent',
+  sound: 'sound',
+  vibrate: 'vibrate',
+} as const;
+
+export type UserProfileNotificationPreferencesPlatformUpdates = typeof UserProfileNotificationPreferencesPlatformUpdates[keyof typeof UserProfileNotificationPreferencesPlatformUpdates];
+
+
+export const UserProfileNotificationPreferencesPlatformUpdates = {
+  in_app: 'in_app',
+  silent: 'silent',
+  sound: 'sound',
+  vibrate: 'vibrate',
+} as const;
+
+export type UserProfileNotificationPreferences = {
+  orderAlerts?: UserProfileNotificationPreferencesOrderAlerts;
+  platformUpdates?: UserProfileNotificationPreferencesPlatformUpdates;
+};
+
 export interface UserProfile {
   id: number;
   clerkId: string;
@@ -590,15 +685,42 @@ export interface UserProfile {
   isActive: boolean;
   contactPhone?: string | null;
   avatarUrl?: string | null;
+  notificationPreferences?: UserProfileNotificationPreferences;
   createdAt: string;
 }
+
+export type UpdateCurrentUserBodyNotificationPreferencesOrderAlerts = typeof UpdateCurrentUserBodyNotificationPreferencesOrderAlerts[keyof typeof UpdateCurrentUserBodyNotificationPreferencesOrderAlerts];
+
+
+export const UpdateCurrentUserBodyNotificationPreferencesOrderAlerts = {
+  in_app: 'in_app',
+  silent: 'silent',
+  sound: 'sound',
+  vibrate: 'vibrate',
+} as const;
+
+export type UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates = typeof UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates[keyof typeof UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates];
+
+
+export const UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates = {
+  in_app: 'in_app',
+  silent: 'silent',
+  sound: 'sound',
+  vibrate: 'vibrate',
+} as const;
+
+export type UpdateCurrentUserBodyNotificationPreferences = {
+  orderAlerts?: UpdateCurrentUserBodyNotificationPreferencesOrderAlerts;
+  platformUpdates?: UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates;
+} | null;
 
 export interface UpdateCurrentUserBody {
   /** @maxLength 100 */
   firstName?: string | null;
   /** @maxLength 100 */
   lastName?: string | null;
-  contactPhone?: string | null;
+  contactPhone?: string;
+  notificationPreferences?: UpdateCurrentUserBodyNotificationPreferences;
   /** @maxLength 2048 */
   avatarUrl?: string | null;
 }
@@ -859,6 +981,7 @@ export interface AdminSettings {
   aiConciergePrompt?: string | null;
   /** True when no custom prompt is set and the server is using the built-in default. */
   aiConciergePromptIsDefault?: boolean;
+  catalogBannerImages?: string[];
   [key: string]: unknown;
  }
 
@@ -874,6 +997,7 @@ export interface UpdateAdminSettingsBody {
   8000 characters server-side.
    */
   aiConciergePrompt?: string | null;
+  catalogBannerImages?: string[];
   [key: string]: unknown;
  }
 
@@ -1050,3 +1174,4 @@ limit?: number;
 export type ListNotificationsParams = {
 unreadOnly?: boolean;
 };
+

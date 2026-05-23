@@ -25,7 +25,7 @@ export const SubmitOnboardingRequestBody = zod.object({
   "companyName": zod.string(),
   "contactName": zod.string(),
   "contactEmail": zod.string(),
-  "contactPhone": zod.string().optional(),
+  "contactPhone": zod.string().nullish(),
   "businessType": zod.string(),
   "website": zod.string().optional(),
   "description": zod.string().optional(),
@@ -244,8 +244,34 @@ export const ListCatalogItemsResponse = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
   "tags": zod.array(zod.string()).optional(),
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -270,6 +296,13 @@ export const CreateCatalogItemBody = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
   "tags": zod.array(zod.string()).optional(),
   "internalName": zod.string().nullish(),
   "internalDescription": zod.string().nullish(),
@@ -329,8 +362,34 @@ export const GetCatalogItemResponse = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
   "tags": zod.array(zod.string()).optional(),
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -355,6 +414,13 @@ export const UpdateCatalogItemBody = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
   "tags": zod.array(zod.string()).optional(),
   "internalName": zod.string().nullish(),
   "internalDescription": zod.string().nullish(),
@@ -406,8 +472,34 @@ export const UpdateCatalogItemResponse = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
   "tags": zod.array(zod.string()).optional(),
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -1325,6 +1417,10 @@ export const GetCurrentUserResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })
 
@@ -1343,7 +1439,11 @@ export const updateCurrentUserBodyAvatarUrlMax = 2048;
 export const UpdateCurrentUserBody = zod.object({
   "firstName": zod.string().max(updateCurrentUserBodyFirstNameMax).nullish(),
   "lastName": zod.string().max(updateCurrentUserBodyLastNameMax).nullish(),
-  "contactPhone": zod.string().nullish(),
+  "contactPhone": zod.string().optional(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).nullish(),
   "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
 })
 
@@ -1361,6 +1461,10 @@ export const UpdateCurrentUserResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })
 
@@ -1387,6 +1491,10 @@ export const ListUsersResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })),
   "total": zod.number()
@@ -1418,6 +1526,10 @@ export const UpdateUserRoleResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })
 
@@ -1496,6 +1608,10 @@ export const ListPendingUsersResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })),
   "total": zod.number()
@@ -1546,6 +1662,10 @@ export const AdminUpdateUserRoleResponse = zod.object({
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
+  "notificationPreferences": zod.object({
+  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
+  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+}).optional(),
   "createdAt": zod.coerce.date()
 })
 
@@ -1629,8 +1749,34 @@ export const AiConciergeChatResponse = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
   "tags": zod.array(zod.string()).optional(),
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })).optional(),
@@ -1659,8 +1805,34 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "stockQuantity": zod.number().optional(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
   "tags": zod.array(zod.string()).optional(),
   "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -1725,7 +1897,8 @@ export const GetAdminSettingsResponse = zod.object({
   "showOutOfStock": zod.boolean().optional(),
   "autoPrintOnPayment": zod.boolean().optional(),
   "aiConciergePrompt": zod.string().nullish().describe('Admin-editable system prompt for the AI concierge. NULL means the\nserver uses the built-in default. May contain the placeholders\n{{itemCount}} and {{catalog}}, which are substituted server-side.\n'),
-  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.')
+  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.'),
+  "catalogBannerImages": zod.array(zod.string()).optional()
 })
 
 
@@ -1741,7 +1914,8 @@ export const UpdateAdminSettingsBody = zod.object({
   "menuImportEnabled": zod.boolean().optional(),
   "showOutOfStock": zod.boolean().optional(),
   "autoPrintOnPayment": zod.boolean().optional(),
-  "aiConciergePrompt": zod.string().nullish().describe('Set to a non-empty string to override the default. Set to null or\nan empty string to revert to the built-in default. Hard-capped at\n8000 characters server-side.\n')
+  "aiConciergePrompt": zod.string().nullish().describe('Set to a non-empty string to override the default. Set to null or\nan empty string to revert to the built-in default. Hard-capped at\n8000 characters server-side.\n'),
+  "catalogBannerImages": zod.array(zod.string()).optional()
 })
 
 
@@ -1755,7 +1929,8 @@ export const UpdateAdminSettingsResponse = zod.object({
   "showOutOfStock": zod.boolean().optional(),
   "autoPrintOnPayment": zod.boolean().optional(),
   "aiConciergePrompt": zod.string().nullish().describe('Admin-editable system prompt for the AI concierge. NULL means the\nserver uses the built-in default. May contain the placeholders\n{{itemCount}} and {{catalog}}, which are substituted server-side.\n'),
-  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.')
+  "aiConciergePromptIsDefault": zod.boolean().optional().describe('True when no custom prompt is set and the server is using the built-in default.'),
+  "catalogBannerImages": zod.array(zod.string()).optional()
 })
 
 

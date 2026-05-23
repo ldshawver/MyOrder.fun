@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { UserProfileNotificationPreferences } from './userProfileNotificationPreferences';
 import type { UserProfileRole } from './userProfileRole';
 import type { UserProfileStatus } from './userProfileStatus';
 
@@ -22,5 +23,6 @@ export interface UserProfile {
   isActive: boolean;
   contactPhone?: string | null;
   avatarUrl?: string | null;
+  notificationPreferences?: UserProfileNotificationPreferences;
   createdAt: Date;
 }

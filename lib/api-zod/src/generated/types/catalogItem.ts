@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { CatalogItemMediaGalleryItem } from './catalogItemMediaGalleryItem';
 import type { CatalogItemMetadata } from './catalogItemMetadata';
 
 export interface CatalogItem {
@@ -19,8 +20,30 @@ export interface CatalogItem {
   stockQuantity?: number;
   isAvailable: boolean;
   imageUrl?: string;
+  mediaGallery?: CatalogItemMediaGalleryItem[];
   tags?: string[];
   metadata?: CatalogItemMetadata;
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
+  alavontName?: string | null;
+  alavontDescription?: string | null;
+  alavontCategory?: string | null;
+  alavontImageUrl?: string | null;
+  alavontInStock?: boolean | null;
+  luciferCruzName?: string | null;
+  luciferCruzImageUrl?: string | null;
+  luciferCruzDescription?: string | null;
+  luciferCruzCategory?: string | null;
+  regularPrice?: number | null;
+  homiePrice?: number | null;
+  merchantProcessingMode?: string | null;
+  merchantProductSource?: string | null;
+  isWooManaged?: boolean;
+  isLocalAlavont?: boolean;
+  wooProductId?: string | null;
+  wooVariationId?: string | null;
+  receiptName?: string | null;
+  labName?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

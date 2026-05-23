@@ -24,6 +24,16 @@ interface WooProduct {
   date_modified?: string | null;
 }
 
+const LC_MAIN_CATEGORIES = [
+  "Anal Play",
+  "Apparel & Accessories",
+  "Cock & Ball",
+  "Kink & Fetish",
+  "Self Care & Ambiance",
+  "Couples Play",
+  "Membership",
+];
+
 function stripHtml(html: string): string {
   return html
     .replace(/<[^>]+>/g, " ")
@@ -35,6 +45,17 @@ function stripHtml(html: string): string {
     .replace(/&nbsp;/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function decodeHtmlEntities(value: string): string {
+  return stripHtml(value);
+}
+
+function pickWooCategory(categories: Array<{ name?: string }> | undefined): string {
+  const names = (categories ?? [])
+    .map((cat) => decodeHtmlEntities(cat.name?.trim() || ""))
+    .filter(Boolean);
+  return names.find((name) => LC_MAIN_CATEGORIES.includes(name)) || names[0] || "Uncategorized";
 }
 
 async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consumerSecret: string) {
@@ -110,11 +131,15 @@ async function syncHandler(_req: import("express").Request, res: import("express
         const lcName: string = product.name?.trim() || "";
         const salePrice = product.sale_price ? parseFloat(product.sale_price) : null;
         const regularPrice = parseFloat(product.regular_price || product.price || product.sale_price || "0") || 0;
-        const category = product.categories?.[0]?.name?.trim() || "Uncategorized";
-        const imageUrl = product.images?.[0]?.src?.trim() || null;
+        const category = pickWooCategory(product.categories);
+        const imageUrls = (product.images ?? [])
+          .map((image) => image.src?.trim() || "")
+          .filter(Boolean);
+        const imageUrl = imageUrls[0] || null;
+        const mediaGallery = imageUrls.map((src) => ({ type: "image" as const, src, alt: lcName }));
         const description = product.description ? stripHtml(product.description) : null;
         const shortDesc = product.short_description ? stripHtml(product.short_description) : null;
-        const inStock = product.stock_status === "instock";
+        const inStock = product.stock_status ? product.stock_status === "instock" : true;
         const wcSku = product.sku?.trim() || null;
 
         if (!lcName) { skipped++; continue; }
@@ -128,6 +153,7 @@ async function syncHandler(_req: import("express").Request, res: import("express
           isAvailable: inStock,
           sku: wcSku,
           imageUrl,
+          mediaGallery,
           // Dual-brand fields
           regularPrice: String(regularPrice.toFixed(2)),
           homiePrice: salePrice ? String(salePrice.toFixed(2)) : null,

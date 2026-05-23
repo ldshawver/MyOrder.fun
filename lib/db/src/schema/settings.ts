@@ -47,6 +47,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   aiConciergePrompt: text("ai_concierge_prompt"),
   conciergeIntroSteps: text("concierge_intro_steps"),
   conciergePromotedItemIds: text("concierge_promoted_item_ids"),
+  catalogBannerImages: text("catalog_banner_images"),
   importTemplateSpec: text("import_template_spec"),
   pickupInstructionOptions: text("pickup_instruction_options"),
   shiftLocationOptions: text("shift_location_options"),

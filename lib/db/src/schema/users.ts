@@ -5,6 +5,7 @@ import {
   timestamp,
   integer,
   boolean,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -23,6 +24,10 @@ export const usersTable = pgTable("users", {
   mfaBackupCodes: text("mfa_backup_codes"),
   contactPhone: text("contact_phone"),
   avatarUrl: text("avatar_url"),
+  notificationPreferences: jsonb("notification_preferences").default({
+    orderAlerts: "sound",
+    platformUpdates: "in_app",
+  }),
   status: text("status").notNull().default("pending"),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),

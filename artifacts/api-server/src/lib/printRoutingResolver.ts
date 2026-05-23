@@ -181,6 +181,10 @@ async function isBridgeHealthy(profile: PrintBridgeProfile): Promise<boolean> {
   }
 }
 
+function isTailscaleBridge(profile: PrintBridgeProfile): boolean {
+  return profile.bridgeUrl.includes("://100.") || profile.networkSubnetHint?.startsWith("100.") === true;
+}
+
 // ── Core Routing Resolver ─────────────────────────────────────────────────────
 
 /**
@@ -227,6 +231,7 @@ export async function resolveRoutingDecision(
   const operatorOnMacNetwork = macProfile
     ? isOnSameNetwork(resolvedOperatorIp, macProfile.networkSubnetHint)
     : false;
+  const macReachableOverTailscale = macProfile ? isTailscaleBridge(macProfile) : false;
 
   rLog.info({
     event: "routing_context",
@@ -252,7 +257,7 @@ export async function resolveRoutingDecision(
   // ── Label-specific Mac restriction ────────────────────────────────────────
   // If role=label and operator is NOT on Mac network, exclude Mac bridge for labels.
   let candidateProfiles = supportingProfiles;
-  if (role === "label" && !operatorOnMacNetwork && macProfile) {
+  if (role === "label" && !operatorOnMacNetwork && !macReachableOverTailscale && macProfile) {
     candidateProfiles = supportingProfiles.filter(p => p.bridgeType !== "mac_studio");
     if (candidateProfiles.length === 0) {
       const msg = "Label not printed: active operator is not on Mac Studio network and no Pi label bridge is configured";

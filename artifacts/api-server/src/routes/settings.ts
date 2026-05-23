@@ -47,6 +47,7 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "ai_concierge_prompt" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_intro_steps" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "concierge_promoted_item_ids" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "catalog_banner_images" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "pickup_instruction_options" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "shift_location_options" text`,
@@ -83,6 +84,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     receiptLineNameMode: s.receiptLineNameMode ?? "lucifer_only",
     aiConciergePrompt: aiPrompt,
     aiConciergePromptIsDefault: aiPrompt === null || aiPrompt.trim() === "",
+    catalogBannerImages: parseCatalogBannerImages(s.catalogBannerImages),
     // WooCommerce — secrets are returned as a boolean mask only,
     // never echoed back to the client in plaintext.
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -95,6 +97,27 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
     updatedAt: s.updatedAt,
   };
+}
+
+const DEFAULT_CATALOG_BANNERS = [
+  "/banners/banner1.png",
+  "/banners/banner2.png",
+  "/banners/banner3.png",
+];
+
+function parseCatalogBannerImages(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_CATALOG_BANNERS;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_CATALOG_BANNERS;
+    const values = parsed
+      .map((value) => typeof value === "string" ? value.trim() : "")
+      .filter(Boolean)
+      .slice(0, 6);
+    return values.length ? values : DEFAULT_CATALOG_BANNERS;
+  } catch {
+    return DEFAULT_CATALOG_BANNERS;
+  }
 }
 
 const DEFAULT_PICKUP_INSTRUCTIONS = [
@@ -216,6 +239,17 @@ router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, 
   const update: Record<string, unknown> = {};
   for (const k of allowed) {
     if (body[k] !== undefined) update[k] = body[k];
+  }
+  if (body.catalogBannerImages !== undefined) {
+    if (!Array.isArray(body.catalogBannerImages)) {
+      res.status(400).json({ error: "catalogBannerImages must be an array of image URLs" });
+      return;
+    }
+    const banners = body.catalogBannerImages
+      .map((value) => typeof value === "string" ? value.trim() : "")
+      .filter(Boolean)
+      .slice(0, 6);
+    update.catalogBannerImages = JSON.stringify(banners.length ? banners : DEFAULT_CATALOG_BANNERS);
   }
   if (body.orderRoutingRule !== undefined) {
     if (typeof body.orderRoutingRule !== "string" || !(ROUTING_RULES as readonly string[]).includes(body.orderRoutingRule)) {

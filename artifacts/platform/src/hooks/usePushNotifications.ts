@@ -22,6 +22,44 @@ interface UsePushNotificationsOptions {
   onPermissionGranted?: () => void;
 }
 
+type NotificationMode = "in_app" | "silent" | "sound" | "vibrate";
+type NotificationChannel = "orderAlerts" | "platformUpdates";
+
+function getNotificationMode(channel: NotificationChannel): NotificationMode {
+  try {
+    const raw = localStorage.getItem("notification_preferences");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const mode = parsed?.[channel];
+      if (mode === "in_app" || mode === "silent" || mode === "sound" || mode === "vibrate") return mode;
+    }
+  } catch {
+    // Ignore malformed local preferences.
+  }
+  const legacy = localStorage.getItem("notification_mode");
+  if (legacy === "silent" || legacy === "sound" || legacy === "vibrate") return legacy;
+  return channel === "orderAlerts" ? "sound" : "in_app";
+}
+
+function playNotificationTone() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.value = 0.04;
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.16);
+  } catch {
+    // Browsers may block audio before a user gesture.
+  }
+}
+
 export function usePushNotifications({ role, onPermissionGranted }: UsePushNotificationsOptions) {
   const permissionRef = useRef<NotificationPermission>("default");
 
@@ -45,8 +83,12 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     return false;
   }, [onPermissionGranted]);
 
-  const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png") => {
-    if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png", channel: NotificationChannel = "platformUpdates") => {
+    const mode = getNotificationMode(channel);
+    if (mode === "silent") return;
+    if (mode === "sound") playNotificationTone();
+    if (mode === "vibrate" && "vibrate" in navigator) navigator.vibrate([90, 40, 90]);
+    if (mode === "in_app" || !("Notification" in window) || Notification.permission !== "granted") return;
     const n = new Notification(title, {
       body,
       icon,
@@ -64,7 +106,9 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     if (role === "customer_service_rep" || role === "admin" || role === "global_admin") {
       sendNotification(
         "New Order Received",
-        `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`
+        `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`,
+        "/lc-icon.png",
+        "orderAlerts"
       );
     }
   }, [role, sendNotification]);
@@ -73,7 +117,9 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     if (role === "user") {
       sendNotification(
         "Your Order is Ready!",
-        `Order #${orderId} has been completed and is ready. Thank you for choosing Lucifer Cruz.`
+        `Order #${orderId} has been completed and is ready. Thank you for choosing Lucifer Cruz.`,
+        "/lc-icon.png",
+        "orderAlerts"
       );
     }
   }, [role, sendNotification]);
@@ -94,7 +140,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
       },
     };
     const msg = messages[status];
-    if (msg) sendNotification(msg.title, msg.body);
+    if (msg) sendNotification(msg.title, msg.body, "/lc-icon.png", "orderAlerts");
   }, [sendNotification]);
 
   useEffect(() => {

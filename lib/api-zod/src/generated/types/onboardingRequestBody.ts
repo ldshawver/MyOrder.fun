@@ -10,7 +10,7 @@ export interface OnboardingRequestBody {
   companyName: string;
   contactName: string;
   contactEmail: string;
-  contactPhone?: string;
+  contactPhone?: string | null;
   businessType: string;
   website?: string;
   description?: string;

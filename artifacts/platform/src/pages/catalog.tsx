@@ -17,26 +17,42 @@ import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { useAuth } from "@clerk/react";
 
 type MenuMode = "alavont" | "lucifer";
 
+const LC_MAIN_CATEGORIES = [
+  "Anal Play",
+  "Apparel & Accessories",
+  "Cock & Ball",
+  "Kink & Fetish",
+  "Self Care & Ambiance",
+  "Couples Play",
+  "Membership",
+];
+
+const DEFAULT_CATALOG_BANNERS = ["/banners/banner1.png", "/banners/banner2.png", "/banners/banner3.png"];
+
 type ExtendedCatalogItem = CatalogItem & {
-  luciferCruzName?: string;
-  luciferCruzCategory?: string;
-  luciferCruzImageUrl?: string;
-  luciferCruzDescription?: string;
-  alavontName?: string;
-  alavontCategory?: string;
-  alavontImageUrl?: string;
-  alavontDescription?: string;
-  alavontInStock?: boolean;
-  merchantProcessingMode?: string;
+  luciferCruzName?: string | null;
+  luciferCruzCategory?: string | null;
+  luciferCruzImageUrl?: string | null;
+  luciferCruzDescription?: string | null;
+  alavontName?: string | null;
+  alavontCategory?: string | null;
+  alavontImageUrl?: string | null;
+  alavontDescription?: string | null;
+  alavontInStock?: boolean | null;
+  merchantProcessingMode?: string | null;
   isWooManaged?: boolean;
   wooProductId?: string | null;
   wooVariationId?: string | null;
   labName?: string | null;
   receiptName?: string | null;
-  regularPrice?: string;
+  regularPrice?: string | number | null;
+  mediaGallery?: Array<{ type?: "image" | "video"; src: string; alt?: string | null }>;
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
 };
 
 interface CatalogItemForm {
@@ -63,6 +79,8 @@ interface CatalogItemForm {
   wooVariationId: string;
   labName: string;
   receiptName: string;
+  isFeatured: boolean;
+  isSaleFeatured: boolean;
 }
 
 type StringFormKey = {
@@ -81,6 +99,12 @@ function CatalogItemCard({
   menuMode: MenuMode;
 }) {
   const isLC = menuMode === "lucifer";
+  const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
+  const media = (item.mediaGallery ?? []).filter((entry) => entry.src);
+  const primaryImage = isLC
+    ? (item.luciferCruzImageUrl || media[0]?.src || item.imageUrl)
+    : (item.imageUrl || item.alavontImageUrl || media[0]?.src);
+  const hasSale = item.isSaleFeatured || (item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price));
 
   return (
     <div
@@ -90,24 +114,57 @@ function CatalogItemCard({
     >
       {/* Thumbnail */}
       <div className="relative aspect-square overflow-hidden" style={{ background: isLC ? "#0A0000" : undefined }}>
-        {(isLC ? item.luciferCruzImageUrl : item.imageUrl) ? (
-          <img
-            src={isLC ? item.luciferCruzImageUrl : item.imageUrl}
-            alt={isLC ? (item.luciferCruzName || item.name) : item.name}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.display = "none";
-              (e.currentTarget.parentElement as HTMLElement).classList.add("fallback-thumb");
-            }}
-          />
+        {primaryImage ? (
+          <>
+            <img
+              src={primaryImage}
+              alt={displayName}
+              className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ${media.length > 1 ? "group-hover:opacity-0" : ""}`}
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+                (e.currentTarget.parentElement as HTMLElement).classList.add("fallback-thumb");
+              }}
+            />
+            {media.length > 1 && (
+              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                {media.slice(0, 4).map((entry, index) => (
+                  entry.type === "video" ? (
+                    <video
+                      key={entry.src}
+                      src={entry.src}
+                      muted
+                      loop
+                      playsInline
+                      autoPlay
+                      className="absolute inset-0 w-full h-full object-cover catalog-card-media-frame"
+                      style={{ animationDelay: `${index * 1.4}s` }}
+                    />
+                  ) : (
+                    <img
+                      key={entry.src}
+                      src={entry.src}
+                      alt={entry.alt || displayName}
+                      className="absolute inset-0 w-full h-full object-cover catalog-card-media-frame"
+                      style={{ animationDelay: `${index * 1.4}s` }}
+                    />
+                  )
+                ))}
+              </div>
+            )}
+          </>
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-muted/10">
             <ImageOff size={28} className="text-muted-foreground/30" />
           </div>
         )}
-        {item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price) && (
+        {hasSale && (
           <div className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500 text-white tracking-wide">
             SALE
+          </div>
+        )}
+        {item.isFeatured && (
+          <div className="absolute top-2 right-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white tracking-wide">
+            FEATURED
           </div>
         )}
         {!item.isAvailable && (
@@ -129,10 +186,10 @@ function CatalogItemCard({
       <div className="p-4 flex-1 flex flex-col gap-2">
         <div className="flex-1">
           <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1">
-            {isLC ? (item.alavontCategory || item.category) : item.category}
+            {isLC ? (item.luciferCruzCategory || item.category) : item.category}
           </div>
           <div className="text-sm font-bold leading-snug line-clamp-2">
-            {isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name)}
+            {displayName}
           </div>
           {(isLC ? item.luciferCruzDescription : item.description) && (
             <div className="text-xs text-muted-foreground mt-1 line-clamp-2 leading-relaxed">
@@ -147,7 +204,7 @@ function CatalogItemCard({
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(isLC && item.regularPrice ? item.regularPrice : String(item.price)).toFixed(2)}
+              ${parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price)).toFixed(2)}
             </span>
           </div>
           {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
@@ -157,17 +214,29 @@ function CatalogItemCard({
           )}
         </div>
 
-        <Link
-          href={`/catalog/${item.id}`}
-          className="mt-1 flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"
-          style={isLC
-            ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff", border: "none" }
-            : { borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
-          data-testid={`link-product-${item.id}`}
-        >
-          <ShoppingCart size={11} />
-          {isLC ? "Order" : "View & Order"}
-        </Link>
+        <div className="grid grid-cols-2 gap-2 mt-1">
+          <Link
+            href={`/catalog/${item.id}`}
+            className="flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"
+            style={isLC
+              ? { borderColor: "rgba(220,20,60,0.4)", color: "#FCA5A5" }
+              : { borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
+            data-testid={`link-product-${item.id}`}
+          >
+            <ShoppingCart size={11} />
+            Add
+          </Link>
+          <Link
+            href={`/orders/new?item=${item.id}`}
+            className="flex items-center justify-center w-full text-xs font-semibold py-2.5 rounded-xl transition-all"
+            style={isLC
+              ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }
+              : { background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+            data-testid={`link-buy-now-${item.id}`}
+          >
+            Buy Now
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -320,6 +389,8 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
     wooVariationId: item?.wooVariationId || "",
     labName: item?.labName || "",
     receiptName: item?.receiptName || "",
+    isFeatured: item?.isFeatured || false,
+    isSaleFeatured: item?.isSaleFeatured || false,
   });
   const updateMutation = useUpdateCatalogItem();
   const queryClient = useQueryClient();
@@ -353,6 +424,8 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           wooVariationId: form.wooVariationId || null,
           labName: form.labName || null,
           receiptName: form.receiptName || null,
+          isFeatured: form.isFeatured,
+          isSaleFeatured: form.isSaleFeatured,
         },
       },
       {
@@ -381,6 +454,22 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
               <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isAvailable ? "left-5" : "left-0.5"}`} />
             </button>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setForm(prev => ({ ...prev, isFeatured: !prev.isFeatured }))}
+              className={`text-xs font-semibold py-2 rounded-xl border transition-colors ${form.isFeatured ? "bg-blue-600 text-white border-blue-600" : "border-border/40 text-muted-foreground"}`}
+            >
+              Featured
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm(prev => ({ ...prev, isSaleFeatured: !prev.isSaleFeatured }))}
+              className={`text-xs font-semibold py-2 rounded-xl border transition-colors ${form.isSaleFeatured ? "bg-emerald-600 text-white border-emerald-600" : "border-border/40 text-muted-foreground"}`}
+            >
+              Sale Item
+            </button>
+          </div>
           <button
             onClick={() => setShowDualBrand(v => !v)}
             className="w-full text-xs font-semibold py-2 rounded-xl border border-border/40 text-muted-foreground hover:text-foreground transition-colors"
@@ -403,7 +492,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
     isAvailable: true, alavontName: "", alavontDescription: "", alavontCategory: "", alavontImageUrl: "",
     alavontInStock: true, luciferCruzName: "", luciferCruzDescription: "", luciferCruzImageUrl: "",
     luciferCruzCategory: "", merchantProcessingMode: "mapped_lucifer", isWooManaged: false,
-    wooProductId: "", wooVariationId: "", labName: "", receiptName: "",
+    wooProductId: "", wooVariationId: "", labName: "", receiptName: "", isFeatured: false, isSaleFeatured: false,
   };
   const [form, setForm] = useState<CatalogItemForm>(emptyForm);
   const createMutation = useCreateCatalogItem();
@@ -422,6 +511,8 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
           imageUrl: form.imageUrl || undefined,
           stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: true,
+          isFeatured: form.isFeatured,
+          isSaleFeatured: form.isSaleFeatured,
         },
       },
       {
@@ -456,8 +547,10 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
 }
 
 export default function Catalog() {
+  const { getToken } = useAuth();
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
+  const [bannerImages, setBannerImages] = useState(DEFAULT_CATALOG_BANNERS);
   const { brand, setBrand } = useBrand();
   const [menuMode, setMenuMode] = useState<MenuMode>(() =>
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
@@ -468,6 +561,24 @@ export default function Catalog() {
   useEffect(() => {
     setBrand(menuMode === "lucifer" ? "lucifer_cruz" : "alavont");
   }, [menuMode, setBrand]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        const res = await fetch("/api/admin/settings", token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && Array.isArray(body.catalogBannerImages) && body.catalogBannerImages.length) {
+          setBannerImages(body.catalogBannerImages);
+        }
+      } catch {
+        // Admin settings are optional for storefront rendering.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [getToken]);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const userRole = normalizeNotificationRole(user?.role);
@@ -480,6 +591,16 @@ export default function Catalog() {
   );
 
   const isLC = menuMode === "lucifer";
+  const categories = ["all", ...(categoriesRes?.categories ?? [])]
+    .filter(cat => cat === "all" || (isLC ? LC_MAIN_CATEGORIES.includes(cat) : true))
+    .sort((a, b) => {
+      if (a === "all") return -1;
+      if (b === "all") return 1;
+      const ai = LC_MAIN_CATEGORIES.indexOf(a);
+      const bi = LC_MAIN_CATEGORIES.indexOf(b);
+      if (isLC && ai !== bi) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      return a.localeCompare(b);
+    });
 
   const allItems = data?.items ?? [];
 
@@ -543,6 +664,21 @@ export default function Catalog() {
         </button>
       </div>
 
+      {!isLC && (
+        <div className="relative overflow-hidden rounded-2xl h-[200px] border border-border/30 catalog-hero">
+          {bannerImages.map((src, index) => (
+            <img
+              key={src}
+              src={src}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover catalog-hero-frame"
+              style={{ animationDelay: `${index * 5}s` }}
+            />
+          ))}
+          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-background via-background/45 to-transparent" />
+        </div>
+      )}
+
       {/* LC branded banner */}
       {isLC && (
         <div
@@ -551,7 +687,15 @@ export default function Catalog() {
         >
           <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
           <p className="text-xs" style={{ color: "#C0C0C0" }}>
-            Lucifer Cruz items ordered here are fulfilled through Alavont Therapeutics. All transactions are private and discreet.
+            All transactions are private and discreet.
+          </p>
+        </div>
+      )}
+
+      {!isLC && (
+        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
+          <p className="text-xs text-muted-foreground">
+            Alavont Thereputics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
           </p>
         </div>
       )}
@@ -571,7 +715,7 @@ export default function Catalog() {
           />
         </div>
         <div className="flex gap-1.5 flex-wrap">
-          {["all", ...(categoriesRes?.categories ?? [])].map(cat => (
+          {categories.map(cat => (
             <button
               key={cat}
               onClick={() => setCategory(cat)}

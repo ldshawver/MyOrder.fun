@@ -112,8 +112,8 @@ export default function Profile() {
       data: {
         firstName: firstName.trim() || null,
         lastName: lastName.trim() || null,
-        contactPhone: trimmedPhone || null,
-        avatarUrl: trimmedAvatar || null,
+        contactPhone: trimmedPhone || undefined,
+        avatarUrl: trimmedAvatar || undefined,
       },
     });
   }

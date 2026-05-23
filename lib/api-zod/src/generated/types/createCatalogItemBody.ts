@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CreateCatalogItemBodyInventoryTrackingData } from './createCatalogItemBodyInventoryTrackingData';
+import type { CreateCatalogItemBodyMediaGalleryItem } from './createCatalogItemBodyMediaGalleryItem';
 
 export interface CreateCatalogItemBody {
   name: string;
@@ -19,6 +20,9 @@ export interface CreateCatalogItemBody {
   stockQuantity?: number;
   isAvailable?: boolean;
   imageUrl?: string;
+  mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
+  isFeatured?: boolean;
+  isSaleFeatured?: boolean;
   tags?: string[];
   internalName?: string | null;
   internalDescription?: string | null;

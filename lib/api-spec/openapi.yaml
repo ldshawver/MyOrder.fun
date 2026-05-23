@@ -1216,6 +1216,7 @@ components:
           type: string
         contactPhone:
           type: string
+          nullable: true
         businessType:
           type: string
         website:
@@ -1399,6 +1400,20 @@ components:
           type: boolean
         imageUrl:
           type: string
+        mediaGallery:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [image, video]
+              src:
+                type: string
+              alt:
+                type: string
+                nullable: true
+            required: [type, src]
         tags:
           type: array
           items:
@@ -1406,6 +1421,65 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        isFeatured:
+          type: boolean
+        isSaleFeatured:
+          type: boolean
+        alavontName:
+          type: string
+          nullable: true
+        alavontDescription:
+          type: string
+          nullable: true
+        alavontCategory:
+          type: string
+          nullable: true
+        alavontImageUrl:
+          type: string
+          nullable: true
+        alavontInStock:
+          type: boolean
+          nullable: true
+        luciferCruzName:
+          type: string
+          nullable: true
+        luciferCruzImageUrl:
+          type: string
+          nullable: true
+        luciferCruzDescription:
+          type: string
+          nullable: true
+        luciferCruzCategory:
+          type: string
+          nullable: true
+        regularPrice:
+          type: number
+          nullable: true
+        homiePrice:
+          type: number
+          nullable: true
+        merchantProcessingMode:
+          type: string
+          nullable: true
+        merchantProductSource:
+          type: string
+          nullable: true
+        isWooManaged:
+          type: boolean
+        isLocalAlavont:
+          type: boolean
+        wooProductId:
+          type: string
+          nullable: true
+        wooVariationId:
+          type: string
+          nullable: true
+        receiptName:
+          type: string
+          nullable: true
+        labName:
+          type: string
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -1441,6 +1515,24 @@ components:
           type: boolean
         imageUrl:
           type: string
+        mediaGallery:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [image, video]
+              src:
+                type: string
+              alt:
+                type: string
+                nullable: true
+            required: [type, src]
+        isFeatured:
+          type: boolean
+        isSaleFeatured:
+          type: boolean
         tags:
           type: array
           items:
@@ -1582,6 +1674,24 @@ components:
           type: boolean
         imageUrl:
           type: string
+        mediaGallery:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [image, video]
+              src:
+                type: string
+              alt:
+                type: string
+                nullable: true
+            required: [type, src]
+        isFeatured:
+          type: boolean
+        isSaleFeatured:
+          type: boolean
         tags:
           type: array
           items:
@@ -2098,6 +2208,15 @@ components:
         avatarUrl:
           type: string
           nullable: true
+        notificationPreferences:
+          type: object
+          properties:
+            orderAlerts:
+              type: string
+              enum: [in_app, silent, sound, vibrate]
+            platformUpdates:
+              type: string
+              enum: [in_app, silent, sound, vibrate]
         createdAt:
           type: string
           format: date-time
@@ -2116,6 +2235,15 @@ components:
           maxLength: 100
         contactPhone:
           type: string
+        notificationPreferences:
+          type: object
+          properties:
+            orderAlerts:
+              type: string
+              enum: [in_app, silent, sound, vibrate]
+            platformUpdates:
+              type: string
+              enum: [in_app, silent, sound, vibrate]
           nullable: true
         avatarUrl:
           type: string
@@ -2429,6 +2557,10 @@ components:
         aiConciergePromptIsDefault:
           type: boolean
           description: True when no custom prompt is set and the server is using the built-in default.
+        catalogBannerImages:
+          type: array
+          items:
+            type: string
       required: [orderRoutingRule, defaultEtaMinutes]
       additionalProperties: true
     UpdateAdminSettingsBody:
@@ -2452,6 +2584,10 @@ components:
             Set to a non-empty string to override the default. Set to null or
             an empty string to revert to the built-in default. Hard-capped at
             8000 characters server-side.
+        catalogBannerImages:
+          type: array
+          items:
+            type: string
       additionalProperties: true
 
     # ─── Admin Stats ───

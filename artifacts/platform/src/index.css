@@ -204,6 +204,28 @@
   border: 1px solid hsl(220 30% 20% / 0.6);
 }
 
+@keyframes catalog-hero-fade {
+  0%, 24% { opacity: 0; transform: scale(1.02); }
+  7%, 18% { opacity: 0.9; transform: scale(1); }
+  35%, 100% { opacity: 0; transform: scale(1); }
+}
+
+.catalog-hero-frame {
+  opacity: 0;
+  animation: catalog-hero-fade 15s ease-in-out infinite;
+}
+
+@keyframes catalog-card-gallery {
+  0%, 23% { opacity: 0; }
+  4%, 19% { opacity: 1; }
+  28%, 100% { opacity: 0; }
+}
+
+.catalog-card-media-frame {
+  opacity: 0;
+  animation: catalog-card-gallery 5.6s ease-in-out infinite;
+}
+
 /* ── Bottom nav safe area for mobile ────────────────────────────────────── */
 .bottom-nav-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);

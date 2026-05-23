@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, asc } from "drizzle-orm";
-import { db, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
+import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -19,6 +19,35 @@ import { getHouseTenantId } from "../lib/singleTenant";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
+
+function normalizeMediaGallery(raw: unknown, fallbackImage?: string | null): CatalogMedia[] {
+  const gallery = Array.isArray(raw) ? raw : [];
+  const normalized = gallery
+    .map((entry): CatalogMedia | null => {
+      if (typeof entry === "string") {
+        const src = entry.trim();
+        return src ? { type: "image", src } : null;
+      }
+      if (!entry || typeof entry !== "object") return null;
+      const rec = entry as Record<string, unknown>;
+      const src = typeof rec.src === "string" ? rec.src.trim() : "";
+      if (!src) return null;
+      const type = rec.type === "video" ? "video" : "image";
+      return {
+        type,
+        src,
+        alt: typeof rec.alt === "string" ? rec.alt : null,
+      };
+    })
+    .filter((entry): entry is CatalogMedia => !!entry);
+  const fallback = fallbackImage?.trim();
+  if (fallback && !normalized.some((entry) => entry.src === fallback)) {
+    normalized.unshift({ type: "image", src: fallback });
+  }
+  return normalized;
+}
+
 function mapItem(
   i: typeof catalogItemsTable.$inferSelect,
   alavontOnly = false,
@@ -26,6 +55,8 @@ function mapItem(
 ) {
   // Prefer alavont_image_url for the primary imageUrl; fall back to image_url
   const resolvedImageUrl = i.alavontImageUrl ?? i.imageUrl ?? undefined;
+  const resolvedLuciferImageUrl = alavontOnly ? null : (i.luciferCruzImageUrl ?? i.imageUrl ?? null);
+  const mediaGallery = normalizeMediaGallery(i.mediaGallery, alavontOnly ? resolvedImageUrl : (resolvedLuciferImageUrl ?? resolvedImageUrl));
   return {
     id: i.id,
     tenantId: i.tenantId,
@@ -38,8 +69,11 @@ function mapItem(
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
     imageUrl: resolvedImageUrl,
+    mediaGallery,
     tags: i.tags ?? [],
     metadata: i.metadata,
+    isFeatured: i.isFeatured ?? false,
+    isSaleFeatured: i.isSaleFeatured ?? false,
     internalName: i.internalName ?? null,
     internalDescription: i.internalDescription ?? null,
     internalCategory: i.internalCategory ?? null,
@@ -58,7 +92,7 @@ function mapItem(
     alavontImageUrl: i.alavontImageUrl ?? null,
     alavontInStock: i.alavontInStock ?? null,
     luciferCruzName: alavontOnly ? null : (i.luciferCruzName ?? null),
-    luciferCruzImageUrl: alavontOnly ? null : (i.luciferCruzImageUrl ?? null),
+    luciferCruzImageUrl: resolvedLuciferImageUrl,
     luciferCruzDescription: alavontOnly ? null : (i.luciferCruzDescription ?? null),
     luciferCruzCategory: alavontOnly ? null : (i.luciferCruzCategory ?? null),
     displayName: i.displayName ?? null,
@@ -110,6 +144,18 @@ async function getLinkedInventoryStockByCatalogId() {
   return stockByCatalogId;
 }
 
+async function getShowOutOfStockSetting(): Promise<boolean> {
+  try {
+    const [settings] = await db
+      .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
+      .from(adminSettingsTable)
+      .limit(1);
+    return settings?.showOutOfStock === true;
+  } catch {
+    return false;
+  }
+}
+
 // GET /api/catalog
 router.get("/catalog", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -138,7 +184,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
     const cat = query.data.category;
     rows = rows.filter(r => {
       const lcCat = (r.metadata as Record<string, unknown>)?.luciferCruzCategory;
-      return r.alavontCategory === cat || r.category === cat || lcCat === cat;
+      return r.luciferCruzCategory === cat || r.alavontCategory === cat || r.category === cat || lcCat === cat;
     });
   }
   if (query.data.search) {
@@ -151,8 +197,11 @@ router.get("/catalog", async (req, res): Promise<void> => {
       (r.labName ?? "").toLowerCase().includes(s)
     );
   }
+  const showOutOfStock = await getShowOutOfStockSetting();
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
+  } else if (!showOutOfStock) {
+    rows = rows.filter(r => r.isAvailable === true && r.alavontInStock !== false);
   }
 
   const page = query.data.page ?? 1;
@@ -172,6 +221,13 @@ router.get("/catalog", async (req, res): Promise<void> => {
   if (!isLuciferMode) {
     rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
   }
+
+  rows = rows.sort((a, b) => {
+    const aRank = (a.isFeatured ? 0 : 2) + (a.isSaleFeatured || (a.compareAtPrice && Number(a.compareAtPrice) > Number(a.price)) ? 0 : 1);
+    const bRank = (b.isFeatured ? 0 : 2) + (b.isSaleFeatured || (b.compareAtPrice && Number(b.compareAtPrice) > Number(b.price)) ? 0 : 1);
+    if (aRank !== bRank) return aRank - bRank;
+    return a.name.localeCompare(b.name);
+  });
 
   const stockByCatalogId = await getLinkedInventoryStockByCatalogId();
   const total = rows.length;

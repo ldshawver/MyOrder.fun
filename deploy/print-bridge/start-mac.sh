@@ -5,8 +5,10 @@
 cd "$(dirname "$0")"
 
 export PRINT_BRIDGE_API_KEY="YsFqy1xcWb0lS8arJw0T97qO6mEVM8USemwpqpP5AML"
-export DIRECT_PRINTER_IP="192.168.68.66"
-export DIRECT_PRINTER_PORT="9100"
+export PRINTER_NAME="${PRINTER_NAME:-Label_Themal_Printer}"
+export CUPS_RAW="${CUPS_RAW:-0}"
+unset DIRECT_PRINTER_IP
+unset DIRECT_PRINTER_PORT
 
-echo "Starting print bridge → receipt printer at $DIRECT_PRINTER_IP:$DIRECT_PRINTER_PORT"
+echo "Starting print bridge → Mac USB label queue: $PRINTER_NAME"
 node server.js

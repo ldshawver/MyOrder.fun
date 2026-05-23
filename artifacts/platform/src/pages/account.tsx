@@ -10,6 +10,12 @@ import { Link } from "wouter";
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
 
+type NotificationMode = "in_app" | "silent" | "sound" | "vibrate";
+type NotificationPreferences = {
+  orderAlerts: NotificationMode;
+  platformUpdates: NotificationMode;
+};
+
 export default function Account() {
   const { data: user, isLoading, refetch } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -18,7 +24,10 @@ export default function Account() {
   const [lastName, setLastName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
-  const [notificationMode, setNotificationMode] = useState<"silent" | "sound" | "vibrate">("sound");
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>({
+    orderAlerts: "sound",
+    platformUpdates: "in_app",
+  });
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -28,13 +37,34 @@ export default function Account() {
       setLastName(user.lastName ?? "");
       setContactPhone(user.contactPhone ?? "");
       setAvatarUrl(user.avatarUrl ?? "");
+      const prefs = user.notificationPreferences as NotificationPreferences | undefined;
+      if (prefs) {
+        setNotificationPreferences({
+          orderAlerts: prefs.orderAlerts ?? "sound",
+          platformUpdates: prefs.platformUpdates ?? "in_app",
+        });
+        localStorage.setItem("notification_preferences", JSON.stringify(prefs));
+      }
     }
   }, [user]);
 
   useEffect(() => {
-    const saved = localStorage.getItem("notification_mode");
-    if (saved === "silent" || saved === "sound" || saved === "vibrate") {
-      setNotificationMode(saved);
+    const savedPrefs = localStorage.getItem("notification_preferences");
+    if (savedPrefs) {
+      try {
+        const parsed = JSON.parse(savedPrefs);
+        setNotificationPreferences({
+          orderAlerts: parsed.orderAlerts ?? "sound",
+          platformUpdates: parsed.platformUpdates ?? "in_app",
+        });
+        return;
+      } catch {
+        // Fall through to the legacy single-mode preference.
+      }
+    }
+    const legacy = localStorage.getItem("notification_mode");
+    if (legacy === "silent" || legacy === "sound" || legacy === "vibrate") {
+      setNotificationPreferences({ orderAlerts: legacy, platformUpdates: "in_app" });
     }
   }, []);
 
@@ -102,9 +132,23 @@ export default function Account() {
     reader.readAsDataURL(file);
   }
 
-  function saveNotificationMode(mode: "silent" | "sound" | "vibrate") {
-    setNotificationMode(mode);
-    localStorage.setItem("notification_mode", mode);
+  async function saveNotificationPreference(key: keyof NotificationPreferences, mode: NotificationMode) {
+    const next = { ...notificationPreferences, [key]: mode };
+    setNotificationPreferences(next);
+    localStorage.setItem("notification_preferences", JSON.stringify(next));
+    setMsg(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${import.meta.env.BASE_URL}api/users/me`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ notificationPreferences: next }),
+      });
+      if (!res.ok) throw new Error("Failed to save notification settings");
+      await refetch();
+    } catch (e) {
+      setMsg({ kind: "err", text: e instanceof Error ? e.message : "Failed to save notification settings" });
+    }
   }
 
   const initials = `${(user.firstName ?? "").charAt(0)}${(user.lastName ?? "").charAt(0)}`.toUpperCase() || (user.email ?? "U").charAt(0).toUpperCase();
@@ -268,22 +312,33 @@ export default function Account() {
             <CardTitle className="text-sm font-semibold uppercase tracking-wider">Notification Settings</CardTitle>
           </CardHeader>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-5">
               {[
-                { value: "silent", label: "Silent" },
-                { value: "sound", label: "Sound" },
-                { value: "vibrate", label: "Vibrate" },
-              ].map((option) => (
-                <Button
-                  key={option.value}
-                  type="button"
-                  variant={notificationMode === option.value ? "default" : "outline"}
-                  className="rounded-sm text-xs uppercase tracking-wider"
-                  onClick={() => saveNotificationMode(option.value as "silent" | "sound" | "vibrate")}
-                  data-testid={`button-notification-${option.value}`}
-                >
-                  {option.label}
-                </Button>
+                { key: "orderAlerts", label: "Order Alerts" },
+                { key: "platformUpdates", label: "Platform Updates" },
+              ].map((group) => (
+                <div key={group.key} className="space-y-2">
+                  <div className="text-[10px] font-mono font-medium text-muted-foreground uppercase tracking-widest">{group.label}</div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {[
+                      { value: "in_app", label: "In-App Only" },
+                      { value: "silent", label: "Silent" },
+                      { value: "sound", label: "Sound" },
+                      { value: "vibrate", label: "Vibrate" },
+                    ].map((option) => (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        variant={notificationPreferences[group.key as keyof NotificationPreferences] === option.value ? "default" : "outline"}
+                        className="rounded-sm text-xs uppercase tracking-wider"
+                        onClick={() => saveNotificationPreference(group.key as keyof NotificationPreferences, option.value as NotificationMode)}
+                        data-testid={`button-notification-${group.key}-${option.value}`}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </CardContent>

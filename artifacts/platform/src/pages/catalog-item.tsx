@@ -10,7 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart } from "lucide-react";
+import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart, ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ export default function CatalogItemDetail() {
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: "", price: 0, category: "", description: "" });
+  const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const userRole = normalizeNotificationRole(user?.role);
@@ -66,6 +67,18 @@ export default function CatalogItemDetail() {
 
   if (isLoading) return <div className="p-8 flex items-center"><Loader2 className="animate-spin mr-2"/> Loading product details...</div>;
   if (isError || !item) return <div className="p-8 text-destructive">Product not found.</div>;
+
+  const itemWithMerchantMedia = item as typeof item & { luciferCruzImageUrl?: string | null };
+  const mediaGallery = ((item.mediaGallery ?? []) as Array<{ type?: "image" | "video"; src: string; alt?: string | null }>)
+    .filter((entry) => entry.src);
+  const fallbackImage = itemWithMerchantMedia.luciferCruzImageUrl || item.imageUrl;
+  const media = mediaGallery.length
+    ? mediaGallery
+    : fallbackImage
+      ? [{ type: "image" as const, src: fallbackImage, alt: item.name }]
+      : [];
+  const selectedMedia = media[Math.min(selectedMediaIndex, Math.max(media.length - 1, 0))];
+  const showMediaNav = media.length > 1;
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
@@ -132,12 +145,54 @@ export default function CatalogItemDetail() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         <Card className="overflow-hidden border-border/50 shadow-sm rounded-sm">
           <div className="aspect-square bg-muted/20 flex items-center justify-center text-muted-foreground p-8">
-            {item.imageUrl ? (
-              <img src={item.imageUrl} alt={item.name} className="w-full h-full object-contain mix-blend-multiply" />
+            {selectedMedia ? (
+              <div className="relative w-full h-full">
+                {selectedMedia.type === "video" ? (
+                  <video src={selectedMedia.src} className="w-full h-full object-contain" controls muted playsInline />
+                ) : (
+                  <img src={selectedMedia.src} alt={selectedMedia.alt || item.name} className="w-full h-full object-contain" />
+                )}
+                {showMediaNav && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMediaIndex(index => (index - 1 + media.length) % media.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-background/80 border border-border/50 flex items-center justify-center"
+                    >
+                      <ChevronLeft size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMediaIndex(index => (index + 1) % media.length)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 h-9 w-9 rounded-full bg-background/80 border border-border/50 flex items-center justify-center"
+                    >
+                      <ChevronRight size={18} />
+                    </button>
+                  </>
+                )}
+              </div>
             ) : (
               <span className="font-mono text-xs uppercase tracking-widest">No Image Available</span>
             )}
           </div>
+          {media.length > 1 && (
+            <div className="grid grid-cols-5 gap-2 p-3 border-t border-border/50 bg-background/40">
+              {media.map((entry, index) => (
+                <button
+                  key={`${entry.src}-${index}`}
+                  type="button"
+                  onClick={() => setSelectedMediaIndex(index)}
+                  className={`aspect-square rounded-sm overflow-hidden border ${selectedMediaIndex === index ? "border-primary" : "border-border/40"}`}
+                >
+                  {entry.type === "video" ? (
+                    <video src={entry.src} muted className="w-full h-full object-cover" />
+                  ) : (
+                    <img src={entry.src} alt={entry.alt || item.name} className="w-full h-full object-cover" />
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
         </Card>
 
         <div className="space-y-6">

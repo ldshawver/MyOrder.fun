@@ -19,5 +19,6 @@ export interface UpdateAdminSettingsBody {
   8000 characters server-side.
    */
   aiConciergePrompt?: string | null;
+  catalogBannerImages?: string[];
   [key: string]: unknown;
  }

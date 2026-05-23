@@ -35,8 +35,11 @@ export const catalogItemsTable = pgTable("catalog_items", {
   stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
   isAvailable: boolean("is_available").notNull().default(true),
   imageUrl: text("image_url"),
+  mediaGallery: jsonb("media_gallery").default([]),
   tags: text("tags").array().default([]),
   metadata: jsonb("metadata").default({}),
+  isFeatured: boolean("is_featured").notNull().default(false),
+  isSaleFeatured: boolean("is_sale_featured").notNull().default(false),
   // Dual-brand pricing
   regularPrice: numeric("regular_price", { precision: 10, scale: 2 }),
   homiePrice: numeric("homie_price", { precision: 10, scale: 2 }),

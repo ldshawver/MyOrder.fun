@@ -27,6 +27,7 @@ type AdminSettings = {
   wcEnabled: boolean;
   aiConciergePrompt: string | null;
   aiConciergePromptIsDefault: boolean;
+  catalogBannerImages: string[];
 };
 
 const AI_PROMPT_MAX_CHARS = 8000;
@@ -51,6 +52,7 @@ const DEFAULTS: AdminSettings = {
   wcEnabled: true,
   aiConciergePrompt: null,
   aiConciergePromptIsDefault: true,
+  catalogBannerImages: ["/banners/banner1.png", "/banners/banner2.png", "/banners/banner3.png"],
 };
 
 export default function AdminSettingsPage() {
@@ -252,6 +254,26 @@ export default function AdminSettingsPage() {
             <SettingRow label="Show Out-of-Stock Items" description="Display products with alavont_in_stock = false in the customer catalog.">
               <Switch checked={settings.showOutOfStock} onCheckedChange={v => set("showOutOfStock", v)} />
             </SettingRow>
+
+            <div className="pt-4 mt-4 border-t border-border/40 space-y-3">
+              <div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Alavont Catalog Banners</div>
+                <p className="text-xs text-muted-foreground mt-1">These images rotate at the top of the Alavont catalog.</p>
+              </div>
+              {(settings.catalogBannerImages ?? []).slice(0, 6).map((url, index) => (
+                <Input
+                  key={index}
+                  value={url}
+                  onChange={(e) => {
+                    const next = [...settings.catalogBannerImages];
+                    next[index] = e.target.value;
+                    set("catalogBannerImages", next);
+                  }}
+                  className="rounded-xl h-9 text-sm bg-background/50"
+                  placeholder="/banners/banner1.png"
+                />
+              ))}
+            </div>
           </div>
         </TabsContent>
 

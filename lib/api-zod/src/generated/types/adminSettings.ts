@@ -25,5 +25,6 @@ export interface AdminSettings {
   aiConciergePrompt?: string | null;
   /** True when no custom prompt is set and the server is using the built-in default. */
   aiConciergePromptIsDefault?: boolean;
+  catalogBannerImages?: string[];
   [key: string]: unknown;
  }
