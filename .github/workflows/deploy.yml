@@ -182,13 +182,13 @@ jobs:
             # NOTE: `docker compose down` (not `down -v`) is used above, so the
             # named postgres_data volume is NEVER deleted during a normal deploy.
             # Never add -v unless this is an intentional data reset.
-            docker compose up -d db
+            docker compose up -d db < /dev/null
 
             echo "▶ Waiting for Postgres healthcheck (up to 60s)..."
             # migrate.sh runs pg_isready internally, but we also wait here so
             # the depends_on healthcheck has time to pass before `run --rm`.
             WAIT=0
-            until docker compose exec -T db pg_isready -q 2>/dev/null; do
+            until docker compose exec -T db pg_isready -q < /dev/null 2>/dev/null; do
               WAIT=$((WAIT + 2))
               if [ "$WAIT" -ge 60 ]; then
                 echo "  ERROR: Postgres did not become healthy within 60s" >&2
@@ -203,7 +203,7 @@ jobs:
             echo "▶ Running migrations (drizzle-kit migrate via migrate.sh)..."
             # migrate.sh: runs pg_isready, db:check, db:migrate:verbose.
             # On failure it prints full diagnostics before exiting non-zero.
-            MIGRATE_OUTPUT=$(docker compose run --rm migrate 2>&1) || {
+            MIGRATE_OUTPUT=$(docker compose run --rm migrate < /dev/null 2>&1) || {
               MIGRATE_EXIT=$?
               echo ""
               echo "  ✗ Migration container exited with code ${MIGRATE_EXIT}" >&2
@@ -218,7 +218,7 @@ jobs:
             echo "MIGRATE SUCCESS"
 
             echo "▶ Starting all services..."
-            docker compose up -d
+            docker compose up -d < /dev/null
 
             echo "▶ Refreshing public web edge..."
             ufw allow 80/tcp || true
@@ -232,14 +232,25 @@ jobs:
             iptables -C DOCKER-USER -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT || true
             command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
-            docker compose up -d db api platform nginx
-            docker compose restart nginx
+            docker compose up -d db api platform nginx < /dev/null
+            docker compose restart nginx < /dev/null
             docker compose ps
             ss -ltnp | grep -E '(:80|:443|:8080|:3000)' || ss -ltnp || true
 
             echo "▶ Verifying local edge health..."
             curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/health
-            curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz
+            for attempt in $(seq 1 30); do
+              if curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz; then
+                break
+              fi
+              if [ "${attempt}" -eq 30 ]; then
+                echo "API health check failed after 30 attempts" >&2
+                docker compose logs --tail=80 api || true
+                exit 1
+              fi
+              echo "  API not ready yet — retry ${attempt}/30"
+              sleep 2
+            done
 
             docker image prune -f
 
@@ -254,4 +265,11 @@ jobs:
         run: |
           sleep 8
           curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
-          curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              exit 0
+            fi
+            echo "API not reachable publicly yet — retry ${attempt}/30"
+            sleep 2
+          done
+          exit 1

@@ -43,8 +43,8 @@ jobs:
             command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
             echo "== start compose services =="
-            docker compose up -d db api platform nginx
-            docker compose restart nginx
+            docker compose up -d db api platform nginx < /dev/null
+            docker compose restart nginx < /dev/null
 
             echo "== ps =="
             docker compose ps
@@ -54,11 +54,24 @@ jobs:
 
             echo "== local probes =="
             curl -v --connect-timeout 3 --max-time 8 http://127.0.0.1/health || true
-            curl -v --connect-timeout 3 --max-time 8 http://127.0.0.1/api/healthz || true
+            for attempt in $(seq 1 30); do
+              if curl -fsS --connect-timeout 3 --max-time 8 http://127.0.0.1/api/healthz; then
+                break
+              fi
+              echo "  API not ready yet — retry ${attempt}/30"
+              sleep 2
+            done
           ENDSSH
 
       - name: External verification from GitHub runner
         run: |
           sleep 8
           curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
-          curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              exit 0
+            fi
+            echo "API not reachable publicly yet — retry ${attempt}/30"
+            sleep 2
+          done
+          exit 1

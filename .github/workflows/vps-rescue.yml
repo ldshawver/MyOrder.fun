@@ -55,8 +55,8 @@ jobs:
             ufw reload || true
 
             echo "== restart nginx edge =="
-            docker compose up -d db api platform nginx
-            docker compose restart nginx
+            docker compose up -d db api platform nginx < /dev/null
+            docker compose restart nginx < /dev/null
 
             echo "== docker compose status after =="
             docker compose ps
@@ -66,7 +66,13 @@ jobs:
 
             echo "== local health probes =="
             curl -fsS --max-time 10 http://127.0.0.1/health || true
-            curl -fsS --max-time 10 http://127.0.0.1/api/healthz || true
+            for attempt in $(seq 1 30); do
+              if curl -fsS --max-time 10 http://127.0.0.1/api/healthz; then
+                break
+              fi
+              echo "  API not ready yet — retry ${attempt}/30"
+              sleep 2
+            done
             curl -kfsS --max-time 10 https://127.0.0.1/api/healthz || true
 
             echo "== recent nginx logs =="
@@ -79,4 +85,11 @@ jobs:
       - name: External verification from GitHub runner
         run: |
           curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
-          curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              exit 0
+            fi
+            echo "API not reachable publicly yet — retry ${attempt}/30"
+            sleep 2
+          done
+          exit 1
