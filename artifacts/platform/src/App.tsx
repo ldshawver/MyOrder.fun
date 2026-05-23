@@ -205,10 +205,37 @@ function AuthErrorScreen({ onSignOut, onRetry }: { onSignOut: () => void; onRetr
 function AuthenticatedApp() {
   const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
   const { signOut } = useClerk();
+  const { getToken } = useAuth();
+  const [authTokenReady, setAuthTokenReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setAuthTokenReady(false);
+
+    if (!clerkLoaded || isSignedIn !== true) {
+      return;
+    }
+
+    setAuthTokenGetter(() => getToken());
+    getToken()
+      .then((token) => {
+        if (!cancelled) setAuthTokenReady(Boolean(token));
+      })
+      .catch(() => {
+        if (!cancelled) setAuthTokenReady(false);
+      });
+
+    return () => {
+      cancelled = true;
+      setAuthTokenGetter(null);
+    };
+  }, [clerkLoaded, isSignedIn, getToken]);
+
   const { data: user, isLoading, isError, error } = useGetCurrentUser({
     query: {
       queryKey: ["getCurrentUser"],
-      enabled: clerkLoaded && isSignedIn === true,
+      enabled: clerkLoaded && isSignedIn === true && authTokenReady,
       retry: (failureCount, err) => {
         const e = err as { status?: number };
         if (e?.status === 403) return false;
@@ -270,7 +297,7 @@ function AuthenticatedApp() {
     );
   }
 
-  if (!clerkLoaded || isLoading) return <LoadingScreen />;
+  if (!clerkLoaded || !authTokenReady || isLoading) return <LoadingScreen />;
 
   if (isError) {
     const err = error as { status?: number; data?: { status?: string } } | null;
