@@ -226,11 +226,16 @@ jobs:
             ufw reload || true
             iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
             iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
+            iptables -C FORWARD -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 80 -j ACCEPT || true
+            iptables -C FORWARD -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 443 -j ACCEPT || true
+            iptables -C DOCKER-USER -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 80 -j ACCEPT || true
+            iptables -C DOCKER-USER -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT || true
             command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
             docker compose up -d db api platform nginx
             docker compose restart nginx
             docker compose ps
+            ss -ltnp | grep -E '(:80|:443|:8080|:3000)' || ss -ltnp || true
 
             echo "▶ Verifying local edge health..."
             curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/health
