@@ -220,6 +220,22 @@ jobs:
             echo "▶ Starting all services..."
             docker compose up -d
 
+            echo "▶ Refreshing public web edge..."
+            ufw allow 80/tcp || true
+            ufw allow 443/tcp || true
+            ufw reload || true
+            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
+            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
+            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+
+            docker compose up -d db api platform nginx
+            docker compose restart nginx
+            docker compose ps
+
+            echo "▶ Verifying local edge health..."
+            curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/health
+            curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz
+
             docker image prune -f
 
             echo ""
@@ -228,3 +244,9 @@ jobs:
             echo "  SHA: ${{ github.sha }}"
             echo "════════════════════════════════════════════════════════"
           ENDSSH
+
+      - name: Verify public site from GitHub runner
+        run: |
+          sleep 8
+          curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
+          curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
