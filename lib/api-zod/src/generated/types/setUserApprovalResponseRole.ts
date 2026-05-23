@@ -10,11 +10,8 @@ export type SetUserApprovalResponseRole = typeof SetUserApprovalResponseRole[key
 
 
 export const SetUserApprovalResponseRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;

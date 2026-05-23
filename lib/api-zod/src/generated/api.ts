@@ -1017,7 +1017,7 @@ export const GetCurrentUserResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
@@ -1053,7 +1053,7 @@ export const UpdateCurrentUserResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
@@ -1069,7 +1069,7 @@ export const UpdateCurrentUserResponse = zod.object({
  * @summary List users in the tenant (admin only)
  */
 export const ListUsersQueryParams = zod.object({
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']).optional()
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']).optional()
 })
 
 export const ListUsersResponse = zod.object({
@@ -1079,7 +1079,7 @@ export const ListUsersResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
@@ -1101,7 +1101,7 @@ export const UpdateUserRoleParams = zod.object({
 })
 
 export const UpdateUserRoleBody = zod.object({
-  "role": zod.enum(['supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user'])
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user'])
 })
 
 export const UpdateUserRoleResponse = zod.object({
@@ -1110,7 +1110,7 @@ export const UpdateUserRoleResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
@@ -1150,7 +1150,7 @@ export const inviteWaitlistEntryBodyLastNameMax = 100;
 
 
 export const InviteWaitlistEntryBody = zod.object({
-  "role": zod.enum(['admin', 'supervisor', 'customer_service_rep', 'sales_rep', 'user']).optional(),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']).optional(),
   "firstName": zod.string().max(inviteWaitlistEntryBodyFirstNameMax).optional(),
   "lastName": zod.string().max(inviteWaitlistEntryBodyLastNameMax).optional()
 })
@@ -1188,7 +1188,7 @@ export const ListPendingUsersResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
@@ -1211,13 +1211,13 @@ export const SetUserApprovalParams = zod.object({
 
 export const SetUserApprovalBody = zod.object({
   "approve": zod.boolean(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']).optional()
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']).optional()
 })
 
 export const SetUserApprovalResponse = zod.object({
   "id": zod.number(),
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user'])
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user'])
 })
 
 
@@ -1229,7 +1229,7 @@ export const AdminUpdateUserRoleParams = zod.object({
 })
 
 export const AdminUpdateUserRoleBody = zod.object({
-  "role": zod.enum(['supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user'])
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user'])
 })
 
 export const AdminUpdateUserRoleResponse = zod.object({
@@ -1238,7 +1238,7 @@ export const AdminUpdateUserRoleResponse = zod.object({
   "email": zod.string(),
   "firstName": zod.string().optional(),
   "lastName": zod.string().optional(),
-  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']),
+  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']),
   "tenantId": zod.number().optional(),
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),

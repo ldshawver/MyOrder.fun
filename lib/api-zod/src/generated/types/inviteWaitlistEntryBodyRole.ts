@@ -10,9 +10,8 @@ export type InviteWaitlistEntryBodyRole = typeof InviteWaitlistEntryBodyRole[key
 
 
 export const InviteWaitlistEntryBodyRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
   user: 'user',
 } as const;

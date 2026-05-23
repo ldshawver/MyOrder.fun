@@ -31,7 +31,21 @@ vi.mock("@clerk/express", () => ({
   clerkClient: { users: {} },
 }));
 
+function normalizeTestRole(role: string | undefined) {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (
+    role === "customer_service_rep" ||
+    role === "business_sitter" ||
+    role === "sales_rep" ||
+    role === "lab_tech" ||
+    role === "lab_technician"
+  ) return "customer_service_rep";
+  return "user";
+}
+
 vi.mock("../../lib/auth", () => ({
+  normalizeRole: normalizeTestRole,
   requireAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   loadDbUser: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     (req as unknown as { dbUser: Record<string, unknown> }).dbUser = mockActor;
@@ -41,7 +55,10 @@ vi.mock("../../lib/auth", () => ({
   requireApproved: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
   requireRole: (...roles: string[]) => (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const u = (req as unknown as { dbUser?: { role: string } }).dbUser;
-    if (!u || !roles.includes(u.role)) { res.status(403).json({ error: "Forbidden" }); return; }
+    const allowed = roles.map(normalizeTestRole);
+    const actorRole = normalizeTestRole(u?.role);
+    const hasRole = allowed.includes(actorRole) || (actorRole === "global_admin" && allowed.includes("admin"));
+    if (!u || !hasRole) { res.status(403).json({ error: "Forbidden" }); return; }
     next();
   },
   writeAuditLog: vi.fn(async () => {}),
@@ -249,7 +266,7 @@ beforeEach(() => {
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved" },
     { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "customer_service_rep", status: "approved" },
-    { id: 9, clerkId: "sup", email: "sup@x.com", firstName: "Sup", lastName: "Er", role: "supervisor", status: "approved" },
+    { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
   ];
   dbState.shifts = [];
   dbState.settings = [{
@@ -277,7 +294,7 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
   });
 });
 
-describe("PATCH /api/orders/:id/eta — supervisor extends the hourglass", () => {
+describe("PATCH /api/orders/:id/eta — admin extends the hourglass", () => {
   it("updates promisedMinutes, recomputes estimatedReadyAt, and flags etaAdjustedBySupervisor", async () => {
     mockActor = dbState.users[0]!;
     await supertest(buildApp())
@@ -285,7 +302,7 @@ describe("PATCH /api/orders/:id/eta — supervisor extends the hourglass", () =>
       .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
     const orderId = dbState.orders[0]!.id as number;
 
-    mockActor = dbState.users[2]!; // supervisor
+    mockActor = dbState.users[2]!; // admin
     const before = Date.now();
     const res = await supertest(buildApp())
       .patch(`/api/orders/${orderId}/eta`)
@@ -329,7 +346,7 @@ describe("SSE event emission via the live route handlers", () => {
     const orderId = dbState.orders[0]!.id as number;
 
     const adminCapture = captureEvents("admin", 999);
-    mockActor = dbState.users[2]!; // supervisor
+    mockActor = dbState.users[2]!; // admin
     const res = await supertest(buildApp())
       .post(`/api/orders/${orderId}/mark-ready`)
       .send({});
@@ -368,7 +385,7 @@ describe("SSE event emission via the live route handlers", () => {
     expect(res.status).toBe(403);
   });
 
-  it("supervisor surfaces are not accessible to business_sitter", async () => {
+  it("admin surfaces are not accessible to customer_service_rep", async () => {
     const sitter = { id: 7, role: "business_sitter", email: "s@x", firstName: "S", lastName: "Sitter" };
     dbState.users.push(sitter);
     mockActor = sitter;

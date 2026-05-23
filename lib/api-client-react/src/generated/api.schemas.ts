@@ -479,12 +479,9 @@ export type UserProfileRole = typeof UserProfileRole[keyof typeof UserProfileRol
 
 
 export const UserProfileRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 
@@ -529,11 +526,9 @@ export type UpdateUserRoleBodyRole = typeof UpdateUserRoleBodyRole[keyof typeof 
 
 
 export const UpdateUserRoleBodyRole = {
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
+  global_admin: 'global_admin',
+  admin: 'admin',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 
@@ -557,10 +552,9 @@ export type InviteWaitlistEntryBodyRole = typeof InviteWaitlistEntryBodyRole[key
 
 
 export const InviteWaitlistEntryBodyRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
   user: 'user',
 } as const;
 
@@ -619,12 +613,9 @@ export type SetUserApprovalBodyRole = typeof SetUserApprovalBodyRole[keyof typeo
 
 
 export const SetUserApprovalBodyRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 
@@ -647,12 +638,9 @@ export type SetUserApprovalResponseRole = typeof SetUserApprovalResponseRole[key
 
 
 export const SetUserApprovalResponseRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 
@@ -961,12 +949,9 @@ export type ListUsersRole = typeof ListUsersRole[keyof typeof ListUsersRole];
 
 
 export const ListUsersRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
-  supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 
@@ -981,4 +966,3 @@ limit?: number;
 export type ListNotificationsParams = {
 unreadOnly?: boolean;
 };
-

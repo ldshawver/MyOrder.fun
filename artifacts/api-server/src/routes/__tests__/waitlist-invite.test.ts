@@ -305,7 +305,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     const app = buildApp();
     const res = await supertest(app)
       .post("/api/admin/users/waitlist/wlent_existing/invite")
-      .send({ role: "supervisor" });
+      .send({ role: "admin" });
 
     expect(res.status).toBe(200);
     expect(res.body.promotedExisting).toBe(true);
@@ -320,25 +320,25 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     // Existing row promoted to approved + new role.
     const promoted = dbState.users.find((u) => u.id === 42)!;
     expect(promoted.status).toBe("approved");
-    expect(promoted.role).toBe("supervisor");
+    expect(promoted.role).toBe("admin");
 
     // And we mirror status+role into Clerk via the real id.
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "user_real_clerk_id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "supervisor" }) },
+      { publicMetadata: expect.objectContaining({ status: "approved", role: "admin" }) },
     );
   });
 
-  it("blocks supervisors with 403 (admin-only)", async () => {
-    // Seed the actor as a supervisor instead of an admin. The route must
+  it("blocks customer service reps with 403 (admin-only)", async () => {
+    // Seed the actor as a CSR instead of an admin. The route must
     // reject the request before it ever reaches Clerk.
     dbState.users.push({
       id: 1,
-      clerkId: "admin-clerk-id",
-      email: "supe@example.com",
-      firstName: "Sue",
-      lastName: "Pervisor",
-      role: "supervisor",
+      clerkId: "csr-clerk-id",
+      email: "csr@example.com",
+      firstName: "Care",
+      lastName: "Rep",
+      role: "customer_service_rep",
       status: "approved",
       isActive: true,
       contactPhone: null,
@@ -346,10 +346,11 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    mockUserId = "csr-clerk-id";
     const app = buildApp();
     const res = await supertest(app)
       .post("/api/admin/users/waitlist/wlent_blocked/invite")
-      .send({ role: "sales_rep" });
+      .send({ role: "customer_service_rep" });
     expect(res.status).toBe(403);
     expect(clerkClient.waitlistEntries.invite).not.toHaveBeenCalled();
     // No users row should be touched.
@@ -367,14 +368,14 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
 
     const second = await supertest(app)
       .post("/api/admin/users/waitlist/wlent_repeat/invite")
-      .send({ role: "supervisor", firstName: "Updated" });
+      .send({ role: "admin", firstName: "Updated" });
     expect(second.status).toBe(200);
 
     const matches = dbState.users.filter(
       (u) => u.clerkId === "pending_invite:wlent_repeat",
     );
     expect(matches.length).toBe(1);
-    expect(matches[0].role).toBe("supervisor");
+    expect(matches[0].role).toBe("admin");
     expect(matches[0].firstName).toBe("Updated");
   });
 });

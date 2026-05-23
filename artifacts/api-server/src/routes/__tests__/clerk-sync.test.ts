@@ -200,18 +200,18 @@ describe("PATCH /api/admin/users/:id/approval", () => {
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/2/approval")
-      .send({ approve: true, role: "lab_tech" });
+      .send({ approve: true, role: "customer_service_rep" });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("lab_tech");
+    expect(res.body.role).toBe("customer_service_rep");
 
     const dbRow = dbState.users.find((u) => u.id === 2)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("lab_tech");
+    expect(dbRow.role).toBe("customer_service_rep");
 
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "pending-clerk-id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "lab_tech" }) },
+      { publicMetadata: expect.objectContaining({ status: "approved", role: "customer_service_rep" }) },
     );
   });
 
@@ -275,15 +275,15 @@ describe("Admin route aliases", () => {
     );
   });
 
-  it("PATCH /api/admin/users/:id/role rejects supervisors with 403", async () => {
+  it("PATCH /api/admin/users/:id/role rejects CSRs with 403", async () => {
     dbState.users.push({
-      id: 100, clerkId: "supervisor-clerk-id",
-      email: "sup@example.com", firstName: "Sup", lastName: "User",
-      role: "supervisor", status: "approved", isActive: true, contactPhone: null,
+      id: 100, clerkId: "csr-clerk-id",
+      email: "csr@example.com", firstName: "Care", lastName: "Rep",
+      role: "customer_service_rep", status: "approved", isActive: true, contactPhone: null,
       mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
     });
-    seedPending(22, "alias-role-supervisor-clerk-id");
-    mockUserId = "supervisor-clerk-id";
+    seedPending(22, "alias-role-csr-clerk-id");
+    mockUserId = "csr-clerk-id";
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/22/role")
@@ -298,12 +298,12 @@ describe("Admin route aliases", () => {
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/21/role")
-      .send({ role: "supervisor" });
+      .send({ role: "admin" });
     expect(res.status).toBe(200);
-    expect(res.body.role).toBe("supervisor");
+    expect(res.body.role).toBe("admin");
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "alias-role-clerk-id",
-      { publicMetadata: expect.objectContaining({ role: "supervisor" }) },
+      { publicMetadata: expect.objectContaining({ role: "admin" }) },
     );
   });
 });
@@ -349,12 +349,12 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("lab_tech");
+    expect(res.body.role).toBe("customer_service_rep");
 
     // DB row was reconciled
     const dbRow = dbState.users.find((u) => u.id === 7)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("lab_tech");
+    expect(dbRow.role).toBe("customer_service_rep");
   });
 
   it("does nothing when Clerk metadata matches the DB", async () => {

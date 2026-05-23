@@ -258,7 +258,7 @@ describe("POST /api/feedback", () => {
   it("creates a ticket for any approved user and notifies all admins", async () => {
     seedUser(1, "actor-clerk-id", "user");
     seedUser(99, "admin1", "admin");
-    seedUser(98, "supe", "supervisor");
+    seedUser(98, "global", "global_admin");
     setMockUserId("actor-clerk-id");
     const app = buildApp();
 
@@ -277,7 +277,7 @@ describe("POST /api/feedback", () => {
     expect(res.body.status).toBe("new");
     expect(res.body.priority).toBe(false);
 
-    // Both admin + supervisor get notified.
+    // Both admin + global admin get notified.
     const notifiedIds = dbState.notifications.map((n) => n.userId).sort();
     expect(notifiedIds).toEqual([98, 99]);
     expect(dbState.notifications.every((n) => n.type === "feedback_new")).toBe(true);
