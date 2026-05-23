@@ -12,7 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame } from "lucide-react";
+import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
@@ -50,15 +50,30 @@ type ExtendedCatalogItem = CatalogItem & {
   labName?: string | null;
   receiptName?: string | null;
   regularPrice?: string | number | null;
+  homiePrice?: string | number | null;
+  displayName?: string | null;
+  displayDescription?: string | null;
+  displayCategory?: string | null;
+  displayImage?: string | null;
+  merchantBrandName?: string | null;
+  marketingCopy?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
+  upsellCopy?: string | null;
+  promoBadges?: string[];
   mediaGallery?: Array<{ type?: "image" | "video"; src: string; alt?: string | null }>;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
 };
 
+type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
+
 interface CatalogItemForm {
   name: string;
   description: string;
   price: string;
+  regularPrice: string;
+  homiePrice: string;
   category: string;
   sku: string;
   imageUrl: string;
@@ -81,6 +96,17 @@ interface CatalogItemForm {
   receiptName: string;
   isFeatured: boolean;
   isSaleFeatured: boolean;
+  mediaGallery: MediaFormEntry[];
+  displayName: string;
+  displayDescription: string;
+  displayCategory: string;
+  displayImage: string;
+  merchantBrandName: string;
+  marketingCopy: string;
+  customerSafeName: string;
+  customerSafeDescription: string;
+  upsellCopy: string;
+  promoBadges: string;
 }
 
 type StringFormKey = {
@@ -247,6 +273,8 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
     { label: "Name *", key: "name", type: "text" },
     { label: "Category *", key: "category", type: "text" },
     { label: "Price ($) *", key: "price", type: "number" },
+    { label: "Regular Price ($)", key: "regularPrice", type: "number" },
+    { label: "Homie Price ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
     { label: "Stock Quantity", key: "stockQuantity", type: "number" },
     { label: "Image URL", key: "imageUrl", type: "url", placeholder: "https://example.com/image.jpg" },
@@ -280,6 +308,223 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
       )}
     </>
   );
+}
+
+function normalizeMediaForSave(mediaGallery: MediaFormEntry[], imageUrl: string) {
+  const rows = mediaGallery
+    .map(entry => ({
+      type: entry.type,
+      src: entry.src.trim(),
+      alt: entry.alt.trim() || null,
+    }))
+    .filter(entry => entry.src);
+  const primary = imageUrl.trim();
+  if (primary && !rows.some(entry => entry.src === primary)) {
+    rows.unshift({ type: "image" as const, src: primary, alt: null });
+  }
+  return rows;
+}
+
+function MediaGalleryFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
+  const addMediaRow = () => {
+    setForm(prev => ({ ...prev, mediaGallery: [...prev.mediaGallery, { type: "image", src: "", alt: "" }] }));
+  };
+
+  const updateMediaRow = (index: number, patch: Partial<MediaFormEntry>) => {
+    setForm(prev => ({
+      ...prev,
+      mediaGallery: prev.mediaGallery.map((entry, i) => i === index ? { ...entry, ...patch } : entry),
+    }));
+  };
+
+  const removeMediaRow = (index: number) => {
+    setForm(prev => ({ ...prev, mediaGallery: prev.mediaGallery.filter((_, i) => i !== index) }));
+  };
+
+  const handleUpload = (files: FileList | null) => {
+    if (!files?.length) return;
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = typeof reader.result === "string" ? reader.result : "";
+        if (!src) return;
+        setForm(prev => ({
+          ...prev,
+          mediaGallery: [
+            ...prev.mediaGallery,
+            {
+              type: file.type.startsWith("video/") ? "video" : "image",
+              src,
+              alt: file.name.replace(/\.[^.]+$/, ""),
+            },
+          ],
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  return (
+    <div className="space-y-3 pt-2 border-t border-border/30">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-primary">Images & Videos</div>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Add product media URLs or upload files for the product card and detail gallery.</p>
+        </div>
+        <Button type="button" variant="outline" size="sm" className="rounded-xl text-xs" onClick={addMediaRow}>
+          Add URL
+        </Button>
+      </div>
+
+      <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-border/50 bg-muted/10 px-3 py-4 text-xs font-semibold text-muted-foreground hover:text-foreground">
+        Upload images/videos
+        <input
+          type="file"
+          accept="image/*,video/*"
+          multiple
+          className="hidden"
+          onChange={e => {
+            handleUpload(e.target.files);
+            e.currentTarget.value = "";
+          }}
+        />
+      </label>
+
+      <div className="space-y-3">
+        {form.mediaGallery.map((entry, index) => (
+          <div key={`${entry.src}-${index}`} className="rounded-xl border border-border/40 bg-background/40 p-3 space-y-2">
+            <div className="grid grid-cols-[88px_1fr_auto] gap-2">
+              <select
+                value={entry.type}
+                onChange={e => updateMediaRow(index, { type: e.target.value === "video" ? "video" : "image" })}
+                className="h-9 rounded-lg border border-border/50 bg-background/50 px-2 text-xs"
+              >
+                <option value="image">Image</option>
+                <option value="video">Video</option>
+              </select>
+              <Input
+                value={entry.src}
+                onChange={e => updateMediaRow(index, { src: e.target.value })}
+                className="h-9 rounded-lg text-xs bg-background/50"
+                placeholder="https://... or uploaded data URL"
+              />
+              <Button type="button" variant="ghost" size="sm" className="h-9 px-2 rounded-lg text-muted-foreground" onClick={() => removeMediaRow(index)}>
+                <Trash size={13} />
+              </Button>
+            </div>
+            <Input
+              value={entry.alt}
+              onChange={e => updateMediaRow(index, { alt: e.target.value })}
+              className="h-8 rounded-lg text-xs bg-background/50"
+              placeholder="Alt text / label"
+            />
+            {entry.src && (
+              <div className="h-28 rounded-lg overflow-hidden bg-muted/20">
+                {entry.type === "video" ? (
+                  <video src={entry.src} muted controls className="h-full w-full object-cover" />
+                ) : (
+                  <img src={entry.src} alt={entry.alt || "media preview"} className="h-full w-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function emptyCatalogForm(): CatalogItemForm {
+  return {
+    name: "",
+    description: "",
+    price: "",
+    regularPrice: "",
+    homiePrice: "",
+    category: "",
+    sku: "",
+    imageUrl: "",
+    stockQuantity: "0",
+    isAvailable: true,
+    alavontName: "",
+    alavontDescription: "",
+    alavontCategory: "",
+    alavontImageUrl: "",
+    alavontInStock: true,
+    luciferCruzName: "",
+    luciferCruzDescription: "",
+    luciferCruzImageUrl: "",
+    luciferCruzCategory: "",
+    merchantProcessingMode: "mapped_lucifer",
+    isWooManaged: false,
+    wooProductId: "",
+    wooVariationId: "",
+    labName: "",
+    receiptName: "",
+    isFeatured: false,
+    isSaleFeatured: false,
+    mediaGallery: [],
+    displayName: "",
+    displayDescription: "",
+    displayCategory: "",
+    displayImage: "",
+    merchantBrandName: "",
+    marketingCopy: "",
+    customerSafeName: "",
+    customerSafeDescription: "",
+    upsellCopy: "",
+    promoBadges: "",
+  };
+}
+
+function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
+  const base = emptyCatalogForm();
+  if (!item) return base;
+  return {
+    ...base,
+    name: item.name || "",
+    description: item.description || "",
+    price: item.price?.toString() || "",
+    regularPrice: item.regularPrice?.toString() || "",
+    homiePrice: item.homiePrice?.toString() || "",
+    category: item.category || "",
+    sku: item.sku || "",
+    imageUrl: item.imageUrl || "",
+    stockQuantity: item.stockQuantity?.toString() || "0",
+    isAvailable: item.isAvailable ?? true,
+    alavontName: item.alavontName || "",
+    alavontDescription: item.alavontDescription || "",
+    alavontCategory: item.alavontCategory || "",
+    alavontImageUrl: item.alavontImageUrl || "",
+    alavontInStock: item.alavontInStock ?? true,
+    luciferCruzName: item.luciferCruzName || "",
+    luciferCruzDescription: item.luciferCruzDescription || "",
+    luciferCruzImageUrl: item.luciferCruzImageUrl || "",
+    luciferCruzCategory: item.luciferCruzCategory || "",
+    merchantProcessingMode: item.merchantProcessingMode || "mapped_lucifer",
+    isWooManaged: item.isWooManaged || false,
+    wooProductId: item.wooProductId || "",
+    wooVariationId: item.wooVariationId || "",
+    labName: item.labName || "",
+    receiptName: item.receiptName || "",
+    isFeatured: item.isFeatured || false,
+    isSaleFeatured: item.isSaleFeatured || false,
+    mediaGallery: (item.mediaGallery ?? []).map(entry => ({
+      type: entry.type === "video" ? "video" : "image",
+      src: entry.src,
+      alt: entry.alt || "",
+    })),
+    displayName: item.displayName || "",
+    displayDescription: item.displayDescription || "",
+    displayCategory: item.displayCategory || "",
+    displayImage: item.displayImage || "",
+    merchantBrandName: item.merchantBrandName || "",
+    marketingCopy: item.marketingCopy || "",
+    customerSafeName: item.customerSafeName || "",
+    customerSafeDescription: item.customerSafeDescription || "",
+    upsellCopy: item.upsellCopy || "",
+    promoBadges: (item.promoBadges ?? []).join(", "),
+  };
 }
 
 function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
@@ -363,40 +608,57 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
   );
 }
 
+function CheckoutPresentationFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
+  const fields: Array<{ label: string; key: StringFormKey; placeholder?: string }> = [
+    { label: "Converted Display Name", key: "displayName" },
+    { label: "Converted Category", key: "displayCategory" },
+    { label: "Converted Image URL", key: "displayImage" },
+    { label: "Merchant Brand Name", key: "merchantBrandName" },
+    { label: "Customer Safe Name", key: "customerSafeName" },
+    { label: "Promo Badges", key: "promoBadges", placeholder: "Comma-separated badges" },
+  ];
+  return (
+    <div className="space-y-3 pt-2 border-t border-border/30">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-emerald-400">Checkout Presentation</div>
+      {fields.map(({ label, key, placeholder }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder={placeholder} />
+        </div>
+      ))}
+      {[
+        { label: "Converted Description", key: "displayDescription" as const },
+        { label: "Marketing Copy", key: "marketingCopy" as const },
+        { label: "Customer Safe Description", key: "customerSafeDescription" as const },
+        { label: "Upsell Copy", key: "upsellCopy" as const },
+      ].map(({ label, key }) => (
+        <div key={key}>
+          <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+          <textarea value={form[key] ?? ""} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | null; open: boolean; onClose: () => void }) {
   const [showDualBrand, setShowDualBrand] = useState(false);
-  const [form, setForm] = useState({
-    name: item?.name || "",
-    description: item?.description || "",
-    price: item?.price?.toString() || "",
-    category: item?.category || "",
-    sku: item?.sku || "",
-    imageUrl: item?.imageUrl || "",
-    stockQuantity: item?.stockQuantity?.toString() || "0",
-    isAvailable: item?.isAvailable ?? true,
-    alavontName: item?.alavontName || "",
-    alavontDescription: item?.alavontDescription || "",
-    alavontCategory: item?.alavontCategory || "",
-    alavontImageUrl: item?.alavontImageUrl || "",
-    alavontInStock: item?.alavontInStock ?? true,
-    luciferCruzName: item?.luciferCruzName || "",
-    luciferCruzDescription: item?.luciferCruzDescription || "",
-    luciferCruzImageUrl: item?.luciferCruzImageUrl || "",
-    luciferCruzCategory: item?.luciferCruzCategory || "",
-    merchantProcessingMode: item?.merchantProcessingMode || "mapped_lucifer",
-    isWooManaged: item?.isWooManaged || false,
-    wooProductId: item?.wooProductId || "",
-    wooVariationId: item?.wooVariationId || "",
-    labName: item?.labName || "",
-    receiptName: item?.receiptName || "",
-    isFeatured: item?.isFeatured || false,
-    isSaleFeatured: item?.isSaleFeatured || false,
-  });
+  const [showPresentation, setShowPresentation] = useState(false);
+  const [form, setForm] = useState<CatalogItemForm>(() => formFromItem(item));
   const updateMutation = useUpdateCatalogItem();
   const queryClient = useQueryClient();
 
+  useEffect(() => {
+    if (open) {
+      setForm(formFromItem(item));
+      setShowDualBrand(false);
+      setShowPresentation(false);
+    }
+  }, [item, open]);
+
   const handleSave = () => {
     if (!item) return;
+    const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
     updateMutation.mutate(
       {
         id: item.id,
@@ -404,9 +666,12 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
+          homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
           sku: form.sku || undefined,
           imageUrl: form.imageUrl || undefined,
+          mediaGallery,
           stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: form.isAvailable,
           alavontName: form.alavontName || undefined,
@@ -426,6 +691,16 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           receiptName: form.receiptName || null,
           isFeatured: form.isFeatured,
           isSaleFeatured: form.isSaleFeatured,
+          displayName: form.displayName || null,
+          displayDescription: form.displayDescription || null,
+          displayCategory: form.displayCategory || null,
+          displayImage: form.displayImage || null,
+          merchantBrandName: form.merchantBrandName || null,
+          marketingCopy: form.marketingCopy || null,
+          customerSafeName: form.customerSafeName || null,
+          customerSafeDescription: form.customerSafeDescription || null,
+          upsellCopy: form.upsellCopy || null,
+          promoBadges: form.promoBadges.split(",").map(b => b.trim()).filter(Boolean),
         },
       },
       {
@@ -441,10 +716,11 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
     <Dialog open={open} onOpenChange={() => onClose()}>
       <DialogContent className="max-w-lg rounded-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-sm font-bold uppercase tracking-wider">Edit Item</DialogTitle>
+          <DialogTitle className="text-sm font-bold uppercase tracking-wider">Edit Item{item ? ` #${item.id}` : ""}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 pt-2">
           <ItemFormFields form={form} setForm={setForm} />
+          <MediaGalleryFields form={form} setForm={setForm} />
           <div className="flex items-center gap-3 pt-1">
             <span className="text-xs text-muted-foreground">Available for ordering</span>
             <button
@@ -477,6 +753,13 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
             {showDualBrand ? "Hide" : "Show"} Dual-Brand & Merchant Fields
           </button>
           {showDualBrand && <DualBrandFormFields form={form} setForm={setForm} />}
+          <button
+            onClick={() => setShowPresentation(v => !v)}
+            className="w-full text-xs font-semibold py-2 rounded-xl border border-border/40 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showPresentation ? "Hide" : "Show"} Checkout Presentation Fields
+          </button>
+          {showPresentation && <CheckoutPresentationFields form={form} setForm={setForm} />}
           <Button className="w-full rounded-xl" onClick={handleSave} disabled={updateMutation.isPending}>
             {updateMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>
@@ -487,38 +770,41 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
 }
 
 function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const emptyForm: CatalogItemForm = {
-    name: "", description: "", price: "", category: "", sku: "", imageUrl: "", stockQuantity: "0",
-    isAvailable: true, alavontName: "", alavontDescription: "", alavontCategory: "", alavontImageUrl: "",
-    alavontInStock: true, luciferCruzName: "", luciferCruzDescription: "", luciferCruzImageUrl: "",
-    luciferCruzCategory: "", merchantProcessingMode: "mapped_lucifer", isWooManaged: false,
-    wooProductId: "", wooVariationId: "", labName: "", receiptName: "", isFeatured: false, isSaleFeatured: false,
-  };
+  const emptyForm = emptyCatalogForm();
   const [form, setForm] = useState<CatalogItemForm>(emptyForm);
   const createMutation = useCreateCatalogItem();
   const queryClient = useQueryClient();
 
   const handleCreate = () => {
     if (!form.name || !form.price || !form.category) return;
+    const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
     createMutation.mutate(
       {
         data: {
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
+          homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
           sku: form.sku || undefined,
           imageUrl: form.imageUrl || undefined,
+          mediaGallery,
           stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: true,
           isFeatured: form.isFeatured,
           isSaleFeatured: form.isSaleFeatured,
+          alavontName: form.alavontName || undefined,
+          alavontDescription: form.alavontDescription || undefined,
+          alavontCategory: form.alavontCategory || undefined,
+          alavontImageUrl: form.alavontImageUrl || undefined,
+          alavontInStock: form.alavontInStock,
         },
       },
       {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
-          setForm(emptyForm);
+          setForm(emptyCatalogForm());
           onClose();
         },
       }
@@ -533,6 +819,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
         </DialogHeader>
         <div className="space-y-3 pt-2">
           <ItemFormFields form={form} setForm={setForm} />
+          <MediaGalleryFields form={form} setForm={setForm} />
           <Button
             className="w-full rounded-xl"
             onClick={handleCreate}

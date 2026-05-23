@@ -88,6 +88,7 @@ function mapItem(
     updatedAt: i.updatedAt,
     // Dual-brand fields — LC merchant names suppressed in Alavont-only mode
     alavontName: i.alavontName ?? null,
+    alavontDescription: i.alavontDescription ?? null,
     alavontCategory: i.alavontCategory ?? null,
     alavontImageUrl: i.alavontImageUrl ?? null,
     alavontInStock: i.alavontInStock ?? null,
@@ -200,7 +201,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const showOutOfStock = await getShowOutOfStockSetting();
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
-  } else if (!showOutOfStock) {
+  } else if (!isAdminActor && !showOutOfStock) {
     rows = rows.filter(r => r.isAvailable === true && r.alavontInStock !== false);
   }
 
