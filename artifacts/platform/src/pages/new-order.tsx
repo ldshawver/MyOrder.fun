@@ -114,7 +114,7 @@ export default function NewOrder() {
 
   const catalogMode = brand === "lucifer_cruz" ? "lucifer" : "alavont";
   const { data: catalog } = useListCatalogItems(
-    { search, limit: 10, available: true, mode: catalogMode },
+    { search, limit: 100, available: true, mode: catalogMode },
     { query: { queryKey: ["listCatalogItems", search, true, catalogMode] } }
   );
 

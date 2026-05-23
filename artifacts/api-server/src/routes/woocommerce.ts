@@ -11,6 +11,7 @@ router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 interface WooProduct {
   id?: number | string;
   name?: string;
+  price?: string;
   regular_price?: string;
   sale_price?: string;
   categories?: Array<{ name?: string }>;
@@ -107,8 +108,8 @@ async function syncHandler(_req: import("express").Request, res: import("express
 
         const wcId = String(product.id);
         const lcName: string = product.name?.trim() || "";
-        const regularPrice = parseFloat(product.regular_price ?? "0") || 0;
         const salePrice = product.sale_price ? parseFloat(product.sale_price) : null;
+        const regularPrice = parseFloat(product.regular_price || product.price || product.sale_price || "0") || 0;
         const category = product.categories?.[0]?.name?.trim() || "Uncategorized";
         const imageUrl = product.images?.[0]?.src?.trim() || null;
         const description = product.description ? stripHtml(product.description) : null;
@@ -116,7 +117,7 @@ async function syncHandler(_req: import("express").Request, res: import("express
         const inStock = product.stock_status === "instock";
         const wcSku = product.sku?.trim() || null;
 
-        if (!lcName || regularPrice === 0) { skipped++; continue; }
+        if (!lcName) { skipped++; continue; }
 
         const values = {
           tenantId: houseTenantId,

@@ -47,14 +47,11 @@ async function ensureShiftSchema(): Promise<void> {
 
 async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const houseTenantId = await getHouseTenantId();
-  let rows = await db
+  const rows = await db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-
-  const itemRows = rows.filter(r => r.rowType === "item");
-  if (itemRows.length > 0) return rows;
 
   const catalogRows = await db
     .select()
@@ -62,7 +59,8 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .where(
       and(
         eq(catalogItemsTable.isAvailable, true),
-        eq(catalogItemsTable.isLocalAlavont, true),
+        sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
+        sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
       )
     )
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
@@ -108,12 +106,11 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     await db.insert(inventoryTemplatesTable).values(toInsert);
   }
 
-  rows = await db
+  return db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-  return rows;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
