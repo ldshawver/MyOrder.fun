@@ -117,13 +117,9 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Mount Let's Encrypt certs from the host into the path the nginx.conf expects.
-      # Certbot renews these on the host; the container sees the updated symlinks
-      # automatically because we mount the live/ directory, not the individual files.
-      - /etc/letsencrypt/live/myorder.fun:/etc/nginx/ssl:ro
-      # Symlinks in live/ point to ../../archive/myorder.fun/*, which resolves
-      # to /etc/archive/myorder.fun/ relative to the /etc/nginx/ssl mount point.
-      - /etc/letsencrypt/archive/myorder.fun:/etc/archive/myorder.fun:ro
+      # deploy.yml copies /etc/letsencrypt/live/myorder.fun/{fullchain,privkey}.pem
+      # into nginx/ssl/ before starting the container — plain files, no symlinks.
+      - ./nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
       - api
