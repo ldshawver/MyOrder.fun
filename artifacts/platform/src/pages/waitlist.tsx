@@ -20,7 +20,22 @@ type ClerkSignUpLike = {
   missingFields?: string[];
 };
 
+function isCaptchaError(err: unknown): boolean {
+  const errors = (err as { errors?: Array<{ code?: string; message?: string }> })?.errors;
+  const code = errors?.[0]?.code ?? "";
+  const msg = (errors?.[0]?.message ?? "").toLowerCase();
+  return (
+    code.toLowerCase().includes("captcha") ||
+    msg.includes("captcha") ||
+    msg.includes("bot protection") ||
+    msg.includes("turnstile")
+  );
+}
+
 function getClerkErrorMessage(err: unknown): string {
+  if (isCaptchaError(err)) {
+    return "CAPTCHA_ERROR";
+  }
   const errors = (err as { errors?: Array<{ longMessage?: string; message?: string }> })?.errors;
   const clerkMessage = errors?.[0]?.longMessage ?? errors?.[0]?.message;
   if (clerkMessage) return clerkMessage;
@@ -361,7 +376,19 @@ export default function WaitlistPage() {
               }}
             />
 
-            {status === "error" && (
+            {status === "error" && errorMsg === "CAPTCHA_ERROR" && (
+              <div
+                className="w-full rounded-lg p-3 text-xs font-mono flex flex-col gap-2"
+                style={{ background: "rgba(139,0,0,0.15)", border: "1px solid rgba(220,20,60,0.3)", color: "#C0C0C0" }}
+              >
+                <p style={{ color: "#DC143C" }}>⚠ Security check couldn't load</p>
+                <p style={{ color: "#888" }}>Your browser blocked the sign-up security check. Use the link below to register instead.</p>
+                <Link href={`${basePath}/sign-up`} className="underline font-bold" style={{ color: "#DC143C" }}>
+                  → Sign up via secure portal
+                </Link>
+              </div>
+            )}
+            {status === "error" && errorMsg !== "CAPTCHA_ERROR" && (
               <p className="text-xs font-mono" style={{ color: "#DC143C" }}>
                 {errorMsg}
               </p>

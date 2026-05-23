@@ -5,11 +5,10 @@ import { useAuth } from "@clerk/react";
 import { Input } from "@/components/ui/input";
 import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw } from "lucide-react";
 import { Link } from "wouter";
-import { useIsMobile } from "@/hooks/use-mobile";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
-const ZAPPY_HERO_IMAGE = "/AI-Alavont.gif";
-const ZAPPY_AVATAR_IMAGE = "/zappy-avatar.png";
+const ZAPPY_HERO_IMAGE = "/zappy-new-animated.gif";
+const ZAPPY_AVATAR_IMAGE = "/zappy-new-animated.gif";
 
 // ─── Background Particle Field ────────────────────────────────────────────────
 const BG_PARTICLES = [
@@ -103,8 +102,7 @@ function ZappyAvatar({ size = 36, mood = "idle" as ZappyMood }: { size?: number;
 // animated=true shows the animated Alavont GIF; animated=false uses the compact Zappy avatar.
 function ZappyHero({ size = 120, mood = "idle" as ZappyMood, animated = true }: { size?: number; mood?: ZappyMood; animated?: boolean }) {
   const shouldReduceMotion = useReducedMotion();
-  const isMobile = useIsMobile();
-  const useAnimatedHero = animated && isMobile && !shouldReduceMotion;
+  const useAnimatedHero = animated && !shouldReduceMotion;
   const { a, b, ring } = MOOD_GLOWS[mood];
   const h = Math.round(size * 1.42);
 
