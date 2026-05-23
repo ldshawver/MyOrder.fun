@@ -631,7 +631,9 @@ export const CreateOrderBody = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
+  "tipAmount": zod.number().min(0).max(1000).optional(),
+  "tipPercent": zod.number().min(0).max(100).optional()
 }).optional(),
   "deliveryQuote": zod.object({
   "provider": zod.enum(['uber_direct']),
@@ -2119,5 +2121,4 @@ export const AddOrderNoteBody = zod.object({
   "isEncrypted": zod.boolean().optional(),
   "isInternal": zod.boolean().optional()
 })
-
 

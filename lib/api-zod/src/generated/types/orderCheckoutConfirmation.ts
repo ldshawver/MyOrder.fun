@@ -13,4 +13,8 @@ export type OrderCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: OrderCheckoutConfirmationPaymentMethod;
+  /** @minimum 0 */
+  tipAmount?: number;
+  /** @minimum 0 */
+  tipPercent?: number | null;
 };

@@ -13,4 +13,8 @@ export type CreateOrderBodyCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
+  /** @minimum 0 */
+  tipAmount?: number;
+  /** @minimum 0 */
+  tipPercent?: number;
 };

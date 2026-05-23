@@ -6,12 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ReceiptText, ShoppingCart, MapPin, PackageCheck } from "lucide-react";
+import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ReceiptText, ShoppingCart, MapPin, PackageCheck, HandCoins } from "lucide-react";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
 type CartItem = { id: number; name: string; price: number; quantity: number };
+type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct";
 type DeliveryQuote = {
   provider: "uber_direct";
@@ -90,6 +91,10 @@ export default function NewOrder() {
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
+  const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
+  const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
+  const [tipMode, setTipMode] = useState<"none" | "10" | "15" | "20" | "custom">("none");
+  const [customTip, setCustomTip] = useState("");
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
   const { getToken } = useAuth();
@@ -135,6 +140,14 @@ export default function NewOrder() {
   }, [cart, shippingAddress, deliveryMethod]);
 
   useEffect(() => {
+    getToken()
+      .then(token => fetch("/api/concierge/promoted", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then(res => res.ok ? res.json() : [])
+      .then((items: PromotedItem[]) => setPromotedItems(Array.isArray(items) ? items.filter(item => item.isAvailable) : []))
+      .catch(() => setPromotedItems([]));
+  }, [getToken]);
+
+  useEffect(() => {
     const cartStr = cart.map(c=>c.id).sort().join(",");
     if (cart.length > 0 && cartStr !== prevCartRef.current) {
       prevCartRef.current = cartStr;
@@ -150,6 +163,17 @@ export default function NewOrder() {
       }
       return [...prev, { id: item.id, name: item.name, price: item.price, quantity: 1 }];
     });
+  };
+
+  const addPromotedToCart = (item: PromotedItem) => {
+    setCart(prev => {
+      const existing = prev.find(i => i.id === item.id);
+      if (existing) {
+        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
+      }
+      return [...prev, { id: item.id, name: item.name, price: item.price, quantity: 1 }];
+    });
+    setReviewedLastItemPrompt(true);
   };
 
   const updateQuantity = (id: number, delta: number) => {
@@ -246,6 +270,8 @@ export default function NewOrder() {
             confirmedAt: conversionPreview.confirmation.confirmedAt,
             legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
             paymentMethod: selectedPaymentMethod as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual",
+            tipAmount,
+            tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
           },
         }
       });
@@ -268,8 +294,16 @@ export default function NewOrder() {
 
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null ? deliveryQuote.fee : 0;
-  const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee;
+  const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
+  const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
+  const tipAmount = tipMode === "none"
+    ? 0
+    : tipMode === "custom"
+      ? Math.round(customTipAmount * 100) / 100
+      : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
+  const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod !== "pickup";
+  const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
   const deliveryReady = deliveryMethod === "pickup"
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
@@ -384,6 +418,12 @@ export default function NewOrder() {
                     <span className="font-mono">${deliveryFee.toFixed(2)}</span>
                   </div>
                 )}
+                {tipAmount > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Sales rep tip</span>
+                    <span className="font-mono">${tipAmount.toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border/40">
                   <span>Total</span>
                   <span className="font-mono" data-testid="text-total">${displayedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
@@ -495,11 +535,45 @@ export default function NewOrder() {
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 <Wand2 size={14} /> 3. Convert Shopping Cart
               </div>
+              {promotedItems.length > 0 && (
+                <div className="rounded-sm border border-primary/20 bg-primary/5 p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">Need one last item?</div>
+                      <div className="text-xs text-muted-foreground">Supervisor-selected add-ons can be added before Zappy converts the cart.</div>
+                    </div>
+                    {reviewedLastItemPrompt && <CheckCircle2 size={17} className="text-emerald-500 shrink-0" />}
+                  </div>
+                  <div className="space-y-2">
+                    {promotedItems.slice(0, 3).map(item => (
+                      <div key={item.id} className="flex items-center gap-3 rounded-sm border border-border/50 bg-background p-2">
+                        {item.imageUrl ? (
+                          <img src={item.imageUrl} alt={item.name} className="h-10 w-10 rounded-sm object-cover bg-muted shrink-0" />
+                        ) : (
+                          <div className="h-10 w-10 rounded-sm bg-muted shrink-0" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold truncate">{item.name}</div>
+                          <div className="text-[11px] text-muted-foreground font-mono">${item.price.toFixed(2)}</div>
+                        </div>
+                        <Button type="button" size="sm" variant="ghost" className="h-7 rounded-sm px-2 text-[10px] uppercase tracking-wider" onClick={() => addPromotedToCart(item)} data-testid={`button-last-item-add-${item.id}`}>
+                          Add
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                  {!reviewedLastItemPrompt && (
+                    <Button type="button" variant="outline" className="w-full h-8 rounded-sm text-xs" onClick={() => setReviewedLastItemPrompt(true)} data-testid="button-last-item-no-thanks">
+                      No thanks, continue
+                    </Button>
+                  )}
+                </div>
+              )}
                 <Button
                   type="button"
                   variant="secondary"
                   className="w-full rounded-sm h-10 text-xs font-semibold uppercase tracking-wider"
-                disabled={cart.length === 0 || !acceptedFinalSale || !deliveryReady || isConverting}
+                disabled={cart.length === 0 || !acceptedFinalSale || !deliveryReady || lastItemPromptRequired || isConverting}
                   onClick={handlePreviewConversion}
                   data-testid="button-preview-conversion"
                 >
@@ -521,26 +595,70 @@ export default function NewOrder() {
                 <CreditCard size={14} /> 4. Select Payment Option & Pay
               </div>
               {conversionPreview ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {conversionPreview.converted.paymentMethods.map(method => {
-                    const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
-                    const active = selectedPaymentMethod === method.id;
-                    return (
-                      <button
-                        key={method.id}
-                        type="button"
-                        onClick={() => setSelectedPaymentMethod(method.id)}
-                        className={`rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
-                        data-testid={`payment-method-${method.id}`}
-                      >
-                        <span className="flex items-center gap-2 text-sm font-semibold">
-                          <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
-                          {method.label}
-                        </span>
-                        {method.message && <span className="block mt-1 text-[11px] text-emerald-600">{method.message}</span>}
-                      </button>
-                    );
-                  })}
+                <div className="space-y-4">
+                  <div className="rounded-sm border border-primary/20 bg-primary/5 p-3 space-y-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <HandCoins size={16} className="text-primary" />
+                      Add a tip for the sales rep preparing this order?
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      {[
+                        { id: "none", label: "No Tip" },
+                        { id: "10", label: "10%" },
+                        { id: "15", label: "15%" },
+                        { id: "20", label: "20%" },
+                        { id: "custom", label: "Custom" },
+                      ].map(option => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => setTipMode(option.id as typeof tipMode)}
+                          className={`rounded-sm border px-2 py-2 text-xs font-semibold transition-colors ${tipMode === option.id ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background text-muted-foreground hover:border-primary/40"}`}
+                          data-testid={`tip-option-${option.id}`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    {tipMode === "custom" && (
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={customTip}
+                        onChange={e => setCustomTip(e.target.value)}
+                        placeholder="Custom tip amount"
+                        className="h-9 rounded-sm bg-background"
+                        data-testid="input-custom-tip"
+                      />
+                    )}
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Tip selected</span>
+                      <span className="font-mono">${tipAmount.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {conversionPreview.converted.paymentMethods.map(method => {
+                      const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
+                      const active = selectedPaymentMethod === method.id;
+                      return (
+                        <button
+                          key={method.id}
+                          type="button"
+                          onClick={() => setSelectedPaymentMethod(method.id)}
+                          className={`rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
+                          data-testid={`payment-method-${method.id}`}
+                        >
+                          <span className="flex items-center gap-2 text-sm font-semibold">
+                            <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
+                            {method.label}
+                          </span>
+                          {method.message && <span className="block mt-1 text-[11px] text-emerald-600">{method.message}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               ) : (
                 <div className="rounded-sm border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">

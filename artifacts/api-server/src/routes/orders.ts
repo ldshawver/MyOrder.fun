@@ -256,6 +256,15 @@ function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[]
   }));
 }
 
+function normalizeCheckoutTip(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === "") return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1000) {
+    throw new Error("Tip amount must be between $0 and $1,000.");
+  }
+  return Math.round(n * 100) / 100;
+}
+
 // POST /api/orders/preview-conversion
 // Mandatory pre-payment conversion stage. Zappy/customer clients call this
 // after the final cart confirmation and before any payment UI appears.
@@ -568,9 +577,18 @@ router.post("/orders", async (req, res): Promise<void> => {
   const totals = computeCheckoutTotals(normalizedLines);
   const subtotal = totals.subtotal;
   const tax = totals.tax;
-  const total = totals.total;
+  const merchandiseTotal = totals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const deliveryQuote = body.data.deliveryQuote ?? null;
+  const deliveryFee = deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
+  let tipAmount: number;
+  try {
+    tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  const finalTotal = Math.round((merchandiseTotal + deliveryFee + tipAmount) * 100) / 100;
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
@@ -611,12 +629,12 @@ router.post("/orders", async (req, res): Promise<void> => {
     paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
     subtotal: String(subtotal.toFixed(2)),
     tax: String(tax.toFixed(2)),
-    total: String(total.toFixed(2)),
+    total: String(finalTotal.toFixed(2)),
     shippingAddress: body.data.shippingAddress ?? null,
     deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
     deliveryQuoteId: deliveryQuote?.quoteId ?? null,
     deliveryQuoteSnapshot: deliveryQuote ?? null,
-    deliveryFee: deliveryQuote?.fee != null ? String(Number(deliveryQuote.fee).toFixed(2)) : null,
+    deliveryFee: deliveryQuote?.fee != null ? String(deliveryFee.toFixed(2)) : null,
     deliveryCurrency: deliveryQuote?.currency ?? null,
     notes: body.data.notes ?? null,
     assignedTechId,
@@ -654,11 +672,26 @@ router.post("/orders", async (req, res): Promise<void> => {
     confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
     legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
   });
+  const checkoutSnapshotWithTip = {
+    ...checkoutConversionSnapshot,
+    tip: {
+      amount: tipAmount,
+      percent: checkoutConfirmation?.tipPercent ?? null,
+      recipient: "sales_rep",
+    },
+    pricingSnapshot: {
+      ...checkoutConversionSnapshot.pricingSnapshot,
+      deliveryFee,
+      tipAmount,
+      totalBeforeTip: merchandiseTotal + deliveryFee,
+      total: finalTotal,
+    },
+  };
 
   await db.update(ordersTable).set({
     alavontCartSnapshot,
     luciferCheckoutSnapshot,
-    checkoutConversionSnapshot,
+    checkoutConversionSnapshot: checkoutSnapshotWithTip,
   }).where(eq(ordersTable.id, order.id));
 
   // Insert order items using normalized line data
@@ -700,7 +733,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     resourceType: "order",
     resourceId: String(order.id),
     metadata: {
-      total,
+      total: finalTotal,
       itemCount: normalizedLines.length,
       routeSource: routing.routeSource,
       assignedCsrUserId: routing.assignedCsrUserId,
@@ -709,7 +742,9 @@ router.post("/orders", async (req, res): Promise<void> => {
       selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
       deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
       deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-      deliveryFee: deliveryQuote?.fee ?? null,
+      deliveryFee,
+      tipAmount,
+      tipPercent: checkoutConfirmation?.tipPercent ?? null,
     },
     ipAddress: req.ip,
   });
@@ -732,13 +767,13 @@ router.post("/orders", async (req, res): Promise<void> => {
     const customerPhone = customer?.contactPhone;
     const itemCount = normalizedLines.reduce((s, l) => s + l.quantity, 0);
     customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
-    await sendSms(customerPhone, smsOrderConfirmation(order.id, total, itemCount));
+    await sendSms(customerPhone, smsOrderConfirmation(order.id, finalTotal, itemCount));
 
     if (routing.routeSource === "general_account") {
-      await sendSms(SUPERVISOR_FALLBACK_PHONE, smsSupervisorFallbackOrderAlert(order.id, customerName, total, itemCount));
+      await sendSms(SUPERVISOR_FALLBACK_PHONE, smsSupervisorFallbackOrderAlert(order.id, customerName, finalTotal, itemCount));
     } else if (assignedTechId) {
       const [tech] = await db.select({ contactPhone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, assignedTechId)).limit(1);
-      await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, total, itemCount));
+      await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, finalTotal, itemCount));
     }
   } catch { /* non-critical */ }
 
@@ -779,7 +814,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     assignedCsrUserId: routing.assignedCsrUserId,
     routeSource: routing.routeSource,
     customerName,
-    total,
+    total: finalTotal,
     itemCount: normalizedLines.reduce((s, l) => s + l.quantity, 0),
     routedAt: now.toISOString(),
     estimatedReadyAt: routing.estimatedReadyAt.toISOString(),
