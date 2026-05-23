@@ -187,14 +187,9 @@ jobs:
             fi
 
             echo "▶ Starting database..."
-            # NOTE: `docker compose down` (not `down -v`) is used above, so the
-            # named postgres_data volume is NEVER deleted during a normal deploy.
-            # Never add -v unless this is an intentional data reset.
             docker compose up -d db < /dev/null
 
             echo "▶ Waiting for Postgres healthcheck (up to 60s)..."
-            # migrate.sh runs pg_isready internally, but we also wait here so
-            # the depends_on healthcheck has time to pass before `run --rm`.
             WAIT=0
             until docker compose exec -T db pg_isready -q < /dev/null 2>/dev/null; do
               WAIT=$((WAIT + 2))
@@ -209,8 +204,6 @@ jobs:
             echo "  ✓ Postgres healthy"
 
             echo "▶ Running migrations (drizzle-kit migrate via migrate.sh)..."
-            # migrate.sh: runs pg_isready, db:check, db:migrate:verbose.
-            # On failure it prints full diagnostics before exiting non-zero.
             MIGRATE_OUTPUT=$(docker compose run --rm migrate < /dev/null 2>&1) || {
               MIGRATE_EXIT=$?
               echo ""
@@ -224,6 +217,11 @@ jobs:
             }
             echo "${MIGRATE_OUTPUT}"
             echo "MIGRATE SUCCESS"
+
+            echo "▶ Opening host firewall ports (idempotent)..."
+            iptables -C INPUT -p tcp --dport 80  -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80  -j ACCEPT || true
+            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
+            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
             echo "▶ Starting all services..."
             docker compose up -d < /dev/null
@@ -260,6 +258,28 @@ jobs:
               sleep 2
             done
 
+            echo "▶ Restarting nginx to pick up new certs and config..."
+            sleep 5
+            docker compose restart nginx
+            sleep 3
+
+            echo "▶ Verifying app health (up to 60s)..."
+            HWAIT=0
+            until curl -sf --connect-timeout 3 --max-time 5 http://127.0.0.1/api/healthz > /dev/null 2>&1; do
+              HWAIT=$((HWAIT + 5))
+              if [ "$HWAIT" -ge 60 ]; then
+                echo "  ✗ App did not become healthy within 60s — dumping diagnostics" >&2
+                docker compose ps
+                docker compose logs --tail=40
+                exit 1
+              fi
+              echo "  not ready — ${HWAIT}s elapsed..."
+              sleep 5
+            done
+            HEALTH_BODY=$(curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz)
+            echo "  ✓ API healthy: ${HEALTH_BODY}"
+
+            docker compose ps
             docker image prune -f
 
             echo ""
