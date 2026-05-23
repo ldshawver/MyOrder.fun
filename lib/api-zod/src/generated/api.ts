@@ -445,6 +445,7 @@ export const ListOrdersQueryParams = zod.object({
 
 
 
+
 export const ListOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -459,6 +460,31 @@ export const ListOrdersResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -501,6 +527,7 @@ export const ListOrdersResponse = zod.object({
 
 
 
+
 export const CreateOrderBody = zod.object({
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
@@ -513,7 +540,72 @@ export const CreateOrderBody = zod.object({
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
   "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+}).optional(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
 }).optional()
+})
+
+
+/**
+ * @summary Create an Uber Courier delivery quote for checkout
+ */
+export const createDeliveryQuoteBodyDropoffAddressMin = 8;
+
+
+
+
+
+
+export const CreateDeliveryQuoteBody = zod.object({
+  "dropoffAddress": zod.string().min(createDeliveryQuoteBodyDropoffAddressMin),
+  "items": zod.array(zod.object({
+  "catalogItemId": zod.number().min(1),
+  "quantity": zod.number().min(1)
+})).min(1)
+})
+
+
+
+
+export const CreateDeliveryQuoteResponse = zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
 })
 
 
@@ -523,6 +615,7 @@ export const CreateOrderBody = zod.object({
 export const GetOrderParams = zod.object({
   "id": zod.coerce.number()
 })
+
 
 
 
@@ -540,6 +633,31 @@ export const GetOrderResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -584,6 +702,7 @@ export const UpdateOrderStatusBody = zod.object({
 
 
 
+
 export const UpdateOrderStatusResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -597,6 +716,31 @@ export const UpdateOrderStatusResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -652,6 +796,7 @@ export const AcceptOrderParams = zod.object({
 
 
 
+
 export const AcceptOrderResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -665,6 +810,31 @@ export const AcceptOrderResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -716,6 +886,7 @@ export const AdjustOrderEtaBody = zod.object({
 
 
 
+
 export const AdjustOrderEtaResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -729,6 +900,31 @@ export const AdjustOrderEtaResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -768,6 +964,7 @@ export const MarkOrderReadyParams = zod.object({
 
 
 
+
 export const MarkOrderReadyResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -781,6 +978,31 @@ export const MarkOrderReadyResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -824,6 +1046,7 @@ export const ReassignOrderBody = zod.object({
 
 
 
+
 export const ReassignOrderResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -837,6 +1060,31 @@ export const ReassignOrderResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -904,6 +1152,7 @@ export const GetRecentOrderEventsResponse = zod.object({
 
 
 
+
 export const ListDelayedOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -918,6 +1167,31 @@ export const ListDelayedOrdersResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -961,6 +1235,7 @@ export const GetRecentOrdersQueryParams = zod.object({
 
 
 
+
 export const GetRecentOrdersResponse = zod.object({
   "orders": zod.array(zod.object({
   "id": zod.number(),
@@ -975,6 +1250,31 @@ export const GetRecentOrdersResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
@@ -1069,7 +1369,7 @@ export const UpdateCurrentUserResponse = zod.object({
  * @summary List users in the tenant (admin only)
  */
 export const ListUsersQueryParams = zod.object({
-  "role": zod.enum(['global_admin', 'admin', 'customer_service_rep', 'user']).optional()
+  "role": zod.enum(['admin', 'supervisor', 'business_sitter', 'customer_service_rep', 'sales_rep', 'lab_tech', 'user']).optional()
 })
 
 export const ListUsersResponse = zod.object({
@@ -1543,6 +1843,7 @@ export const ConfirmPaymentBody = zod.object({
 
 
 
+
 export const ConfirmPaymentResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -1556,6 +1857,31 @@ export const ConfirmPaymentResponse = zod.object({
   "tax": zod.number().optional(),
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
+  "deliveryMethod": zod.string().nullish(),
+  "deliveryQuoteId": zod.string().nullish(),
+  "deliveryFee": zod.number().nullish(),
+  "deliveryCurrency": zod.string().nullish(),
+  "deliveryQuote": zod.object({
+  "provider": zod.enum(['uber_direct']),
+  "quoteId": zod.string().min(1),
+  "fee": zod.number().nullish(),
+  "feeCents": zod.number().nullish(),
+  "currency": zod.string().optional(),
+  "dropoffEta": zod.string().nullish(),
+  "duration": zod.number().nullish(),
+  "pickupDuration": zod.number().nullish(),
+  "expires": zod.string().nullish(),
+  "pickupAction": zod.enum(['default', 'pick_pack_pay']).optional(),
+  "manifestItems": zod.array(zod.object({
+  "name": zod.string().optional(),
+  "quantity": zod.number().optional(),
+  "price": zod.number().optional(),
+  "size": zod.enum(['small', 'medium', 'large', 'xlarge']).optional(),
+  "replacement_type": zod.enum(['contact_customer', 'remove_item', 'customer_choice']).optional(),
+  "sku": zod.string().optional(),
+  "special_instructions": zod.string().optional()
+})).optional()
+}).nullish(),
   "notes": zod.string().optional(),
   "checkoutConfirmation": zod.object({
   "acceptedAllSalesFinal": zod.boolean(),

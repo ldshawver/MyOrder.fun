@@ -67,6 +67,11 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      UBER_CLIENT_ID: ${UBER_CLIENT_ID:-${Uber_Client_ID:-}}
+      UBER_CUSTOMER_ID: ${UBER_CUSTOMER_ID:-${Uber_Customer_ID:-}}
+      UBER_CLIENT_SECRET: ${UBER_CLIENT_SECRET:-${Uber_Client_secret:-}}
+      UBER_PICKUP_ADDRESS: ${UBER_PICKUP_ADDRESS:-${Uber_Pickup_Address:-}}
+      UBER_PICKUP_ACTION: ${UBER_PICKUP_ACTION:-${Uber_Pickup_Action:-pick_pack_pay}}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Tell the bundled cups-client (lp/lpstat) which CUPS server to talk to.
       # Default uses the bind-mounted host socket below; override with an

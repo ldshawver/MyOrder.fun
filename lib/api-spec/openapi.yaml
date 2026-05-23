@@ -385,6 +385,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/Order"
 
+  /orders/delivery-quote:
+    post:
+      operationId: createDeliveryQuote
+      tags: [orders]
+      summary: Create an Uber Courier delivery quote for checkout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeliveryQuoteBody"
+      responses:
+        "200":
+          description: Delivery quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryQuote"
+
   /orders/{id}:
     get:
       operationId: getOrder
@@ -1747,6 +1766,21 @@ components:
           type: number
         shippingAddress:
           type: string
+        deliveryMethod:
+          type: string
+          nullable: true
+        deliveryQuoteId:
+          type: string
+          nullable: true
+        deliveryFee:
+          type: number
+          nullable: true
+        deliveryCurrency:
+          type: string
+          nullable: true
+        deliveryQuote:
+          $ref: "#/components/schemas/DeliveryQuote"
+          nullable: true
         notes:
           type: string
         checkoutConfirmation:
@@ -1848,7 +1882,95 @@ components:
               type: string
               enum: [cash, cash_app, stripe, venmo, gift_card, manual]
           required: [acceptedAllSalesFinal, legalDisclaimerText]
+        deliveryQuote:
+          $ref: "#/components/schemas/DeliveryQuoteSelection"
       required: [items]
+
+    CreateDeliveryQuoteBody:
+      type: object
+      additionalProperties: false
+      properties:
+        dropoffAddress:
+          type: string
+          minLength: 8
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              catalogItemId:
+                type: integer
+                minimum: 1
+              quantity:
+                type: integer
+                minimum: 1
+            required: [catalogItemId, quantity]
+      required: [dropoffAddress, items]
+
+    DeliveryQuoteSelection:
+      type: object
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          enum: [uber_direct]
+        quoteId:
+          type: string
+          minLength: 1
+        fee:
+          type: number
+          nullable: true
+        feeCents:
+          type: integer
+          nullable: true
+        currency:
+          type: string
+        dropoffEta:
+          type: string
+          nullable: true
+        duration:
+          type: integer
+          nullable: true
+        pickupDuration:
+          type: integer
+          nullable: true
+        expires:
+          type: string
+          nullable: true
+        pickupAction:
+          type: string
+          enum: [default, pick_pack_pay]
+        manifestItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeliveryManifestItem"
+      required: [provider, quoteId]
+
+    DeliveryQuote:
+      allOf:
+        - $ref: "#/components/schemas/DeliveryQuoteSelection"
+
+    DeliveryManifestItem:
+      type: object
+      properties:
+        name:
+          type: string
+        quantity:
+          type: integer
+        price:
+          type: integer
+        size:
+          type: string
+          enum: [small, medium, large, xlarge]
+        replacement_type:
+          type: string
+          enum: [contact_customer, remove_item, customer_choice]
+        sku:
+          type: string
+        special_instructions:
+          type: string
 
     UpdateOrderStatusBody:
       type: object
@@ -1958,7 +2080,7 @@ components:
           type: string
         role:
           type: string
-          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+          enum: [global_admin, admin, customer_service_rep, user]
         tenantId:
           type: integer
         tenantName:
@@ -2005,7 +2127,7 @@ components:
       properties:
         role:
           type: string
-          enum: [supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+          enum: [global_admin, admin, customer_service_rep, user]
       required: [role]
 
     WaitlistEntry:
@@ -2039,7 +2161,7 @@ components:
       properties:
         role:
           type: string
-          enum: [admin, supervisor, customer_service_rep, sales_rep, user]
+          enum: [global_admin, admin, customer_service_rep, user]
         firstName:
           type: string
           maxLength: 100
@@ -2098,7 +2220,7 @@ components:
           type: boolean
         role:
           type: string
-          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+          enum: [global_admin, admin, customer_service_rep, user]
       required: [approve]
 
     SetUserApprovalResponse:
@@ -2111,7 +2233,7 @@ components:
           enum: [pending, approved, rejected, deactivated]
         role:
           type: string
-          enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+          enum: [global_admin, admin, customer_service_rep, user]
       required: [id, status, role]
 
     UserListResponse:

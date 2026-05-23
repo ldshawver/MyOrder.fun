@@ -351,6 +351,67 @@ export const OrderFulfillmentStatus = {
   cancelled: 'cancelled',
 } as const;
 
+export type DeliveryQuoteSelectionProvider = typeof DeliveryQuoteSelectionProvider[keyof typeof DeliveryQuoteSelectionProvider];
+
+
+export const DeliveryQuoteSelectionProvider = {
+  uber_direct: 'uber_direct',
+} as const;
+
+export type DeliveryQuoteSelectionPickupAction = typeof DeliveryQuoteSelectionPickupAction[keyof typeof DeliveryQuoteSelectionPickupAction];
+
+
+export const DeliveryQuoteSelectionPickupAction = {
+  default: 'default',
+  pick_pack_pay: 'pick_pack_pay',
+} as const;
+
+export type DeliveryManifestItemSize = typeof DeliveryManifestItemSize[keyof typeof DeliveryManifestItemSize];
+
+
+export const DeliveryManifestItemSize = {
+  small: 'small',
+  medium: 'medium',
+  large: 'large',
+  xlarge: 'xlarge',
+} as const;
+
+export type DeliveryManifestItemReplacementType = typeof DeliveryManifestItemReplacementType[keyof typeof DeliveryManifestItemReplacementType];
+
+
+export const DeliveryManifestItemReplacementType = {
+  contact_customer: 'contact_customer',
+  remove_item: 'remove_item',
+  customer_choice: 'customer_choice',
+} as const;
+
+export interface DeliveryManifestItem {
+  name?: string;
+  quantity?: number;
+  price?: number;
+  size?: DeliveryManifestItemSize;
+  replacement_type?: DeliveryManifestItemReplacementType;
+  sku?: string;
+  special_instructions?: string;
+}
+
+export interface DeliveryQuoteSelection {
+  provider: DeliveryQuoteSelectionProvider;
+  /** @minLength 1 */
+  quoteId: string;
+  fee?: number | null;
+  feeCents?: number | null;
+  currency?: string;
+  dropoffEta?: string | null;
+  duration?: number | null;
+  pickupDuration?: number | null;
+  expires?: string | null;
+  pickupAction?: DeliveryQuoteSelectionPickupAction;
+  manifestItems?: DeliveryManifestItem[];
+}
+
+export type DeliveryQuote = DeliveryQuoteSelection;
+
 export interface Order {
   id: number;
   tenantId: number;
@@ -364,6 +425,11 @@ export interface Order {
   tax?: number;
   total: number;
   shippingAddress?: string;
+  deliveryMethod?: string | null;
+  deliveryQuoteId?: string | null;
+  deliveryFee?: number | null;
+  deliveryCurrency?: string | null;
+  deliveryQuote?: DeliveryQuote | null;
   notes?: string;
   checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];
@@ -413,6 +479,21 @@ export interface CreateOrderBody {
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
+  deliveryQuote?: DeliveryQuoteSelection;
+}
+
+export type CreateDeliveryQuoteBodyItemsItem = {
+  /** @minimum 1 */
+  catalogItemId: number;
+  /** @minimum 1 */
+  quantity: number;
+};
+
+export interface CreateDeliveryQuoteBody {
+  /** @minLength 8 */
+  dropoffAddress: string;
+  /** @minItems 1 */
+  items: CreateDeliveryQuoteBodyItemsItem[];
 }
 
 export type UpdateOrderStatusBodyStatus = typeof UpdateOrderStatusBodyStatus[keyof typeof UpdateOrderStatusBodyStatus];
@@ -949,9 +1030,12 @@ export type ListUsersRole = typeof ListUsersRole[keyof typeof ListUsersRole];
 
 
 export const ListUsersRole = {
-  global_admin: 'global_admin',
   admin: 'admin',
+  supervisor: 'supervisor',
+  business_sitter: 'business_sitter',
   customer_service_rep: 'customer_service_rep',
+  sales_rep: 'sales_rep',
+  lab_tech: 'lab_tech',
   user: 'user',
 } as const;
 

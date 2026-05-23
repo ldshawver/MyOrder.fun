@@ -7,6 +7,7 @@
  */
 import type { CreateOrderBodyCheckoutConfirmation } from './createOrderBodyCheckoutConfirmation';
 import type { CreateOrderBodyItemsItem } from './createOrderBodyItemsItem';
+import type { DeliveryQuoteSelection } from './deliveryQuoteSelection';
 
 export interface CreateOrderBody {
   shippingAddress?: string;
@@ -14,4 +15,5 @@ export interface CreateOrderBody {
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
+  deliveryQuote?: DeliveryQuoteSelection;
 }

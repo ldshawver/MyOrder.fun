@@ -21,6 +21,7 @@
 import { Router, type IRouter } from "express";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 import { logger } from "../lib/logger";
+import { hasUberDirectConfig } from "../lib/uberDirect";
 
 const router: IRouter = Router();
 
@@ -34,6 +35,7 @@ interface IntegrationResult {
   woocommerce: IntegrationStatus;
   revenuecat: IntegrationStatus;
   openai: IntegrationStatus;
+  uberDirect: IntegrationStatus;
 }
 
 function hasEnv(...keys: string[]): boolean {
@@ -124,6 +126,10 @@ function checkOpenAI(): IntegrationStatus {
   return hasEnv("OPENAI_API_KEY") ? "connected" : "missing_config";
 }
 
+function checkUberDirect(): IntegrationStatus {
+  return hasUberDirectConfig() ? "connected" : "missing_config";
+}
+
 // ─── Route ───────────────────────────────────────────────────────────────────
 
 router.get(
@@ -146,6 +152,7 @@ router.get(
       woocommerce: checkWooCommerce(),
       revenuecat: checkRevenueCat(),
       openai: checkOpenAI(),
+      uberDirect: checkUberDirect(),
     };
 
     res.json(result);

@@ -6,12 +6,26 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw } from "lucide-react";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
 type CartItem = { id: number; name: string; price: number; quantity: number };
+type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct";
+type DeliveryQuote = {
+  provider: "uber_direct";
+  quoteId: string;
+  fee: number | null;
+  feeCents: number | null;
+  currency: string;
+  dropoffEta: string | null;
+  duration: number | null;
+  pickupDuration: number | null;
+  expires: string | null;
+  pickupAction: "default" | "pick_pack_pay";
+  manifestItems?: Array<{ name: string; quantity: number; price?: number }>;
+};
 type ConversionPreview = {
   confirmation: {
     acceptedAllSalesFinal: true;
@@ -65,6 +79,10 @@ export default function NewOrder() {
     }));
   };
   const [shippingAddress, setShippingAddress] = useState("");
+  const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>("pickup");
+  const [deliveryQuote, setDeliveryQuote] = useState<DeliveryQuote | null>(null);
+  const [deliveryQuoteError, setDeliveryQuoteError] = useState<string | null>(null);
+  const [isQuotingDelivery, setIsQuotingDelivery] = useState(false);
   const [notes, setNotes] = useState("");
   const [acceptedFinalSale, setAcceptedFinalSale] = useState(false);
   const [conversionPreview, setConversionPreview] = useState<ConversionPreview | null>(null);
@@ -107,6 +125,11 @@ export default function NewOrder() {
     setConversionPreview(null);
     setConversionError(null);
   }, [cart, shippingAddress, notes]);
+
+  useEffect(() => {
+    setDeliveryQuote(null);
+    setDeliveryQuoteError(null);
+  }, [cart, shippingAddress, deliveryMethod]);
 
   useEffect(() => {
     const cartStr = cart.map(c=>c.id).sort().join(",");
@@ -174,15 +197,47 @@ export default function NewOrder() {
     }
   };
 
+  const handleDeliveryQuote = async () => {
+    if (cart.length === 0 || !shippingAddress.trim()) return;
+    setIsQuotingDelivery(true);
+    setDeliveryQuoteError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/orders/delivery-quote", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          dropoffAddress: shippingAddress,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error ?? "Uber Courier quote failed.");
+      }
+      setDeliveryQuote(data as DeliveryQuote);
+    } catch (e) {
+      setDeliveryQuoteError(e instanceof Error ? e.message : "Uber Courier quote failed.");
+    } finally {
+      setIsQuotingDelivery(false);
+    }
+  };
+
   const handleSubmit = () => {
     if (cart.length === 0 || !conversionPreview) return;
+    if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
+    if (deliveryMethod !== "pickup" && !shippingAddress.trim()) return;
     
     createOrderMutation.mutate(
       {
         data: {
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
-          shippingAddress,
+          shippingAddress: deliveryMethod === "pickup" ? "" : shippingAddress,
           notes,
+          deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation: {
             acceptedAllSalesFinal: true,
             confirmedAt: conversionPreview.confirmation.confirmedAt,
@@ -207,6 +262,10 @@ export default function NewOrder() {
 
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const displayedTotal = conversionPreview?.pricingSnapshot.total ?? subtotal;
+  const requiresDeliveryAddress = deliveryMethod !== "pickup";
+  const deliveryReady = deliveryMethod === "pickup"
+    || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
+    || (deliveryMethod === "uber_direct" && !!deliveryQuote);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
@@ -293,13 +352,64 @@ export default function NewOrder() {
 
             <div className="shrink-0 space-y-4 p-4 border-t border-border/50 bg-muted/5">
               <div className="space-y-3">
-                <Input 
-                  placeholder="Shipping Address (Optional)" 
-                  value={shippingAddress}
-                  onChange={e => setShippingAddress(e.target.value)}
-                  className="rounded-sm bg-background"
-                  data-testid="input-shipping"
-                />
+                <div className="rounded-sm border border-border/50 bg-background p-3 space-y-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Fulfillment</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: "pickup", label: "Pickup" },
+                      { id: "manual_delivery", label: "Delivery" },
+                      { id: "uber_direct", label: "Uber Courier" },
+                    ].map(option => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setDeliveryMethod(option.id as DeliveryMethod)}
+                        className={`rounded-sm border px-2 py-2 text-xs font-semibold transition-colors ${deliveryMethod === option.id ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-muted/10 text-muted-foreground hover:border-primary/40"}`}
+                        data-testid={`delivery-method-${option.id}`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  {requiresDeliveryAddress && (
+                    <Input
+                      placeholder="Delivery address"
+                      value={shippingAddress}
+                      onChange={e => setShippingAddress(e.target.value)}
+                      className="rounded-sm bg-background"
+                      data-testid="input-shipping"
+                    />
+                  )}
+                  {deliveryMethod === "uber_direct" && (
+                    <div className="space-y-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full rounded-sm h-9 text-xs font-semibold uppercase tracking-wider"
+                        disabled={cart.length === 0 || !shippingAddress.trim() || isQuotingDelivery}
+                        onClick={handleDeliveryQuote}
+                        data-testid="button-uber-quote"
+                      >
+                        {isQuotingDelivery ? <RefreshCw size={14} className="mr-2 animate-spin" /> : <Truck size={14} className="mr-2" />}
+                        {isQuotingDelivery ? "Quoting..." : "Quote Uber Courier"}
+                      </Button>
+                      {deliveryQuote && (
+                        <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs" data-testid="uber-quote-summary">
+                          <div className="font-semibold text-emerald-700">
+                            Uber Courier quoted{deliveryQuote.fee != null ? ` at $${deliveryQuote.fee.toFixed(2)}` : ""}
+                          </div>
+                          <div className="text-muted-foreground mt-1">
+                            {deliveryQuote.duration ? `${deliveryQuote.duration} min estimated delivery` : "Delivery ETA available after dispatch."}
+                            {deliveryQuote.expires ? ` Quote expires ${new Date(deliveryQuote.expires).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : ""}
+                          </div>
+                        </div>
+                      )}
+                      {deliveryQuoteError && (
+                        <div className="text-xs text-destructive" data-testid="text-uber-quote-error">{deliveryQuoteError}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <Textarea 
                   placeholder="Order Notes (Optional)" 
                   value={notes}
@@ -345,10 +455,16 @@ export default function NewOrder() {
                 <span className="font-medium text-muted-foreground">Total</span>
                 <span className="font-bold tracking-tight" data-testid="text-total">${displayedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
+              {deliveryMethod === "uber_direct" && deliveryQuote?.fee != null && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground -mt-2">
+                  <span>Uber Courier fee</span>
+                  <span data-testid="text-uber-fee">${deliveryQuote.fee.toFixed(2)}</span>
+                </div>
+              )}
 
               <Button 
                 className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider" 
-                disabled={cart.length === 0 || !conversionPreview || createOrderMutation.isPending}
+                disabled={cart.length === 0 || !conversionPreview || !deliveryReady || createOrderMutation.isPending}
                 onClick={handleSubmit}
                 data-testid="button-submit-order"
               >

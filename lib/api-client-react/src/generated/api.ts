@@ -34,7 +34,9 @@ import type {
   CatalogItemListResponse,
   ConfirmPaymentBody,
   CreateCatalogItemBody,
+  CreateDeliveryQuoteBody,
   CreateOrderBody,
+  DeliveryQuote,
   GetRecentOrderEvents200,
   GetRecentOrderEventsParams,
   GetRecentOrdersParams,
@@ -1386,6 +1388,77 @@ export const useCreateOrder = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getCreateOrderMutationOptions(options));
+    }
+
+/**
+ * @summary Create an Uber Courier delivery quote for checkout
+ */
+export const getCreateDeliveryQuoteUrl = () => {
+
+
+
+
+  return `/api/orders/delivery-quote`
+}
+
+export const createDeliveryQuote = async (createDeliveryQuoteBody: CreateDeliveryQuoteBody, options?: RequestInit): Promise<DeliveryQuote> => {
+
+  return customFetch<DeliveryQuote>(getCreateDeliveryQuoteUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      createDeliveryQuoteBody,)
+  }
+);}
+
+
+
+
+export const getCreateDeliveryQuoteMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createDeliveryQuote>>, TError,{data: BodyType<CreateDeliveryQuoteBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createDeliveryQuote>>, TError,{data: BodyType<CreateDeliveryQuoteBody>}, TContext> => {
+
+const mutationKey = ['createDeliveryQuote'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createDeliveryQuote>>, {data: BodyType<CreateDeliveryQuoteBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createDeliveryQuote(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateDeliveryQuoteMutationResult = NonNullable<Awaited<ReturnType<typeof createDeliveryQuote>>>
+    export type CreateDeliveryQuoteMutationBody = BodyType<CreateDeliveryQuoteBody>
+    export type CreateDeliveryQuoteMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create an Uber Courier delivery quote for checkout
+ */
+export const useCreateDeliveryQuote = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createDeliveryQuote>>, TError,{data: BodyType<CreateDeliveryQuoteBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createDeliveryQuote>>,
+        TError,
+        {data: BodyType<CreateDeliveryQuoteBody>},
+        TContext
+      > => {
+      return useMutation(getCreateDeliveryQuoteMutationOptions(options));
     }
 
 /**

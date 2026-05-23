@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { DeliveryQuote } from './deliveryQuote';
 import type { OrderCheckoutConfirmation } from './orderCheckoutConfirmation';
 import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
@@ -25,6 +26,11 @@ export interface Order {
   tax?: number;
   total: number;
   shippingAddress?: string;
+  deliveryMethod?: string | null;
+  deliveryQuoteId?: string | null;
+  deliveryFee?: number | null;
+  deliveryCurrency?: string | null;
+  deliveryQuote?: DeliveryQuote | null;
   notes?: string;
   checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];

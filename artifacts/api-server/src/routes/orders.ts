@@ -9,6 +9,7 @@ import {
   notificationsTable,
   labTechShiftsTable,
   inventoryTemplatesTable,
+  adminSettingsTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -42,6 +43,15 @@ import { z } from "zod";
 import { logger } from "../lib/logger";
 import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
+import {
+  createUberDeliveryQuote,
+  getConfiguredPickupAddress,
+  getUberPickupAction,
+  hasUberDirectConfig,
+  UberDirectApiError,
+  UberDirectConfigError,
+  type UberManifestItem,
+} from "../lib/uberDirect";
 
 const router: IRouter = Router();
 const SUPERVISOR_FALLBACK_PHONE = "19165989519";
@@ -201,6 +211,51 @@ function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.inf
   };
 }
 
+const DeliveryQuoteCartLineInput = z.object({
+  catalogItemId: z.number().int().positive(),
+  quantity: z.number().int().positive(),
+}).strict();
+
+const DeliveryQuoteBody = z.object({
+  items: z.array(DeliveryQuoteCartLineInput).min(1),
+  dropoffAddress: z.string().min(8).max(1000),
+}).strict();
+
+function parseFirstPickupAddressFromSettings(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Array<{ address?: unknown }> | null;
+    if (!Array.isArray(parsed)) return null;
+    for (const location of parsed) {
+      const address = typeof location.address === "string" ? location.address.trim() : "";
+      if (address) return address;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function resolveUberPickupAddress(): Promise<string | null> {
+  const envPickupAddress = getConfiguredPickupAddress();
+  if (envPickupAddress) return envPickupAddress;
+  const [settings] = await db.select({ shiftLocationOptions: adminSettingsTable.shiftLocationOptions })
+    .from(adminSettingsTable)
+    .limit(1);
+  return parseFirstPickupAddressFromSettings(settings?.shiftLocationOptions);
+}
+
+function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
+  return lines.map(line => ({
+    name: line.merchant_name || line.display_name || line.catalog_display_name,
+    quantity: line.quantity,
+    price: Math.max(0, Math.round(line.unit_price * 100)),
+    size: "small",
+    replacement_type: "contact_customer",
+    sku: line.merchant_sku ?? line.woo_product_id ?? String(line.catalog_item_id),
+  }));
+}
+
 // POST /api/orders/preview-conversion
 // Mandatory pre-payment conversion stage. Zappy/customer clients call this
 // after the final cart confirmation and before any payment UI appears.
@@ -256,6 +311,95 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
   res.json(preview);
 });
 
+// POST /api/orders/delivery-quote
+// Creates an Uber Direct quote for customers choosing courier delivery. This
+// does not dispatch a courier; it returns quote details for checkout and order
+// audit persistence. Dispatch can be added as a staff-only action later.
+router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const body = DeliveryQuoteBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message, details: body.error.issues });
+    return;
+  }
+  if (!hasUberDirectConfig()) {
+    res.status(503).json({ error: "Uber Courier is not configured." });
+    return;
+  }
+
+  let normalizedLines: NormalizedCartLine[];
+  try {
+    normalizedLines = await normalizeCheckoutCart(body.data.items);
+  } catch (normErr) {
+    if (normErr instanceof CheckoutMappingError) {
+      res.status(422).json({
+        error: "Item not available for Uber Courier delivery",
+        catalogItemId: normErr.catalogItemId,
+      });
+      return;
+    }
+    res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
+    return;
+  }
+
+  const pickupAddress = await resolveUberPickupAddress();
+  if (!pickupAddress) {
+    res.status(503).json({ error: "Uber Courier pickup address is not configured." });
+    return;
+  }
+
+  try {
+    const manifestItems = buildUberManifestItems(normalizedLines);
+    const quote = await createUberDeliveryQuote({
+      pickupAddress,
+      dropoffAddress: body.data.dropoffAddress,
+      manifestItems,
+      pickupAction: getUberPickupAction(),
+    });
+
+    await writeAuditLog({
+      actorId: actor.id,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      action: "UBER_DELIVERY_QUOTE_CREATED",
+      resourceType: "order",
+      metadata: {
+        quoteId: quote.id,
+        fee: quote.fee ?? null,
+        currency: quote.currency_type ?? null,
+        pickupAction: quote.pickup_action ?? getUberPickupAction(),
+        itemCount: manifestItems.length,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.json({
+      provider: "uber_direct",
+      quoteId: quote.id,
+      fee: typeof quote.fee === "number" ? quote.fee / 100 : null,
+      feeCents: quote.fee ?? null,
+      currency: quote.currency_type ?? "USD",
+      dropoffEta: quote.dropoff_eta ?? null,
+      duration: quote.duration ?? null,
+      pickupDuration: quote.pickup_duration ?? null,
+      expires: quote.expires ?? null,
+      pickupAction: quote.pickup_action ?? getUberPickupAction(),
+      manifestItems,
+    });
+  } catch (err) {
+    if (err instanceof UberDirectConfigError) {
+      res.status(503).json({ error: err.message });
+      return;
+    }
+    if (err instanceof UberDirectApiError) {
+      res.status(err.status >= 400 && err.status < 500 ? 422 : 502).json({ error: err.message });
+      return;
+    }
+    logger.warn({ err }, "Unexpected Uber Courier quote failure");
+    res.status(502).json({ error: "Uber Courier quote failed." });
+  }
+});
+
 async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const customer = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
@@ -274,6 +418,11 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
     shippingAddress: order.shippingAddress,
+    deliveryMethod: order.deliveryMethod ?? null,
+    deliveryQuoteId: order.deliveryQuoteId ?? null,
+    deliveryFee: order.deliveryFee == null ? null : parseFloat(order.deliveryFee as string),
+    deliveryCurrency: order.deliveryCurrency ?? null,
+    deliveryQuote: order.deliveryQuoteSnapshot ?? null,
     notes: order.notes,
     trackingUrl: order.trackingUrl ?? null,
     items: items.map(i => ({
@@ -421,6 +570,7 @@ router.post("/orders", async (req, res): Promise<void> => {
   const tax = totals.tax;
   const total = totals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
+  const deliveryQuote = body.data.deliveryQuote ?? null;
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
@@ -463,6 +613,11 @@ router.post("/orders", async (req, res): Promise<void> => {
     tax: String(tax.toFixed(2)),
     total: String(total.toFixed(2)),
     shippingAddress: body.data.shippingAddress ?? null,
+    deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+    deliveryQuoteId: deliveryQuote?.quoteId ?? null,
+    deliveryQuoteSnapshot: deliveryQuote ?? null,
+    deliveryFee: deliveryQuote?.fee != null ? String(Number(deliveryQuote.fee).toFixed(2)) : null,
+    deliveryCurrency: deliveryQuote?.currency ?? null,
     notes: body.data.notes ?? null,
     assignedTechId,
     assignedShiftId,
@@ -552,6 +707,9 @@ router.post("/orders", async (req, res): Promise<void> => {
       finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
       legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
       selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+      deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+      deliveryQuoteId: deliveryQuote?.quoteId ?? null,
+      deliveryFee: deliveryQuote?.fee ?? null,
     },
     ipAddress: req.ip,
   });
