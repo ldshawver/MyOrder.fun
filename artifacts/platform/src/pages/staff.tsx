@@ -18,6 +18,13 @@ import { useAuth } from "@clerk/react";
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 
+function formatCourierEta(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 const STATUS_TABS = [
   { value: "pending", label: "Incoming" },
   { value: "processing", label: "In Progress" },
@@ -1116,6 +1123,12 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
             <span className="font-mono font-bold text-foreground">
               ${order.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
             </span>
+            {order.deliveryMethod && order.deliveryMethod !== "pickup" && (
+              <span className="flex items-center gap-1 text-primary">
+                <Truck size={10} />
+                {order.deliveryMethod === "uber_direct" ? "Uber Courier" : "Delivery"}
+              </span>
+            )}
           </div>
         </div>
         <button onClick={() => setExpanded(e => !e)} className="text-muted-foreground hover:text-foreground p-1">
@@ -1125,6 +1138,34 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 
       {expanded && (
         <div className="border-t border-border/30 bg-muted/10 px-4 py-3 space-y-2">
+          {order.deliveryMethod && order.deliveryMethod !== "pickup" && (
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs space-y-2" data-testid={`delivery-info-${order.id}`}>
+              <div className="flex items-center gap-2 text-[10px] font-semibold text-primary uppercase tracking-widest">
+                <Truck size={12} /> Delivery
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <div className="text-muted-foreground">Method</div>
+                  <div className="font-mono font-semibold">{order.deliveryMethod === "uber_direct" ? "Uber Courier" : "Manual delivery"}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Fee</div>
+                  <div className="font-mono font-semibold">{order.deliveryFee != null ? `$${order.deliveryFee.toFixed(2)}` : "—"}</div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">ETA</div>
+                  <div className="font-mono font-semibold">
+                    {formatCourierEta(order.deliveryQuote?.dropoffEta) ?? (order.deliveryQuote?.duration ? `${order.deliveryQuote.duration} min` : "—")}
+                  </div>
+                </div>
+              </div>
+              {order.shippingAddress && (
+                <div className="pt-2 border-t border-primary/10 text-muted-foreground">
+                  {order.shippingAddress}
+                </div>
+              )}
+            </div>
+          )}
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Line Items</div>
           {(order.items as ExtendedOrderItem[]).map((item, i) => (
             <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-border/20 last:border-0">

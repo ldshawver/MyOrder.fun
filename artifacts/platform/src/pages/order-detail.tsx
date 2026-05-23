@@ -32,6 +32,13 @@ import { useOrderEvents } from "@/hooks/useOrderEvents";
 type OrderWithTracking = Order & { trackingUrl?: string };
 type CreditSummary = { balance: number };
 
+function formatCourierEta(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => Date.now());
@@ -132,6 +139,37 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
         {stageMessageFor(order)}
         {" "}You'll receive a push notification the moment it's ready.
       </p>
+      {order.deliveryMethod === "uber_direct" && (
+        <div className="mt-5 w-full max-w-md rounded-xl border border-primary/20 bg-background/70 p-4 text-left" data-testid="customer-uber-info">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
+            <Truck size={14} /> Uber Courier
+          </div>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="text-muted-foreground">Delivery fee</div>
+              <div className="font-mono font-semibold">
+                {order.deliveryFee != null ? `$${order.deliveryFee.toFixed(2)}` : "Quoted at dispatch"}
+              </div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">ETA</div>
+              <div className="font-mono font-semibold">
+                {formatCourierEta(order.deliveryQuote?.dropoffEta) ?? (order.deliveryQuote?.duration ? `${order.deliveryQuote.duration} min` : "Waiting for dispatch")}
+              </div>
+            </div>
+          </div>
+          {(order as OrderWithTracking).trackingUrl && (
+            <a
+              href={(order as OrderWithTracking).trackingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-primary hover:underline"
+            >
+              Track delivery <ExternalLink size={12} />
+            </a>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -709,6 +747,31 @@ export default function OrderDetail() {
               <h2 className="text-sm font-semibold uppercase tracking-wider">Delivery</h2>
             </div>
             <div className="px-5 py-5 space-y-4">
+              <div className="rounded-xl border border-border/40 bg-muted/10 p-3 text-xs space-y-2" data-testid="delivery-summary">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Method</span>
+                  <span className="font-mono font-semibold uppercase">{(order.deliveryMethod ?? "pickup").replace(/_/g, " ")}</span>
+                </div>
+                {order.deliveryQuoteId && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Uber quote</span>
+                    <span className="font-mono truncate">{order.deliveryQuoteId}</span>
+                  </div>
+                )}
+                {order.deliveryFee != null && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Delivery fee</span>
+                    <span className="font-mono">${order.deliveryFee.toFixed(2)}</span>
+                  </div>
+                )}
+                {order.deliveryQuote?.dropoffEta && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Courier ETA</span>
+                    <span className="font-mono">{formatCourierEta(order.deliveryQuote.dropoffEta)}</span>
+                  </div>
+                )}
+              </div>
+
               {/* Staff: paste tracking link */}
               {canEditStatus && (
                 <div className="space-y-2">
