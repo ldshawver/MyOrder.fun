@@ -9,7 +9,7 @@ import {
   UpdateUserRoleBody,
   UpdateUserRoleResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog, normalizeRole as normalizeAuthRole } from "../lib/auth";
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
@@ -46,23 +46,16 @@ const router: IRouter = Router();
 let usersListSchemaEnsured = false;
 
 const VALID_ROLES = [
+  "global_admin",
   "admin",
-  "supervisor",
-  "business_sitter",
   "customer_service_rep",
-  "sales_rep",
-  "lab_tech",
   "user",
 ] as const;
 type ValidRole = typeof VALID_ROLES[number];
 type ValidStatus = "pending" | "approved" | "rejected" | "deactivated";
 
 function normalizeRole(role: unknown): ValidRole {
-  if (typeof role === "string" && (VALID_ROLES as readonly string[]).includes(role)) {
-    return role as ValidRole;
-  }
-  logger.warn({ rawRole: role }, "Invalid role value in DB — defaulting to 'user'");
-  return "user";
+  return normalizeAuthRole(role) as ValidRole;
 }
 
 function normalizeStatus(status: unknown): ValidStatus {
@@ -262,7 +255,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
 });
 
 // GET /api/users — admin and supervisor see all users
-router.get("/users", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.get("/users", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -324,7 +317,7 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
 // PATCH /api/users/:id/role — supervisors and admins (legacy path)
 // PATCH /api/admin/users/:id/role — admin-only namespace
 router.patch("/admin/users/:id/role", requireRole("admin"), updateUserRoleHandler);
-router.patch("/users/:id/role", requireRole("admin", "supervisor"), updateUserRoleHandler);
+router.patch("/users/:id/role", requireRole("global_admin", "admin"), updateUserRoleHandler);
 
 async function updateUserRoleHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
   const actor = req.dbUser!;

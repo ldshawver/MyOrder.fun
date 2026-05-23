@@ -19,6 +19,8 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   // status: active | clocked_out | supervisor_pending | finalized
   status: text("status").notNull().default("active"),
   ipAddress: text("ip_address"),
+  boxAssignmentId: text("box_assignment_id"),
+  setupJson: json("setup_json").default({}),
   clockedInAt: timestamp("clocked_in_at", { withTimezone: true }).notNull().defaultNow(),
   clockedOutAt: timestamp("clocked_out_at", { withTimezone: true }),
   // Cash bank tracking

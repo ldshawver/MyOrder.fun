@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { Plus, Package, Clock, ShieldAlert } from "lucide-react";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 const SESSION_ORDERS_KEY = "alavont_session_orders";
 
@@ -46,8 +47,9 @@ export default function Orders() {
     { query: { queryKey: ["listOrders"] } }
   );
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const isCustomer = user?.role === "user";
-  const isSupervisor = user?.role === "supervisor" || user?.role === "admin";
+  const userRole = normalizeNotificationRole(user?.role);
+  const isCustomer = userRole === "user";
+  const isSupervisor = userRole === "global_admin" || userRole === "admin";
 
   // Customers only see orders from the current browser session
   const visibleOrders = useMemo(() => {

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { Response } from "express";
 import { logger } from "./logger";
+import { normalizeRole } from "./auth";
 
 /**
  *
@@ -101,14 +102,14 @@ export function subscribe(client: SseClient): () => void {
 }
 
 export function shouldDeliver(client: SseClient, ev: OrderEvent): boolean {
-  const role = client.role;
+  const role = normalizeRole(client.role);
   // Privileged roles see everything
-  if (role === "admin" || role === "supervisor") {
+  if (role === "global_admin" || role === "admin") {
     return true;
   }
   // CSR pool (and business_sitter helper) — only their own assigned orders
   // OR the unassigned general queue
-  if (role === "customer_service_rep" || role === "lab_tech" || role === "sales_rep" || role === "business_sitter") {
+  if (role === "customer_service_rep") {
     return ev.assignedCsrUserId === null || ev.assignedCsrUserId === client.userId;
   }
   // Customers — only their own orders

@@ -439,7 +439,7 @@ function applyUserMapping(headers: string[], rawHeaders: string[], userMapping: 
 // ─── GET /api/admin/products/import-template ──────────────────────────────────
 router.get(
   "/admin/products/import-spec",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const spec = await loadImportSpec();
     res.json({ spec, defaultSpec: DEFAULT_IMPORT_SPEC });
@@ -465,7 +465,7 @@ router.put(
 
 router.get(
   "/admin/products/import-template",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const spec = await loadImportSpec();
     const headers = spec.columns.map(c => c.header);
@@ -482,7 +482,7 @@ router.get(
 // which expected columns are present and which are missing/extra.
 router.post(
   "/admin/products/parse-headers",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("file") as any,
   async (req, res): Promise<void> => {
@@ -578,7 +578,7 @@ function buildRecord(row: string[], headerIndex: Record<string, number>): RowRec
 // ─── POST /api/admin/products/import ──────────────────────────────────────────
 router.post(
   "/admin/products/import",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("file") as any,
   async (req, res): Promise<void> => {
@@ -779,7 +779,7 @@ router.post(
 // ─── GET /api/admin/products — list all products (admin only) ─────────────────
 router.get(
   "/admin/products",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const rows = await db.select().from(catalogItemsTable);
     res.json({ products: rows });
@@ -789,7 +789,7 @@ router.get(
 // ─── Spec doc aliases ─────────────────────────────────────────────────────────
 router.get(
   "/admin/import/catalog-template",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   (_req, res): void => {
     res.redirect(307, "/api/admin/products/import-template");
   }
@@ -797,7 +797,7 @@ router.get(
 
 router.post(
   "/admin/import/catalog",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   upload.single("file") as any,
   (_req, res): void => {

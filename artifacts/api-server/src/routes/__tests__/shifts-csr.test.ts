@@ -40,7 +40,13 @@ vi.mock("@workspace/db", () => {
   const usersTable = { clerkId: "clerkId_col", id: "id_col", email: "email_col", firstName: "firstName_col", lastName: "lastName_col" };
   const labTechShiftsTable = { techId: "techId_col", status: "status_col", id: "id_col" };
   const shiftInventoryItemsTable = { shiftId: "shiftId_col", displayOrder: "displayOrder_col", id: "id_col" };
-  const inventoryTemplatesTable = { isActive: "isActive_col", displayOrder: "displayOrder_col" };
+  const inventoryTemplatesTable = { isActive: "isActive_col", displayOrder: "displayOrder_col", tenantId: "tenantId_col" };
+  const catalogItemsTable = {
+    isAvailable: "isAvailable_col",
+    isLocalAlavont: "isLocalAlavont_col",
+    alavontCategory: "alavontCategory_col",
+    name: "name_col",
+  };
   const ordersTable = { assignedShiftId: "assignedShiftId_col", id: "id_col", customerId: "customerId_col" };
   const orderItemsTable = { orderId: "orderId_col" };
   const auditLogsTable = {};
@@ -74,7 +80,7 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn(),
   };
 
-  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, ordersTable, orderItemsTable, auditLogsTable };
+  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable };
 });
 
 vi.mock("drizzle-orm", () => ({
@@ -131,7 +137,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     mockUserId = "csr-clerk-id";
   });
 
-  for (const role of ["customer_service_rep", "sales_rep", "lab_tech"] as const) {
+  for (const role of ["customer_service_rep", "sales_rep", "lab_tech", "lab_technician", "global_admin"] as const) {
     it(`role=${role} (status=pending) is allowed past requireApproved + requireRole on clock-in`, async () => {
       configureDb({ user: makeUser(role, "pending") });
       const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});

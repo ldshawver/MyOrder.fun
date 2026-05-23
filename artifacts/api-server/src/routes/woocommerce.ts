@@ -189,13 +189,13 @@ async function syncHandler(_req: import("express").Request, res: import("express
 // Both URLs are mounted on the SAME shared handler (no internal req.url
 // rewrites). The newer `/sync-products` name is preferred; `/sync` is kept
 // for back-compat with already-deployed clients.
-router.post("/admin/woocommerce/sync", requireRole("admin", "supervisor"), syncHandler);
-router.post("/admin/woocommerce/sync-products", requireRole("admin", "supervisor"), syncHandler);
+router.post("/admin/woocommerce/sync", requireRole("global_admin", "admin"), syncHandler);
+router.post("/admin/woocommerce/sync-products", requireRole("global_admin", "admin"), syncHandler);
 
 // GET /api/admin/woocommerce/status — check if WC credentials are configured
 router.get(
   "/admin/woocommerce/status",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const s = await getOrCreateSettings();
     const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
@@ -219,7 +219,7 @@ router.get(
  */
 router.post(
   "/admin/woocommerce/test",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     // Test only the SAVED credentials. We deliberately do not honor
     // request-body overrides (admin-gated SSRF) and we deliberately do

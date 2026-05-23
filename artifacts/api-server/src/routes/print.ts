@@ -43,7 +43,7 @@ import {
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-const adminOnly = requireRole("admin", "supervisor");
+const adminOnly = requireRole("global_admin", "admin");
 
 // ── GET /api/print/routing ─────────────────────────────────────────────────
 // Returns active operator + their printers + health status. Admin monitor page.
@@ -1123,7 +1123,7 @@ router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
 // Clients supply only the orderId — no receipt content, no printer commands.
 // ESC/POS framing (\x1b@ reset, \x1dV1 cut) is added by escposPrinter, not here.
 
-const staffOrAbove = requireRole("admin", "supervisor", "business_sitter");
+const staffOrAbove = requireRole("global_admin", "admin");
 
 /**
  * POST /api/print/receipt/order/:orderId

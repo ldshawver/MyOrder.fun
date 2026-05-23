@@ -12,25 +12,31 @@ import { Search, Mail, CheckCircle2, XCircle, ShieldAlert } from "lucide-react";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
-type RoleFilter = "all" | "supervisor" | "customer_service_rep" | "user";
+type RoleFilter = "all" | "global_admin" | "admin" | "customer_service_rep" | "user";
 
-// Active roles surfaced in dropdowns. business_sitter and lab_tech are
-// retired job titles — folded into customer_service_rep going forward — so
-// they no longer appear here even though the backend still accepts them
-// for any historical rows that haven't been migrated.
 const APPROVAL_ROLES: { value: SetUserApprovalBodyRole; label: string }[] = [
   { value: "user", label: "User" },
-  { value: "supervisor", label: "Supervisor" },
   { value: "customer_service_rep", label: "Customer Service Rep" },
-  { value: "sales_rep", label: "Sales Rep" },
+  { value: "admin", label: "Admin" },
+  { value: "global_admin" as SetUserApprovalBodyRole, label: "Global Admin" },
 ];
 
 const ROLE_TABS: { id: RoleFilter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "supervisor", label: "Supervisor" },
+  { id: "global_admin", label: "Global Admin" },
+  { id: "admin", label: "Admin" },
   { id: "customer_service_rep", label: "CSR" },
-  { id: "user", label: "Plain User" },
+  { id: "user", label: "User" },
 ];
+
+function normalizeRole(role: string | undefined): RoleFilter {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+    return "customer_service_rep";
+  }
+  return "user";
+}
 
 function StatusBadge({ status }: { status?: UserProfileStatus }) {
   const s = status ?? "pending";
@@ -67,7 +73,7 @@ type WaitlistEntry = {
 function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string | undefined; currentUserLoaded: boolean }) {
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
-  const isAdmin = currentRole === "admin";
+  const isAdmin = currentRole === "admin" || currentRole === "global_admin";
   const [search, setSearch] = useState("");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ id: string; msg: string; ok: boolean } | null>(null);
@@ -352,7 +358,7 @@ export default function AdminUsers() {
   const [pendingRoleById, setPendingRoleById] = useState<Record<number, SetUserApprovalBodyRole>>({});
 
   const handleRoleChange = (id: number, newRole: string) => {
-    if (["supervisor", "customer_service_rep", "sales_rep", "user"].includes(newRole)) {
+    if (["global_admin", "admin", "customer_service_rep", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
@@ -387,12 +393,12 @@ export default function AdminUsers() {
   };
 
   const allUsers = data?.users ?? [];
-  // Treat retired roles as their replacement (CSR) for the "CSR" tab.
+  // Treat retired role values as their replacements for historical rows.
   const matchesRoleTab = (userRole: string | undefined, tab: RoleFilter): boolean => {
     if (tab === "all") return true;
-    const r = userRole ?? "user";
+    const r = normalizeRole(userRole);
     if (tab === "customer_service_rep") {
-      return r === "customer_service_rep" || r === "business_sitter" || r === "lab_tech";
+      return r === "customer_service_rep";
     }
     return r === tab;
   };
@@ -412,7 +418,8 @@ export default function AdminUsers() {
   };
   const roleCounts: Record<RoleFilter, number> = {
     all: allUsers.length,
-    supervisor: allUsers.filter((u) => matchesRoleTab(u.role, "supervisor")).length,
+    global_admin: allUsers.filter((u) => matchesRoleTab(u.role, "global_admin")).length,
+    admin: allUsers.filter((u) => matchesRoleTab(u.role, "admin")).length,
     customer_service_rep: allUsers.filter((u) => matchesRoleTab(u.role, "customer_service_rep")).length,
     user: allUsers.filter((u) => matchesRoleTab(u.role, "user")).length,
   };
@@ -589,16 +596,10 @@ export default function AdminUsers() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="rounded-sm">
-                                <SelectItem value="supervisor" className="text-xs font-mono uppercase tracking-wider">Supervisor</SelectItem>
+                                <SelectItem value="global_admin" className="text-xs font-mono uppercase tracking-wider">Global Admin</SelectItem>
+                                <SelectItem value="admin" className="text-xs font-mono uppercase tracking-wider">Admin</SelectItem>
                                 <SelectItem value="customer_service_rep" className="text-xs font-mono uppercase tracking-wider">Customer Service Rep</SelectItem>
-                                <SelectItem value="sales_rep" className="text-xs font-mono uppercase tracking-wider">Sales Rep</SelectItem>
                                 <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
-                                {/* Legacy roles kept for users still on retired titles */}
-                                {(user.role === "business_sitter" || user.role === "lab_tech") && (
-                                  <SelectItem value={user.role} className="text-xs font-mono uppercase tracking-wider opacity-60">
-                                    {user.role === "business_sitter" ? "Business Sitter (legacy)" : "Lab Tech (legacy)"}
-                                  </SelectItem>
-                                )}
                               </SelectContent>
                             </Select>
                           )}

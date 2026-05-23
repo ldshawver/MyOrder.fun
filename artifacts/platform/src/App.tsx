@@ -47,6 +47,7 @@ import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
 import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
@@ -322,7 +323,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {user.role === "admin" && (
+        {normalizeNotificationRole(user.role) === "global_admin" && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -331,10 +332,10 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
+        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(user.role === "supervisor" || user.role === "admin") && (
+        {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/mfa" component={MfaSetup} />
@@ -351,7 +352,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["business_sitter", "customer_service_rep", "sales_rep", "lab_tech", "supervisor", "admin"].includes(user.role)) && (
+        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />

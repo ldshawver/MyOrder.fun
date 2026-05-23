@@ -27,7 +27,7 @@ import {
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
-const adminOnly = requireRole("admin", "supervisor");
+const adminOnly = requireRole("global_admin", "admin");
 
 // Always respond JSON: a tiny error wrapper for async handlers.
 type AsyncHandler = (req: Request, res: Response) => Promise<void>;

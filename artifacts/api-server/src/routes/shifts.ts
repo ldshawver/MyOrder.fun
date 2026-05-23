@@ -5,22 +5,20 @@ import {
   labTechShiftsTable,
   shiftInventoryItemsTable,
   inventoryTemplatesTable,
+  catalogItemsTable,
   ordersTable,
   orderItemsTable,
   usersTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 
-// Roles permitted to operate a shift (clock in/out, view current shift,
-// view inventory template). CSR / sales rep / lab tech are first-class
-// shift operators alongside the legacy business_sitter / supervisor / admin.
+// Roles permitted to operate a shift. Legacy role names are normalized in
+// requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
+// supervisor => admin, customer => user.
 const SHIFT_OPERATOR_ROLES = [
-  "business_sitter",
   "customer_service_rep",
-  "sales_rep",
-  "lab_tech",
-  "supervisor",
   "admin",
+  "global_admin",
 ] as const;
 import { getHouseTenantId } from "../lib/singleTenant";
 
@@ -31,6 +29,91 @@ function getClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
   return req.socket.remoteAddress ?? "unknown";
+}
+
+const DEFAULT_CSR_BOXES = [
+  { id: "sales-box-1", label: "CSR Sales Box 1" },
+  { id: "sales-box-2", label: "CSR Sales Box 2" },
+];
+
+let shiftSchemaEnsured = false;
+
+async function ensureShiftSchema(): Promise<void> {
+  if (shiftSchemaEnsured) return;
+  await db.execute(sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "box_assignment_id" text`);
+  await db.execute(sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "setup_json" jsonb DEFAULT '{}'::jsonb`);
+  shiftSchemaEnsured = true;
+}
+
+async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
+  const houseTenantId = await getHouseTenantId();
+  let rows = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.isActive, true))
+    .orderBy(asc(inventoryTemplatesTable.displayOrder));
+
+  const itemRows = rows.filter(r => r.rowType === "item");
+  if (itemRows.length > 0) return rows;
+
+  const catalogRows = await db
+    .select()
+    .from(catalogItemsTable)
+    .where(
+      and(
+        eq(catalogItemsTable.isAvailable, true),
+        eq(catalogItemsTable.isLocalAlavont, true),
+      )
+    )
+    .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
+
+  if (catalogRows.length === 0) return rows;
+
+  const existingTemplateRows = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.tenantId, houseTenantId));
+  const existingCatalogIds = new Set(
+    existingTemplateRows
+      .map(r => r.catalogItemId)
+      .filter((id): id is number => typeof id === "number")
+  );
+
+  const currentMaxOrder = existingTemplateRows.reduce((max, r) => Math.max(max, r.displayOrder ?? 0), 0);
+  const toInsert = catalogRows
+    .filter(item => !existingCatalogIds.has(item.id))
+    .map((item, idx) => {
+      const stockValue = item.stockQuantity ?? item.inventoryAmount ?? "0";
+      const itemName = item.alavontName ?? item.displayName ?? item.name;
+      return {
+        tenantId: houseTenantId,
+        sectionName: item.alavontCategory ?? item.category ?? "Alavont",
+        itemName,
+        rowType: "item",
+        unitType: item.stockUnit ?? item.unitMeasurement ?? "#",
+        startingQuantityDefault: String(stockValue ?? "0"),
+        currentStock: String(stockValue ?? "0"),
+        menuPrice: String(item.price ?? "0"),
+        payoutPrice: String(item.costBasis ?? item.price ?? "0"),
+        displayOrder: currentMaxOrder + ((idx + 1) * 10),
+        isActive: true,
+        catalogItemId: item.id,
+        alavontId: item.alavontId ?? item.externalMenuId ?? null,
+        deductionQuantityPerSale: "1",
+        parLevel: String(item.parLevel ?? "0"),
+      };
+    });
+
+  if (toInsert.length > 0) {
+    await db.insert(inventoryTemplatesTable).values(toInsert);
+  }
+
+  rows = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.isActive, true))
+    .orderBy(asc(inventoryTemplatesTable.displayOrder));
+  return rows;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -170,13 +253,10 @@ router.get(
   "/shifts/inventory-template",
   requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
-    const rows = await db
-      .select()
-      .from(inventoryTemplatesTable)
-      .where(eq(inventoryTemplatesTable.isActive, true))
-      .orderBy(asc(inventoryTemplatesTable.displayOrder));
+    const rows = await ensureClockInInventoryTemplate();
 
     res.json({
+      boxes: DEFAULT_CSR_BOXES,
       template: rows.map(r => ({
         id: r.id,
         sectionName: r.sectionName,
@@ -199,6 +279,7 @@ router.post(
   "/shifts/clock-in",
   requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
+    await ensureShiftSchema();
     const tech = req.dbUser!;
 
     const existing = await db
@@ -222,11 +303,17 @@ router.post(
     const ip = getClientIp(req);
     const houseTenantId = await getHouseTenantId();
 
-    const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart } = req.body as {
+    const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart, boxAssignmentId, setup } = req.body as {
       inventorySnapshot?: { templateItemId: number; quantityStart: number }[];
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
       cashBankStart?: number;
+      boxAssignmentId?: string;
+      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean };
     };
+
+    const selectedBox = DEFAULT_CSR_BOXES.some(box => box.id === boxAssignmentId)
+      ? boxAssignmentId
+      : DEFAULT_CSR_BOXES[0].id;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -236,17 +323,20 @@ router.post(
         status: "active",
         ipAddress: ip,
         cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
+        boxAssignmentId: selectedBox,
+        setupJson: {
+          boxAssignmentId: selectedBox,
+          wifiReady: setup?.wifiReady ?? false,
+          printerReady: setup?.printerReady ?? false,
+          locationReady: setup?.locationReady ?? true,
+        },
       })
       .returning();
 
     let inventoryItemsInserted = 0;
 
     if (inventorySnapshot && inventorySnapshot.length > 0) {
-      const templateRows = await db
-        .select()
-        .from(inventoryTemplatesTable)
-        .where(eq(inventoryTemplatesTable.isActive, true))
-        .orderBy(asc(inventoryTemplatesTable.displayOrder));
+      const templateRows = await ensureClockInInventoryTemplate();
 
       const qtyByTemplateId = new Map<number, number>(
         inventorySnapshot.map(s => [s.templateItemId, s.quantityStart])
@@ -493,7 +583,7 @@ router.get(
 // ─── GET /api/shifts/active-techs ────────────────────────────────────────────
 router.get(
   "/shifts/active-techs",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shifts = await db
       .select()
@@ -558,7 +648,7 @@ router.get(
 // GET /api/admin/inventory-template
 router.get(
   "/admin/inventory-template",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const rows = await db
       .select()
@@ -572,7 +662,7 @@ router.get(
 // PATCH /api/admin/inventory-template/:id
 router.patch(
   "/admin/inventory-template/:id",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -627,7 +717,7 @@ router.patch(
 // POST /api/admin/inventory-template — create a new raw-material row
 router.post(
   "/admin/inventory-template",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const {
       itemName = "New Item",
@@ -674,7 +764,7 @@ router.post(
 // DELETE /api/admin/inventory-template/:id — permanently remove a row
 router.delete(
   "/admin/inventory-template/:id",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -723,7 +813,7 @@ const CSR_INVENTORY_SEED = [
 
 router.post(
   "/admin/inventory-template/seed",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const houseTenantId = await getHouseTenantId();
 
@@ -775,7 +865,7 @@ router.post(
 // Supervisor confirms ending inventory, sets tip %, calculates final amounts.
 router.post(
   "/shifts/:id/supervisor-checkout",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
@@ -866,7 +956,7 @@ router.post(
 // Available immediately after clock-out (quantityEndActual recorded).
 router.get(
   "/shifts/:id/restock-slip",
-  requireRole("business_sitter", "supervisor", "admin"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
@@ -951,7 +1041,7 @@ router.get(
 // Generates and prints a restock slip for the shift via CUPS.
 router.post(
   "/shifts/:id/restock-slip/print",
-  requireRole("supervisor", "admin"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
@@ -1057,7 +1147,7 @@ router.post(
 // Returns all shifts awaiting supervisor checkout.
 router.get(
   "/shifts/pending-supervisor",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     const shifts = await db
       .select()

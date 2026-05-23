@@ -20,6 +20,7 @@ import {
 } from "@workspace/db";
 import { eq, and, desc } from "drizzle-orm";
 import type { PrintPrinter, OperatorPrintProfile } from "@workspace/db";
+import { normalizeRole } from "./auth";
 
 export type ActiveOperator = {
   userId: number;
@@ -77,10 +78,9 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
     )
     .limit(10);
 
-  // Priority: admin > supervisor > business_sitter
-  const admin = admins.find(u => u.role === "admin")
-    ?? admins.find(u => u.role === "supervisor")
-    ?? admins.find(u => u.role === "business_sitter");
+  const admin = admins.find(u => normalizeRole(u.role) === "global_admin")
+    ?? admins.find(u => normalizeRole(u.role) === "admin")
+    ?? admins.find(u => normalizeRole(u.role) === "customer_service_rep");
 
   if (!admin) return null;
 

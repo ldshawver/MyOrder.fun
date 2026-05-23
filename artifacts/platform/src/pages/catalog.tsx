@@ -16,6 +16,7 @@ import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Fla
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type MenuMode = "alavont" | "lucifer";
 
@@ -469,7 +470,8 @@ export default function Catalog() {
   }, [menuMode, setBrand]);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const canEdit = user?.role === "admin" || user?.role === "supervisor";
+  const userRole = normalizeNotificationRole(user?.role);
+  const canEdit = userRole === "global_admin" || userRole === "admin";
 
   const { data: categoriesRes } = useListCatalogCategories({ query: { queryKey: ["listCatalogCategories"] } });
   const { data, isLoading } = useListCatalogItems(

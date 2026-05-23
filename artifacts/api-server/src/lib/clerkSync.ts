@@ -3,16 +3,24 @@ import { logger } from "./logger";
 
 export type ClerkSyncStatus = "pending" | "approved" | "rejected" | "deactivated";
 
-const VALID_CLERK_ROLES = [
-  "admin",
-  "supervisor",
-  "business_sitter",
-  "customer_service_rep",
-  "sales_rep",
-  "lab_tech",
-  "user",
-] as const;
-type ValidClerkRole = typeof VALID_CLERK_ROLES[number];
+type ValidClerkRole = "global_admin" | "admin" | "customer_service_rep" | "user";
+
+function normalizeClerkRole(role: string | undefined): ValidClerkRole | undefined {
+  if (!role) return undefined;
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (
+    role === "customer_service_rep" ||
+    role === "business_sitter" ||
+    role === "sales_rep" ||
+    role === "lab_tech" ||
+    role === "lab_technician"
+  ) {
+    return "customer_service_rep";
+  }
+  if (role === "user" || role === "customer") return "user";
+  return undefined;
+}
 
 export interface ClerkSyncPayload {
   status?: ClerkSyncStatus;
@@ -222,9 +230,6 @@ export function readClerkPublicMetadata(
       ? (rawStatus as ClerkSyncStatus)
       : undefined;
   const rawRole = typeof meta.role === "string" ? meta.role : undefined;
-  const role: ValidClerkRole | undefined =
-    rawRole && (VALID_CLERK_ROLES as readonly string[]).includes(rawRole)
-      ? (rawRole as ValidClerkRole)
-      : undefined;
+  const role = normalizeClerkRole(rawRole);
   return { status, role };
 }

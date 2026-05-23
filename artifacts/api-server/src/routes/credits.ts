@@ -56,7 +56,7 @@ router.get("/credits/me", async (req, res): Promise<void> => {
   });
 });
 
-router.get("/admin/credits", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/credits", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   await ensureCreditSchema();
   const [users, credits] = await Promise.all([
     db.select().from(usersTable).orderBy(usersTable.createdAt),
@@ -83,7 +83,7 @@ router.get("/admin/credits", requireRole("admin", "supervisor"), async (_req, re
   });
 });
 
-router.post("/admin/credits", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.post("/admin/credits", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const actor = req.dbUser!;
   const userId = Number(req.body?.userId);

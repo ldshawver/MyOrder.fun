@@ -4,7 +4,7 @@ import { db, labTechShiftsTable, orderItemsTable, ordersTable, usersTable } from
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin", "supervisor"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
 let reportSchemaEnsured = false;
 
 async function ensureReportSchema(): Promise<void> {

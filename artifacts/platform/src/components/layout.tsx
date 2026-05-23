@@ -54,6 +54,19 @@ type NavSection = {
   items: NavItem[];
 };
 
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+    return "customer_service_rep";
+  }
+  return "user";
+}
+
+function roleCanSee(roles: string[], userRole: string): boolean {
+  return roles.includes(userRole) || (userRole === "global_admin" && roles.includes("admin"));
+}
+
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
   const { signOut } = useClerk();
@@ -61,18 +74,20 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     navigation: true,
     csr: true,
-    supervisor: false,
+    admin: false,
     platform: false,
   });
   const { brand } = useBrand();
   const isLC = brand === "lucifer_cruz";
 
-  usePushNotifications({ role: user.role as "user" | "business_sitter" | "supervisor" | "admin" });
+  const userRole = normalizeUiRole(user.role);
+
+  usePushNotifications({ role: userRole });
 
   // Staff roles that can run a shift / see the CSR queue + clock-in
-  const SHIFT_ROLES = ["admin", "supervisor", "business_sitter", "customer_service_rep", "sales_rep", "lab_tech"];
+  const SHIFT_ROLES = ["global_admin", "admin", "customer_service_rep"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
-  const isCustomer = user.role === "user";
+  const isCustomer = userRole === "user";
 
   const navSections: NavSection[] = [
     {
@@ -110,7 +125,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           children: [
             { href: "/csr-settings/pickup", label: "Pickup Instructions", icon: ClipboardList, roles: SHIFT_ROLES },
             { href: "/csr-settings/shift", label: "Shift Settings", icon: Settings, roles: SHIFT_ROLES },
-            { href: "/admin/print", label: "Test Print", icon: Printer, roles: ["admin", "supervisor"] },
+            { href: "/admin/print", label: "Test Print", icon: Printer, roles: ["global_admin", "admin"] },
             { href: "/csr-settings/wifi", label: "WIFI", icon: Wifi, roles: SHIFT_ROLES },
             { href: "/csr-settings/location", label: "Shift Location", icon: Store, roles: SHIFT_ROLES },
           ],
@@ -119,66 +134,66 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     },
     {
       title: "Supervisor",
-      roles: ["admin", "supervisor"],
+      roles: ["global_admin", "admin"],
       items: [
-        { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["admin", "supervisor"] },
+        { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Supervisor Settings",
           icon: Settings,
-          roles: ["admin", "supervisor"],
+          roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/print", label: "Printing", icon: Printer, roles: ["admin", "supervisor"] },
-            { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["admin", "supervisor"] },
-            { href: "/admin/receipts", label: "Reprint Receipts", icon: ReceiptText, roles: ["admin", "supervisor"] },
+            { href: "/admin/print", label: "Printing", icon: Printer, roles: ["global_admin", "admin"] },
+            { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["global_admin", "admin"] },
+            { href: "/admin/receipts", label: "Reprint Receipts", icon: ReceiptText, roles: ["global_admin", "admin"] },
           ],
         },
         {
           href: "/admin/catalog-debug",
           label: "Products",
           icon: PackageOpen,
-          roles: ["admin", "supervisor"],
+          roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/catalog-debug", label: "Edit Catalog", icon: Bug, roles: ["admin", "supervisor"] },
-            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin", "supervisor"] },
+            { href: "/admin/catalog-debug", label: "Edit Catalog", icon: Bug, roles: ["global_admin", "admin"] },
+            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
-        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["admin", "supervisor"] },
-        { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["admin", "supervisor"] },
+        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
         {
           href: "/admin/concierge-settings",
           label: "AI Concierge",
           icon: Bot,
-          roles: ["admin", "supervisor"],
+          roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["admin", "supervisor"] },
-            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["admin", "supervisor"] },
+            { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["global_admin", "admin"] },
+            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
           ],
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
-        { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["admin", "supervisor"] },
+        { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["global_admin", "admin"] },
       ],
     },
     {
       title: "Platform Admin",
-      roles: ["admin"],
+      roles: ["global_admin", "admin"],
       items: [
-        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["admin"] },
-        { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["admin"] },
-        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin"] },
+        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
+        { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Admin Settings",
           icon: ShieldAlert,
-          roles: ["admin"],
+          roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["admin"] },
-            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["admin"] },
-            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["admin"] },
-            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["admin"] },
-            { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["admin"] },
-            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["admin"] },
-            { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["admin"] },
+            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin", "admin"] },
+            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin", "admin"] },
+            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
+            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
+            { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin", "admin"] },
+            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin", "admin"] },
+            { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },
           ],
         },
       ],
@@ -186,14 +201,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   ];
 
   const visibleSections = navSections
-    .filter(section => section.roles.includes(user.role))
+    .filter(section => roleCanSee(section.roles, userRole))
     .map(section => ({
       ...section,
       items: section.items
-        .filter(item => item.roles.includes(user.role))
+        .filter(item => roleCanSee(item.roles, userRole))
         .map(item => ({
           ...item,
-          children: item.children?.filter(child => child.roles.includes(user.role)),
+          children: item.children?.filter(child => roleCanSee(child.roles, userRole)),
         })),
     }))
     .filter(section => section.items.length > 0);

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2 } from "lucide-react";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
@@ -77,7 +77,7 @@ export default function NewOrder() {
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
-    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
+    role: normalizeNotificationRole(user?.role),
   });
 
   const { data: preItem } = useGetCatalogItem(preItemId!, {

@@ -40,6 +40,8 @@ type TemplateRow = {
 };
 
 type InventorySnapshot = { templateItemId: number; quantityStart: number };
+type CsrBoxOption = { id: string; label: string };
+type ShiftSetup = { boxAssignmentId: string; wifiReady: boolean; printerReady: boolean; locationReady: boolean };
 
 type EnrichedItem = {
   id: number;
@@ -74,6 +76,7 @@ type ActiveShift = {
   techId: number;
   status: string;
   ipAddress: string | null;
+  boxAssignmentId: string | null;
   clockedInAt: string;
   cashBankStart: number;
   runningCashBank: number;
@@ -117,13 +120,27 @@ function fmtMoney(n: number) {
   return `$${n.toFixed(2)}`;
 }
 
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+    return "customer_service_rep";
+  }
+  return "user";
+}
+
 // ─── Clock-In Panel ───────────────────────────────────────────────────────────
 
 function ClockInPanel({ onClockIn, getToken }: {
-  onClockIn: (snapshot: InventorySnapshot[], cashBankStart: number) => Promise<void>;
+  onClockIn: (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => Promise<void>;
   getToken: () => Promise<string | null>;
 }) {
   const [template, setTemplate] = useState<TemplateRow[]>([]);
+  const [boxes, setBoxes] = useState<CsrBoxOption[]>([]);
+  const [boxAssignmentId, setBoxAssignmentId] = useState("sales-box-1");
+  const [wifiReady, setWifiReady] = useState(false);
+  const [printerReady, setPrinterReady] = useState(false);
+  const [locationReady, setLocationReady] = useState(true);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [cashBankStart, setCashBankStart] = useState("0");
   const [loadingTemplate, setLoadingTemplate] = useState(true);
@@ -141,7 +158,10 @@ function ClockInPanel({ onClockIn, getToken }: {
         if (res.ok) {
           const data = await res.json();
           const rows: TemplateRow[] = data.template;
+          const boxOptions: CsrBoxOption[] = data.boxes ?? [{ id: "sales-box-1", label: "CSR Sales Box 1" }];
           setTemplate(rows);
+          setBoxes(boxOptions);
+          setBoxAssignmentId(prev => boxOptions.some(box => box.id === prev) ? prev : (boxOptions[0]?.id ?? "sales-box-1"));
           const defaults: Record<number, string> = {};
           for (const row of rows) {
             if (row.rowType === "item" || row.rowType === "cash") {
@@ -168,7 +188,12 @@ function ClockInPanel({ onClockIn, getToken }: {
           templateItemId: r.id,
           quantityStart: parseFloat(quantities[r.id] ?? "0") || 0,
         }));
-      await onClockIn(snapshot, parseFloat(cashBankStart) || 0);
+      await onClockIn(snapshot, parseFloat(cashBankStart) || 0, {
+        boxAssignmentId,
+        wifiReady,
+        printerReady,
+        locationReady,
+      });
     } catch (err) {
       setError((err as Error).message ?? "Clock-in failed. Please try again.");
     } finally {
@@ -202,8 +227,9 @@ function ClockInPanel({ onClockIn, getToken }: {
     } else if (row.rowType === "spacer") {
       currentSection = null;
     } else if (row.rowType === "item" || row.rowType === "cash") {
-      if (!currentSection) {
-        currentSection = { name: "", items: [] };
+      const targetSection = row.rowType === "item" ? (row.sectionName ?? "") : "";
+      if (!currentSection || currentSection.name !== targetSection) {
+        currentSection = { name: targetSection, items: [] };
         sections.push(currentSection);
       }
       currentSection.items.push(row);
@@ -218,7 +244,30 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div>
           <div className="text-sm font-bold">Start Your Shift</div>
-          <div className="text-xs text-muted-foreground">Enter starting cash bank and confirm beginning inventory</div>
+          <div className="text-xs text-muted-foreground">Assign your sales box, confirm inventory, then become active for orders</div>
+        </div>
+      </div>
+
+      <div className="px-6 py-4 border-b border-border/40">
+        <div className="text-[10px] font-bold text-primary uppercase tracking-widest mb-3 flex items-center gap-1.5">
+          <Boxes size={11} />
+          Box Assignment & Setup
+        </div>
+        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
+          <label className="block">
+            <span className="text-xs text-muted-foreground mb-1 block">Assigned sales box</span>
+            <select
+              value={boxAssignmentId}
+              onChange={e => setBoxAssignmentId(e.target.value)}
+              className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-medium"
+              data-testid="select-box-assignment"
+            >
+              {boxes.map(box => <option key={box.id} value={box.id}>{box.label}</option>)}
+            </select>
+          </label>
+          <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
+          <SetupCheck label="WiFi" checked={wifiReady} onChange={setWifiReady} />
+          <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
         </div>
       </div>
 
@@ -249,6 +298,11 @@ function ClockInPanel({ onClockIn, getToken }: {
 
       {/* Inventory list */}
       <div className="divide-y divide-border/20">
+        {sections.length === 0 && (
+          <div className="px-6 py-8 text-center text-sm text-muted-foreground">
+            No Alavont inventory rows are available for clock-in. Ask a supervisor to import or seed the Alavont catalog inventory.
+          </div>
+        )}
         {sections.map((section, si) => (
           <div key={si}>
             {section.name && (
@@ -302,6 +356,20 @@ function ClockInPanel({ onClockIn, getToken }: {
         </Button>
       </div>
     </div>
+  );
+}
+
+function SetupCheck({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 rounded-xl border border-border/40 bg-background/30 px-3 py-2 text-xs font-semibold">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+        className="h-4 w-4"
+      />
+      {label}
+    </label>
   );
 }
 
@@ -761,8 +829,9 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
     } else if (item.rowType === "spacer") {
       currentSection = null;
     } else if (item.rowType === "item" || item.rowType === "cash") {
-      if (!currentSection) {
-        currentSection = { name: "", items: [] };
+      const targetSection = item.rowType === "item" ? (item.sectionName ?? "") : "";
+      if (!currentSection || currentSection.name !== targetSection) {
+        currentSection = { name: targetSection, items: [] };
         sections.push(currentSection);
       }
       currentSection.items.push(item);
@@ -787,6 +856,13 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Clock size={10} />
               {duration} min
+              {shift.boxAssignmentId && (
+                <>
+                  <span className="opacity-40">·</span>
+                  <Boxes size={10} />
+                  <span>{shift.boxAssignmentId.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</span>
+                </>
+              )}
               {shift.ipAddress && (
                 <>
                   <span className="opacity-40">·</span>
@@ -1134,7 +1210,8 @@ export default function CustomerServiceRepQueue() {
 
   const { shift, setShift, loading: shiftLoading, refetch: refetchShift } = useShift(getToken);
 
-  const isAdmin = user?.role === "admin";
+  const userRole = normalizeUiRole(user?.role);
+  const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
 
   const { data, isLoading } = useListOrders(
@@ -1153,14 +1230,23 @@ export default function CustomerServiceRepQueue() {
     return () => clearInterval(timer);
   }, [shift, refetchShift]);
 
-  const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number) => {
+  const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => {
     const token = await getToken();
     const method = "POST";
     const endpoint = "/api/shifts/clock-in";
     const res = await fetch(endpoint, {
       method,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ inventorySnapshot: snapshot, cashBankStart }),
+      body: JSON.stringify({
+        inventorySnapshot: snapshot,
+        cashBankStart,
+        boxAssignmentId: setup.boxAssignmentId,
+        setup: {
+          wifiReady: setup.wifiReady,
+          printerReady: setup.printerReady,
+          locationReady: setup.locationReady,
+        },
+      }),
     });
     const contentType = res.headers.get("content-type") ?? "";
     const responseData = contentType.includes("application/json") ? (await res.json() as Record<string, unknown>) : null;
@@ -1202,20 +1288,10 @@ export default function CustomerServiceRepQueue() {
   };
 
   // All roles that can clock in — must match SHIFT_OPERATOR_ROLES in shifts.ts
-  const isStaff =
-    user?.role === "business_sitter" ||
-    user?.role === "customer_service_rep" ||
-    user?.role === "sales_rep" ||
-    user?.role === "lab_tech" ||
-    user?.role === "supervisor" ||
-    user?.role === "admin";
+  const isStaff = userRole === "customer_service_rep" || userRole === "admin" || userRole === "global_admin";
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
-  const isCsrOnly =
-    user?.role === "customer_service_rep" ||
-    user?.role === "sales_rep" ||
-    user?.role === "lab_tech" ||
-    user?.role === "business_sitter";
+  const isCsrOnly = userRole === "customer_service_rep";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

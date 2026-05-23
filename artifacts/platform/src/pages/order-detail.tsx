@@ -25,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import AnimatedHourglass from "@/components/AnimatedHourglass";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 
@@ -337,12 +337,13 @@ export default function OrderDetail() {
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
-  const canEditStatus = user?.role === "admin" || user?.role === "supervisor" || user?.role === "business_sitter";
-  const canManageRouting = user?.role === "admin" || user?.role === "supervisor";
-  const isCustomer = user?.role === "user";
+  const userRole = normalizeNotificationRole(user?.role);
+  const canEditStatus = userRole === "global_admin" || userRole === "admin" || userRole === "customer_service_rep";
+  const canManageRouting = userRole === "global_admin" || userRole === "admin";
+  const isCustomer = userRole === "user";
 
   const { notifyOrderStatusChange } = usePushNotifications({
-    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
+    role: userRole,
   });
 
   const { data: order, isLoading: isOrderLoading } = useGetOrder(

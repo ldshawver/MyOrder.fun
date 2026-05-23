@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ClipboardList, MapPin, Settings, Store, Truck, Wifi } from "lucide-react";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type SectionKey = "pickup" | "location" | "wifi" | "shift";
 type PickupOption = { id: string; label: string; instructions: string };
@@ -31,7 +32,8 @@ export default function CsrSettings() {
   const activeSection = sections.some(s => s.key === section) ? section as SectionKey : "pickup";
   const { getToken } = useAuth();
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const canEdit = user?.role === "admin" || user?.role === "supervisor";
+  const userRole = normalizeNotificationRole(user?.role);
+  const canEdit = userRole === "global_admin" || userRole === "admin";
 
   const [pickupOptions, setPickupOptions] = useState<PickupOption[]>([]);
   const [shiftLocations, setShiftLocations] = useState<ShiftLocation[]>([]);

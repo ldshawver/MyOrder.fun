@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 export default function CatalogItemDetail() {
   const params = useParams();
@@ -26,7 +27,8 @@ export default function CatalogItemDetail() {
   const [editForm, setEditForm] = useState({ name: "", price: 0, category: "", description: "" });
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
-  const canEdit = user?.role === "admin" || user?.role === "supervisor";
+  const userRole = normalizeNotificationRole(user?.role);
+  const canEdit = userRole === "global_admin" || userRole === "admin";
 
   const { data: item, isLoading, isError } = useGetCatalogItem(
     id,

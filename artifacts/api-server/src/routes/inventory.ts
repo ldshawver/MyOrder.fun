@@ -10,7 +10,7 @@ router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 // GET /api/admin/inventory — all catalog items with stock data
 router.get(
   "/admin/inventory",
-  requireRole("admin", "supervisor", "business_sitter"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const houseTenantId = await getHouseTenantId();
     const items = await db
@@ -48,7 +48,7 @@ router.get(
 // PATCH /api/admin/inventory/:id — update stock_quantity and/or stock_unit
 router.patch(
   "/admin/inventory/:id",
-  requireRole("admin", "supervisor", "business_sitter"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -85,7 +85,7 @@ router.patch(
 // PATCH /api/admin/inventory/petty-cash
 router.patch(
   "/admin/inventory/petty-cash",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const { pettyCash } = req.body as { pettyCash: number };
     if (typeof pettyCash !== "number" || isNaN(pettyCash)) {

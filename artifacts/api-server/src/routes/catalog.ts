@@ -13,7 +13,7 @@ import {
   DeleteCatalogItemParams,
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
@@ -121,11 +121,12 @@ router.get("/catalog", async (req, res): Promise<void> => {
 
   const catalogMode = query.data.mode ?? "alavont";
   const isLuciferMode = catalogMode === "lucifer";
-  // Admin and supervisor users always receive full routing fields (isWooManaged, wooProductId,
+  // Admin users always receive full routing fields (isWooManaged, wooProductId,
   // merchantProcessingMode, luciferCruzName, etc.) regardless of mode — suppression is for
   // storefront/end-customer views only. This prevents catalog edits from accidentally
   // overwriting live routing config with suppressed null/false defaults.
-  const isAdminActor = actor.role === "admin" || actor.role === "supervisor";
+  const actorRole = normalizeRole(actor.role);
+  const isAdminActor = actorRole === "global_admin" || actorRole === "admin";
   const alavontOnly = !isLuciferMode && !isAdminActor;
 
   let rows = await db.select().from(catalogItemsTable)
@@ -191,7 +192,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 });
 
 // POST /api/catalog
-router.post("/catalog", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const body = CreateCatalogItemBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -254,7 +255,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/catalog/:id
-router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -326,7 +327,7 @@ router.patch("/catalog/:id", requireRole("admin", "supervisor"), async (req, res
 });
 
 // DELETE /api/catalog/:id
-router.delete("/catalog/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeleteCatalogItemParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -346,7 +347,7 @@ router.delete("/catalog/:id", requireRole("admin", "supervisor"), async (req, re
 // Returns a full diagnostic breakdown of catalog items and why some may be hidden.
 router.get(
   "/admin/catalog/debug",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const allRows = await db.select().from(catalogItemsTable)
       .orderBy(asc(catalogItemsTable.id));
@@ -430,7 +431,7 @@ router.get(
 // Admin-only: Preview normalized cart from raw catalog item IDs
 router.post(
   "/admin/checkout/normalize-preview",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     try {
       const { normalizeCheckoutCart } = await import("../lib/checkoutNormalizer");
@@ -451,7 +452,7 @@ router.post(
 // Admin-only: Preview the merchant payload that would be sent to the processor
 router.post(
   "/admin/checkout/merchant-payload-preview",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     try {
       const { normalizeCheckoutCart, buildMerchantPayloadLines } = await import("../lib/checkoutNormalizer");
@@ -486,7 +487,7 @@ router.post(
 // so operators can see exactly what prints in each mode.
 router.get(
   "/admin/receipts/preview",
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const mode = (req.query.mode as string) ?? "lucifer_only";
     if (!["alavont_only", "lucifer_only", "both"].includes(mode)) {

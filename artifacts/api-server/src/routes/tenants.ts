@@ -37,7 +37,7 @@ router.get("/tenants", requireRole("admin"), async (_req, res): Promise<void> =>
 });
 
 // GET /api/tenants/:id
-router.get("/tenants/:id", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.get("/tenants/:id", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -86,7 +86,7 @@ router.patch("/tenants/:id", requireRole("admin"), async (req, res): Promise<voi
 });
 
 // GET /api/tenants/:id/summary
-router.get("/tenants/:id/summary", requireRole("admin", "supervisor", "business_sitter"), async (req, res): Promise<void> => {
+router.get("/tenants/:id/summary", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetTenantSummaryParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {

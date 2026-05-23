@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Star, Search, MessageSquare } from "lucide-react";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type Status = "new" | "reviewed" | "priority_fix" | "in_progress" | "waiting_on_user" | "closed" | "rejected";
 type Type = "bug" | "ux" | "feature" | "general";
@@ -102,7 +103,7 @@ export default function AdminFeedback() {
     return m;
   }, [users]);
   const staff = useMemo(
-    () => users.filter((u) => ["admin", "supervisor", "customer_service_rep", "sales_rep"].includes(u.role)),
+    () => users.filter((u) => ["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(u.role))),
     [users],
   );
 

@@ -2,7 +2,7 @@ import { useListNotifications, useMarkNotificationRead, getListNotificationsQuer
 import { useQueryClient } from "@tanstack/react-query";
 import { Bell, Check, Package, ShieldAlert, BellOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 
 export default function Notifications() {
@@ -10,7 +10,7 @@ export default function Notifications() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
 
   const { requestPermission, permission } = usePushNotifications({
-    role: (user?.role || "user") as "user" | "business_sitter" | "supervisor" | "admin",
+    role: normalizeNotificationRole(user?.role),
   });
 
   const { data, isLoading } = useListNotifications(

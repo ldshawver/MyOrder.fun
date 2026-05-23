@@ -5,25 +5,44 @@ import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { readClerkPublicMetadata } from "./clerkSync";
 
-export type Role =
+export type CanonicalRole =
+  | "global_admin"
   | "admin"
+  | "customer_service_rep"
+  | "user";
+
+export type LegacyRole =
   | "supervisor"
   | "business_sitter"
-  | "customer_service_rep"
   | "sales_rep"
   | "lab_tech"
-  | "user";
+  | "lab_technician"
+  | "customer";
+
+export type Role = CanonicalRole | LegacyRole;
+
+export function normalizeRole(role: unknown): CanonicalRole {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (
+    role === "customer_service_rep" ||
+    role === "business_sitter" ||
+    role === "sales_rep" ||
+    role === "lab_tech" ||
+    role === "lab_technician"
+  ) {
+    return "customer_service_rep";
+  }
+  return "user";
+}
 
 // Staff roles are implicitly approved — having been assigned a staff role
 // by an admin is itself the approval gate. Keep this list in sync with
 // requireApproved below.
-export const STAFF_ROLES: readonly Role[] = [
+export const STAFF_ROLES: readonly CanonicalRole[] = [
+  "global_admin",
   "admin",
-  "supervisor",
-  "business_sitter",
   "customer_service_rep",
-  "sales_rep",
-  "lab_tech",
 ] as const;
 
 let usersSchemaEnsured = false;
@@ -176,7 +195,10 @@ export function requireRole(...roles: Role[]) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    if (!roles.includes(user.role as Role)) {
+    const allowed = roles.map(normalizeRole);
+    const actorRole = normalizeRole(user.role);
+    const hasRole = allowed.includes(actorRole) || (actorRole === "global_admin" && allowed.includes("admin"));
+    if (!hasRole) {
       res.status(403).json({ error: "Forbidden: insufficient role" });
       return;
     }
@@ -193,7 +215,7 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
   // Elevated/staff roles are implicitly approved — having been assigned a
   // staff role by an admin is itself the approval gate. Only end-customer
   // "user" accounts require an explicit status check.
-  if ((STAFF_ROLES as readonly string[]).includes(user.role)) {
+  if ((STAFF_ROLES as readonly string[]).includes(normalizeRole(user.role))) {
     next();
     return;
   }
@@ -237,11 +259,13 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       // Role elevations come through the admin UI which syncs both DB + Clerk
       // together. If they're out of sync here it means Clerk has a stale value
       // (e.g. user was promoted via direct DB change) — the DB staff role wins.
+      const dbRole = normalizeRole(user.role);
+      const clerkRole = normalizeRole(meta.role);
       const isRoleDowngrade =
-        (STAFF_ROLES as readonly string[]).includes(user.role) &&
-        !(STAFF_ROLES as readonly string[]).includes(meta.role);
+        (STAFF_ROLES as readonly string[]).includes(dbRole) &&
+        !(STAFF_ROLES as readonly string[]).includes(clerkRole);
       if (!isRoleDowngrade) {
-        updates.role = meta.role;
+        updates.role = clerkRole;
       } else {
         logger.warn(
           { userId: user.id, dbRole: user.role, clerkRole: meta.role },

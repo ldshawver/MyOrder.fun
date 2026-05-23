@@ -8,6 +8,7 @@ import {
   Search, RefreshCw, CheckCircle, AlertTriangle, XCircle, Eye, EyeOff,
   Database, Flame, FlaskConical, Image, Tag, Link2, Loader2
 } from "lucide-react";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type DebugSummary = {
   totalRows: number;
@@ -131,7 +132,8 @@ export default function CatalogDebug() {
     },
   });
 
-  if (!user || (user.role !== "supervisor" && user.role !== "admin")) {
+  const userRole = normalizeNotificationRole(user?.role);
+  if (!user || (userRole !== "global_admin" && userRole !== "admin")) {
     return (
       <div className="glass-card rounded-2xl p-8 text-center">
         <XCircle className="mx-auto text-red-400 mb-3" size={32} />

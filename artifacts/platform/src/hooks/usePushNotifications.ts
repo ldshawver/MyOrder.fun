@@ -1,6 +1,21 @@
 import { useEffect, useCallback, useRef } from "react";
 
-export type NotificationRole = "user" | "business_sitter" | "supervisor" | "admin";
+export type NotificationRole = "user" | "customer_service_rep" | "admin" | "global_admin";
+
+export function normalizeNotificationRole(role?: string | null): NotificationRole {
+  if (role === "global_admin") return "global_admin";
+  if (role === "admin" || role === "supervisor") return "admin";
+  if (
+    role === "customer_service_rep" ||
+    role === "business_sitter" ||
+    role === "sales_rep" ||
+    role === "lab_tech" ||
+    role === "lab_technician"
+  ) {
+    return "customer_service_rep";
+  }
+  return "user";
+}
 
 interface UsePushNotificationsOptions {
   role: NotificationRole;
@@ -46,7 +61,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
   }, []);
 
   const notifyOrderPlaced = useCallback((orderId: number, customerName?: string) => {
-    if (role === "business_sitter" || role === "supervisor" || role === "admin") {
+    if (role === "customer_service_rep" || role === "admin" || role === "global_admin") {
       sendNotification(
         "New Order Received",
         `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`

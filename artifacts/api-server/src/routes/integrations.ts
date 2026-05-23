@@ -132,7 +132,7 @@ router.get(
   loadDbUser,
   requireDbUser,
   requireApproved,
-  requireRole("admin", "supervisor"),
+  requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
     // Run all checks concurrently; individual check failures are caught
     // internally and return "error" rather than throwing.

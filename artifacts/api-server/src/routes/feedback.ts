@@ -6,10 +6,7 @@
  *   - Regular users can only list/view/comment on tickets THEY submitted.
  *     The DB query filters by submitterId — there is no client-supplied
  *     filter that bypasses this.
- *   - Admins (role=admin) can list/view/update/comment on every ticket.
- *   - Supervisors get the same read+update powers as admins on tickets so
- *     the team can triage without granting full admin. (Adjust the
- *     ADMIN_VIEW_ROLES list below to tighten this if needed.)
+ *   - Admins/global admins can list/view/update/comment on every ticket.
  *
  * Tenant isolation: this deploy is single-tenant (house tenant id=1) so
  * the tenantId column is captured for forward compat but no per-tenant
@@ -18,7 +15,7 @@
  *
  * Notifications: in-app only, written into the existing notifications
  * table (no email dependency). Submitter is notified on status change;
- * every admin/supervisor is notified on new ticket creation.
+ * every admin/global admin is notified on new ticket creation.
  */
 import { Router, type IRouter } from "express";
 import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
@@ -30,15 +27,15 @@ import {
   usersTable,
 } from "@workspace/db";
 import { z } from "zod/v4";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-const ADMIN_VIEW_ROLES = ["admin", "supervisor"] as const;
-const ADMIN_WRITE_ROLES = ["admin", "supervisor"] as const;
+const ADMIN_VIEW_ROLES = ["global_admin", "admin"] as const;
+const ADMIN_WRITE_ROLES = ["global_admin", "admin"] as const;
 
 const FEEDBACK_TYPES = ["bug", "ux", "feature", "general"] as const;
 const FEEDBACK_SEVERITIES = ["low", "medium", "high", "critical"] as const;
@@ -95,10 +92,10 @@ const AddCommentBody = z.object({
 });
 
 function isAdminViewer(role: string): boolean {
-  return (ADMIN_VIEW_ROLES as readonly string[]).includes(role);
+  return (ADMIN_VIEW_ROLES as readonly string[]).includes(normalizeRole(role));
 }
 function isAdminWriter(role: string): boolean {
-  return (ADMIN_WRITE_ROLES as readonly string[]).includes(role);
+  return (ADMIN_WRITE_ROLES as readonly string[]).includes(normalizeRole(role));
 }
 
 // ─── POST /api/feedback ──────────────────────────────────────────────────────
@@ -144,7 +141,7 @@ router.post("/feedback", async (req, res): Promise<void> => {
     screenshotData: parsed.data.screenshotData ?? null,
   }).returning();
 
-  // Fan out an in-app notification to every admin/supervisor so they see
+  // Fan out an in-app notification to every admin/global admin so they see
   // new tickets in their bell dropdown without polling the admin page.
   try {
     const admins = await db.select({ id: usersTable.id })

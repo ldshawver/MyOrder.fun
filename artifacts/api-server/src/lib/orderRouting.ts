@@ -6,6 +6,7 @@ import {
   labTechShiftsTable,
   adminSettingsTable,
 } from "@workspace/db";
+import { normalizeRole } from "./auth";
 
 /**
  *
@@ -42,7 +43,7 @@ export type RoutingDecision = {
   promisedMinutes: number;
 };
 
-const ROUTING_ROLES = ["customer_service_rep", "lab_tech", "sales_rep"] as const;
+const ROUTING_ROLES = ["customer_service_rep"] as const;
 
 async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinutes: number }> {
   const [s] = await db.select().from(adminSettingsTable).limit(1);
@@ -65,7 +66,7 @@ export async function listActiveCsrs(): Promise<ActiveCsr[]> {
     .where(eq(labTechShiftsTable.status, "active"));
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
-    if (!(ROUTING_ROLES as readonly string[]).includes(r.role)) continue;
+    if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
     if (!seen.has(r.userId)) seen.set(r.userId, { userId: r.userId, shiftId: r.shiftId });
   }
   return [...seen.values()].sort((a, b) => a.userId - b.userId);

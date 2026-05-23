@@ -4,6 +4,7 @@ import { useAuth } from "@clerk/react";
 import { Link } from "wouter";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 type DelayedRow = {
   id: number;
@@ -26,7 +27,8 @@ export function SupervisorDelayedOrders() {
   const [rows, setRows] = useState<DelayedRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isSupervisor = user?.role === "admin" || user?.role === "supervisor";
+  const userRole = normalizeNotificationRole(user?.role);
+  const isSupervisor = userRole === "global_admin" || userRole === "admin";
 
   const reload = async () => {
     if (!isSupervisor) { setLoading(false); return; }

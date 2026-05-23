@@ -198,13 +198,13 @@ async function getDecryptedWooCreds(): Promise<{
 }
 
 // GET /api/admin/settings
-router.get("/admin/settings", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/settings", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json(mapSettings(s));
 });
 
 // PUT /api/admin/settings
-router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const allowed = [
     "menuImportEnabled", "showOutOfStock", "enabledProcessors",
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
@@ -271,7 +271,7 @@ router.put("/admin/settings", requireRole("admin", "supervisor"), async (req, re
  * Returns the WC config in masked form. Secrets are NEVER returned in plaintext —
  * only boolean flags indicating whether they have been saved.
  */
-router.get("/admin/settings/woocommerce", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/settings/woocommerce", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -339,7 +339,7 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
 
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
-router.get("/admin/csr-settings", requireRole("admin", "supervisor", "customer_service_rep", "business_sitter", "sales_rep", "lab_tech"), async (_req, res): Promise<void> => {
+router.get("/admin/csr-settings", requireRole("global_admin", "admin", "customer_service_rep"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings() as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
@@ -349,7 +349,7 @@ router.get("/admin/csr-settings", requireRole("admin", "supervisor", "customer_s
   });
 });
 
-router.put("/admin/csr-settings", requireRole("admin", "supervisor"), async (req, res): Promise<void> => {
+router.put("/admin/csr-settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
   const shiftLocationOptions = req.body?.shiftLocationOptions;
   const deliveryOptions = req.body?.deliveryOptions;
@@ -451,7 +451,7 @@ router.get("/concierge/promoted", async (_req, res): Promise<void> => {
 });
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
-router.get("/admin/concierge/promoted", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
@@ -491,7 +491,7 @@ router.get("/concierge/intro-steps", async (_req, res): Promise<void> => {
 });
 
 // GET /api/admin/concierge-steps — admin/supervisor read
-router.get("/admin/concierge-steps", requireRole("admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/concierge-steps", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json(parseSteps(s.conciergeIntroSteps));
 });
