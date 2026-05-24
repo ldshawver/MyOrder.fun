@@ -40,10 +40,55 @@ let shiftSchemaEnsured = false;
 
 async function ensureShiftSchema(): Promise<void> {
   if (shiftSchemaEnsured) return;
-  await db.execute(sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "box_assignment_id" text`);
-  await db.execute(sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "setup_json" jsonb DEFAULT '{}'::jsonb`);
+  const statements = [
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "box_assignment_id" text`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "setup_json" jsonb DEFAULT '{}'::jsonb`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_start" numeric(10, 2) DEFAULT 0`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end" numeric(10, 2)`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end_reported" numeric(10, 2)`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_percent_selected" numeric(5, 2)`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_amount" numeric(10, 2)`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "difference_amount" numeric(10, 2) DEFAULT 0`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "deposit_amount" numeric(10, 2)`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_id" integer`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_confirmed_at" timestamp with time zone`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "payment_totals_json" json`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "summary" json`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
+    sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "catalog_item_id" integer`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "alavont_id" text`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_unit_output" text DEFAULT '#'`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_quantity_per_sale" numeric(10, 3) DEFAULT 1`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "menu_price" numeric(10, 2)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "payout_price" numeric(10, 2)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "current_stock" numeric(10, 3)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "par_level" numeric(10, 2) DEFAULT 0`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "template_item_id" integer`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "section_name" text`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "row_output" text DEFAULT 'item'`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "unit_output" text DEFAULT '#'`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "display_order" integer DEFAULT 0`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_sold" numeric(10, 3) DEFAULT 0`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end" numeric(10, 3)`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end_actual" numeric(10, 3)`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "discrepancy" numeric(10, 3)`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "is_flagged" boolean DEFAULT false`,
+  ];
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
   shiftSchemaEnsured = true;
 }
+
+router.use(async (_req, res, next) => {
+  try {
+    await ensureShiftSchema();
+    next();
+  } catch {
+    res.status(500).json({ error: "Could not prepare shift schema" });
+  }
+});
 
 async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const houseTenantId = await getHouseTenantId();
@@ -276,7 +321,6 @@ router.post(
   "/shifts/clock-in",
   requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
-    await ensureShiftSchema();
     const tech = req.dbUser!;
 
     const existing = await db

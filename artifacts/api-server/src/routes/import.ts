@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, catalogItemsTable, auditLogsTable, adminSettingsTable } from "@workspace/db";
+import { db, catalogItemsTable, auditLogsTable, adminSettingsTable, inventoryTemplatesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import multer from "multer";
@@ -290,6 +290,96 @@ async function ensureCatalogImportSchema(): Promise<void> {
     await db.execute(statement);
   }
   catalogImportSchemaEnsured = true;
+}
+
+async function ensureInventoryTemplateSchema(): Promise<void> {
+  const statements = [
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "catalog_item_id" integer`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "alavont_id" text`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_unit_output" text DEFAULT '#'`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_quantity_per_sale" numeric(10, 3) DEFAULT 1`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "menu_price" numeric(10, 2)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "payout_price" numeric(10, 2)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "current_stock" numeric(10, 3)`,
+    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "par_level" numeric(10, 2) DEFAULT 0`,
+  ];
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+}
+
+async function syncImportedCatalogToInventoryTemplates(tenantId: number): Promise<{ inserted: number; updated: number }> {
+  await ensureInventoryTemplateSchema();
+
+  const catalogRows = await db
+    .select()
+    .from(catalogItemsTable)
+    .where(
+      and(
+        eq(catalogItemsTable.tenantId, tenantId),
+        eq(catalogItemsTable.isWooManaged, false),
+        eq(catalogItemsTable.isLocalAlavont, true),
+      )
+    );
+
+  const templateRows = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.tenantId, tenantId));
+
+  const byCatalogId = new Map(
+    templateRows
+      .filter(row => typeof row.catalogItemId === "number")
+      .map(row => [row.catalogItemId as number, row])
+  );
+  const byAlavontId = new Map(
+    templateRows
+      .filter(row => row.alavontId)
+      .map(row => [row.alavontId as string, row])
+  );
+
+  let inserted = 0;
+  let updated = 0;
+  let nextDisplayOrder = templateRows.reduce((max, row) => Math.max(max, row.displayOrder ?? 0), 0);
+
+  for (const item of catalogRows) {
+    const existing = byCatalogId.get(item.id) ?? (item.alavontId ? byAlavontId.get(item.alavontId) : undefined);
+    const stockValue = item.stockQuantity ?? item.inventoryAmount ?? "0";
+    const itemName = item.alavontName ?? item.displayName ?? item.name;
+    const patch = {
+      sectionName: item.alavontCategory ?? item.category ?? "Alavont",
+      itemName,
+      rowType: "item",
+      unitType: item.stockUnit ?? item.unitMeasurement ?? "#",
+      startingQuantityDefault: String(stockValue ?? "0"),
+      currentStock: String(stockValue ?? "0"),
+      menuPrice: String(item.price ?? "0"),
+      payoutPrice: String(item.costBasis ?? item.price ?? "0"),
+      isActive: item.isAvailable !== false,
+      catalogItemId: item.id,
+      alavontId: item.alavontId ?? item.externalMenuId ?? null,
+      deductionQuantityPerSale: "1",
+      parLevel: String(item.parLevel ?? "0"),
+    };
+
+    if (existing) {
+      await db
+        .update(inventoryTemplatesTable)
+        .set(patch)
+        .where(eq(inventoryTemplatesTable.id, existing.id));
+      updated++;
+    } else {
+      nextDisplayOrder += 10;
+      await db.insert(inventoryTemplatesTable).values({
+        tenantId,
+        displayOrder: nextDisplayOrder,
+        ...patch,
+      });
+      inserted++;
+    }
+  }
+
+  return { inserted, updated };
 }
 
 function formatDatabaseError(err: unknown): string {
@@ -751,7 +841,15 @@ router.post(
       }
     }
 
+    let inventoryTemplates = { inserted: 0, updated: 0 };
+
     if (!dryRun) {
+      try {
+        inventoryTemplates = await syncImportedCatalogToInventoryTemplates(houseTenantId);
+      } catch (err) {
+        errors.push({ row: 0, message: `inventory template sync failed — ${formatDatabaseError(err)}` });
+      }
+
       try {
         await db.insert(auditLogsTable).values({
           actorId: actor.id,
@@ -766,13 +864,14 @@ router.post(
             updated,
             skipped,
             errorCount: errors.length,
+            inventoryTemplates,
           },
           ipAddress: req.ip ?? undefined,
         });
       } catch { /* audit failure is non-fatal */ }
     }
 
-    res.json({ inserted, updated, skipped, errors });
+    res.json({ inserted, updated, skipped, errors, inventoryTemplates });
   }
 );
 
