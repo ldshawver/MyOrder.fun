@@ -62,7 +62,22 @@ type WaitlistEntry = {
   emailAddress: string;
   createdAt: number;
   status: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
 };
+
+function splitDisplayName(name: string | null | undefined): { firstName?: string; lastName?: string } {
+  const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return {};
+  return { firstName: parts[0], lastName: parts.length > 1 ? parts.slice(1).join(" ") : undefined };
+}
+
+function waitlistDisplayName(entry: WaitlistEntry): string {
+  const fullName = `${entry.firstName ?? ""} ${entry.lastName ?? ""}`.trim();
+  return fullName || entry.contactName?.trim() || "Name not provided";
+}
 
 // ─── Waitlist tab ────────────────────────────────────────────────────────────
 // Lists Clerk waitlist entries. Each row has an inline role picker and a
@@ -127,32 +142,35 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
     return roleById[id] ?? "user";
   }
 
-  async function handleApprove(id: string, email: string) {
-    const role = getRole(id);
-    setActionLoading(id);
+  async function handleApprove(entry: WaitlistEntry) {
+    const role = getRole(entry.id);
+    setActionLoading(entry.id);
     setActionMsg(null);
     try {
       const token = await getToken();
-      const res = await fetch(`/api/admin/users/waitlist/${id}/invite`, {
+      const derived = splitDisplayName(entry.contactName);
+      const firstName = entry.firstName || derived.firstName;
+      const lastName = entry.lastName || derived.lastName;
+      const res = await fetch(`/api/admin/users/waitlist/${entry.id}/invite`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         // Always send the email we already have — the server uses it as a
         // fallback when Clerk's waitlist API is unavailable (Restricted mode).
-        body: JSON.stringify({ role, email }),
+        body: JSON.stringify({ role, email: entry.emailAddress, firstName, lastName }),
       });
       const body = await res.json() as { status?: string; error?: string; clerkInviteFailed?: boolean };
       if (!res.ok) throw new Error(body.error ?? "Invite failed");
       if (body.clerkInviteFailed) {
         // Clerk invite email couldn't be sent (user may have already signed up),
         // but the DB row was approved — show a warning, not an error.
-        setActionMsg({ id, msg: `Approved as ${role} in database. No invite email sent — if they already have an account, they can sign in now.`, ok: true });
+        setActionMsg({ id: entry.id, msg: `Approved as ${role} in database. No invite email sent — if they already have an account, they can sign in now.`, ok: true });
       } else {
-        setActionMsg({ id, msg: `Invited as ${role}.`, ok: true });
+        setActionMsg({ id: entry.id, msg: `Invited as ${role}.`, ok: true });
       }
       refetch();
       queryClient.invalidateQueries({ queryKey: ["listUsers"] });
     } catch (e) {
-      setActionMsg({ id, msg: (e as Error).message, ok: false });
+      setActionMsg({ id: entry.id, msg: (e as Error).message, ok: false });
     } finally {
       setActionLoading(null);
     }
@@ -232,10 +250,16 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
                 const role = getRole(entry.id);
                 return (
                   <TableRow key={entry.id} className="border-border/30 hover:bg-muted/20 transition-colors" data-testid={`row-waitlist-${entry.id}`}>
-                    <TableCell className="font-mono text-sm text-primary/90">
-                      <div className="flex items-center gap-2">
-                        <Mail size={12} className="text-muted-foreground shrink-0" />
-                        {entry.emailAddress}
+                    <TableCell className="text-sm text-primary/90">
+                      <div className="flex items-start gap-2">
+                        <Mail size={12} className="text-muted-foreground shrink-0 mt-1" />
+                        <div className="min-w-0">
+                          <div className="font-medium text-foreground truncate">{waitlistDisplayName(entry)}</div>
+                          <div className="font-mono text-xs text-muted-foreground truncate">{entry.emailAddress}</div>
+                          {entry.contactPhone && (
+                            <div className="font-mono text-[10px] text-muted-foreground truncate">{entry.contactPhone}</div>
+                          )}
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -283,7 +307,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
                             size="sm"
                             variant="outline"
                             className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600 gap-1"
-                            onClick={() => handleApprove(entry.id, entry.emailAddress)}
+                            onClick={() => handleApprove(entry)}
                             disabled={actionLoading === entry.id}
                             data-testid={`btn-waitlist-approve-${entry.id}`}
                           >

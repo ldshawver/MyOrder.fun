@@ -13,6 +13,10 @@ export type CanonicalRole =
 
 export type LegacyRole =
   | "supervisor"
+  | "csr"
+  | "qsr"
+  | "customer_service"
+  | "customer_service_specialist"
   | "business_sitter"
   | "sales_rep"
   | "lab_tech"
@@ -26,6 +30,10 @@ export function normalizeRole(role: unknown): CanonicalRole {
   if (role === "admin" || role === "supervisor") return "admin";
   if (
     role === "customer_service_rep" ||
+    role === "csr" ||
+    role === "qsr" ||
+    role === "customer_service" ||
+    role === "customer_service_specialist" ||
     role === "business_sitter" ||
     role === "sales_rep" ||
     role === "lab_tech" ||
@@ -54,6 +62,8 @@ async function ensureUsersAuthSchema(): Promise<void> {
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "first_name" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_name" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
@@ -93,7 +103,19 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     .where(eq(usersTable.clerkId, clerkId))
     .limit(1);
 
-  if (existing) return existing;
+  if (existing) {
+    const auth = getAuth(req);
+    const claimFirstName = (auth.sessionClaims?.firstName as string) || (auth.sessionClaims?.given_name as string) || null;
+    const claimLastName = (auth.sessionClaims?.lastName as string) || (auth.sessionClaims?.family_name as string) || null;
+    const patch: Partial<typeof usersTable.$inferInsert> = {};
+    if (!existing.firstName && claimFirstName) patch.firstName = claimFirstName;
+    if (!existing.lastName && claimLastName) patch.lastName = claimLastName;
+    if (Object.keys(patch).length > 0) {
+      const [updated] = await db.update(usersTable).set(patch).where(eq(usersTable.id, existing.id)).returning();
+      return updated ?? existing;
+    }
+    return existing;
+  }
 
   // 2. Extract user info from Clerk session claims (JWT doesn't always include email,
   //    so fall back to the Clerk API to get the canonical email address).

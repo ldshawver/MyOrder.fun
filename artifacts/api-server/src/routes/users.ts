@@ -86,6 +86,8 @@ async function ensureUsersListSchema(): Promise<void> {
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "first_name" text`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_name" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "notification_preferences" jsonb DEFAULT '{"orderAlerts":"sound","platformUpdates":"in_app"}'::jsonb`,
@@ -117,11 +119,28 @@ async function syncOnboardingRequestsToPendingUsers(): Promise<void> {
 
     try {
       const [existing] = await db
-        .select({ id: usersTable.id })
+        .select({
+          id: usersTable.id,
+          firstName: usersTable.firstName,
+          lastName: usersTable.lastName,
+          contactPhone: usersTable.contactPhone,
+          status: usersTable.status,
+        })
         .from(usersTable)
         .where(sql`lower(${usersTable.email}) = lower(${email})`)
         .limit(1);
-      if (existing) continue;
+      if (existing) {
+        const updates: Partial<typeof usersTable.$inferInsert> = {};
+        if (!existing.firstName && request.contactName) updates.firstName = request.contactName;
+        if (!existing.contactPhone && request.contactPhone) updates.contactPhone = request.contactPhone;
+        const requestStatus = onboardingStatusToUserStatus(request.status);
+        if (existing.status !== "approved" && existing.status !== requestStatus) updates.status = requestStatus;
+        if (Object.keys(updates).length > 0) {
+          updates.updatedAt = new Date();
+          await db.update(usersTable).set(updates).where(eq(usersTable.id, existing.id));
+        }
+        continue;
+      }
 
       await db.insert(usersTable).values({
         clerkId: `pending_request:${email.toLowerCase()}`,
@@ -583,17 +602,50 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
 router.get("/admin/users/waitlist", requireRole("admin"), async (req, res): Promise<void> => {
   const query = (req.query.q as string | undefined)?.trim() || undefined;
   try {
+    await syncOnboardingRequestsToPendingUsers();
     const result = await clerkClient.waitlistEntries.list({
       limit: 100,
       query,
     });
+    const emails = result.data.map(e => e.emailAddress?.trim().toLowerCase()).filter((email): email is string => !!email);
+    const emailSet = new Set(emails);
+    const [users, requests] = emailSet.size > 0
+      ? await Promise.all([
+          db.select({
+            email: usersTable.email,
+            firstName: usersTable.firstName,
+            lastName: usersTable.lastName,
+            contactPhone: usersTable.contactPhone,
+          }).from(usersTable),
+          db.select({
+            contactEmail: onboardingRequestsTable.contactEmail,
+            contactName: onboardingRequestsTable.contactName,
+            contactPhone: onboardingRequestsTable.contactPhone,
+          }).from(onboardingRequestsTable),
+        ])
+      : [[], []];
+    const userByEmail = new Map(users
+      .filter(user => user.email && emailSet.has(user.email.toLowerCase()))
+      .map(user => [user.email?.toLowerCase(), user]));
+    const requestByEmail = new Map(requests
+      .filter(request => request.contactEmail && emailSet.has(request.contactEmail.toLowerCase()))
+      .map(request => [request.contactEmail?.toLowerCase(), request]));
     res.json({
-      entries: result.data.map(e => ({
-        id: e.id,
-        emailAddress: e.emailAddress,
-        createdAt: e.createdAt,
-        status: e.status,
-      })),
+      entries: result.data.map(e => {
+        const emailKey = e.emailAddress?.toLowerCase();
+        const user = userByEmail.get(emailKey);
+        const request = requestByEmail.get(emailKey);
+        return {
+          id: e.id,
+          emailAddress: e.emailAddress,
+          createdAt: e.createdAt,
+          status: e.status,
+          firstName: user?.firstName ?? request?.contactName ?? null,
+          lastName: user?.lastName ?? null,
+          contactName: request?.contactName ?? user?.firstName ?? null,
+          contactPhone: user?.contactPhone ?? request?.contactPhone ?? null,
+        };
+      }),
       total: result.totalCount,
     });
   } catch (err) {
@@ -636,7 +688,7 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const { role, firstName, lastName, email: bodyEmail } = body.data;
+  let { role, firstName, lastName, email: bodyEmail } = body.data;
 
   // Pre-fetch email from the waitlist list so we have it even if the Clerk
   // invite call fails (e.g. entry already processed, Clerk not in Waitlist
@@ -680,6 +732,22 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
 
   const sentinelClerkId = pendingInviteSentinel(entry.id);
   const email = entry.emailAddress;
+
+  if (email && (!firstName || !lastName)) {
+    const [request] = await db
+      .select({
+        contactName: onboardingRequestsTable.contactName,
+        contactPhone: onboardingRequestsTable.contactPhone,
+      })
+      .from(onboardingRequestsTable)
+      .where(sql`lower(${onboardingRequestsTable.contactEmail}) = lower(${email})`)
+      .limit(1);
+    if (request?.contactName) {
+      const parts = request.contactName.trim().split(/\s+/).filter(Boolean);
+      firstName = firstName || request.contactName.trim();
+      lastName = lastName || (parts.length > 1 ? parts.slice(1).join(" ") : undefined);
+    }
+  }
 
   // Reconcile against any existing real (non-sentinel) user row for this
   // email. If one exists, the person already has a Clerk account — skip the

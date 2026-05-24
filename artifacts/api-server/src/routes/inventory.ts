@@ -1,11 +1,41 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+let inventoryCatalogSchemaEnsured = false;
+
+async function ensureInventoryCatalogSchema(): Promise<void> {
+  if (inventoryCatalogSchemaEnsured) return;
+  const statements = [
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "stock_quantity" numeric(10, 2) DEFAULT 0`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "stock_unit" text DEFAULT '#'`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "par_level" numeric(10, 2) DEFAULT 0`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "regular_price" numeric(10, 2)`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_category" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lucifer_cruz_name" text`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_woo_managed" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_local_alavont" boolean NOT NULL DEFAULT true`,
+  ];
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  inventoryCatalogSchemaEnsured = true;
+}
+
+router.use(async (_req, res, next) => {
+  try {
+    await ensureInventoryCatalogSchema();
+    next();
+  } catch {
+    res.status(500).json({ error: "Could not prepare inventory schema" });
+  }
+});
 
 // GET /api/admin/inventory — all catalog items with stock data
 router.get(
@@ -14,7 +44,22 @@ router.get(
   async (req, res): Promise<void> => {
     const houseTenantId = await getHouseTenantId();
     const catalogItems = await db
-      .select()
+      .select({
+        id: catalogItemsTable.id,
+        name: catalogItemsTable.name,
+        category: catalogItemsTable.category,
+        price: catalogItemsTable.price,
+        isAvailable: catalogItemsTable.isAvailable,
+        alavontName: catalogItemsTable.alavontName,
+        luciferCruzName: catalogItemsTable.luciferCruzName,
+        alavontCategory: catalogItemsTable.alavontCategory,
+        regularPrice: catalogItemsTable.regularPrice,
+        stockQuantity: catalogItemsTable.stockQuantity,
+        stockUnit: catalogItemsTable.stockUnit,
+        parLevel: catalogItemsTable.parLevel,
+        isWooManaged: catalogItemsTable.isWooManaged,
+        isLocalAlavont: catalogItemsTable.isLocalAlavont,
+      })
       .from(catalogItemsTable)
       .orderBy(catalogItemsTable.category, catalogItemsTable.name);
     const items = catalogItems.filter((item) => item.isWooManaged !== true && item.isLocalAlavont !== false);
