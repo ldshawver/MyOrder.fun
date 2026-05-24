@@ -95,7 +95,7 @@ function SignInPage() {
         routing="path"
         path={`${basePath}/sign-in`}
         signUpUrl={`${basePath}/sign-up`}
-        forceRedirectUrl={`${basePath}/ai-concierge`}
+        forceRedirectUrl={`${basePath}/catalog`}
       />
     </AuthBrandWrapper>
   );
@@ -135,8 +135,7 @@ function HomeRedirect() {
   return (
     <>
       <Show when="signed-in">
-        {/* Customers land on the Order Concierge; admins/staff still have the dashboard in the nav */}
-        <Redirect to="/ai-concierge" />
+        <Redirect to="/catalog" />
       </Show>
       <Show when="signed-out">
         <Home />
