@@ -1,14 +1,13 @@
 import { useState, useEffect } from "react";
 import {
   useListCatalogItems,
-  useListCatalogCategories,
   useCreateCatalogItem,
   useUpdateCatalogItem,
   useGetCurrentUser,
   getListCatalogItemsQueryKey,
   type CatalogItem,
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -871,7 +870,15 @@ export default function Catalog() {
   const userRole = normalizeNotificationRole(user?.role);
   const canEdit = userRole === "global_admin" || userRole === "admin";
 
-  const { data: categoriesRes } = useListCatalogCategories({ query: { queryKey: ["listCatalogCategories"] } });
+  const { data: categoriesRes } = useQuery({
+    queryKey: ["listCatalogCategories", menuMode],
+    queryFn: async (): Promise<{ categories: string[] }> => {
+      const token = await getToken();
+      const res = await fetch(`/api/catalog/categories?mode=${menuMode}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+      if (!res.ok) throw new Error(`Could not load categories (${res.status})`);
+      return res.json() as Promise<{ categories: string[] }>;
+    },
+  });
   const { data, isLoading } = useListCatalogItems(
     { search, category: category !== "all" ? category : undefined, limit: 200, mode: menuMode === "lucifer" ? "lucifer" : "alavont" },
     { query: { queryKey: ["listCatalogItems", search, category, menuMode] } }

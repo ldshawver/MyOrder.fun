@@ -13,10 +13,11 @@ router.get(
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const houseTenantId = await getHouseTenantId();
-    const items = await db
+    const catalogItems = await db
       .select()
       .from(catalogItemsTable)
       .orderBy(catalogItemsTable.category, catalogItemsTable.name);
+    const items = catalogItems.filter((item) => item.isWooManaged !== true && item.isLocalAlavont !== false);
 
     // Get petty cash
     const [settings] = await db

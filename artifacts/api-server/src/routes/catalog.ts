@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, asc } from "drizzle-orm";
+import { and, eq, asc } from "drizzle-orm";
 import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
@@ -118,6 +118,63 @@ function mapItem(
     wooProductId: alavontOnly ? null : (i.wooProductId ?? null),
     wooVariationId: alavontOnly ? null : (i.wooVariationId ?? null),
   };
+}
+
+function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
+  return row.isWooManaged !== true && row.isLocalAlavont !== false;
+}
+
+async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.$inferSelect): Promise<void> {
+  if (!isLocalAlavontCatalogRow(row)) return;
+
+  const stockValue = row.inventoryAmount ?? row.stockQuantity ?? "0";
+  const itemName = row.alavontName ?? row.displayName ?? row.name;
+  const patch = {
+    sectionName: row.alavontCategory ?? row.category ?? "Alavont",
+    itemName,
+    rowType: "item",
+    unitType: row.stockUnit ?? row.unitMeasurement ?? "#",
+    startingQuantityDefault: String(stockValue ?? "0"),
+    currentStock: String(stockValue ?? "0"),
+    menuPrice: String(row.price ?? "0"),
+    payoutPrice: String(row.costBasis ?? row.price ?? "0"),
+    isActive: row.isAvailable !== false,
+    catalogItemId: row.id,
+    alavontId: row.alavontId ?? row.externalMenuId ?? null,
+    deductionQuantityPerSale: "1",
+    parLevel: String(row.parLevel ?? "0"),
+  };
+
+  const [existing] = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(
+      and(
+        eq(inventoryTemplatesTable.tenantId, row.tenantId),
+        eq(inventoryTemplatesTable.catalogItemId, row.id),
+      )
+    )
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(inventoryTemplatesTable)
+      .set(patch)
+      .where(eq(inventoryTemplatesTable.id, existing.id));
+    return;
+  }
+
+  const existingTemplates = await db
+    .select({ displayOrder: inventoryTemplatesTable.displayOrder })
+    .from(inventoryTemplatesTable)
+    .where(eq(inventoryTemplatesTable.tenantId, row.tenantId));
+  const nextDisplayOrder = existingTemplates.reduce((max, item) => Math.max(max, item.displayOrder ?? 0), 0) + 10;
+
+  await db.insert(inventoryTemplatesTable).values({
+    tenantId: row.tenantId,
+    displayOrder: nextDisplayOrder,
+    ...patch,
+  });
 }
 
 async function getLinkedInventoryStockByCatalogId() {
@@ -263,29 +320,54 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
     name: body.data.name,
+    alavontName: body.data.alavontName ?? body.data.name,
+    alavontDescription: body.data.alavontDescription ?? body.data.description ?? null,
+    alavontCategory: body.data.alavontCategory ?? body.data.category,
+    alavontImageUrl: body.data.alavontImageUrl ?? body.data.imageUrl ?? null,
+    alavontInStock: body.data.alavontInStock ?? body.data.isAvailable ?? true,
+    merchantProcessingMode: body.data.merchantProcessingMode ?? "mapped_lucifer",
+    merchantProductSource: body.data.merchantProductSource ?? "local_mapped",
+    isWooManaged: body.data.isWooManaged ?? false,
+    isLocalAlavont: true,
+    merchantBrand: "alavont",
     price: String(body.data.price),
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
     stockQuantity: String(body.data.stockQuantity ?? 0),
+    inventoryAmount: String(body.data.stockQuantity ?? 0),
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
+  await syncCatalogItemToInventoryTemplate(row);
   res.status(201).json(mapItem(row));
 });
 
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
-  // Collect distinct categories from both alavont_category and category columns
+  const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
+      luciferCruzCategory: catalogItemsTable.luciferCruzCategory,
       category: catalogItemsTable.category,
+      isWooManaged: catalogItemsTable.isWooManaged,
+      isLocalAlavont: catalogItemsTable.isLocalAlavont,
+      merchantProductSource: catalogItemsTable.merchantProductSource,
+      wooProductId: catalogItemsTable.wooProductId,
     })
     .from(catalogItemsTable);
 
   const seen = new Set<string>();
   const categories: string[] = [];
   for (const r of rows) {
-    const cat = r.alavontCategory || r.category;
+    if (mode === "lucifer") {
+      if (r.isWooManaged !== true || r.merchantProductSource !== "woo" || !r.wooProductId) continue;
+    } else if (r.isLocalAlavont === false || r.isWooManaged === true) {
+      continue;
+    }
+
+    const cat = mode === "lucifer"
+      ? (r.luciferCruzCategory || r.category)
+      : (r.alavontCategory || r.category);
     if (cat && !seen.has(cat)) {
       seen.add(cat);
       categories.push(cat);
@@ -380,6 +462,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     }
   }
   const [updated] = await db.update(catalogItemsTable).set(updateData).where(eq(catalogItemsTable.id, params.data.id)).returning();
+  await syncCatalogItemToInventoryTemplate(updated);
   res.json(UpdateCatalogItemResponse.parse(mapItem(updated)));
 });
 
