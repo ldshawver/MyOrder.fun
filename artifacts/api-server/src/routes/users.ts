@@ -688,7 +688,8 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
     res.status(400).json({ error: body.error.message });
     return;
   }
-  let { role, firstName, lastName, email: bodyEmail } = body.data;
+  const { role, email: bodyEmail } = body.data;
+  let { firstName, lastName } = body.data;
 
   // Pre-fetch email from the waitlist list so we have it even if the Clerk
   // invite call fails (e.g. entry already processed, Clerk not in Waitlist
