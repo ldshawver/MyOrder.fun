@@ -29,7 +29,13 @@ import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePush
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 
-type OrderWithTracking = Order & { trackingUrl?: string };
+type OrderWithTracking = Order & {
+  trackingUrl?: string | null;
+  trackingSubmittedAt?: string | null;
+  handoffChecklist?: Record<string, boolean> | null;
+  handoffCompletedAt?: string | null;
+  handoffCompletedByUserId?: number | null;
+};
 type CreditSummary = { balance: number };
 
 function formatCourierEta(value?: string | null) {
@@ -160,7 +166,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
           </div>
           {(order as OrderWithTracking).trackingUrl && (
             <a
-              href={(order as OrderWithTracking).trackingUrl}
+              href={(order as OrderWithTracking).trackingUrl ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-primary hover:underline"
@@ -368,6 +374,9 @@ export default function OrderDetail() {
   const [isEncrypted, setIsEncrypted] = useState(false);
   const [trackingInput, setTrackingInput] = useState("");
   const [trackingSaving, setTrackingSaving] = useState(false);
+  const [customerTrackingInput, setCustomerTrackingInput] = useState("");
+  const [customerTrackingSubmitting, setCustomerTrackingSubmitting] = useState(false);
+  const [customerTrackingError, setCustomerTrackingError] = useState<string | null>(null);
   const [creditBalance, setCreditBalance] = useState<number | null>(null);
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
@@ -497,6 +506,26 @@ export default function OrderDetail() {
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
     } finally {
       setTrackingSaving(false);
+    }
+  };
+
+  const handleCustomerSubmitTracking = async () => {
+    setCustomerTrackingSubmitting(true);
+    setCustomerTrackingError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/orders/${id}/delivery/tracking-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ trackingUrl: customerTrackingInput.trim() }),
+      });
+      const data = await res.json() as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Failed to submit tracking link");
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
+    } catch (err) {
+      setCustomerTrackingError(err instanceof Error ? err.message : "Failed to submit");
+    } finally {
+      setCustomerTrackingSubmitting(false);
     }
   };
 
@@ -798,10 +827,10 @@ export default function OrderDetail() {
                 </div>
               )}
 
-              {/* Customer: Track My Delivery button */}
+              {/* Customer: Track My Delivery / submit tracking link */}
               {isCustomer && (order as OrderWithTracking).trackingUrl ? (
                 <a
-                  href={(order as OrderWithTracking).trackingUrl}
+                  href={(order as OrderWithTracking).trackingUrl ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex w-full items-center justify-center gap-2 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl transition-all shadow-lg shadow-emerald-500/20"
@@ -811,6 +840,42 @@ export default function OrderDetail() {
                   Track My Delivery
                   <ExternalLink size={12} />
                 </a>
+              ) : isCustomer && order?.deliveryMethod && order.deliveryMethod !== "pickup" ? (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3 text-xs" data-testid="customer-tracking-submit">
+                  <div className="font-semibold text-primary flex items-center gap-1.5">
+                    <Truck size={13} /> Share Your Uber Tracking Link
+                  </div>
+                  <ol className="space-y-1 text-muted-foreground list-decimal list-inside leading-relaxed">
+                    <li>Open the <strong className="text-foreground">Uber</strong> app</li>
+                    <li>Select <strong className="text-foreground">Package → Receive a package</strong></li>
+                    <li>Set our store as the <strong className="text-foreground">pickup</strong> address</li>
+                    <li>Set your address as the <strong className="text-foreground">drop-off</strong></li>
+                    <li>After a driver is assigned, tap <strong className="text-foreground">Share Trip Status</strong></li>
+                    <li>Paste the link below</li>
+                  </ol>
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      placeholder="https://trip.uber.com/..."
+                      value={customerTrackingInput}
+                      onChange={e => setCustomerTrackingInput(e.target.value)}
+                      className="flex-1 rounded-lg border border-border/50 bg-background/60 px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                      data-testid="input-customer-tracking"
+                    />
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs rounded-lg px-3"
+                      disabled={customerTrackingSubmitting || !customerTrackingInput.trim()}
+                      onClick={() => void handleCustomerSubmitTracking()}
+                      data-testid="btn-customer-submit-tracking"
+                    >
+                      {customerTrackingSubmitting ? "Saving…" : "Submit"}
+                    </Button>
+                  </div>
+                  {customerTrackingError && (
+                    <div className="text-red-400 text-[11px]" data-testid="customer-tracking-error">{customerTrackingError}</div>
+                  )}
+                </div>
               ) : isCustomer ? (
                 <div className="text-xs text-muted-foreground text-center py-3">
                   Tracking link will appear here once dispatched.
@@ -820,7 +885,7 @@ export default function OrderDetail() {
               {/* Staff: show current link if set */}
               {canEditStatus && (order as OrderWithTracking).trackingUrl && (
                 <a
-                  href={(order as OrderWithTracking).trackingUrl}
+                  href={(order as OrderWithTracking).trackingUrl ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-xs text-primary hover:underline"

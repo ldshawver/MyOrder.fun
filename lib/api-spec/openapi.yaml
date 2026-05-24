@@ -1191,6 +1191,101 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrderNote"
 
+  /orders/{id}/delivery/tracking-link:
+    post:
+      operationId: submitDeliveryTrackingLink
+      tags: [orders]
+      summary: Customer submits their Uber trip-share tracking link for a delivery order
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                trackingUrl:
+                  type: string
+                  maxLength: 2048
+              required: [trackingUrl]
+      responses:
+        "200":
+          description: Tracking link saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trackingUrl:
+                    type: string
+                    nullable: true
+                  trackingSubmittedAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+
+  /orders/{id}/delivery/handoff-checklist:
+    patch:
+      operationId: updateHandoffChecklist
+      tags: [orders]
+      summary: CSR updates the courier handoff checklist
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HandoffChecklist"
+      responses:
+        "200":
+          description: Checklist updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  handoffChecklist:
+                    $ref: "#/components/schemas/HandoffChecklist"
+                    nullable: true
+
+  /orders/{id}/delivery/handoff-complete:
+    post:
+      operationId: completeDeliveryHandoff
+      tags: [orders]
+      summary: CSR marks the courier handoff as complete
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Handoff marked complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  handoffCompletedAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  handoffCompletedByUserId:
+                    type: integer
+                    nullable: true
+
 components:
   schemas:
     HealthStatus:
@@ -1946,6 +2041,23 @@ components:
           type: string
           enum: [submitted, accepted, preparing, ready, completed, cancelled]
           nullable: true
+        trackingUrl:
+          type: string
+          nullable: true
+        trackingSubmittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        handoffChecklist:
+          $ref: "#/components/schemas/HandoffChecklist"
+          nullable: true
+        handoffCompletedAt:
+          type: string
+          format: date-time
+          nullable: true
+        handoffCompletedByUserId:
+          type: integer
+          nullable: true
         createdAt:
           type: string
           format: date-time
@@ -1953,6 +2065,20 @@ components:
           type: string
           format: date-time
       required: [id, tenantId, customerId, status, paymentStatus, subtotal, total, items, createdAt, updatedAt]
+
+    HandoffChecklist:
+      type: object
+      properties:
+        driverMatched:
+          type: boolean
+        vehicleMatched:
+          type: boolean
+        plateMatched:
+          type: boolean
+        sealedDiscreet:
+          type: boolean
+        handedToCourier:
+          type: boolean
 
     CreateOrderBody:
       type: object
@@ -1991,6 +2117,12 @@ components:
             paymentMethod:
               type: string
               enum: [cash, cash_app, stripe, venmo, gift_card, manual]
+            tipAmount:
+              type: number
+              nullable: true
+            tipPercent:
+              type: number
+              nullable: true
           required: [acceptedAllSalesFinal, legalDisclaimerText]
         deliveryQuote:
           $ref: "#/components/schemas/DeliveryQuoteSelection"

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { DeliveryQuote } from './deliveryQuote';
+import type { HandoffChecklist } from './handoffChecklist';
 import type { OrderCheckoutConfirmation } from './orderCheckoutConfirmation';
 import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
@@ -43,6 +44,11 @@ export interface Order {
   readyAt?: Date | null;
   etaAdjustedBySupervisor?: boolean;
   fulfillmentStatus?: OrderFulfillmentStatus;
+  trackingUrl?: string | null;
+  trackingSubmittedAt?: Date | null;
+  handoffChecklist?: HandoffChecklist | null;
+  handoffCompletedAt?: Date | null;
+  handoffCompletedByUserId?: number | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -434,6 +434,10 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     deliveryQuote: order.deliveryQuoteSnapshot ?? null,
     notes: order.notes,
     trackingUrl: order.trackingUrl ?? null,
+    trackingSubmittedAt: order.trackingSubmittedAt ?? null,
+    handoffChecklist: (order.handoffChecklist as Record<string, boolean> | null) ?? null,
+    handoffCompletedAt: order.handoffCompletedAt ?? null,
+    handoffCompletedByUserId: order.handoffCompletedByUserId ?? null,
     items: items.map(i => ({
       id: i.id,
       catalogItemId: i.catalogItemId,
@@ -1474,6 +1478,105 @@ router.post("/orders/:id/notes", async (req, res): Promise<void> => {
     isInternal: note.isInternal === "true",
     createdAt: note.createdAt,
   });
+});
+
+// ── Delivery tracking (customer-booked Uber) ────────────────────────────────
+
+const ALLOWED_UBER_DOMAINS = ["uber.com", "m.uber.com", "trip.uber.com"];
+function isAllowedUberUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return ALLOWED_UBER_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
+  } catch { return false; }
+}
+
+const SubmitTrackingLinkBody = z.object({
+  trackingUrl: z.string().min(1).max(2048).refine(isAllowedUberUrl, {
+    message: "Only https:// Uber tracking links (uber.com, trip.uber.com) are allowed",
+  }),
+});
+
+const HandoffChecklistBody = z.object({
+  driverMatched: z.boolean().optional(),
+  vehicleMatched: z.boolean().optional(),
+  plateMatched: z.boolean().optional(),
+  sealedDiscreet: z.boolean().optional(),
+  handedToCourier: z.boolean().optional(),
+});
+
+// POST /api/orders/:id/delivery/tracking-link — customer submits Uber trip-share link
+router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const body = SubmitTrackingLinkBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  const isStaff = ["global_admin", "admin", "customer_service_rep"].includes(actor.role ?? "");
+  if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
+  if (!order.deliveryMethod || order.deliveryMethod === "pickup") {
+    res.status(422).json({ error: "Order is not a delivery order" }); return;
+  }
+  const [updated] = await db.update(ordersTable)
+    .set({ trackingUrl: body.data.trackingUrl, trackingSubmittedAt: new Date() })
+    .where(eq(ordersTable.id, orderId))
+    .returning();
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "DELIVERY_TRACKING_LINK_SUBMITTED",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { trackingUrl: body.data.trackingUrl }, ipAddress: req.ip,
+  });
+  res.json({ trackingUrl: updated.trackingUrl, trackingSubmittedAt: updated.trackingSubmittedAt });
+});
+
+// PATCH /api/orders/:id/delivery/handoff-checklist — CSR updates courier handoff checklist
+router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const body = HandoffChecklistBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  const existing = (order.handoffChecklist as Record<string, boolean> | null) ?? {};
+  const merged = { ...existing, ...body.data };
+  const [updated] = await db.update(ordersTable)
+    .set({ handoffChecklist: merged })
+    .where(eq(ordersTable.id, orderId))
+    .returning();
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "DELIVERY_HANDOFF_CHECKLIST_UPDATED",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { checklist: merged }, ipAddress: req.ip,
+  });
+  res.json({ handoffChecklist: updated.handoffChecklist });
+});
+
+// POST /api/orders/:id/delivery/handoff-complete — CSR marks courier handoff complete
+router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
+  if (order.handoffCompletedAt) { res.status(409).json({ error: "Handoff already completed" }); return; }
+  const now = new Date();
+  const [updated] = await db.update(ordersTable)
+    .set({ handoffCompletedAt: now, handoffCompletedByUserId: actor.id })
+    .where(eq(ordersTable.id, orderId))
+    .returning();
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "DELIVERY_HANDOFF_COMPLETE",
+    resourceType: "order", resourceId: String(orderId),
+    metadata: { handoffCompletedAt: now.toISOString() }, ipAddress: req.ip,
+  });
+  res.json({ handoffCompletedAt: updated.handoffCompletedAt, handoffCompletedByUserId: updated.handoffCompletedByUserId });
 });
 
 export default router;

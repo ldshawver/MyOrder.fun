@@ -8,7 +8,7 @@ import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
   Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
-  CreditCard, Banknote,
+  CreditCard, Banknote, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1052,7 +1052,37 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   const [printingReceipt, setPrintingReceipt] = useState(false);
   const [printingLabel, setPrintingLabel] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [checklist, setChecklist] = useState<Record<string, boolean>>(
+    (order.handoffChecklist as Record<string, boolean> | null) ?? {}
+  );
   const fulfillment = order.fulfillmentStatus as string | null;
+
+  async function toggleChecklistItem(key: string, value: boolean) {
+    const next = { ...checklist, [key]: value };
+    setChecklist(next);
+    try {
+      const token = await getToken();
+      await fetch(`/api/orders/${order.id}/delivery/handoff-checklist`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ [key]: value }),
+      });
+      onRefresh();
+    } catch { /* non-critical */ }
+  }
+
+  async function markHandoffComplete() {
+    setHandoffBusy(true);
+    try {
+      const token = await getToken();
+      await fetch(`/api/orders/${order.id}/delivery/handoff-complete`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      onRefresh();
+    } catch { /* non-critical */ } finally { setHandoffBusy(false); }
+  }
 
   async function setFulfillmentStatus(status: string) {
     setLoading(status);
@@ -1162,6 +1192,60 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
               {order.shippingAddress && (
                 <div className="pt-2 border-t border-primary/10 text-muted-foreground">
                   {order.shippingAddress}
+                </div>
+              )}
+              {order.trackingUrl && (
+                <div className="pt-2 border-t border-primary/10 space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle size={10} className="text-amber-400 shrink-0" />
+                    <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">Customer Tracking Link Received</span>
+                  </div>
+                  <a
+                    href={order.trackingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline"
+                    data-testid={`btn-open-tracking-${order.id}`}
+                  >
+                    <ExternalLink size={12} /> Open Uber Tracking
+                  </a>
+                  <div className="space-y-1 pt-1">
+                    {([
+                      { key: "driverMatched", label: "Driver name matched" },
+                      { key: "vehicleMatched", label: "Vehicle matched" },
+                      { key: "plateMatched", label: "License plate matched" },
+                      { key: "sealedDiscreet", label: "Package sealed / discreet" },
+                      { key: "handedToCourier", label: "Package handed to courier" },
+                    ] as { key: string; label: string }[]).map(({ key, label }) => (
+                      <label key={key} className="flex items-center gap-2 cursor-pointer text-xs select-none">
+                        <input
+                          type="checkbox"
+                          checked={!!checklist[key]}
+                          onChange={e => void toggleChecklistItem(key, e.target.checked)}
+                          className="rounded accent-primary"
+                          data-testid={`checklist-${key}-${order.id}`}
+                        />
+                        <span className={checklist[key] ? "line-through text-muted-foreground/60" : ""}>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {order.handoffCompletedAt ? (
+                    <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CheckCircle2 size={12} />
+                      Handed off {new Date(order.handoffCompletedAt as string).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  ) : (
+                    <Button
+                      size="sm"
+                      className="w-full h-7 text-xs rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/30"
+                      disabled={handoffBusy}
+                      onClick={() => void markHandoffComplete()}
+                      data-testid={`btn-handoff-complete-${order.id}`}
+                    >
+                      <CheckCircle2 size={11} className="mr-1.5" />
+                      {handoffBusy ? "Marking..." : "Mark Handoff Complete"}
+                    </Button>
+                  )}
                 </div>
               )}
             </div>

@@ -32,6 +32,10 @@ export const ordersTable = pgTable("orders", {
   deliveryCurrency: text("delivery_currency"),
   notes: text("notes"),
   trackingUrl: text("tracking_url"),
+  trackingSubmittedAt: timestamp("tracking_submitted_at", { withTimezone: true }),
+  handoffChecklist: jsonb("handoff_checklist"),
+  handoffCompletedAt: timestamp("handoff_completed_at", { withTimezone: true }),
+  handoffCompletedByUserId: integer("handoff_completed_by_user_id").references(() => usersTable.id),
   assignedTechId: integer("assigned_tech_id"),
   assignedShiftId: integer("assigned_shift_id"),
   // Fulfillment workflow

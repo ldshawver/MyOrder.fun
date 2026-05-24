@@ -601,6 +601,17 @@ export const ListOrdersResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -632,8 +643,8 @@ export const CreateOrderBody = zod.object({
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
   "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
-  "tipAmount": zod.number().min(0).max(1000).optional(),
-  "tipPercent": zod.number().min(0).max(100).optional()
+  "tipAmount": zod.number().nullish(),
+  "tipPercent": zod.number().nullish()
 }).optional(),
   "deliveryQuote": zod.object({
   "provider": zod.enum(['uber_direct']),
@@ -776,6 +787,17 @@ export const GetOrderResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -859,6 +881,17 @@ export const UpdateOrderStatusResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -953,6 +986,17 @@ export const AcceptOrderResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -1043,6 +1087,17 @@ export const AdjustOrderEtaResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -1121,6 +1176,17 @@ export const MarkOrderReadyResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -1203,6 +1269,17 @@ export const ReassignOrderResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -1310,6 +1387,17 @@ export const ListDelayedOrdersResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -1393,6 +1481,17 @@ export const GetRecentOrdersResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -2083,6 +2182,17 @@ export const ConfirmPaymentResponse = zod.object({
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
   "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish(),
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish(),
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -2121,4 +2231,65 @@ export const AddOrderNoteBody = zod.object({
   "isEncrypted": zod.boolean().optional(),
   "isInternal": zod.boolean().optional()
 })
+
+
+/**
+ * @summary Customer submits their Uber trip-share tracking link for a delivery order
+ */
+export const SubmitDeliveryTrackingLinkParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const submitDeliveryTrackingLinkBodyTrackingUrlMax = 2048;
+
+
+
+export const SubmitDeliveryTrackingLinkBody = zod.object({
+  "trackingUrl": zod.string().max(submitDeliveryTrackingLinkBodyTrackingUrlMax)
+})
+
+export const SubmitDeliveryTrackingLinkResponse = zod.object({
+  "trackingUrl": zod.string().nullish(),
+  "trackingSubmittedAt": zod.coerce.date().nullish()
+})
+
+
+/**
+ * @summary CSR updates the courier handoff checklist
+ */
+export const UpdateHandoffChecklistParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateHandoffChecklistBody = zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+})
+
+export const UpdateHandoffChecklistResponse = zod.object({
+  "handoffChecklist": zod.object({
+  "driverMatched": zod.boolean().optional(),
+  "vehicleMatched": zod.boolean().optional(),
+  "plateMatched": zod.boolean().optional(),
+  "sealedDiscreet": zod.boolean().optional(),
+  "handedToCourier": zod.boolean().optional()
+}).nullish()
+})
+
+
+/**
+ * @summary CSR marks the courier handoff as complete
+ */
+export const CompleteDeliveryHandoffParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CompleteDeliveryHandoffResponse = zod.object({
+  "handoffCompletedAt": zod.coerce.date().nullish(),
+  "handoffCompletedByUserId": zod.number().nullish()
+})
+
 

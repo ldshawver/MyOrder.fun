@@ -32,6 +32,7 @@ import type {
   CatalogCategoriesResponse,
   CatalogItem,
   CatalogItemListResponse,
+  CompleteDeliveryHandoff200,
   ConfirmPaymentBody,
   CreateCatalogItemBody,
   CreateDeliveryQuoteBody,
@@ -40,6 +41,7 @@ import type {
   GetRecentOrderEvents200,
   GetRecentOrderEventsParams,
   GetRecentOrdersParams,
+  HandoffChecklist,
   HealthStatus,
   InviteWaitlistEntryBody,
   InviteWaitlistEntryResponse,
@@ -67,6 +69,8 @@ import type {
   ReassignOrderBody,
   SetUserApprovalBody,
   SetUserApprovalResponse,
+  SubmitDeliveryTrackingLink200,
+  SubmitDeliveryTrackingLinkBody,
   Tenant,
   TenantListResponse,
   TenantSummary,
@@ -76,6 +80,7 @@ import type {
   UpdateCatalogItemBody,
   UpdateCurrentUser400,
   UpdateCurrentUserBody,
+  UpdateHandoffChecklist200,
   UpdateOnboardingRequestBody,
   UpdateOrderStatusBody,
   UpdateTenantBody,
@@ -4264,5 +4269,219 @@ export const useAddOrderNote = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getAddOrderNoteMutationOptions(options));
+    }
+
+/**
+ * @summary Customer submits their Uber trip-share tracking link for a delivery order
+ */
+export const getSubmitDeliveryTrackingLinkUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/delivery/tracking-link`
+}
+
+export const submitDeliveryTrackingLink = async (id: number,
+    submitDeliveryTrackingLinkBody: SubmitDeliveryTrackingLinkBody, options?: RequestInit): Promise<SubmitDeliveryTrackingLink200> => {
+
+  return customFetch<SubmitDeliveryTrackingLink200>(getSubmitDeliveryTrackingLinkUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      submitDeliveryTrackingLinkBody,)
+  }
+);}
+
+
+
+
+export const getSubmitDeliveryTrackingLinkMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof submitDeliveryTrackingLink>>, TError,{id: number;data: BodyType<SubmitDeliveryTrackingLinkBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof submitDeliveryTrackingLink>>, TError,{id: number;data: BodyType<SubmitDeliveryTrackingLinkBody>}, TContext> => {
+
+const mutationKey = ['submitDeliveryTrackingLink'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof submitDeliveryTrackingLink>>, {id: number;data: BodyType<SubmitDeliveryTrackingLinkBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  submitDeliveryTrackingLink(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type SubmitDeliveryTrackingLinkMutationResult = NonNullable<Awaited<ReturnType<typeof submitDeliveryTrackingLink>>>
+    export type SubmitDeliveryTrackingLinkMutationBody = BodyType<SubmitDeliveryTrackingLinkBody>
+    export type SubmitDeliveryTrackingLinkMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Customer submits their Uber trip-share tracking link for a delivery order
+ */
+export const useSubmitDeliveryTrackingLink = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof submitDeliveryTrackingLink>>, TError,{id: number;data: BodyType<SubmitDeliveryTrackingLinkBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof submitDeliveryTrackingLink>>,
+        TError,
+        {id: number;data: BodyType<SubmitDeliveryTrackingLinkBody>},
+        TContext
+      > => {
+      return useMutation(getSubmitDeliveryTrackingLinkMutationOptions(options));
+    }
+
+/**
+ * @summary CSR updates the courier handoff checklist
+ */
+export const getUpdateHandoffChecklistUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/delivery/handoff-checklist`
+}
+
+export const updateHandoffChecklist = async (id: number,
+    handoffChecklist: HandoffChecklist, options?: RequestInit): Promise<UpdateHandoffChecklist200> => {
+
+  return customFetch<UpdateHandoffChecklist200>(getUpdateHandoffChecklistUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      handoffChecklist,)
+  }
+);}
+
+
+
+
+export const getUpdateHandoffChecklistMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateHandoffChecklist>>, TError,{id: number;data: BodyType<HandoffChecklist>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateHandoffChecklist>>, TError,{id: number;data: BodyType<HandoffChecklist>}, TContext> => {
+
+const mutationKey = ['updateHandoffChecklist'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateHandoffChecklist>>, {id: number;data: BodyType<HandoffChecklist>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateHandoffChecklist(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateHandoffChecklistMutationResult = NonNullable<Awaited<ReturnType<typeof updateHandoffChecklist>>>
+    export type UpdateHandoffChecklistMutationBody = BodyType<HandoffChecklist>
+    export type UpdateHandoffChecklistMutationError = ErrorType<unknown>
+
+    /**
+ * @summary CSR updates the courier handoff checklist
+ */
+export const useUpdateHandoffChecklist = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateHandoffChecklist>>, TError,{id: number;data: BodyType<HandoffChecklist>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateHandoffChecklist>>,
+        TError,
+        {id: number;data: BodyType<HandoffChecklist>},
+        TContext
+      > => {
+      return useMutation(getUpdateHandoffChecklistMutationOptions(options));
+    }
+
+/**
+ * @summary CSR marks the courier handoff as complete
+ */
+export const getCompleteDeliveryHandoffUrl = (id: number,) => {
+
+
+
+
+  return `/api/orders/${id}/delivery/handoff-complete`
+}
+
+export const completeDeliveryHandoff = async (id: number, options?: RequestInit): Promise<CompleteDeliveryHandoff200> => {
+
+  return customFetch<CompleteDeliveryHandoff200>(getCompleteDeliveryHandoffUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getCompleteDeliveryHandoffMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof completeDeliveryHandoff>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof completeDeliveryHandoff>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['completeDeliveryHandoff'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof completeDeliveryHandoff>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  completeDeliveryHandoff(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CompleteDeliveryHandoffMutationResult = NonNullable<Awaited<ReturnType<typeof completeDeliveryHandoff>>>
+
+    export type CompleteDeliveryHandoffMutationError = ErrorType<unknown>
+
+    /**
+ * @summary CSR marks the courier handoff as complete
+ */
+export const useCompleteDeliveryHandoff = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof completeDeliveryHandoff>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof completeDeliveryHandoff>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getCompleteDeliveryHandoffMutationOptions(options));
     }
 

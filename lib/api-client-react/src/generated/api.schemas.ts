@@ -398,10 +398,6 @@ export type OrderCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: OrderCheckoutConfirmationPaymentMethod;
-  /** @minimum 0 */
-  tipAmount?: number;
-  /** @minimum 0 */
-  tipPercent?: number | null;
 };
 
 export type OrderRouteSource = typeof OrderRouteSource[keyof typeof OrderRouteSource] | null;
@@ -486,6 +482,14 @@ export interface DeliveryQuoteSelection {
 
 export type DeliveryQuote = DeliveryQuoteSelection;
 
+export interface HandoffChecklist {
+  driverMatched?: boolean;
+  vehicleMatched?: boolean;
+  plateMatched?: boolean;
+  sealedDiscreet?: boolean;
+  handedToCourier?: boolean;
+}
+
 export interface Order {
   id: number;
   tenantId: number;
@@ -516,6 +520,11 @@ export interface Order {
   readyAt?: string | null;
   etaAdjustedBySupervisor?: boolean;
   fulfillmentStatus?: OrderFulfillmentStatus;
+  trackingUrl?: string | null;
+  trackingSubmittedAt?: string | null;
+  handoffChecklist?: HandoffChecklist | null;
+  handoffCompletedAt?: string | null;
+  handoffCompletedByUserId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -545,10 +554,8 @@ export type CreateOrderBodyCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
-  /** @minimum 0 */
-  tipAmount?: number;
-  /** @minimum 0 */
-  tipPercent?: number;
+  tipAmount?: number | null;
+  tipPercent?: number | null;
 };
 
 export interface CreateOrderBody {
@@ -1182,3 +1189,23 @@ limit?: number;
 export type ListNotificationsParams = {
 unreadOnly?: boolean;
 };
+
+export type SubmitDeliveryTrackingLinkBody = {
+  /** @maxLength 2048 */
+  trackingUrl: string;
+};
+
+export type SubmitDeliveryTrackingLink200 = {
+  trackingUrl?: string | null;
+  trackingSubmittedAt?: string | null;
+};
+
+export type UpdateHandoffChecklist200 = {
+  handoffChecklist?: HandoffChecklist | null;
+};
+
+export type CompleteDeliveryHandoff200 = {
+  handoffCompletedAt?: string | null;
+  handoffCompletedByUserId?: number | null;
+};
+
