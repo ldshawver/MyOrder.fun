@@ -735,18 +735,22 @@ router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req
   const email = entry.emailAddress;
 
   if (email && (!firstName || !lastName)) {
-    const [request] = await db
-      .select({
-        contactName: onboardingRequestsTable.contactName,
-        contactPhone: onboardingRequestsTable.contactPhone,
-      })
-      .from(onboardingRequestsTable)
-      .where(sql`lower(${onboardingRequestsTable.contactEmail}) = lower(${email})`)
-      .limit(1);
-    if (request?.contactName) {
-      const parts = request.contactName.trim().split(/\s+/).filter(Boolean);
-      firstName = firstName || request.contactName.trim();
-      lastName = lastName || (parts.length > 1 ? parts.slice(1).join(" ") : undefined);
+    try {
+      const [request] = await db
+        .select({
+          contactName: onboardingRequestsTable.contactName,
+          contactPhone: onboardingRequestsTable.contactPhone,
+        })
+        .from(onboardingRequestsTable)
+        .where(sql`lower(${onboardingRequestsTable.contactEmail}) = lower(${email})`)
+        .limit(1);
+      if (request?.contactName) {
+        const parts = request.contactName.trim().split(/\s+/).filter(Boolean);
+        firstName = firstName || request.contactName.trim();
+        lastName = lastName || (parts.length > 1 ? parts.slice(1).join(" ") : undefined);
+      }
+    } catch (err) {
+      req.log.warn({ err, email }, "Could not enrich waitlist invite name from onboarding request");
     }
   }
 
