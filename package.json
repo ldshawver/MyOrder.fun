@@ -19,5 +19,16 @@
     "prettier": "^3.8.1",
     "tsx": "catalog:",
     "typescript": "~5.9.2"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.2.3",
+    "@ant-design/pro-components": "^2.8.10",
+    "@plasmicapp/react-web": "^1.0.9",
+    "@plasmicpkgs/antd5": "^0.0.346",
+    "@plasmicpkgs/plasmic-basic-components": "^0.0.275",
+    "@plasmicpkgs/plasmic-rich-components": "^1.0.252",
+    "@plasmicpkgs/react-chartjs-2": "^1.0.156",
+    "chart.js": "^4.5.1",
+    "react-chartjs-2": "^5.3.1"
   }
 }
