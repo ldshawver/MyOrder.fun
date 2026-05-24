@@ -126,7 +126,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
   const toInsert = catalogRows
     .filter(item => !existingCatalogIds.has(item.id))
     .map((item, idx) => {
-      const stockValue = item.stockQuantity ?? item.inventoryAmount ?? "0";
+      const stockValue = item.inventoryAmount ?? item.stockQuantity ?? "0";
       const itemName = item.alavontName ?? item.displayName ?? item.name;
       return {
         tenantId: houseTenantId,

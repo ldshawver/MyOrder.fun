@@ -344,7 +344,7 @@ async function syncImportedCatalogToInventoryTemplates(tenantId: number): Promis
 
   for (const item of catalogRows) {
     const existing = byCatalogId.get(item.id) ?? (item.alavontId ? byAlavontId.get(item.alavontId) : undefined);
-    const stockValue = item.stockQuantity ?? item.inventoryAmount ?? "0";
+    const stockValue = item.inventoryAmount ?? item.stockQuantity ?? "0";
     const itemName = item.alavontName ?? item.displayName ?? item.name;
     const patch = {
       sectionName: item.alavontCategory ?? item.category ?? "Alavont",
@@ -779,6 +779,8 @@ router.post(
         // Quantity / unit
         inventoryAmount: amount !== null ? amount.toFixed(2) : null,
         unitMeasurement: rec.unit || null,
+        stockQuantity: amount !== null ? amount.toFixed(2) : null,
+        stockUnit: rec.unit || null,
         // Lucifer Cruz-facing fields
         luciferCruzName: lcName,
         luciferCruzImageUrl: lcImageUrl,

@@ -40,53 +40,84 @@ vi.mock("../../lib/singleTenant", () => ({
 }));
 
 // Track inserts/updates for assertions
-const state: { inserted: Record<string, unknown>[]; updated: Record<string, unknown>[] } = {
+const state: {
+  inserted: Record<string, unknown>[];
+  updated: Record<string, unknown>[];
+  inventoryTemplates: Record<string, unknown>[];
+} = {
   inserted: [],
   updated: [],
+  inventoryTemplates: [],
 };
 
 vi.mock("@workspace/db", () => {
   const adminSettingsTable = { _name: "admin_settings" };
-  const mkChain = () => {
+  const catalogItemsTable = {
+    _name: "catalog_items",
+    id: "id",
+    tenantId: "tenantId",
+    sku: "sku",
+    externalMenuId: "externalMenuId",
+    isWooManaged: "isWooManaged",
+    isLocalAlavont: "isLocalAlavont",
+  };
+  const inventoryTemplatesTable = {
+    _name: "inventory_templates",
+    id: "templateId",
+    tenantId: "templateTenantId",
+    catalogItemId: "templateCatalogItemId",
+    alavontId: "templateAlavontId",
+    displayOrder: "templateDisplayOrder",
+  };
+  const mkChain = (selection?: unknown) => {
+    const getRows = () => {
+      if (chain._table === adminSettingsTable) return [{ id: 1, tenantId: 1, importTemplateSpec: null }];
+      if (chain._table === catalogItemsTable && selection === undefined) {
+        return state.inserted.map((row, index) => ({ id: index + 1, ...row }));
+      }
+      if (chain._table === inventoryTemplatesTable) return state.inventoryTemplates;
+      return [];
+    };
     const chain: Record<string, unknown> & { _table?: unknown } = {};
     chain.from = vi.fn((table: unknown) => {
       chain._table = table;
       return chain;
     });
     chain.where = vi.fn(() => chain);
-    chain.limit = vi.fn(() => Promise.resolve(chain._table === adminSettingsTable ? [{ id: 1, tenantId: 1, importTemplateSpec: null }] : []));
+    chain.orderBy = vi.fn(() => Promise.resolve(getRows()));
+    chain.limit = vi.fn(() => Promise.resolve(getRows()));
+    chain.then = vi.fn((resolve: (value: unknown) => void) => resolve(getRows()));
     return chain;
   };
   return {
     db: {
       execute: vi.fn(() => Promise.resolve()),
-      select: vi.fn(() => mkChain()),
+      select: vi.fn((selection?: unknown) => mkChain(selection)),
       insert: vi.fn((table: { _name?: string }) => ({
         values: (vals: Record<string, unknown>) => {
-          if (table === catalogItemsTable) state.inserted.push(vals);
+          if (table._name === "catalog_items") state.inserted.push(vals);
+          if (table._name === "inventory_templates") state.inventoryTemplates.push(vals);
           return {
             returning: () => Promise.resolve([vals]),
             then: (resolve: (value: unknown) => void) => resolve(undefined),
           };
         },
       })),
-      update: vi.fn(() => ({
+      update: vi.fn((table: { _name?: string }) => ({
         set: (vals: Record<string, unknown>) => ({
           where: () => {
-            state.updated.push(vals);
+            if (table._name === "catalog_items") state.updated.push(vals);
             return Promise.resolve();
           },
         }),
       })),
     },
     adminSettingsTable,
-    catalogItemsTable: { id: "id", tenantId: "tenantId", sku: "sku", externalMenuId: "externalMenuId" },
+    catalogItemsTable,
+    inventoryTemplatesTable,
     auditLogsTable: { id: "id" },
   };
 });
-
-// Reference must come after the mock above
-const { catalogItemsTable } = await import("@workspace/db");
 
 const importRouter = (await import("../import")).default;
 
@@ -103,6 +134,7 @@ const fixture = (name: string): Buffer =>
 beforeEach(() => {
   state.inserted = [];
   state.updated = [];
+  state.inventoryTemplates = [];
 });
 
 describe("menu import — Alavont canonical import spec", () => {
