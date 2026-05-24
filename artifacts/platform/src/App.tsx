@@ -47,6 +47,7 @@ import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
 import Layout from "@/components/layout";
+import Homepage from "@/components/Homepage";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -391,6 +392,9 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
+        <Route path="/plasmic-test">
+          <Homepage />
+        </Route>
         <Route component={NotFound} />
         </Switch>
       </Layout>
