@@ -165,6 +165,9 @@ jobs:
             cd /opt/alavont/deploy
             DOMAIN="myorder.fun"
 
+            echo "▶ Releasing public web ports from Coolify proxy if present..."
+            docker stop coolify-proxy 2>/dev/null || true
+
             echo "▶ Stopping all services..."
             docker compose down 2>&1 || true
             sleep 3
@@ -224,6 +227,7 @@ jobs:
             command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
 
             echo "▶ Starting all services..."
+            docker stop coolify-proxy 2>/dev/null || true
             docker compose up -d < /dev/null
 
             echo "▶ Refreshing public web edge..."
