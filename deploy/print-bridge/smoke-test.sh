@@ -13,7 +13,9 @@ if [[ -z "${API_KEY}" ]]; then
 fi
 
 echo "== healthz =="
-curl -fsS "${BRIDGE_URL}/healthz"
+if ! curl -fsS "${BRIDGE_URL}/healthz"; then
+  echo "healthz unavailable; continuing with authenticated /health"
+fi
 echo
 echo
 
@@ -28,12 +30,14 @@ echo
 echo
 
 echo "== print =="
-PAYLOAD="$(printf '\033@=== MYORDER BRIDGE TEST ===\nQueue: %s\n%s\n\n\n\035V1' "${QUEUE}" "$(date -Is)" | base64 | tr -d '\n')"
+TEXT="$(printf '\033@=== MYORDER BRIDGE TEST ===\nQueue: %s\n%s\n\n\n\035V1' "${QUEUE}" "$(date '+%Y-%m-%dT%H:%M:%S%z')" )"
+PAYLOAD="$(printf '%s' "${TEXT}" | base64 | tr -d '\n')"
+BODY="$(node -e 'const [role, queue, text, payloadBase64] = process.argv.slice(1); process.stdout.write(JSON.stringify({ role, printer: queue, printerName: queue, text, payloadBase64, copies: 1 }));' "${ROLE}" "${QUEUE}" "${TEXT}" "${PAYLOAD}")"
 curl -fsS \
   -H "Content-Type: application/json" \
   -H "x-api-key: ${API_KEY}" \
-  -d "{\"role\":\"${ROLE}\",\"printer\":\"${QUEUE}\",\"payloadBase64\":\"${PAYLOAD}\",\"copies\":1}" \
+  -d "${BODY}" \
   "${BRIDGE_URL}/print"
 echo
 echo
-echo "Smoke test request completed. Confirm the physical receipt printed."
+echo "Smoke test request completed. Confirm the physical printout."
