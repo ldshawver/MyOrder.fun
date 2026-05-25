@@ -29,10 +29,6 @@ author = "agent"
 task = "workflow.run"
 args = "lint"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start Platform"
-
   [[workflows.workflow]]
   name = "lint"
   author = "agent"
@@ -43,18 +39,6 @@ args = "Start Platform"
 
   [workflows.workflow.metadata]
   isValidation = true
-
-[[workflows.workflow]]
-name = "Start Platform"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PORT=5173 BASE_PATH=/ node artifacts/platform/dev-server.mjs"
-waitForPort = 5173
-
-[workflows.workflow.metadata]
-outputType = "webview"
 
   [agent]
   stack = "PNPM_WORKSPACE"
