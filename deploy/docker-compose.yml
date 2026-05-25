@@ -77,6 +77,15 @@ services:
       # Default uses the bind-mounted host socket below; override with an
       # IP:port like "host.docker.internal:631" if you front CUPS over IPP.
       CUPS_SERVER: ${CUPS_SERVER:-/var/run/cups/cups.sock}
+      # Tailscale print bridge settings. These are used for Mac Studio USB
+      # label printing and remote receipt/label bridge diagnostics.
+      PRINT_BRIDGE_URL: ${PRINT_BRIDGE_URL:-}
+      PRINT_BRIDGE_API_KEY: ${PRINT_BRIDGE_API_KEY:-}
+      PRINT_SERVER_HOST: ${PRINT_SERVER_HOST:-}
+      RECEIPT_PRINT_ENABLED: ${RECEIPT_PRINT_ENABLED:-false}
+      RECEIPT_PRINTER_NAME: ${RECEIPT_PRINTER_NAME:-receipt}
+      LABEL_PRINT_ENABLED: ${LABEL_PRINT_ENABLED:-false}
+      LABEL_PRINTER_NAME: ${LABEL_PRINTER_NAME:-Label_Themal_Printer}
     volumes:
       # Bind-mount the host's CUPS socket so `lp -d <queue>` inside the
       # container drives the host's CUPS daemon. The host MUST have CUPS

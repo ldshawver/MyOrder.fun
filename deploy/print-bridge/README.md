@@ -1,6 +1,6 @@
 # MyOrder Print Bridge
 
-Production HTTP print bridge for MyOrder.fun. It runs on the Raspberry Pi over Tailscale and forwards print jobs to CUPS, raw USB, or a direct socket printer.
+Production HTTP print bridge for MyOrder.fun. It can run on the Raspberry Pi or Mac Studio over Tailscale and forwards print jobs to CUPS, raw USB, or a direct socket printer.
 
 Current production target:
 
@@ -10,7 +10,7 @@ Current production target:
 - Receipt CUPS queue: `receipt`
 - Label printer: `PL70e-BT`
 - Mac label CUPS queue: `Label_Themal_Printer`
-- Bridge URL used by the app: `http://100.83.99.2:3100`
+- Bridge URL used by the app: `http://100.83.99.2:3100` or the Mac Studio Tailscale URL if the label printer is Mac-hosted
 
 ## API Compatibility
 
@@ -92,6 +92,35 @@ From the VPS or any Tailscale machine:
 ```bash
 curl -fsS http://100.83.99.2:3100/healthz
 curl -fsS -H "x-api-key: $PRINT_BRIDGE_API_KEY" http://100.83.99.2:3100/printers
+```
+
+For a Mac Studio USB label printer, run the bridge on the Mac and test it from the VPS:
+
+```bash
+# Mac Studio
+cd /path/to/MyOrder.fun/deploy/print-bridge
+npm install
+lpstat -p -d
+printf 'MYORDER MAC LABEL TEST\n\n' | lp -d Label_Themal_Printer
+PRINT_BRIDGE_API_KEY="$PRINT_BRIDGE_API_KEY" PRINTER_NAME=Label_Themal_Printer CUPS_RAW=0 node server.js
+```
+
+```bash
+# VPS
+curl -fsS http://<mac-tailscale-ip>:3100/healthz
+curl -fsS -H "x-api-key: $PRINT_BRIDGE_API_KEY" http://<mac-tailscale-ip>:3100/printers
+bash /opt/alavont/deploy/print-bridge/smoke-test.sh \
+  http://<mac-tailscale-ip>:3100 "$PRINT_BRIDGE_API_KEY" Label_Themal_Printer label
+```
+
+Set the VPS `/opt/alavont/deploy/.env` to match the reachable Mac Studio Tailscale address:
+
+```bash
+PRINT_BRIDGE_URL=http://<mac-tailscale-ip>:3100
+PRINT_SERVER_HOST=<mac-tailscale-ip>
+PRINT_BRIDGE_API_KEY=<same key used by the Mac bridge>
+LABEL_PRINT_ENABLED=true
+LABEL_PRINTER_NAME=Label_Themal_Printer
 ```
 
 ## PL70e-BT Bluetooth Provisioning

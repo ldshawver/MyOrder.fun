@@ -4,10 +4,11 @@ set -euo pipefail
 BRIDGE_URL="${1:-${PRINT_BRIDGE_URL:-http://127.0.0.1:3100}}"
 API_KEY="${2:-${PRINT_BRIDGE_API_KEY:-}}"
 QUEUE="${3:-${PRINTER_NAME:-receipt}}"
+ROLE="${4:-receipt}"
 
 if [[ -z "${API_KEY}" ]]; then
-  echo "Usage: bash smoke-test.sh <bridge-url> <api-key> [queue]"
-  echo "Example: bash smoke-test.sh http://100.83.99.2:3100 abc123 receipt"
+  echo "Usage: bash smoke-test.sh <bridge-url> <api-key> [queue] [role]"
+  echo "Example: bash smoke-test.sh http://100.83.99.2:3100 abc123 receipt receipt"
   exit 1
 fi
 
@@ -31,7 +32,7 @@ PAYLOAD="$(printf '\033@=== MYORDER BRIDGE TEST ===\nQueue: %s\n%s\n\n\n\035V1' 
 curl -fsS \
   -H "Content-Type: application/json" \
   -H "x-api-key: ${API_KEY}" \
-  -d "{\"role\":\"receipt\",\"printer\":\"${QUEUE}\",\"payloadBase64\":\"${PAYLOAD}\",\"copies\":1}" \
+  -d "{\"role\":\"${ROLE}\",\"printer\":\"${QUEUE}\",\"payloadBase64\":\"${PAYLOAD}\",\"copies\":1}" \
   "${BRIDGE_URL}/print"
 echo
 echo
