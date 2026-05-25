@@ -25,7 +25,7 @@ CURRENT CATALOG ({{itemCount}} items available):
 CORE RULES:
 - Always be warm, direct, and helpful. Skip filler phrases like "Great question!" or "Certainly!".
 - Reference real product names and prices from the catalog above. Never invent products.
-- When a customer wants to order, tell them to click "Order This Item" on any product, or go to New Order from the Orders tab.
+- When a customer wants to order, tell them to go to the New Order page from the Orders tab and search for the product.
 - If someone asks to build an order or says what they want, name 1-3 specific matching products from the catalog with prices.
 - If they ask what's popular, pick 3 items from different categories and describe them briefly with prices.
 - Keep replies to 2-5 sentences. Be conversational, not corporate.
@@ -115,13 +115,17 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
   const catalog = await db.select().from(catalogItemsTable)
     .orderBy(asc(catalogItemsTable.name));
 
-  const catalogContext = catalog
-    .filter(i => i.isAvailable)
-    .slice(0, 30)
-    .map(i => `- ${i.name} (${i.category}) $${parseFloat(i.price as string).toFixed(2)}${i.description ? ": " + i.description : ""}`)
-    .join("\n");
+  const availableItems = catalog.filter(i => i.isAvailable === true && i.alavontInStock !== false);
 
-  const availableItems = catalog.filter(i => i.isAvailable);
+  const catalogContext = availableItems
+    .slice(0, 50)
+    .map(i => {
+      const displayName = i.alavontName ?? i.name;
+      const displayCat = i.alavontCategory ?? i.category;
+      const desc = i.alavontDescription ?? i.description ?? "";
+      return `- ${displayName} (${displayCat}) $${parseFloat(i.price as string).toFixed(2)}${desc ? ": " + desc : ""}`;
+    })
+    .join("\n");
 
   const promptTemplate = await loadConciergePromptTemplate();
   const systemPrompt = renderConciergePrompt(promptTemplate, {
@@ -129,15 +133,17 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     catalog: catalogContext,
   });
 
-  let reply = "";
+  let reply: string;
   let suggestedItems: typeof catalogItemsTable.$inferSelect[];
 
   try {
     reply = await callAI(systemPrompt, body.data.messages);
 
     // Extract mentioned product names from the reply to suggest
+    const replyLow = reply.toLowerCase();
     const mentionedNames = availableItems.filter(i =>
-      reply.toLowerCase().includes(i.name.toLowerCase())
+      replyLow.includes(i.name.toLowerCase()) ||
+      (i.alavontName && replyLow.includes(i.alavontName.toLowerCase()))
     ).slice(0, 3);
     suggestedItems = mentionedNames;
   } catch (err) {
@@ -151,20 +157,20 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
       suggestedItems = [];
     } else if (lastUserMsg.includes("order") || lastUserMsg.includes("buy") || lastUserMsg.includes("get") || lastUserMsg.includes("want")) {
       const picks = availableItems.slice(0, 3);
-      reply = `Let's build your order! Here are some items to start with:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nClick any product and hit "Order This Item" to add it, or head to the Orders tab to build from scratch.`;
+      reply = `Let's build your order! Here are some items to start with:\n${picks.map(i => `• ${i.alavontName ?? i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nOpen the Orders tab, tap New Order, and search for any product to add it.`;
       suggestedItems = picks;
     } else if (lastUserMsg.includes("popular") || lastUserMsg.includes("best") || lastUserMsg.includes("recommend")) {
       const picks = availableItems.slice(0, 3);
-      reply = `Here are some top picks right now:\n${picks.map(i => `• ${i.name} (${i.category}) — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
+      reply = `Here are some top picks right now:\n${picks.map(i => `• ${i.alavontName ?? i.name} (${i.alavontCategory ?? i.category}) — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
       suggestedItems = picks;
     } else if (lastUserMsg.includes("price") || lastUserMsg.includes("cost") || lastUserMsg.includes("cheap") || lastUserMsg.includes("afford")) {
       const sorted = [...availableItems].sort((a, b) => parseFloat(a.price as string) - parseFloat(b.price as string));
       const picks = sorted.slice(0, 3);
-      reply = `Here are our most affordable options:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
+      reply = `Here are our most affordable options:\n${picks.map(i => `• ${i.alavontName ?? i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}`;
       suggestedItems = picks;
     } else {
       const picks = availableItems.slice(0, 3);
-      reply = `We've got ${availableItems.length} items available right now. Here's a quick look:\n${picks.map(i => `• ${i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nWhat are you looking for? I'll find the right fit.`;
+      reply = `We've got ${availableItems.length} items available right now. Here's a quick look:\n${picks.map(i => `• ${i.alavontName ?? i.name} — $${parseFloat(i.price as string).toFixed(2)}`).join("\n")}\n\nWhat are you looking for? I'll find the right fit.`;
       suggestedItems = picks;
     }
   }

@@ -241,25 +241,25 @@ function CatalogItemCard({
 
         <div className="grid grid-cols-2 gap-2 mt-1">
           <Link
-            href={`/catalog/${item.id}`}
-            className="flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"
-            style={isLC
-              ? { borderColor: "rgba(220,20,60,0.4)", color: "#FCA5A5" }
-              : { borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
-            data-testid={`link-product-${item.id}`}
-          >
-            <ShoppingCart size={11} />
-            Add
-          </Link>
-          <Link
             href={`/orders/new?item=${item.id}`}
-            className="flex items-center justify-center w-full text-xs font-semibold py-2.5 rounded-xl transition-all"
+            className="flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl transition-all"
             style={isLC
               ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }
               : { background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
             data-testid={`link-buy-now-${item.id}`}
           >
-            Buy Now
+            <ShoppingCart size={11} />
+            Add to Cart
+          </Link>
+          <Link
+            href={`/catalog/${item.id}`}
+            className="flex items-center justify-center w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"
+            style={isLC
+              ? { borderColor: "rgba(220,20,60,0.4)", color: "#FCA5A5" }
+              : { borderColor: "rgba(var(--primary), 0.3)", color: "hsl(var(--primary))" }}
+            data-testid={`link-product-${item.id}`}
+          >
+            Details
           </Link>
         </div>
       </div>

@@ -680,7 +680,7 @@ export default function AiConcierge() {
                               transition={{ delay: i * 0.06, type: "spring", stiffness: 340 }}
                             >
                               <Link
-                                href={`/catalog/${item.id}`}
+                                href={`/orders/new?item=${item.id}`}
                                 className="flex items-center gap-3 p-2.5 rounded-2xl border border-border/20 hover:border-primary/35 bg-white/3 hover:bg-primary/5 transition-all group"
                               >
                                 <div className="w-11 h-11 rounded-xl bg-muted/20 shrink-0 overflow-hidden">

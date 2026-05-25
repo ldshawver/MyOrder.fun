@@ -323,7 +323,7 @@ export default function NewOrder() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)] gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)] gap-6 items-start">
         {/* Receipt Cart */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-card">
           <CardHeader className="pb-3 bg-muted/10 border-b border-border/50">
@@ -389,9 +389,9 @@ export default function NewOrder() {
                     </div>
                     <div className="flex items-center justify-between gap-4 mt-3">
                       <div className="flex items-center border border-border/50 rounded-sm bg-background">
-                        <button className="px-2 py-1 text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, -1)} data-testid={`button-decrease-${item.id}`}><Minus size={12}/></button>
-                        <span className="w-6 text-center text-xs font-mono font-medium">{item.quantity}</span>
-                        <button className="px-2 py-1 text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, 1)} data-testid={`button-increase-${item.id}`}><Plus size={12}/></button>
+                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, -1)} data-testid={`button-decrease-${item.id}`}><Minus size={14}/></button>
+                        <span className="w-8 text-center text-xs font-mono font-medium">{item.quantity}</span>
+                        <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, 1)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
                       </div>
                       <button className="text-muted-foreground hover:text-destructive transition-colors p-1" onClick={() => removeFromCart(item.id)} data-testid={`button-remove-${item.id}`}>
                         <Trash size={14} />
