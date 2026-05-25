@@ -117,29 +117,14 @@ services:
     networks:
       - internal
 
-  # ── Nginx Reverse Proxy ───────────────────────────────────
-  nginx:
-    image: nginx:alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # deploy.yml copies /etc/letsencrypt/live/myorder.fun/{fullchain,privkey}.pem
-      # into nginx/ssl/ before starting the container — plain files, no symlinks.
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - nginx_logs:/var/log/nginx
-    depends_on:
-      - api
-      - platform
-    networks:
-      - internal
-      - external
+  # NOTE: TLS termination is handled by Traefik (coolify-proxy) on the host.
+  # A separate nginx container would conflict with Traefik on ports 80/443 and
+  # will fail to start. Traefik proxies directly to the `platform` container
+  # on port 3000 and to the `api` container on port 8080.
+  # To configure HTTPS: Coolify dashboard → Servers → Proxy → enable Auto SSL.
 
 volumes:
   postgres_data:
-  nginx_logs:
 
 networks:
   internal:
