@@ -5,12 +5,9 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
-import type { CartAction } from './cartAction';
 import type { CatalogItem } from './catalogItem';
 
-export interface AiChatResponse {
-  reply: string;
-  suggestedItems?: CatalogItem[];
-  cartActions?: CartAction[];
-  conversationId?: string;
+export interface AiCatalogSearchResponse {
+  items: CatalogItem[];
+  query: string;
 }

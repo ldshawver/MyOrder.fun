@@ -5,10 +5,12 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { AiCartItem } from './aiCartItem';
 import type { AiChatBodyContext } from './aiChatBodyContext';
 import type { AiChatMessage } from './aiChatMessage';
 
 export interface AiChatBody {
   messages: AiChatMessage[];
+  cart?: AiCartItem[];
   context?: AiChatBodyContext;
 }

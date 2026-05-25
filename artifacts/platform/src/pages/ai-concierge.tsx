@@ -3,8 +3,9 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { useAiConciergeChat, AiChatMessage, type CatalogItem } from "@workspace/api-client-react";
 import { useAuth } from "@clerk/react";
 import { Input } from "@/components/ui/input";
-import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw } from "lucide-react";
+import { Send, ImageOff, ChevronRight, ChevronLeft, FlaskConical, ShoppingCart, Package, X, RotateCcw, Plus, Trash2 } from "lucide-react";
 import { Link } from "wouter";
+import { useCart } from "@/contexts/CartContext";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
 const ZAPPY_HERO_IMAGE = "/zappy-new-animated.gif";
@@ -354,6 +355,7 @@ const QUICK_PROMPTS = [
 
 export default function AiConcierge() {
   const { getToken } = useAuth();
+  const { cart, addItem, removeItem, itemCount, cartTotal } = useCart();
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiChatMessage[]>([
     { role: "assistant", content: INITIAL_MSG },
@@ -364,6 +366,7 @@ export default function AiConcierge() {
   const [zappyMood, setZappyMood] = useState<ZappyMood>("idle");
   const [introSteps, setIntroSteps] = useState<IntroStep[]>(DEFAULT_STEPS);
   const [promotedItems, setPromotedItems] = useState<CatalogItem[]>([]);
+  const [cartActionFeedback, setCartActionFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     getToken().then(token => {
@@ -393,11 +396,39 @@ export default function AiConcierge() {
     setZappyMood("thinking");
 
     chatMutation.mutate(
-      { data: { messages: newMsgs } },
+      {
+        data: {
+          messages: newMsgs,
+          cart: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity, name: i.name, price: i.price })),
+        },
+      },
       {
         onSuccess: res => {
           setMessages(prev => [...prev, { role: "assistant" as const, content: res.reply }]);
           if (res.suggestedItems?.length) setSuggestedItems(res.suggestedItems);
+
+          // Execute cart actions returned by Zappy
+          if (res.cartActions?.length) {
+            const allItems = [...(res.suggestedItems ?? []), ...suggestedItems, ...promotedItems];
+            const feedback: string[] = [];
+            for (const action of res.cartActions) {
+              if (action.action === "add") {
+                const item = allItems.find(i => i.id === action.catalogItemId);
+                if (item) {
+                  addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null }, action.quantity ?? 1);
+                  feedback.push(`+${item.name}`);
+                }
+              } else if (action.action === "remove") {
+                removeItem(action.catalogItemId);
+                if (action.itemName) feedback.push(`−${action.itemName}`);
+              }
+            }
+            if (feedback.length) {
+              setCartActionFeedback(feedback.join(" · "));
+              setTimeout(() => setCartActionFeedback(null), 3500);
+            }
+          }
+
           setZappyMood("speaking");
           setTimeout(() => setZappyMood("idle"), 3500);
         },
@@ -407,7 +438,7 @@ export default function AiConcierge() {
         },
       }
     );
-  }, [input, messages, chatMutation]);
+  }, [input, messages, chatMutation, cart, addItem, removeItem, suggestedItems, promotedItems]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -419,6 +450,22 @@ export default function AiConcierge() {
       <SendFlash show={sendFlash} />
       <AnimatePresence>
         {showIntro && <WelcomeModal onClose={() => setShowIntro(false)} steps={introSteps} />}
+      </AnimatePresence>
+
+      {/* Cart action feedback toast */}
+      <AnimatePresence>
+        {cartActionFeedback && (
+          <motion.div
+            className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 px-5 py-2.5 rounded-2xl text-sm font-bold text-white flex items-center gap-2 pointer-events-none"
+            style={{ background: "linear-gradient(135deg, #3B82F6, #7C3AED)", boxShadow: "0 8px 32px rgba(59,130,246,0.45)" }}
+            initial={{ opacity: 0, y: 16, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.95 }}
+          >
+            <ShoppingCart size={14} />
+            Cart updated: {cartActionFeedback}
+          </motion.div>
+        )}
       </AnimatePresence>
 
       <div className="relative h-[calc(100dvh-5rem)] flex flex-col gap-3 max-w-6xl mx-auto" style={{ zIndex: 1 }}>
@@ -602,6 +649,47 @@ export default function AiConcierge() {
             animate={{ opacity: 1, x: 0 }}
             transition={{ type: "spring", stiffness: 260, damping: 22, delay: 0.14 }}
           >
+            {/* Mini cart — shown when cart has items */}
+            <AnimatePresence>
+              {cart.length > 0 && (
+                <motion.div
+                  className="rounded-3xl p-4"
+                  style={{ background: "linear-gradient(160deg, hsl(220 38% 10% / 0.95), hsl(225 40% 8% / 0.95))", border: "1px solid rgba(59,130,246,0.22)" }}
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.2em]" style={{ color: "rgba(148,163,184,0.6)" }}>
+                      🛒 Your Cart ({itemCount})
+                    </div>
+                    <div className="text-xs font-black" style={{ color: "#60A5FA" }}>${cartTotal.toFixed(2)}</div>
+                  </div>
+                  <div className="space-y-1.5 max-h-32 overflow-y-auto mb-3">
+                    {cart.map(item => (
+                      <div key={item.id} className="flex items-center gap-2 text-xs">
+                        <span className="flex-1 font-medium truncate">{item.name}</span>
+                        <span className="text-muted-foreground shrink-0">×{item.quantity}</span>
+                        <button
+                          onClick={() => removeItem(item.id)}
+                          className="text-muted-foreground/40 hover:text-red-400 transition-colors shrink-0"
+                        >
+                          <Trash2 size={10} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <Link
+                    href="/orders/new"
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-2xl text-xs font-black text-white"
+                    style={{ background: "linear-gradient(135deg, #3B82F6, #7C3AED)", boxShadow: "0 4px 16px rgba(59,130,246,0.3)" }}
+                  >
+                    <ShoppingCart size={12} /> Checkout
+                  </Link>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Quick actions */}
             <div
               className="rounded-3xl p-4"
@@ -679,10 +767,7 @@ export default function AiConcierge() {
                               animate={{ opacity: 1, scale: 1, y: 0 }}
                               transition={{ delay: i * 0.06, type: "spring", stiffness: 340 }}
                             >
-                              <Link
-                                href={`/orders/new?item=${item.id}`}
-                                className="flex items-center gap-3 p-2.5 rounded-2xl border border-border/20 hover:border-primary/35 bg-white/3 hover:bg-primary/5 transition-all group"
-                              >
+                                      <div className="flex items-center gap-3 p-2.5 rounded-2xl border border-border/20 hover:border-primary/35 bg-white/3 hover:bg-primary/5 transition-all group">
                                 <div className="w-11 h-11 rounded-xl bg-muted/20 shrink-0 overflow-hidden">
                                   {item.imageUrl ? (
                                     <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
@@ -695,7 +780,17 @@ export default function AiConcierge() {
                                   <div className="text-xs font-bold truncate mt-0.5">{item.name}</div>
                                   <div className="text-xs font-black mt-0.5" style={{ color: "#60A5FA" }}>${(+item.price).toFixed(2)}</div>
                                 </div>
-                              </Link>
+                                <motion.button
+                                  onClick={() => addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null })}
+                                  className="shrink-0 w-8 h-8 rounded-xl flex items-center justify-center text-white"
+                                  style={{ background: "linear-gradient(135deg, rgba(59,130,246,0.7), rgba(139,92,246,0.6))", border: "1px solid rgba(96,165,250,0.4)" }}
+                                  whileHover={{ scale: 1.15 }}
+                                  whileTap={{ scale: 0.88 }}
+                                  title={`Add ${item.name} to cart`}
+                                >
+                                  <Plus size={12} />
+                                </motion.button>
+                              </div>
                             </motion.div>
                           ))}
                         </AnimatePresence>

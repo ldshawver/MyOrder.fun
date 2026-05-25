@@ -1830,6 +1830,12 @@ export const AiConciergeChatBody = zod.object({
   "role": zod.enum(['user', 'assistant']),
   "content": zod.string()
 })),
+  "cart": zod.array(zod.object({
+  "catalogItemId": zod.number(),
+  "quantity": zod.number(),
+  "name": zod.string().optional(),
+  "price": zod.number().optional()
+})).optional(),
   "context": zod.object({
   "currentCartItems": zod.array(zod.number()).optional(),
   "currentOrderId": zod.number().optional()
@@ -1881,7 +1887,69 @@ export const AiConciergeChatResponse = zod.object({
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })).optional(),
+  "cartActions": zod.array(zod.object({
+  "action": zod.enum(['add', 'remove', 'update_quantity']),
+  "catalogItemId": zod.number(),
+  "quantity": zod.number().optional(),
+  "itemName": zod.string().optional()
+})).optional(),
   "conversationId": zod.string().optional()
+})
+
+
+/**
+ * @summary Semantic keyword search over the catalog
+ */
+export const AiCatalogSearchBody = zod.object({
+  "query": zod.string(),
+  "limit": zod.number().optional()
+})
+
+export const AiCatalogSearchResponse = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "tenantId": zod.number(),
+  "name": zod.string(),
+  "description": zod.string().optional(),
+  "category": zod.string(),
+  "sku": zod.string().optional(),
+  "price": zod.number(),
+  "compareAtPrice": zod.number().optional(),
+  "stockQuantity": zod.number().optional(),
+  "isAvailable": zod.boolean(),
+  "imageUrl": zod.string().optional(),
+  "mediaGallery": zod.array(zod.object({
+  "type": zod.enum(['image', 'video']),
+  "src": zod.string(),
+  "alt": zod.string().nullish()
+})).optional(),
+  "tags": zod.array(zod.string()).optional(),
+  "metadata": zod.record(zod.string(), zod.unknown()).optional(),
+  "isFeatured": zod.boolean().optional(),
+  "isSaleFeatured": zod.boolean().optional(),
+  "alavontName": zod.string().nullish(),
+  "alavontDescription": zod.string().nullish(),
+  "alavontCategory": zod.string().nullish(),
+  "alavontImageUrl": zod.string().nullish(),
+  "alavontInStock": zod.boolean().nullish(),
+  "luciferCruzName": zod.string().nullish(),
+  "luciferCruzImageUrl": zod.string().nullish(),
+  "luciferCruzDescription": zod.string().nullish(),
+  "luciferCruzCategory": zod.string().nullish(),
+  "regularPrice": zod.number().nullish(),
+  "homiePrice": zod.number().nullish(),
+  "merchantProcessingMode": zod.string().nullish(),
+  "merchantProductSource": zod.string().nullish(),
+  "isWooManaged": zod.boolean().optional(),
+  "isLocalAlavont": zod.boolean().optional(),
+  "wooProductId": zod.string().nullish(),
+  "wooVariationId": zod.string().nullish(),
+  "receiptName": zod.string().nullish(),
+  "labName": zod.string().nullish(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})),
+  "query": zod.string()
 })
 
 

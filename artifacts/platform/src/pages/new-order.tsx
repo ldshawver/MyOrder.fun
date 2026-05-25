@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
 import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, useTokenizePayment, useConfirmPayment, type CatalogItem } from "@workspace/api-client-react";
+import { useCart } from "@/contexts/CartContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,6 @@ import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePush
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
-type CartItem = { id: number; name: string; price: number; quantity: number };
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct";
 type DeliveryQuote = {
@@ -67,19 +67,9 @@ const CONVERSION_NOTE = "Items in this cart will be converted to the appropriate
 export default function NewOrder() {
   const [, setLocation] = useLocation();
   const { brand } = useBrand();
+  const { cart, addItem, removeItem, updateQuantity, replaceCart, clearCart } = useCart();
   const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
-  const [carts, setCarts] = useState<{ alavont: CartItem[]; lucifer_cruz: CartItem[] }>({
-    alavont: [],
-    lucifer_cruz: [],
-  });
-  const cart = carts[brand];
-  const setCart = (updater: CartItem[] | ((prev: CartItem[]) => CartItem[])) => {
-    setCarts(prev => ({
-      ...prev,
-      [brand]: typeof updater === "function" ? updater(prev[brand]) : updater,
-    }));
-  };
   const [shippingAddress, setShippingAddress] = useState("");
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethod>("pickup");
   const [deliveryQuote, setDeliveryQuote] = useState<DeliveryQuote | null>(null);
@@ -111,12 +101,9 @@ export default function NewOrder() {
   useEffect(() => {
     if (preItem && !preloaded.current) {
       preloaded.current = true;
-      setCarts(prev => ({
-        ...prev,
-        [brand]: [{ id: preItem.id, name: preItem.name, price: preItem.price, quantity: 1 }],
-      }));
+      replaceCart([{ id: preItem.id, name: preItem.name, price: preItem.price, quantity: 1 }]);
     }
-  }, [preItem, brand]);
+  }, [preItem, replaceCart]);
 
   const catalogMode = brand === "lucifer_cruz" ? "lucifer" : "alavont";
   const { data: catalog } = useListCatalogItems(
@@ -155,39 +142,11 @@ export default function NewOrder() {
     }
   }, [cart, upsellMutation]);
 
-  const addToCart = (item: CatalogItem) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.id === item.id);
-      if (existing) {
-        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
-      }
-      return [...prev, { id: item.id, name: item.name, price: item.price, quantity: 1 }];
-    });
-  };
+  const addToCart = (item: CatalogItem) => addItem(item);
 
   const addPromotedToCart = (item: PromotedItem) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.id === item.id);
-      if (existing) {
-        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
-      }
-      return [...prev, { id: item.id, name: item.name, price: item.price, quantity: 1 }];
-    });
+    addItem(item);
     setReviewedLastItemPrompt(true);
-  };
-
-  const updateQuantity = (id: number, delta: number) => {
-    setCart(prev => prev.map(i => {
-      if (i.id === id) {
-        const newQ = Math.max(1, i.quantity + delta);
-        return { ...i, quantity: newQ };
-      }
-      return i;
-    }));
-  };
-
-  const removeFromCart = (id: number) => {
-    setCart(prev => prev.filter(i => i.id !== id));
   };
 
   const handlePreviewConversion = async () => {
@@ -282,6 +241,7 @@ export default function NewOrder() {
       }
 
       notifyOrderPlaced(order.id, user?.firstName || undefined);
+      clearCart();
       try {
         const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
         sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
@@ -393,7 +353,7 @@ export default function NewOrder() {
                         <span className="w-8 text-center text-xs font-mono font-medium">{item.quantity}</span>
                         <button className="h-9 w-9 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors" onClick={() => updateQuantity(item.id, 1)} data-testid={`button-increase-${item.id}`}><Plus size={14}/></button>
                       </div>
-                      <button className="text-muted-foreground hover:text-destructive transition-colors p-1" onClick={() => removeFromCart(item.id)} data-testid={`button-remove-${item.id}`}>
+                      <button className="text-muted-foreground hover:text-destructive transition-colors p-1" onClick={() => removeItem(item.id)} data-testid={`button-remove-${item.id}`}>
                         <Trash size={14} />
                       </button>
                     </div>

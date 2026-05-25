@@ -970,6 +970,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/AiChatResponse"
 
+  /ai/catalog-search:
+    post:
+      operationId: aiCatalogSearch
+      tags: [ai]
+      summary: Semantic keyword search over the catalog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiCatalogSearchBody"
+      responses:
+        "200":
+          description: Matching catalog items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiCatalogSearchResponse"
+
   /ai/upsell:
     post:
       operationId: aiUpsellSuggestions
@@ -2563,6 +2582,33 @@ components:
           type: string
       required: [role, content]
 
+    CartAction:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [add, remove, update_quantity]
+        catalogItemId:
+          type: integer
+        quantity:
+          type: integer
+        itemName:
+          type: string
+      required: [action, catalogItemId]
+
+    AiCartItem:
+      type: object
+      properties:
+        catalogItemId:
+          type: integer
+        quantity:
+          type: integer
+        name:
+          type: string
+        price:
+          type: number
+      required: [catalogItemId, quantity]
+
     AiChatBody:
       type: object
       properties:
@@ -2570,6 +2616,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AiChatMessage"
+        cart:
+          type: array
+          items:
+            $ref: "#/components/schemas/AiCartItem"
         context:
           type: object
           properties:
@@ -2590,9 +2640,33 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CatalogItem"
+        cartActions:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartAction"
         conversationId:
           type: string
       required: [reply]
+
+    AiCatalogSearchBody:
+      type: object
+      properties:
+        query:
+          type: string
+        limit:
+          type: integer
+      required: [query]
+
+    AiCatalogSearchResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+        query:
+          type: string
+      required: [items, query]
 
     AiUpsellBody:
       type: object

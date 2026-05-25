@@ -24,6 +24,8 @@ import type {
   AdjustOrderEtaBody,
   AdminSettings,
   AdminStats,
+  AiCatalogSearchBody,
+  AiCatalogSearchResponse,
   AiChatBody,
   AiChatResponse,
   AiUpsellBody,
@@ -3386,6 +3388,77 @@ export const useAiConciergeChat = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getAiConciergeChatMutationOptions(options));
+    }
+
+/**
+ * @summary Semantic keyword search over the catalog
+ */
+export const getAiCatalogSearchUrl = () => {
+
+
+
+
+  return `/api/ai/catalog-search`
+}
+
+export const aiCatalogSearch = async (aiCatalogSearchBody: AiCatalogSearchBody, options?: RequestInit): Promise<AiCatalogSearchResponse> => {
+
+  return customFetch<AiCatalogSearchResponse>(getAiCatalogSearchUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      aiCatalogSearchBody,)
+  }
+);}
+
+
+
+
+export const getAiCatalogSearchMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof aiCatalogSearch>>, TError,{data: BodyType<AiCatalogSearchBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof aiCatalogSearch>>, TError,{data: BodyType<AiCatalogSearchBody>}, TContext> => {
+
+const mutationKey = ['aiCatalogSearch'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof aiCatalogSearch>>, {data: BodyType<AiCatalogSearchBody>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  aiCatalogSearch(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AiCatalogSearchMutationResult = NonNullable<Awaited<ReturnType<typeof aiCatalogSearch>>>
+    export type AiCatalogSearchMutationBody = BodyType<AiCatalogSearchBody>
+    export type AiCatalogSearchMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Semantic keyword search over the catalog
+ */
+export const useAiCatalogSearch = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof aiCatalogSearch>>, TError,{data: BodyType<AiCatalogSearchBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof aiCatalogSearch>>,
+        TError,
+        {data: BodyType<AiCatalogSearchBody>},
+        TContext
+      > => {
+      return useMutation(getAiCatalogSearchMutationOptions(options));
     }
 
 /**

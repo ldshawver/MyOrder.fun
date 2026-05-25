@@ -909,6 +909,29 @@ export interface AiChatMessage {
   content: string;
 }
 
+export type CartActionAction = typeof CartActionAction[keyof typeof CartActionAction];
+
+
+export const CartActionAction = {
+  add: 'add',
+  remove: 'remove',
+  update_quantity: 'update_quantity',
+} as const;
+
+export interface CartAction {
+  action: CartActionAction;
+  catalogItemId: number;
+  quantity?: number;
+  itemName?: string;
+}
+
+export interface AiCartItem {
+  catalogItemId: number;
+  quantity: number;
+  name?: string;
+  price?: number;
+}
+
 export type AiChatBodyContext = {
   currentCartItems?: number[];
   currentOrderId?: number;
@@ -916,13 +939,25 @@ export type AiChatBodyContext = {
 
 export interface AiChatBody {
   messages: AiChatMessage[];
+  cart?: AiCartItem[];
   context?: AiChatBodyContext;
 }
 
 export interface AiChatResponse {
   reply: string;
   suggestedItems?: CatalogItem[];
+  cartActions?: CartAction[];
   conversationId?: string;
+}
+
+export interface AiCatalogSearchBody {
+  query: string;
+  limit?: number;
+}
+
+export interface AiCatalogSearchResponse {
+  items: CatalogItem[];
+  query: string;
 }
 
 export interface AiUpsellBody {
