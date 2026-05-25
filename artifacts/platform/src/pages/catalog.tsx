@@ -124,11 +124,12 @@ function CatalogItemCard({
   menuMode: MenuMode;
 }) {
   const isLC = menuMode === "lucifer";
+  const [imgError, setImgError] = useState(false);
   const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
-  const media = (item.mediaGallery ?? []).filter((entry) => entry.src);
+  const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
-    ? (item.luciferCruzImageUrl || media[0]?.src || item.imageUrl)
-    : (item.imageUrl || item.alavontImageUrl || media[0]?.src);
+    ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
+    : (item.imageUrl?.trim() || item.alavontImageUrl?.trim() || media[0]?.src?.trim() || null);
   const hasSale = item.isSaleFeatured || (item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price));
 
   return (
@@ -139,16 +140,13 @@ function CatalogItemCard({
     >
       {/* Thumbnail */}
       <div className="relative aspect-square overflow-hidden" style={{ background: isLC ? "#0A0000" : undefined }}>
-        {primaryImage ? (
+        {primaryImage && !imgError ? (
           <>
             <img
               src={primaryImage}
               alt={displayName}
               className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ${media.length > 1 ? "group-hover:opacity-0" : ""}`}
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-                (e.currentTarget.parentElement as HTMLElement).classList.add("fallback-thumb");
-              }}
+              onError={() => setImgError(true)}
             />
             {media.length > 1 && (
               <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
@@ -178,7 +176,7 @@ function CatalogItemCard({
             )}
           </>
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-muted/10">
+          <div className="w-full h-full flex items-center justify-center bg-muted/10" data-testid="image-placeholder">
             <ImageOff size={28} className="text-muted-foreground/30" />
           </div>
         )}

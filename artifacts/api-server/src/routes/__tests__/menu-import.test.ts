@@ -260,6 +260,52 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(res.body.extraColumns).toContain("Bogus");
   });
 
+  it("preserves alavont_image URL on import and maps it to imageUrl and alavontImageUrl", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "19.99,https://cdn.example.com/product-a.jpg,Image Test Item,Desc,Cat,true,ALV-IMG-1,3,ml,,LC Name,https://cdn.example.com/lc-a.jpg,LC Desc,LC Cat,LC-IMG-1\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "images.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(1);
+    expect(state.inserted[0].imageUrl).toBe("https://cdn.example.com/product-a.jpg");
+    expect(state.inserted[0].alavontImageUrl).toBe("https://cdn.example.com/product-a.jpg");
+    expect(state.inserted[0].luciferCruzImageUrl).toBe("https://cdn.example.com/lc-a.jpg");
+  });
+
+  it("discards alavont_image when value is not a valid URL", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "9.99,not-a-url,Bad Image Item,Desc,Cat,true,ALV-IMG-2,1,ml,,LC Name,,LC Desc,LC Cat,LC-IMG-2\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "bad-image.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(1);
+    expect(state.inserted[0].imageUrl).toBeNull();
+    expect(state.inserted[0].alavontImageUrl).toBeNull();
+  });
+
+  it("stores null imageUrl when alavont_image column is empty", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "14.99,,No Image Item,Desc,Cat,true,ALV-IMG-3,2,ml,,LC Name,,LC Desc,LC Cat,LC-IMG-3\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "empty-image.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(1);
+    expect(state.inserted[0].imageUrl).toBeNull();
+    expect(state.inserted[0].alavontImageUrl).toBeNull();
+  });
+
   it("response shape matches { inserted, updated, skipped, errors:[{row,message}] }", async () => {
     // Bad row — missing required Menu Name (after a valid header set)
     const csv =
