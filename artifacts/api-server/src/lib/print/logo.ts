@@ -1,9 +1,23 @@
 import { centerText } from "./formatter";
 
-const PRIMARY_WIDE   = "A   L   A   V   O   N   T";   // 21 chars — elegant on 80mm
-const TAGLINE_WIDE   = "T H E R A P E U T I C S";     // 23 chars
-const PRIMARY_NARROW = "A L A V O N T";               // 13 chars — compact on 58mm
-const TAGLINE_NARROW = "THERAPEUTICS";                // 12 chars
+const MARK_WIDE = [
+  "          /\\",
+  "         /  \\",
+  "        / /\\ \\",
+  "       / ____ \\",
+  "      /_/    \\_\\",
+];
+const MARK_NARROW = [
+  "    /\\",
+  "   /  \\",
+  "  / /\\ \\",
+  " /_/  \\_\\",
+];
+
+const PRIMARY_WIDE = "ALAVONT";
+const TAGLINE_WIDE = "THERAPEUTICS";
+const PRIMARY_NARROW = "ALAVONT";
+const TAGLINE_NARROW = "THERAPEUTICS";
 
 /**
  * Returns centered Alavont Therapeutics logo lines for the given paper width.
@@ -15,11 +29,13 @@ const TAGLINE_NARROW = "THERAPEUTICS";                // 12 chars
 export function getLogo(width: number): string[] {
   if (width >= 40) {
     return [
+      ...MARK_WIDE.map(line => centerText(line, width)),
       centerText(PRIMARY_WIDE, width),
       centerText(TAGLINE_WIDE, width),
     ];
   }
   return [
+    ...MARK_NARROW.map(line => centerText(line, width)),
     centerText(PRIMARY_NARROW, width),
     centerText(TAGLINE_NARROW, width),
   ];

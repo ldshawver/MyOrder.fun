@@ -203,6 +203,12 @@ export default function AdminReceipts() {
           <ToggleRow label="Auto-print receipts on payment" checked={settings.autoPrintReceipts}
             onChange={v => update("autoPrintReceipts", v)} testId="toggle-receipt-autoprint" />
         </div>
+        <div className="rounded-lg border border-border/40 bg-background/40 p-3 flex items-center gap-3">
+          <img src="/alavont-receipt-logo.png" alt="Alavont Therapeutics receipt logo" className="h-16 w-16 object-contain bg-black rounded-md border border-border/30" />
+          <div className="text-xs text-muted-foreground leading-relaxed">
+            This logo is the receipt brand reference. Thermal receipt text uses a centered monochrome version so it prints reliably on 58mm and 80mm printers.
+          </div>
+        </div>
       </div>
 
       <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">

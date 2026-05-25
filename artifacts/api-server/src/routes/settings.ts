@@ -530,8 +530,8 @@ router.get("/admin/concierge-steps", requireRole("global_admin", "admin"), async
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
-// PUT /api/admin/concierge-steps — admin only
-router.put("/admin/concierge-steps", requireRole("admin"), async (req, res): Promise<void> => {
+// PUT /api/admin/concierge-steps — global/admin only
+router.put("/admin/concierge-steps", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const body = req.body;
   if (!Array.isArray(body) || body.length === 0 || body.length > 8) {
     res.status(400).json({ error: "steps must be an array of 1–8 items" });

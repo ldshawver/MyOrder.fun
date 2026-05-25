@@ -16,6 +16,17 @@ const DEFAULT_STEPS: IntroStep[] = [
   { emoji: "📱", title: "Track It & Chill", body: "After checkout, updates come straight here — no calls needed. Sit back, relax. When your order's ready, you'll know. I'll be here if you need anything else.", cta: "I'm ready ⚡" },
 ];
 
+async function readErrorMessage(res: Response, fallback: string): Promise<string> {
+  const text = await res.text();
+  if (!text.trim()) return fallback;
+  try {
+    const body = JSON.parse(text) as { error?: unknown; message?: unknown };
+    return String(body.error ?? body.message ?? fallback);
+  } catch {
+    return `${fallback} (HTTP ${res.status}): ${text.slice(0, 180)}`;
+  }
+}
+
 // ─── Featured Panel ────────────────────────────────────────────────────────────
 function FeaturedPanel({ token }: { token: string | null }) {
   const [promotedIds, setPromotedIds] = useState<number[]>([]);
@@ -31,7 +42,7 @@ function FeaturedPanel({ token }: { token: string | null }) {
     const headers = { Authorization: `Bearer ${token}` };
     Promise.all([
       fetch("/api/admin/concierge/promoted", { headers }).then(r => r.json()),
-      fetch("/api/catalog", { headers }).then(r => r.json()),
+      fetch("/api/catalog?limit=500&mode=alavont", { headers }).then(r => r.json()),
     ]).then(([prom, cat]) => {
       setPromotedIds(prom.ids ?? []);
       const items: PromotedItem[] = (cat.items ?? cat ?? []).map((i: Record<string, unknown>) => ({
@@ -61,7 +72,7 @@ function FeaturedPanel({ token }: { token: string | null }) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ ids: promotedIds }),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Save failed");
+      if (!res.ok) throw new Error(await readErrorMessage(res, "Save failed"));
       setSaved(true); setTimeout(() => setSaved(false), 3000);
     } catch (e) { setError((e as Error).message); }
     finally { setSaving(false); }
@@ -182,7 +193,7 @@ function IntroStepsPanel({ token }: { token: string | null }) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(steps),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Save failed");
+      if (!res.ok) throw new Error(await readErrorMessage(res, "Save failed"));
       setSaved(true); setTimeout(() => setSaved(false), 3000);
     } catch (e) { setError((e as Error).message); }
     finally { setSaving(false); }
