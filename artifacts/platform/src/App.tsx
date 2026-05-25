@@ -5,6 +5,7 @@ import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wo
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
 import { queryClient } from "./lib/queryClient";
+import { PlasmicCanvasHost } from "@plasmicapp/host";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
@@ -406,6 +407,9 @@ function AuthenticatedApp() {
 function Router() {
   return (
     <Switch>
+      <Route path="/plasmic-host">
+        <PlasmicCanvasHost />
+      </Route>
       <Route path="/" component={HomeRedirect} />
       <Route path="/terms-of-service" component={Terms} />
       <Route path="/privacy" component={Privacy} />

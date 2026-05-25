@@ -368,8 +368,14 @@ router.get("/catalog", async (req, res): Promise<void> => {
   // Alavont Therapeutics mode is the uploaded/imported vendor menu. It shows
   // local Alavont rows only, even though those rows carry Lucifer Cruz mapped
   // fields used later for merchant processing.
+  // Admins see all non-WooCommerce rows (including imported items that may have
+  // isLocalAlavont=false/null) so the inventory template dropdown is complete.
   if (!isLuciferMode) {
-    rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
+    if (isAdminActor) {
+      rows = rows.filter(r => r.isWooManaged !== true);
+    } else {
+      rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
+    }
   }
 
   rows = rows.sort((a, b) => {

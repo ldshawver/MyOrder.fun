@@ -9,29 +9,44 @@ let reportSchemaEnsured = false;
 
 async function ensureReportSchema(): Promise<void> {
   if (reportSchemaEnsured) return;
-  await db.execute(sql`
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "tracking_url" text;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_tech_id" integer;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "fulfillment_status" text;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "route_source" text;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "accepted_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "promised_minutes" integer DEFAULT 30;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "estimated_ready_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "eta_adjusted_by_supervisor" boolean NOT NULL DEFAULT false;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "purged_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "audit_token" text;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "alavont_cart_snapshot" jsonb;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "lucifer_checkout_snapshot" jsonb;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "final_confirmation_at" timestamp with time zone;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_accepted" boolean NOT NULL DEFAULT false;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_text" text;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "checkout_conversion_snapshot" jsonb;
-    ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "selected_payment_method" text;
-  `);
+  const statements = [
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "tracking_url" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_tech_id" integer`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "fulfillment_status" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "route_source" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "accepted_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "promised_minutes" integer DEFAULT 30`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "estimated_ready_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "eta_adjusted_by_supervisor" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "purged_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "audit_token" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "alavont_cart_snapshot" jsonb`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "lucifer_checkout_snapshot" jsonb`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "final_confirmation_at" timestamp with time zone`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_accepted" boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "legal_disclaimer_text" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "checkout_conversion_snapshot" jsonb`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "selected_payment_method" text`,
+    `ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "payment_method" text`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_start" numeric(10,2) DEFAULT 0`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end" numeric(10,2)`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "cash_bank_end_reported" numeric(10,2)`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_percent_selected" numeric(5,2)`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "tip_amount" numeric(10,2)`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "difference_amount" numeric(10,2) DEFAULT 0`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "deposit_amount" numeric(10,2)`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_id" integer`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "supervisor_confirmed_at" timestamp with time zone`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "payment_totals_json" json`,
+    `ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "summary" json`,
+  ];
+  for (const stmt of statements) {
+    await db.execute(sql.raw(stmt));
+  }
   reportSchemaEnsured = true;
 }
 

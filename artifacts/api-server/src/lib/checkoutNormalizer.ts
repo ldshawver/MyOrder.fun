@@ -95,7 +95,8 @@ function inferMerchantBrand(ci: typeof catalogItemsTable.$inferSelect): "alavont
 
 export async function normalizeCheckoutCart(
   rawLines: CartLineInputType[],
-  receiptMode?: string
+  receiptMode?: string,
+  strictMode = true,
 ): Promise<NormalizedCartLine[]> {
   const parsed = CartInputSchema.safeParse(rawLines);
   if (!parsed.success) {
@@ -138,31 +139,36 @@ export async function normalizeCheckoutCart(
     if (merchantBrand === "alavont") {
       const mode = ci.merchantProcessingMode ?? "mapped_lucifer";
       const SUPPORTED_ALAVONT_MODES = new Set(["mapped_lucifer", "comp_only"]);
-      if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
-        throw new CheckoutMappingError(line.catalogItemId, "unsupported_processing_mode",
-          `Alavont catalog item ${line.catalogItemId} has unsupported merchant_processing_mode="${mode}". ` +
-          `Refusing to build a payment until this row is reclassified.`);
-      }
-      if (!ci.luciferCruzName) {
-        throw new CheckoutMappingError(line.catalogItemId, "missing_lucifer_cruz_name",
-          `Alavont catalog item ${line.catalogItemId} has no lucifer_cruz_name — cannot be processed safely.`);
-      }
-      if (!ci.merchantSku) {
-        throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
-          `Alavont catalog item ${line.catalogItemId} has no merchant_sku — Lucifer Cruz mapping is incomplete.`);
-      }
-      // The merchant_sku must be a TRUE Lucifer Cruz SKU. If it equals the
-      // Alavont-side identifier (alavont_id) or carries the well-known
-      // Alavont-shape prefixes, the row was not properly remapped — refuse
-      // to build a payment for it. Stops Alavont identifiers leaking into
-      // the Stripe payload via the merchant_sku field.
-      if (
-        (ci.alavontId && ci.merchantSku === ci.alavontId) ||
-        /^(?:ALV|ALAVONT)[-_]/i.test(ci.merchantSku)
-      ) {
-        throw new CheckoutMappingError(line.catalogItemId, "alavont_shaped_merchant_sku",
-          `Alavont catalog item ${line.catalogItemId} has merchant_sku "${ci.merchantSku}" that looks like an Alavont identifier. ` +
-          `Remap to a true Lucifer Cruz SKU before processing payments.`);
+      if (strictMode) {
+        if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
+          throw new CheckoutMappingError(line.catalogItemId, "unsupported_processing_mode",
+            `Alavont catalog item ${line.catalogItemId} has unsupported merchant_processing_mode="${mode}". ` +
+            `Refusing to build a payment until this row is reclassified.`);
+        }
+        if (!ci.luciferCruzName) {
+          throw new CheckoutMappingError(line.catalogItemId, "missing_lucifer_cruz_name",
+            `Alavont catalog item ${line.catalogItemId} has no lucifer_cruz_name — cannot be processed safely.`);
+        }
+        if (!ci.merchantSku) {
+          throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
+            `Alavont catalog item ${line.catalogItemId} has no merchant_sku — Lucifer Cruz mapping is incomplete.`);
+        }
+        if (
+          (ci.alavontId && ci.merchantSku === ci.alavontId) ||
+          /^(?:ALV|ALAVONT)[-_]/i.test(ci.merchantSku)
+        ) {
+          throw new CheckoutMappingError(line.catalogItemId, "alavont_shaped_merchant_sku",
+            `Alavont catalog item ${line.catalogItemId} has merchant_sku "${ci.merchantSku}" that looks like an Alavont identifier. ` +
+            `Remap to a true Lucifer Cruz SKU before processing payments.`);
+        }
+      } else {
+        // Preview mode: log warnings but allow conversion with fallback data.
+        if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
+          logger.warn({ catalogItemId: line.catalogItemId, mode }, "Alavont item has unsupported processing mode — preview will use fallback display data");
+        }
+        if (!ci.luciferCruzName) {
+          logger.warn({ catalogItemId: line.catalogItemId }, "Alavont item missing lucifer_cruz_name — preview will use Alavont display name");
+        }
       }
     }
 
