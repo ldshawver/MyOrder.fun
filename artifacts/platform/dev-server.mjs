@@ -30,6 +30,7 @@ function startVite() {
     [join(__dir, "node_modules", "vite", "bin", "vite.js"), "--config", "vite.config.ts"],
     {
       stdio: ["pipe", "pipe", "pipe"],
+      cwd: __dir,
       env: { ...process.env, PORT: String(VITE_PORT) },
     },
   );
@@ -127,18 +128,38 @@ proxy.on("error", (err) => {
   process.stderr.write(`[dev-server] Proxy server error: ${err.message}\n`);
 });
 
-proxy.listen(PORT, "0.0.0.0", () => {
-  process.stdout.write(`[dev-server] Proxy on :${PORT} (0.0.0.0) → Vite on :${VITE_PORT}\n`);
+proxy.listen(PORT, "::", () => {
+  process.stdout.write(`[dev-server] Proxy on :${PORT} (::) → Vite on :${VITE_PORT}\n`);
   startVite();
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 let shuttingDown = false;
-const shutdown = () => {
+const startTime = Date.now();
+
+const doShutdown = () => {
+  if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(keepAlive);
   if (viteProcess) viteProcess.kill("SIGTERM");
   proxy.close(() => process.exit(0));
 };
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+
+process.on("SIGTERM", () => {
+  const uptime = Date.now() - startTime;
+  process.stderr.write(`[dev-server] SIGTERM received after ${uptime}ms uptime\n`);
+  // Delay shutdown so the workflow health-checker can detect port 5173 is open.
+  // The runner sometimes sends SIGTERM immediately during its restart sequence.
+  if (uptime < 30_000) {
+    process.stderr.write("[dev-server] Deferring shutdown 30 s (startup grace period)\n");
+    setTimeout(doShutdown, 30_000);
+  } else {
+    doShutdown();
+  }
+});
+
+process.on("SIGINT", doShutdown);
+
+process.on("beforeExit", (code) => {
+  process.stderr.write(`[dev-server] beforeExit code=${code} — event loop may be draining\n`);
+});

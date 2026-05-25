@@ -18,16 +18,20 @@ modules = ["nodejs-24", "python-3.11", "postgresql-16"]
   env = { "CI" = "true" }
 
   [workflows]
-  runButton = "Project"
+runButton = "Project"
 
   [[workflows.workflow]]
-  name = "Project"
-  mode = "parallel"
-  author = "agent"
+name = "Project"
+mode = "parallel"
+author = "agent"
 
-  [[workflows.workflow.tasks]]
-  task = "workflow.run"
-  args = "lint"
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "lint"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start Platform"
 
   [[workflows.workflow]]
   name = "lint"
@@ -39,6 +43,18 @@ modules = ["nodejs-24", "python-3.11", "postgresql-16"]
 
   [workflows.workflow.metadata]
   isValidation = true
+
+[[workflows.workflow]]
+name = "Start Platform"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=5173 BASE_PATH=/ node artifacts/platform/dev-server.mjs"
+waitForPort = 5173
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
   [agent]
   stack = "PNPM_WORKSPACE"

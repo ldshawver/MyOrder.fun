@@ -48,6 +48,26 @@ async function getPlugins(): Promise<PluginOption[]> {
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),
+    {
+      name: "stdin-keep-alive",
+      apply: "serve",
+      configureServer() {
+        // In Replit workflow environments the runner provides a PTY, so
+        // process.stdin.isTTY is true.  When the runner closes the PTY master
+        // side (after detecting the port is open) the process receives SIGHUP.
+        // Node's default SIGHUP action is exit — override it to stay alive.
+        process.on("SIGHUP", () => {});
+
+        // Non-TTY fallback: Vite 5.4+ watches stdin and calls process.exit(0)
+        // when stdin closes.  In environments where stdin is /dev/null the
+        // close fires immediately after startup.  Remove those listeners.
+        if (!process.stdin.isTTY) {
+          process.stdin.removeAllListeners("close");
+          process.stdin.removeAllListeners("end");
+          process.stdin.unref();
+        }
+      },
+    } satisfies PluginOption,
   ];
 
   const isReplitDev =
