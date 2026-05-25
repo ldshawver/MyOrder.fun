@@ -29,6 +29,10 @@ author = "agent"
 task = "workflow.run"
 args = "lint"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Platform Dev"
+
   [[workflows.workflow]]
   name = "lint"
   author = "agent"
@@ -39,6 +43,18 @@ args = "lint"
 
   [workflows.workflow.metadata]
   isValidation = true
+
+[[workflows.workflow]]
+name = "Platform Dev"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "CI=true pnpm --filter @workspace/platform run dev"
+waitForPort = 5173
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
   [agent]
   stack = "PNPM_WORKSPACE"

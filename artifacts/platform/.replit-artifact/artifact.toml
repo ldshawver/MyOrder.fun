@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 5173
 
 [services.development]
-run = "setsid node dev-server.mjs"
+run = "node dev-server.mjs"
 
 [services.production]
 publicDir = "artifacts/platform/dist"
