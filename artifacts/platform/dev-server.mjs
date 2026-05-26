@@ -1,18 +1,16 @@
 /**
  * dev-server.mjs — Replit-compatible Vite dev launcher.
  *
- * Owns port PORT directly (http.createServer) so Replit's workflow runner
- * can always detect it — even before Vite finishes compiling.
+ * This process owns port PORT directly (http.createServer proxy) so
+ * Replit's workflow runner can track it — the runner monitors ports bound
+ * by the workflow PID, not by child processes.
  *
- * Vite runs on PORT+1.  All traffic is proxied to Vite once ready.
- * If Vite exits unexpectedly it is restarted automatically.
+ * Vite runs on PORT+1 in the same process group (detached: false) so that
+ * SIGTERM/SIGKILL sent to this process group reaches Vite too. On SIGTERM
+ * we kill Vite cleanly and exit so the runner can start a fresh instance.
  *
- * Signal hardening:
- *  - SIGHUP  ignored: PTY close sends SIGHUP to the foreground group; we ignore it.
- *  - SIGTERM ignored: runner sends SIGTERM as a lifecycle signal; we let it SIGKILL us.
- *  - stdout/stderr error suppression: EIO after PTY master closes is swallowed.
- *  - Vite spawned detached + CI=true: Vite is in its own process group (no SIGHUP),
- *    and stdin is a pipe (isTTY=false) so Vite never registers stdin-end handlers.
+ * Traffic is proxied to Vite once it signals readiness; before that a
+ * self-refreshing "Starting…" page is served so the port always responds.
  */
 
 import http from "node:http";
@@ -22,16 +20,12 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const PORT = parseInt(process.env.PORT ?? "5173", 10);
 const VITE_PORT = PORT + 1;
 
 // ── Suppress I/O errors (EIO after PTY master closes) ─────────────────────────
 process.stdout.on("error", () => {});
 process.stderr.on("error", () => {});
-
-// ── Ignore SIGHUP and SIGTERM (runner lifecycle signals) ───────────────────────
-process.on("SIGHUP",  () => {});
-process.on("SIGTERM", () => {});
 
 // ── Error safety ───────────────────────────────────────────────────────────────
 process.on("uncaughtException", (err) => {
@@ -53,7 +47,7 @@ function startVite() {
     process.execPath,
     [join(__dir, "node_modules", "vite", "bin", "vite.js"), "--config", "vite.config.ts"],
     {
-      detached: true,
+      detached: false,          // same process group — SIGTERM reaches Vite too
       stdio: ["pipe", "pipe", "pipe"],
       cwd: __dir,
       env: { ...process.env, PORT: String(VITE_PORT), CI: "true" },
@@ -88,7 +82,7 @@ function startVite() {
   });
 }
 
-// ── HTTP proxy ─────────────────────────────────────────────────────────────────
+// ── HTTP proxy (owned by this process — Replit tracks this port) ───────────────
 function tryProxy(req, res) {
   if (!viteReady) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -96,7 +90,7 @@ function tryProxy(req, res) {
       "<!DOCTYPE html><html><head><meta charset=utf-8><title>Starting…</title>" +
       "<meta http-equiv='refresh' content='2'></head>" +
       "<body style='background:#0B1121;color:#3B82F6;font-family:sans-serif;padding:2rem'>" +
-      "<h2>OrderFlow is starting…</h2><p>Vite is compiling — refreshes automatically.</p>" +
+      "<h2>OrderFlow is starting…</h2><p>Vite is compiling — page refreshes automatically.</p>" +
       "</body></html>",
     );
   }
@@ -140,23 +134,27 @@ proxy.on("error", (err) => {
   try { process.stderr.write(`[dev-server] Proxy error: ${err.message}\n`); } catch (_) {}
 });
 
-// Keep the event loop alive independently of Vite
-const keepAlive = setInterval(() => {}, 1 << 30);
+// ── Clean shutdown ─────────────────────────────────────────────────────────────
+function doShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try { process.stderr.write(`[dev-server] Shutting down (${signal})\n`); } catch (_) {}
+  if (viteProcess) {
+    try { viteProcess.kill("SIGTERM"); } catch (_) {}
+  }
+  proxy.close(() => process.exit(0));
+  // Force exit after 3s in case Vite hangs
+  setTimeout(() => process.exit(0), 3000).unref();
+}
 
-proxy.listen(PORT, "::", () => {
+process.on("SIGTERM", () => doShutdown("SIGTERM"));
+process.on("SIGINT",  () => doShutdown("SIGINT"));
+process.on("SIGHUP",  () => {});  // PTY close — ignore
+
+// ── Bind proxy then start Vite ─────────────────────────────────────────────────
+proxy.listen(PORT, "0.0.0.0", () => {
   try {
-    process.stdout.write(`[dev-server] Proxy on :${PORT} (::) → Vite on :${VITE_PORT}\n`);
+    process.stdout.write(`[dev-server] Proxy on :${PORT} → Vite on :${VITE_PORT}\n`);
   } catch (_) {}
   startVite();
 });
-
-// ── Graceful shutdown (Ctrl+C in local dev) ────────────────────────────────────
-function doShutdown() {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  clearInterval(keepAlive);
-  if (viteProcess) { try { viteProcess.kill("SIGTERM"); } catch (_) {} }
-  proxy.close(() => process.exit(0));
-}
-
-process.on("SIGINT", doShutdown);

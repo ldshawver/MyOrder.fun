@@ -48,13 +48,12 @@ args = "Platform Dev"
 name = "Platform Dev"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "CI=true pnpm --filter @workspace/platform run dev"
-waitForPort = 5173
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=5173 node artifacts/platform/dev-server.mjs"
 
   [agent]
   stack = "PNPM_WORKSPACE"

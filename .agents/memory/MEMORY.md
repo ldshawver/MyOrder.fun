@@ -1,0 +1,1 @@
+- [Platform Dev workflow fix](platform-dev-workflow.md) — waitForPort must be omitted; dev-server.mjs must handle SIGTERM cleanly; proxy on 0.0.0.0 not ::.

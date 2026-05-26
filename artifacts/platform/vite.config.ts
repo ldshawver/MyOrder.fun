@@ -87,13 +87,13 @@ export default defineConfig(async () => {
       ],
     },
     server: {
-      host: "::",
+      host: "0.0.0.0",
       port,
       strictPort: true,
       allowedHosts: true,
     },
     preview: {
-      host: "::",
+      host: "0.0.0.0",
       port,
       strictPort: true,
     },
