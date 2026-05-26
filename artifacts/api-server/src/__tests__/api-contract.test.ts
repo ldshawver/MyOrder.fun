@@ -32,9 +32,8 @@ vi.mock("@workspace/db", () => {
     db: {
       execute: vi.fn(() => Promise.resolve({ rows: [] })),
       select: vi.fn(() => {
-        const chain: Record<string, unknown> = {};
         const p = Promise.resolve([]) as unknown as Record<string, unknown>;
-        p.from = vi.fn(() => { const c2: Record<string, unknown> = {}; const p2 = Promise.resolve([]) as unknown as Record<string, unknown>; p2.where = vi.fn(() => { const p3 = Promise.resolve([]) as unknown as Record<string, unknown>; p3.limit = vi.fn(() => Promise.resolve([])); p3.orderBy = vi.fn(() => Promise.resolve([])); return p3; }); p2.limit = vi.fn(() => Promise.resolve([])); p2.orderBy = vi.fn(() => Promise.resolve([])); return p2; }); void chain; return p; }),
+        p.from = vi.fn(() => { const p2 = Promise.resolve([]) as unknown as Record<string, unknown>; p2.where = vi.fn(() => { const p3 = Promise.resolve([]) as unknown as Record<string, unknown>; p3.limit = vi.fn(() => Promise.resolve([])); p3.orderBy = vi.fn(() => Promise.resolve([])); return p3; }); p2.limit = vi.fn(() => Promise.resolve([])); p2.orderBy = vi.fn(() => Promise.resolve([])); return p2; }); return p; }),
       insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: () => Promise.resolve([]) })) })),
       update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: () => Promise.resolve([]) })) })) })),
       delete: vi.fn(),
