@@ -84,6 +84,9 @@ vi.mock("@workspace/db", () => {
   const operatorPrintProfilesTable = {};
   const printTemplatesTable = {};
   const printAssetsTable = {};
+  const csrBoxesTable = { id: "id_col", tenantId: "tenantId_col", slug: "slug_col", isActive: "isActive_col", displayOrder: "displayOrder_col", label: "label_col" };
+  const inventoryLocationsTable = { id: "id_col", tenantId: "tenantId_col", name: "name_col", type: "type_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
+  const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col", parLevel: "parLevel_col" };
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -116,6 +119,9 @@ vi.mock("@workspace/db", () => {
     operatorPrintProfilesTable,
     printTemplatesTable,
     printAssetsTable,
+    csrBoxesTable,
+    inventoryLocationsTable,
+    inventoryBalancesTable,
   };
 });
 

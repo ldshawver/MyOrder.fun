@@ -50,6 +50,9 @@ vi.mock("@workspace/db", () => {
   const ordersTable = { assignedShiftId: "assignedShiftId_col", id: "id_col", customerId: "customerId_col" };
   const orderItemsTable = { orderId: "orderId_col" };
   const auditLogsTable = {};
+  const csrBoxesTable = { id: "id_col", tenantId: "tenantId_col", slug: "slug_col", label: "label_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
+  const inventoryLocationsTable = { id: "id_col", tenantId: "tenantId_col", name: "name_col", type: "type_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
+  const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col" };
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -80,7 +83,7 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn(),
   };
 
-  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable };
+  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable };
 });
 
 vi.mock("drizzle-orm", () => ({

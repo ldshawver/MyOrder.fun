@@ -32,6 +32,42 @@ export const csrBoxesTable = pgTable("csr_boxes", {
 export type CsrBox = typeof csrBoxesTable.$inferSelect;
 export type InsertCsrBox = typeof csrBoxesTable.$inferInsert;
 
+// ─── Inventory Locations ──────────────────────────────────────────────────────
+// Physical or logical storage locations: CSR boxes, storefront, backstock.
+// Only Alavont products (is_woo_managed=false) use this model.
+export const inventoryLocationsTable = pgTable("inventory_locations", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  // 'csr_box' | 'storefront' | 'backstock'
+  type: text("type").notNull(),
+  // Set only when type='csr_box'; links to the csr_boxes row
+  csrBoxId: integer("csr_box_id").references(() => csrBoxesTable.id),
+  name: text("name").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type InventoryLocation = typeof inventoryLocationsTable.$inferSelect;
+export type InsertInventoryLocation = typeof inventoryLocationsTable.$inferInsert;
+
+// ─── Inventory Balances ───────────────────────────────────────────────────────
+// Per-product, per-location quantity tracking.
+// Master total = SUM(quantity_on_hand) across active locations.
+export const inventoryBalancesTable = pgTable("inventory_balances", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  productId: integer("product_id").notNull().references(() => catalogItemsTable.id),
+  locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
+  quantityOnHand: numeric("quantity_on_hand", { precision: 10, scale: 3 }).notNull().default("0"),
+  parLevel: numeric("par_level", { precision: 10, scale: 2 }).notNull().default("0"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type InventoryBalance = typeof inventoryBalancesTable.$inferSelect;
+export type InsertInventoryBalance = typeof inventoryBalancesTable.$inferInsert;
+
 export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),

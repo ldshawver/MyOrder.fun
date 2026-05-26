@@ -53,6 +53,9 @@ vi.mock("@workspace/db", () => {
   const ordersTable = cols(["assignedShiftId", "id", "customerId"]);
   const orderItemsTable = cols(["orderId"]);
   const auditLogsTable = {};
+  const csrBoxesTable = cols(["id", "tenantId", "slug", "label", "isActive", "displayOrder", "description", "location"]);
+  const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt"]);
+  const inventoryBalancesTable = cols(["id", "tenantId", "productId", "locationId", "quantityOnHand", "parLevel", "updatedAt"]);
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -79,6 +82,9 @@ vi.mock("@workspace/db", () => {
     ordersTable,
     orderItemsTable,
     auditLogsTable,
+    csrBoxesTable,
+    inventoryLocationsTable,
+    inventoryBalancesTable,
   };
 });
 

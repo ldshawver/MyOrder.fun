@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, ChevronRight, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
-  Package,
+  Package, MapPin, BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1062,11 +1062,318 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
   );
 }
 
+// ─── Inventory Locations Tab ──────────────────────────────────────────────────
+
+type InventoryLocation = {
+  id: number;
+  name: string;
+  type: string;
+  csrBoxId: number | null;
+  isActive: boolean;
+  displayOrder: number;
+};
+
+function LocationsTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState<Record<number | "new", boolean>>({} as Record<number | "new", boolean>);
+  const [showNew, setShowNew] = useState(false);
+  const [newLoc, setNewLoc] = useState({ name: "", type: "storefront" });
+
+  const fetchLocations = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/inventory-locations", { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error("Failed to load locations");
+      const data = await res.json();
+      setLocations(data.locations ?? []);
+    } catch { setError("Could not load locations."); }
+    setLoading(false);
+  }, [getToken]);
+
+  useEffect(() => { fetchLocations(); }, [fetchLocations]);
+
+  const toggleActive = async (loc: InventoryLocation) => {
+    setSaving(s => ({ ...s, [loc.id]: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/inventory-locations/${loc.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ isActive: !loc.isActive }),
+      });
+      if (!res.ok) throw new Error("Update failed");
+      const data = await res.json();
+      setLocations(prev => prev.map(l => l.id === loc.id ? data.location : l));
+    } catch { setError("Failed to update."); }
+    setSaving(s => ({ ...s, [loc.id]: false }));
+  };
+
+  const createLocation = async () => {
+    if (!newLoc.name.trim()) return;
+    setSaving(s => ({ ...s, new: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/inventory-locations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ name: newLoc.name.trim(), type: newLoc.type, displayOrder: locations.length * 10 }),
+      });
+      if (!res.ok) throw new Error("Create failed");
+      const data = await res.json();
+      setLocations(prev => [...prev, data.location]);
+      setNewLoc({ name: "", type: "storefront" });
+      setShowNew(false);
+    } catch { setError("Failed to create location."); }
+    setSaving(s => ({ ...s, new: false }));
+  };
+
+  const TYPE_LABELS: Record<string, string> = { csr_box: "CSR Box", storefront: "Storefront", backstock: "Backstock" };
+  const TYPE_COLORS: Record<string, string> = {
+    csr_box: "text-blue-400 border-blue-500/30",
+    storefront: "text-emerald-400 border-emerald-500/30",
+    backstock: "text-amber-400 border-amber-500/30",
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground text-sm">
+      <Loader2 size={16} className="animate-spin" /> Loading locations…
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {error && <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-xs text-red-400">{error}</div>}
+
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Locations are the physical storage areas tracked per-product. CSR Sales Box 1 &amp; 2, Storefront, and Backstock are auto-seeded.
+        </p>
+        <Button size="sm" onClick={() => setShowNew(v => !v)} className="gap-2 rounded-xl h-7 text-xs">
+          <Plus size={12} /> Add Location
+        </Button>
+      </div>
+
+      {showNew && (
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3">
+          <p className="text-xs font-semibold text-primary uppercase tracking-wider">New Location</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Name *</label>
+              <Input value={newLoc.name} onChange={e => setNewLoc(v => ({ ...v, name: e.target.value }))} placeholder="e.g. Overflow Backstock" className="h-8 text-sm rounded-lg" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Type</label>
+              <select
+                value={newLoc.type}
+                onChange={e => setNewLoc(v => ({ ...v, type: e.target.value }))}
+                className="w-full h-8 text-sm rounded-lg bg-background border border-border/40 px-2 text-foreground"
+              >
+                <option value="storefront">Storefront</option>
+                <option value="backstock">Backstock</option>
+                <option value="csr_box">CSR Box</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setShowNew(false)} className="h-7 text-xs rounded-xl">Cancel</Button>
+            <Button size="sm" onClick={createLocation} disabled={!newLoc.name.trim() || saving["new"]} className="h-7 text-xs gap-1.5 rounded-xl">
+              {saving["new"] ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Create
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {locations.map(loc => (
+          <div key={loc.id} className={`rounded-xl border overflow-hidden transition-colors ${loc.isActive ? "border-border/40" : "border-border/20 opacity-60"}`}>
+            <div className="flex items-center justify-between px-4 py-3">
+              <div className="flex items-center gap-3">
+                <MapPin size={13} className="text-muted-foreground/50" />
+                <span className="text-sm font-semibold">{loc.name}</span>
+                <Badge variant="outline" className={`text-[10px] h-4 ${TYPE_COLORS[loc.type] ?? "text-muted-foreground"}`}>
+                  {TYPE_LABELS[loc.type] ?? loc.type}
+                </Badge>
+                {!loc.isActive && <Badge variant="outline" className="text-[10px] h-4 text-muted-foreground border-border/30">Inactive</Badge>}
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => toggleActive(loc)} disabled={saving[loc.id]} className="h-6 text-[11px] gap-1 rounded-lg px-2.5 text-muted-foreground">
+                {saving[loc.id] ? <Loader2 size={10} className="animate-spin" /> : loc.isActive ? <EyeOff size={10} /> : <Eye size={10} />}
+                {loc.isActive ? "Deactivate" : "Activate"}
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {locations.length === 0 && !showNew && (
+        <div className="rounded-xl border border-dashed border-border/40 p-10 text-center text-xs text-muted-foreground">
+          No locations yet — they will be auto-seeded on first API load.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Stock Grid Tab ───────────────────────────────────────────────────────────
+
+type InventoryBalance = {
+  id: number;
+  productId: number;
+  locationId: number;
+  quantityOnHand: number;
+  parLevel: number;
+  productName: string;
+  alavontName: string | null;
+  locationName: string;
+  locationType: string;
+};
+
+function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [balances, setBalances] = useState<InventoryBalance[]>([]);
+  const [locations, setLocations] = useState<InventoryLocation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [edits, setEdits] = useState<Record<number, string>>({});
+  const [saving, setSaving] = useState<Record<number, boolean>>({});
+  const [filterLoc, setFilterLoc] = useState<number | "all">("all");
+
+  const fetchBalances = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const url = filterLoc === "all" ? "/api/admin/inventory-balances" : `/api/admin/inventory-balances?locationId=${filterLoc}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error("Failed to load balances");
+      const data = await res.json();
+      setBalances(data.balances ?? []);
+      setLocations(data.locations ?? []);
+      setEdits({});
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Network error"); }
+    setLoading(false);
+  }, [getToken, filterLoc]);
+
+  useEffect(() => { fetchBalances(); }, [fetchBalances]);
+
+  const saveBalance = async (balance: InventoryBalance) => {
+    const raw = edits[balance.id];
+    if (raw === undefined) return;
+    const qty = parseFloat(raw);
+    if (isNaN(qty)) return;
+    setSaving(s => ({ ...s, [balance.id]: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/inventory-balances/${balance.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ quantityOnHand: qty }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      const data = await res.json();
+      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand } : b));
+      setEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
+    } catch { setError("Failed to save."); }
+    setSaving(s => ({ ...s, [balance.id]: false }));
+  };
+
+  // Group by product for the grid view
+  const productMap = new Map<number, { name: string; balances: InventoryBalance[] }>();
+  for (const b of balances) {
+    if (!productMap.has(b.productId)) {
+      productMap.set(b.productId, { name: b.alavontName ?? b.productName, balances: [] });
+    }
+    productMap.get(b.productId)!.balances.push(b);
+  }
+  const products = Array.from(productMap.entries()).sort((a, b) => a[1].name.localeCompare(b[1].name));
+
+  if (loading) return (
+    <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground text-sm">
+      <Loader2 size={16} className="animate-spin" /> Loading stock grid…
+    </div>
+  );
+
+  if (error) return (
+    <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">{error}</div>
+  );
+
+  const activeLocations = locations.filter(l => l.isActive);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <p className="text-xs text-muted-foreground flex-1">
+          Per-product, per-location quantities. WooCommerce items excluded. Inline edit → blur to save.
+        </p>
+        <div className="flex items-center gap-2">
+          <select
+            value={filterLoc}
+            onChange={e => setFilterLoc(e.target.value === "all" ? "all" : parseInt(e.target.value))}
+            className="h-7 text-xs rounded-lg bg-background border border-border/40 px-2 text-foreground"
+          >
+            <option value="all">All Locations</option>
+            {activeLocations.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+          <Button size="sm" variant="ghost" onClick={fetchBalances} className="h-7 text-xs gap-1 rounded-xl">
+            <RefreshCw size={11} /> Refresh
+          </Button>
+        </div>
+      </div>
+
+      {products.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/40 p-10 text-center text-xs text-muted-foreground">
+          No inventory balances yet. They are seeded automatically when a CSR uses the inventory template.
+        </div>
+      ) : (
+        <div className="rounded-xl border border-border/40 overflow-hidden">
+          {/* Header */}
+          <div className="grid gap-2 px-4 py-2 bg-muted/20 border-b border-border/30 text-[10px] font-bold text-muted-foreground uppercase tracking-widest"
+            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+            <div>Product</div>
+            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}</div>)}
+          </div>
+
+          {/* Rows */}
+          {products.map(([productId, { name, balances: pBalances }]) => (
+            <div key={productId}
+              className="grid gap-2 px-4 py-2 border-b border-border/20 last:border-0 hover:bg-muted/10 transition-colors items-center"
+              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+              <div className="text-xs font-medium truncate">{name}</div>
+              {activeLocations.map(loc => {
+                const b = pBalances.find(pb => pb.locationId === loc.id);
+                if (!b) return <div key={loc.id} className="text-center text-muted-foreground/30 text-xs">—</div>;
+                const editVal = edits[b.id];
+                const isDirty = editVal !== undefined;
+                return (
+                  <div key={loc.id} className="flex items-center justify-center">
+                    {saving[b.id] ? (
+                      <Loader2 size={11} className="animate-spin text-muted-foreground" />
+                    ) : (
+                      <Input
+                        value={isDirty ? editVal : String(b.quantityOnHand)}
+                        onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
+                        onBlur={() => saveBalance(b)}
+                        className={`h-6 w-16 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"stock" | "template" | "boxes">("template");
+  const [tab, setTab] = useState<"stock" | "template" | "boxes" | "locations" | "stockgrid">("template");
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -1077,16 +1384,18 @@ export default function AdminInventory() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking, shift template, and CSR box management</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking, shift template, CSR boxes, and per-location stock</p>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
+      <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
         {[
           { key: "template" as const, label: "Raw Materials", icon: Settings2 },
           { key: "stock" as const, label: "Stock Levels", icon: ClipboardList },
           { key: "boxes" as const, label: "CSR Boxes", icon: Package },
+          { key: "locations" as const, label: "Locations", icon: MapPin },
+          { key: "stockgrid" as const, label: "Stock Grid", icon: BarChart3 },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1108,6 +1417,10 @@ export default function AdminInventory() {
         <ShiftTemplateTab getToken={getToken} />
       ) : tab === "boxes" ? (
         <CsrBoxesTab getToken={getToken} />
+      ) : tab === "locations" ? (
+        <LocationsTab getToken={getToken} />
+      ) : tab === "stockgrid" ? (
+        <StockGridTab getToken={getToken} />
       ) : (
         <StockLevelsTab getToken={getToken} />
       )}

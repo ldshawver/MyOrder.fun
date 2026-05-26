@@ -7,6 +7,8 @@ import {
   inventoryTemplatesTable,
   catalogItemsTable,
   csrBoxesTable,
+  inventoryLocationsTable,
+  inventoryBalancesTable,
   ordersTable,
   orderItemsTable,
   usersTable,
@@ -154,6 +156,37 @@ async function ensureShiftSchema(): Promise<void> {
       "created_at" timestamptz NOT NULL DEFAULT now(),
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
+    // inventory_locations — physical/logical storage locations (CSR boxes, storefront, backstock)
+    sql`CREATE TABLE IF NOT EXISTS "inventory_locations" (
+      "id" serial PRIMARY KEY,
+      "tenant_id" integer NOT NULL,
+      "type" text NOT NULL,
+      "csr_box_id" integer,
+      "name" text NOT NULL,
+      "is_active" boolean NOT NULL DEFAULT true,
+      "display_order" integer NOT NULL DEFAULT 0,
+      "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now()
+    )`,
+    // inventory_balances — per-product, per-location quantity
+    sql`CREATE TABLE IF NOT EXISTS "inventory_balances" (
+      "id" serial PRIMARY KEY,
+      "tenant_id" integer NOT NULL,
+      "product_id" integer NOT NULL,
+      "location_id" integer NOT NULL,
+      "quantity_on_hand" numeric(10, 3) NOT NULL DEFAULT 0,
+      "par_level" numeric(10, 2) NOT NULL DEFAULT 0,
+      "updated_at" timestamptz NOT NULL DEFAULT now()
+    )`,
+    sql`DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique'
+      ) THEN
+        ALTER TABLE "inventory_balances"
+          ADD CONSTRAINT "inventory_balances_unique"
+          UNIQUE ("tenant_id", "product_id", "location_id");
+      END IF;
+    END $$`,
   ];
   for (const statement of statements) {
     await db.execute(statement);
@@ -177,6 +210,99 @@ async function ensureShiftSchema(): Promise<void> {
     );
   }
   shiftSchemaEnsured = true;
+}
+
+// ─── Helper: seed inventory_locations + backfill inventory_balances ───────────
+// Idempotent. Creates 4 canonical locations for the house tenant if missing,
+// then populates inventory_balances from inventory_templates (Alavont only).
+async function ensureInventoryLocations(houseTenantId: number): Promise<void> {
+  // Resolve box IDs
+  const boxes = await db
+    .select({ id: csrBoxesTable.id, slug: csrBoxesTable.slug })
+    .from(csrBoxesTable)
+    .where(eq(csrBoxesTable.tenantId, houseTenantId));
+  const box1 = boxes.find(b => b.slug === "sales-box-1");
+  const box2 = boxes.find(b => b.slug === "sales-box-2");
+
+  const locationSeeds: { type: string; name: string; csrBoxId: number | null; displayOrder: number }[] = [
+    { type: "backstock",  name: "Backstock",       csrBoxId: null,          displayOrder: 1 },
+    { type: "storefront", name: "Storefront",      csrBoxId: null,          displayOrder: 2 },
+    { type: "csr_box",   name: "CSR Sales Box 1", csrBoxId: box1?.id ?? null, displayOrder: 3 },
+    { type: "csr_box",   name: "CSR Sales Box 2", csrBoxId: box2?.id ?? null, displayOrder: 4 },
+  ];
+
+  for (const seed of locationSeeds) {
+    const existing = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(
+        and(
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.name, seed.name),
+        )
+      )
+      .limit(1);
+    if (existing.length === 0) {
+      await db.insert(inventoryLocationsTable).values({
+        tenantId: houseTenantId,
+        type: seed.type,
+        csrBoxId: seed.csrBoxId,
+        name: seed.name,
+        isActive: true,
+        displayOrder: seed.displayOrder,
+      });
+    }
+  }
+
+  // Backfill inventory_balances from inventory_templates (Alavont items only)
+  const locations = await db
+    .select()
+    .from(inventoryLocationsTable)
+    .where(eq(inventoryLocationsTable.tenantId, houseTenantId));
+
+  const backstockLoc = locations.find(l => l.type === "backstock");
+  if (!backstockLoc) return;
+
+  const templateItems = await db
+    .select()
+    .from(inventoryTemplatesTable)
+    .where(
+      and(
+        eq(inventoryTemplatesTable.tenantId, houseTenantId),
+        eq(inventoryTemplatesTable.isActive, true),
+      )
+    );
+
+  for (const tmpl of templateItems) {
+    if (!tmpl.catalogItemId) continue;
+    for (const loc of locations) {
+      // Determine starting qty: use current_stock for backstock, 0 for others
+      const qty = loc.id === backstockLoc.id
+        ? String(tmpl.currentStock ?? tmpl.startingQuantityDefault ?? "0")
+        : "0";
+      // ON CONFLICT DO NOTHING pattern via check-first
+      const exists = await db
+        .select({ id: inventoryBalancesTable.id })
+        .from(inventoryBalancesTable)
+        .where(
+          and(
+            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            eq(inventoryBalancesTable.productId, tmpl.catalogItemId),
+            eq(inventoryBalancesTable.locationId, loc.id),
+          )
+        )
+        .limit(1);
+      if (exists.length === 0) {
+        await db.insert(inventoryBalancesTable).values({
+          tenantId: houseTenantId,
+          productId: tmpl.catalogItemId,
+          locationId: loc.id,
+          quantityOnHand: qty,
+          parLevel: String(tmpl.parLevel ?? "0"),
+        });
+      }
+    }
+  }
 }
 
 // ─── Helper: load active boxes for a tenant ───────────────────────────────────
@@ -398,32 +524,59 @@ function enrichInventoryWithSales(
 }
 
 // ─── GET /api/shifts/inventory-template ───────────────────────────────────────
+// Optional ?locationId=<inventory_locations.id> — when provided, returns
+// quantity_on_hand from inventory_balances for that location instead of
+// inventory_templates.current_stock (falls back if no balance row exists).
 router.get(
   "/shifts/inventory-template",
   requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
+    await ensureInventoryLocations(houseTenantId);
+
     const dbBoxes = await getActiveCsrBoxes(houseTenantId);
     const boxes = dbBoxes.length > 0
       ? dbBoxes.map(b => ({ id: b.slug, label: b.label, description: b.description, location: b.location }))
       : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
 
+    // Load location-specific balances if requested
+    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
+    let balanceMap: Map<number, number> = new Map();
+    if (locationId && !isNaN(locationId)) {
+      const balances = await db
+        .select({ productId: inventoryBalancesTable.productId, qty: inventoryBalancesTable.quantityOnHand })
+        .from(inventoryBalancesTable)
+        .where(
+          and(
+            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            eq(inventoryBalancesTable.locationId, locationId),
+          )
+        );
+      balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
+    }
+
     res.json({
       boxes,
-      template: rows.map(r => ({
-        id: r.id,
-        sectionName: r.sectionName,
-        itemName: r.itemName,
-        rowType: r.rowType,
-        unitType: r.unitType,
-        startingQuantityDefault: parseFloat(String(r.startingQuantityDefault ?? 0)),
-        catalogItemId: r.catalogItemId,
-        alavontId: r.alavontId,
-        displayOrder: r.displayOrder,
-        menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
-        payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
-      })),
+      template: rows.map(r => {
+        const balanceQty = r.catalogItemId != null ? balanceMap.get(r.catalogItemId) : undefined;
+        const startingQty = balanceQty !== undefined
+          ? balanceQty
+          : parseFloat(String(r.startingQuantityDefault ?? 0));
+        return {
+          id: r.id,
+          sectionName: r.sectionName,
+          itemName: r.itemName,
+          rowType: r.rowType,
+          unitType: r.unitType,
+          startingQuantityDefault: startingQty,
+          catalogItemId: r.catalogItemId,
+          alavontId: r.alavontId,
+          displayOrder: r.displayOrder,
+          menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
+          payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
+        };
+      }),
     });
   }
 );
@@ -1113,6 +1266,168 @@ router.delete(
     res.json({ box: updated });
   }
 );
+
+// ─── Inventory Locations Admin CRUD ───────────────────────────────────────────
+
+// GET /api/admin/inventory-locations
+router.get(
+  "/admin/inventory-locations",
+  requireRole("global_admin", "admin"),
+  async (_req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+    await ensureInventoryLocations(houseTenantId);
+    const rows = await db
+      .select()
+      .from(inventoryLocationsTable)
+      .where(eq(inventoryLocationsTable.tenantId, houseTenantId))
+      .orderBy(asc(inventoryLocationsTable.displayOrder), asc(inventoryLocationsTable.name));
+    res.json({ locations: rows });
+  }
+);
+
+// POST /api/admin/inventory-locations
+router.post(
+  "/admin/inventory-locations",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const { name, type, csrBoxId, isActive = true, displayOrder = 0 } = req.body as {
+      name?: string;
+      type?: string;
+      csrBoxId?: number | null;
+      isActive?: boolean;
+      displayOrder?: number;
+    };
+    if (!name || String(name).trim() === "") { res.status(400).json({ error: "name is required" }); return; }
+    if (!type || !["csr_box", "storefront", "backstock"].includes(type)) {
+      res.status(400).json({ error: "type must be csr_box | storefront | backstock" }); return;
+    }
+    const houseTenantId = await getHouseTenantId();
+    const [created] = await db.insert(inventoryLocationsTable).values({
+      tenantId: houseTenantId,
+      name: String(name).trim(),
+      type,
+      csrBoxId: csrBoxId ?? null,
+      isActive,
+      displayOrder,
+    }).returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_CREATED", resourceType: "inventory_location", resourceId: String(created.id), metadata: { name, type } });
+    res.status(201).json({ location: created });
+  }
+);
+
+// PATCH /api/admin/inventory-locations/:id
+router.patch(
+  "/admin/inventory-locations/:id",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+    const { name, isActive, displayOrder } = req.body as {
+      name?: string;
+      isActive?: boolean;
+      displayOrder?: number;
+    };
+    const update: Record<string, unknown> = {};
+    if (name !== undefined) update.name = String(name).trim();
+    if (isActive !== undefined) update.isActive = isActive;
+    if (displayOrder !== undefined) update.displayOrder = displayOrder;
+    if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
+    const [updated] = await db.update(inventoryLocationsTable).set(update).where(eq(inventoryLocationsTable.id, id)).returning();
+    if (!updated) { res.status(404).json({ error: "Location not found" }); return; }
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_UPDATED", resourceType: "inventory_location", resourceId: String(id), metadata: update });
+    res.json({ location: updated });
+  }
+);
+
+// ─── Inventory Balances Admin CRUD ────────────────────────────────────────────
+
+// GET /api/admin/inventory-balances — product × location grid
+// Optional ?locationId= filter
+router.get(
+  "/admin/inventory-balances",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+    await ensureInventoryLocations(houseTenantId);
+    const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
+    const whereClause = locationId && !isNaN(locationId)
+      ? and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.locationId, locationId))
+      : eq(inventoryBalancesTable.tenantId, houseTenantId);
+
+    const balances = await db
+      .select({
+        id: inventoryBalancesTable.id,
+        productId: inventoryBalancesTable.productId,
+        locationId: inventoryBalancesTable.locationId,
+        quantityOnHand: inventoryBalancesTable.quantityOnHand,
+        parLevel: inventoryBalancesTable.parLevel,
+        updatedAt: inventoryBalancesTable.updatedAt,
+        productName: catalogItemsTable.name,
+        alavontName: catalogItemsTable.alavontName,
+        locationName: inventoryLocationsTable.name,
+        locationType: inventoryLocationsTable.type,
+      })
+      .from(inventoryBalancesTable)
+      .innerJoin(catalogItemsTable, eq(inventoryBalancesTable.productId, catalogItemsTable.id))
+      .innerJoin(inventoryLocationsTable, eq(inventoryBalancesTable.locationId, inventoryLocationsTable.id))
+      .where(whereClause)
+      .orderBy(asc(inventoryLocationsTable.displayOrder), asc(catalogItemsTable.alavontName));
+
+    const locations = await db
+      .select()
+      .from(inventoryLocationsTable)
+      .where(and(eq(inventoryLocationsTable.tenantId, houseTenantId), eq(inventoryLocationsTable.isActive, true)))
+      .orderBy(asc(inventoryLocationsTable.displayOrder));
+
+    res.json({
+      balances: balances.map(b => ({
+        ...b,
+        quantityOnHand: parseFloat(String(b.quantityOnHand ?? "0")),
+        parLevel: parseFloat(String(b.parLevel ?? "0")),
+      })),
+      locations,
+    });
+  }
+);
+
+// PATCH /api/admin/inventory-balances/:id — manual quantity override (admin only, audit logged)
+router.patch(
+  "/admin/inventory-balances/:id",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+    const { quantityOnHand, parLevel } = req.body as { quantityOnHand?: number; parLevel?: number };
+    if (quantityOnHand === undefined && parLevel === undefined) {
+      res.status(400).json({ error: "quantityOnHand or parLevel required" }); return;
+    }
+    const [current] = await db.select().from(inventoryBalancesTable).where(eq(inventoryBalancesTable.id, id)).limit(1);
+    if (!current) { res.status(404).json({ error: "Balance not found" }); return; }
+
+    const update: Record<string, string> = {};
+    if (quantityOnHand !== undefined) update.quantityOnHand = String(quantityOnHand);
+    if (parLevel !== undefined) update.parLevel = String(parLevel);
+
+    const [updated] = await db.update(inventoryBalancesTable).set(update).where(eq(inventoryBalancesTable.id, id)).returning();
+    await writeAuditLog({
+      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+      action: "INVENTORY_BALANCE_ADJUSTED",
+      resourceType: "inventory_balance", resourceId: String(id),
+      metadata: {
+        productId: current.productId, locationId: current.locationId,
+        oldQty: current.quantityOnHand, newQty: update.quantityOnHand,
+        oldPar: current.parLevel, newPar: update.parLevel,
+      },
+    });
+    res.json({ balance: { ...updated, quantityOnHand: parseFloat(String(updated.quantityOnHand)), parLevel: parseFloat(String(updated.parLevel)) } });
+  }
+);
+
+// GET /api/shifts/inventory-template — modified to support ?locationId= for per-box qty
+// (existing route below is updated in-place)
 
 // ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
 // Supervisor confirms ending inventory, sets tip %, calculates final amounts.
