@@ -142,8 +142,12 @@ function ClockInPanel({ onClockIn, getToken }: {
   onClockIn: (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => Promise<void>;
   getToken: () => Promise<string | null>;
 }) {
+  const DEFAULT_BOXES: CsrBoxOption[] = [
+    { id: "sales-box-1", label: "CSR Sales Box 1" },
+    { id: "sales-box-2", label: "CSR Sales Box 2" },
+  ];
   const [template, setTemplate] = useState<TemplateRow[]>([]);
-  const [boxes, setBoxes] = useState<CsrBoxOption[]>([]);
+  const [boxes, setBoxes] = useState<CsrBoxOption[]>(DEFAULT_BOXES);
   const [boxAssignmentId, setBoxAssignmentId] = useState("sales-box-1");
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
@@ -165,7 +169,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         if (res.ok) {
           const data = await res.json();
           const rows: TemplateRow[] = data.template;
-          const boxOptions: CsrBoxOption[] = data.boxes ?? [{ id: "sales-box-1", label: "CSR Sales Box 1" }];
+          const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : DEFAULT_BOXES;
           setTemplate(rows);
           setBoxes(boxOptions);
           setBoxAssignmentId(prev => boxOptions.some(box => box.id === prev) ? prev : (boxOptions[0]?.id ?? "sales-box-1"));
@@ -176,9 +180,13 @@ function ClockInPanel({ onClockIn, getToken }: {
             }
           }
           setQuantities(defaults);
+        } else if (res.status === 403) {
+          setError("Access denied — your account doesn't have CSR shift access yet. Ask an admin to open Admin → Users, find your account, and set your role to \"Customer Service Rep\".");
+        } else {
+          setError(`Failed to load inventory template (${res.status}). Please refresh or contact support.`);
         }
       } catch {
-        setError("Failed to load inventory template.");
+        setError("Could not reach the server. Check your connection and try again.");
       }
       setLoadingTemplate(false);
     }
@@ -1386,6 +1394,9 @@ export default function CustomerServiceRepQueue() {
       }, ...prev]);
     }
     if (!res.ok) {
+      if (res.status === 403) {
+        throw new Error("Access denied — ask an admin to set your role to \"Customer Service Rep\" in Admin → Users.");
+      }
       const msg = responseData
         ? ((responseData as { error?: string }).error ?? "Clock-in failed")
         : `Clock-in failed (${res.status})`;
