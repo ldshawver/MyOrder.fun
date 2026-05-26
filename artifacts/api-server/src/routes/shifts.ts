@@ -6,6 +6,7 @@ import {
   shiftInventoryItemsTable,
   inventoryTemplatesTable,
   catalogItemsTable,
+  csrBoxesTable,
   ordersTable,
   orderItemsTable,
   usersTable,
@@ -31,9 +32,10 @@ function getClientIp(req: Request): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
+// Hardcoded seed defaults used only if the csr_boxes table is empty.
 const DEFAULT_CSR_BOXES = [
-  { id: "sales-box-1", label: "CSR Sales Box 1" },
-  { id: "sales-box-2", label: "CSR Sales Box 2" },
+  { slug: "sales-box-1", label: "CSR Sales Box 1", displayOrder: 1 },
+  { slug: "sales-box-2", label: "CSR Sales Box 2", displayOrder: 2 },
 ];
 
 let shiftSchemaEnsured = false;
@@ -139,11 +141,51 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end_actual" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "discrepancy" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "is_flagged" boolean DEFAULT false`,
+    // csr_boxes — tenant-scoped physical/logical sales boxes
+    sql`CREATE TABLE IF NOT EXISTS "csr_boxes" (
+      "id" serial PRIMARY KEY,
+      "tenant_id" integer NOT NULL,
+      "slug" text NOT NULL,
+      "label" text NOT NULL,
+      "description" text,
+      "location" text,
+      "is_active" boolean NOT NULL DEFAULT true,
+      "display_order" integer NOT NULL DEFAULT 0,
+      "created_at" timestamptz NOT NULL DEFAULT now(),
+      "updated_at" timestamptz NOT NULL DEFAULT now()
+    )`,
   ];
   for (const statement of statements) {
     await db.execute(statement);
   }
+  // Seed default boxes if the table is empty for this tenant
+  const houseTenantId = await getHouseTenantId();
+  const existing = await db
+    .select({ id: csrBoxesTable.id })
+    .from(csrBoxesTable)
+    .where(eq(csrBoxesTable.tenantId, houseTenantId))
+    .limit(1);
+  if (existing.length === 0) {
+    await db.insert(csrBoxesTable).values(
+      DEFAULT_CSR_BOXES.map(b => ({
+        tenantId: houseTenantId,
+        slug: b.slug,
+        label: b.label,
+        displayOrder: b.displayOrder,
+        isActive: true,
+      }))
+    );
+  }
   shiftSchemaEnsured = true;
+}
+
+// ─── Helper: load active boxes for a tenant ───────────────────────────────────
+async function getActiveCsrBoxes(tenantId: number) {
+  return db
+    .select()
+    .from(csrBoxesTable)
+    .where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true)))
+    .orderBy(asc(csrBoxesTable.displayOrder), asc(csrBoxesTable.label));
 }
 
 router.use(async (_req, res, next) => {
@@ -361,9 +403,14 @@ router.get(
   requireRole(...SHIFT_OPERATOR_ROLES),
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
+    const houseTenantId = await getHouseTenantId();
+    const dbBoxes = await getActiveCsrBoxes(houseTenantId);
+    const boxes = dbBoxes.length > 0
+      ? dbBoxes.map(b => ({ id: b.slug, label: b.label, description: b.description, location: b.location }))
+      : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
 
     res.json({
-      boxes: DEFAULT_CSR_BOXES,
+      boxes,
       template: rows.map(r => ({
         id: r.id,
         sectionName: r.sectionName,
@@ -417,9 +464,9 @@ router.post(
       setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean };
     };
 
-    const selectedBox = DEFAULT_CSR_BOXES.some(box => box.id === boxAssignmentId)
+    const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
       ? boxAssignmentId
-      : DEFAULT_CSR_BOXES[0].id;
+      : DEFAULT_CSR_BOXES[0].slug;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -964,6 +1011,106 @@ router.post(
     }
 
     res.json({ inserted: inserted.length, updated: CSR_INVENTORY_SEED.length - toInsert.length, total: CSR_INVENTORY_SEED.length });
+  }
+);
+
+// ─── CSR Boxes Admin CRUD ──────────────────────────────────────────────────────
+
+// GET /api/admin/csr-boxes — list all boxes (admin sees all; CSR uses /shifts/inventory-template)
+router.get(
+  "/admin/csr-boxes",
+  requireRole("global_admin", "admin"),
+  async (_req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+    const rows = await db
+      .select()
+      .from(csrBoxesTable)
+      .where(eq(csrBoxesTable.tenantId, houseTenantId))
+      .orderBy(asc(csrBoxesTable.displayOrder), asc(csrBoxesTable.label));
+    res.json({ boxes: rows });
+  }
+);
+
+// POST /api/admin/csr-boxes — create a new box
+router.post(
+  "/admin/csr-boxes",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const { label, description, location, isActive = true, displayOrder = 0 } = req.body as {
+      label?: string;
+      description?: string;
+      location?: string;
+      isActive?: boolean;
+      displayOrder?: number;
+    };
+    if (!label || String(label).trim() === "") {
+      res.status(400).json({ error: "label is required" });
+      return;
+    }
+    const houseTenantId = await getHouseTenantId();
+    const slug = String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const [created] = await db
+      .insert(csrBoxesTable)
+      .values({ tenantId: houseTenantId, slug, label: String(label).trim(), description: description ?? null, location: location ?? null, isActive, displayOrder })
+      .returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_CREATED", resourceType: "csr_box", resourceId: String(created.id), metadata: { label, slug } });
+    res.status(201).json({ box: created });
+  }
+);
+
+// PATCH /api/admin/csr-boxes/:id — update label/description/location/isActive/displayOrder
+router.patch(
+  "/admin/csr-boxes/:id",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+    const { label, description, location, isActive, displayOrder } = req.body as {
+      label?: string;
+      description?: string;
+      location?: string;
+      isActive?: boolean;
+      displayOrder?: number;
+    };
+
+    const houseTenantId = await getHouseTenantId();
+    const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
+    if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
+
+    const update: Partial<typeof csrBoxesTable.$inferInsert> = {};
+    if (label !== undefined) { update.label = String(label).trim(); update.slug = String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
+    if (description !== undefined) update.description = description;
+    if (location !== undefined) update.location = location;
+    if (isActive !== undefined) update.isActive = isActive;
+    if (displayOrder !== undefined) update.displayOrder = displayOrder;
+
+    if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
+
+    const [updated] = await db.update(csrBoxesTable).set(update).where(eq(csrBoxesTable.id, id)).returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_UPDATED", resourceType: "csr_box", resourceId: String(id), metadata: update as Record<string, unknown> });
+    res.json({ box: updated });
+  }
+);
+
+// DELETE /api/admin/csr-boxes/:id — deactivate (soft delete)
+router.delete(
+  "/admin/csr-boxes/:id",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
+
+    const houseTenantId = await getHouseTenantId();
+    const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
+    if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
+
+    const [updated] = await db.update(csrBoxesTable).set({ isActive: false }).where(eq(csrBoxesTable.id, id)).returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_DEACTIVATED", resourceType: "csr_box", resourceId: String(id) });
+    res.json({ box: updated });
   }
 );
 

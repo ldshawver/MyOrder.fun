@@ -138,16 +138,17 @@ function normalizeUiRole(role: string | null | undefined): "global_admin" | "adm
 
 // ─── Clock-In Panel ───────────────────────────────────────────────────────────
 
+const CLOCK_IN_DEFAULT_BOXES: CsrBoxOption[] = [
+  { id: "sales-box-1", label: "CSR Sales Box 1" },
+  { id: "sales-box-2", label: "CSR Sales Box 2" },
+];
+
 function ClockInPanel({ onClockIn, getToken }: {
   onClockIn: (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => Promise<void>;
   getToken: () => Promise<string | null>;
 }) {
-  const DEFAULT_BOXES: CsrBoxOption[] = [
-    { id: "sales-box-1", label: "CSR Sales Box 1" },
-    { id: "sales-box-2", label: "CSR Sales Box 2" },
-  ];
   const [template, setTemplate] = useState<TemplateRow[]>([]);
-  const [boxes, setBoxes] = useState<CsrBoxOption[]>(DEFAULT_BOXES);
+  const [boxes, setBoxes] = useState<CsrBoxOption[]>(CLOCK_IN_DEFAULT_BOXES);
   const [boxAssignmentId, setBoxAssignmentId] = useState("sales-box-1");
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
@@ -169,7 +170,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         if (res.ok) {
           const data = await res.json();
           const rows: TemplateRow[] = data.template;
-          const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : DEFAULT_BOXES;
+          const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : CLOCK_IN_DEFAULT_BOXES;
           setTemplate(rows);
           setBoxes(boxOptions);
           setBoxAssignmentId(prev => boxOptions.some(box => box.id === prev) ? prev : (boxOptions[0]?.id ?? "sales-box-1"));

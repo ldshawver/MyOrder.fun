@@ -3,6 +3,7 @@ import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, ChevronRight, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
+  Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -575,6 +576,209 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
   );
 }
 
+// ─── CSR Boxes Tab ────────────────────────────────────────────────────────────
+
+type CsrBox = {
+  id: number;
+  slug: string;
+  label: string;
+  description: string | null;
+  location: string | null;
+  isActive: boolean;
+  displayOrder: number;
+};
+
+function CsrBoxesTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [boxes, setBoxes] = useState<CsrBox[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState<Record<number | "new", boolean>>({} as Record<number | "new", boolean>);
+  const [edits, setEdits] = useState<Record<number, Partial<CsrBox>>>({});
+  const [showNew, setShowNew] = useState(false);
+  const [newBox, setNewBox] = useState({ label: "", description: "", location: "" });
+
+  const fetchBoxes = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/csr-boxes", { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error("Failed to load boxes");
+      const data = await res.json();
+      setBoxes(data.boxes ?? []);
+    } catch {
+      setError("Could not load CSR boxes.");
+    }
+    setLoading(false);
+  }, [getToken]);
+
+  useEffect(() => { fetchBoxes(); }, [fetchBoxes]);
+
+  const save = async (id: number) => {
+    const patch = edits[id];
+    if (!patch || Object.keys(patch).length === 0) return;
+    setSaving(s => ({ ...s, [id]: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/csr-boxes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      const data = await res.json();
+      setBoxes(prev => prev.map(b => b.id === id ? data.box : b));
+      setEdits(prev => { const next = { ...prev }; delete next[id]; return next; });
+    } catch { setError("Failed to save box."); }
+    setSaving(s => ({ ...s, [id]: false }));
+  };
+
+  const toggleActive = async (box: CsrBox) => {
+    setSaving(s => ({ ...s, [box.id]: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/csr-boxes/${box.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ isActive: !box.isActive }),
+      });
+      if (!res.ok) throw new Error("Toggle failed");
+      const data = await res.json();
+      setBoxes(prev => prev.map(b => b.id === box.id ? data.box : b));
+    } catch { setError("Failed to update box."); }
+    setSaving(s => ({ ...s, [box.id]: false }));
+  };
+
+  const createBox = async () => {
+    if (!newBox.label.trim()) return;
+    setSaving(s => ({ ...s, new: true }));
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/csr-boxes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label: newBox.label.trim(), description: newBox.description || null, location: newBox.location || null, displayOrder: boxes.length * 10 }),
+      });
+      if (!res.ok) throw new Error("Create failed");
+      const data = await res.json();
+      setBoxes(prev => [...prev, data.box]);
+      setNewBox({ label: "", description: "", location: "" });
+      setShowNew(false);
+    } catch { setError("Failed to create box."); }
+    setSaving(s => ({ ...s, new: false }));
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground text-sm">
+      <Loader2 size={16} className="animate-spin" /> Loading boxes…
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {error && <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-xs text-red-400">{error}</div>}
+
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          CSR boxes are tenant-scoped. Active boxes appear in the CSR clock-in dropdown.
+        </p>
+        <Button size="sm" onClick={() => setShowNew(v => !v)} className="gap-2 rounded-xl h-7 text-xs">
+          <Plus size={12} /> Add Box
+        </Button>
+      </div>
+
+      {showNew && (
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3">
+          <p className="text-xs font-semibold text-primary uppercase tracking-wider">New Box</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Label *</label>
+              <Input value={newBox.label} onChange={e => setNewBox(v => ({ ...v, label: e.target.value }))} placeholder="CSR Sales Box 3" className="h-8 text-sm rounded-lg" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Location</label>
+              <Input value={newBox.location} onChange={e => setNewBox(v => ({ ...v, location: e.target.value }))} placeholder="South corner" className="h-8 text-sm rounded-lg" />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Description</label>
+              <Input value={newBox.description} onChange={e => setNewBox(v => ({ ...v, description: e.target.value }))} placeholder="Optional notes" className="h-8 text-sm rounded-lg" />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setShowNew(false)} className="h-7 text-xs rounded-xl">Cancel</Button>
+            <Button size="sm" onClick={createBox} disabled={!newBox.label.trim() || saving["new"]} className="h-7 text-xs gap-1.5 rounded-xl">
+              {saving["new"] ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Create
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {boxes.length === 0 && !showNew && (
+        <div className="rounded-xl border border-dashed border-border/40 p-10 text-center text-xs text-muted-foreground">
+          No CSR boxes configured. Click <strong>Add Box</strong> to create one.
+        </div>
+      )}
+
+      {boxes.map(box => {
+        const edit = edits[box.id] ?? {};
+        const isDirty = Object.keys(edit).length > 0;
+        return (
+          <div key={box.id} className={`rounded-xl border overflow-hidden transition-colors ${box.isActive ? "border-border/40" : "border-border/20 opacity-60"}`}>
+            <div className="flex items-center justify-between px-4 py-3 bg-muted/10 border-b border-border/20">
+              <div className="flex items-center gap-2">
+                <Package size={13} className="text-primary" />
+                <span className="text-sm font-semibold">{edit.label ?? box.label}</span>
+                <span className="text-[10px] font-mono text-muted-foreground/50 bg-muted/30 px-1.5 py-0.5 rounded">{box.slug}</span>
+                {!box.isActive && <Badge variant="outline" className="text-[10px] h-4 text-muted-foreground border-border/30">Inactive</Badge>}
+                {box.isActive && <Badge variant="outline" className="text-[10px] h-4 text-green-400 border-green-500/30">Active</Badge>}
+              </div>
+              <div className="flex items-center gap-2">
+                {isDirty && (
+                  <Button size="sm" onClick={() => save(box.id)} disabled={saving[box.id]} className="h-6 text-[11px] gap-1 rounded-lg px-2.5">
+                    {saving[box.id] ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />} Save
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => toggleActive(box)} disabled={saving[box.id]} className="h-6 text-[11px] gap-1 rounded-lg px-2.5 text-muted-foreground">
+                  {box.isActive ? <EyeOff size={10} /> : <Eye size={10} />}
+                  {box.isActive ? "Deactivate" : "Activate"}
+                </Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 px-4 py-3">
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 block">Label</label>
+                <Input
+                  value={edit.label ?? box.label}
+                  onChange={e => setEdits(prev => ({ ...prev, [box.id]: { ...(prev[box.id] ?? {}), label: e.target.value } }))}
+                  className="h-7 text-xs rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 block">Location</label>
+                <Input
+                  value={edit.location ?? box.location ?? ""}
+                  onChange={e => setEdits(prev => ({ ...prev, [box.id]: { ...(prev[box.id] ?? {}), location: e.target.value } }))}
+                  placeholder="e.g. South corner"
+                  className="h-7 text-xs rounded-lg"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 block">Description</label>
+                <Input
+                  value={edit.description ?? box.description ?? ""}
+                  onChange={e => setEdits(prev => ({ ...prev, [box.id]: { ...(prev[box.id] ?? {}), description: e.target.value } }))}
+                  placeholder="Optional notes"
+                  className="h-7 text-xs rounded-lg"
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Stock Levels Tab ─────────────────────────────────────────────────────────
 
 function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }) {
@@ -862,7 +1066,7 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"stock" | "template">("template");
+  const [tab, setTab] = useState<"stock" | "template" | "boxes">("template");
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -873,7 +1077,7 @@ export default function AdminInventory() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking and shift template management</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking, shift template, and CSR box management</p>
         </div>
       </div>
 
@@ -882,6 +1086,7 @@ export default function AdminInventory() {
         {[
           { key: "template" as const, label: "Raw Materials", icon: Settings2 },
           { key: "stock" as const, label: "Stock Levels", icon: ClipboardList },
+          { key: "boxes" as const, label: "CSR Boxes", icon: Package },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -901,6 +1106,8 @@ export default function AdminInventory() {
       {/* Tab content */}
       {tab === "template" ? (
         <ShiftTemplateTab getToken={getToken} />
+      ) : tab === "boxes" ? (
+        <CsrBoxesTab getToken={getToken} />
       ) : (
         <StockLevelsTab getToken={getToken} />
       )}

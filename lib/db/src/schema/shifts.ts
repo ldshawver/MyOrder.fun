@@ -12,6 +12,26 @@ import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
 
+// ─── CSR Sales Boxes ──────────────────────────────────────────────────────────
+// Tenant-scoped physical/logical boxes that CSRs are assigned to during a shift.
+// Admins create/edit/deactivate; CSRs read active ones at clock-in.
+export const csrBoxesTable = pgTable("csr_boxes", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  // Stable slug used as boxAssignmentId in lab_tech_shifts (e.g. "sales-box-1")
+  slug: text("slug").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  location: text("location"),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type CsrBox = typeof csrBoxesTable.$inferSelect;
+export type InsertCsrBox = typeof csrBoxesTable.$inferInsert;
+
 export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
