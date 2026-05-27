@@ -297,6 +297,69 @@ pnpm lint:ratchet --update
 
 ---
 
+## Operating Rules (Pre-Migration Stabilization)
+
+### Source of Truth
+- **GitHub** = code source of truth. Pull latest before making changes.
+- **VPS production** = runtime source of truth. PostgreSQL data must be preserved.
+- Replit is a build/test/deploy staging environment only — not a preview environment.
+
+### DO NOT
+- Require Clerk setup inside Replit or block work because Replit preview is blank
+- Rebuild from scratch, reset the database, or create duplicate tables
+- Redesign UI, change branding/layout, or switch frameworks (no Next.js, no framework swaps)
+- Change the Plasmic integration method or move business logic into Plasmic
+- Mix Alavont and Lucifer Cruz inventory/reporting
+- Edit WooCommerce-managed Lucifer Cruz products inside MyOrder
+- Hardcode VPS-specific paths or introduce Replit-specific dependencies
+
+### Testing Approach
+- Unit tests, API tests, typecheck, and build validation — not Replit preview
+- Mock auth only in tests where needed; do not alter production auth flow for Replit convenience
+- Provide exact VPS deploy commands after every approved fix
+
+### Schema Change Rules (mandatory before any migration)
+1. Explain current schema issue
+2. Provide migration plan
+3. Confirm no data loss + rollback plan
+4. Get approval
+5. Add proper Drizzle migration (idempotent, preserves existing data)
+6. Never ask user to paste raw SQL unless emergency
+
+### Completion Checklist (every fix)
+- [ ] typecheck/build passes for affected package
+- [ ] relevant tests pass
+- [ ] no unrelated files changed
+- [ ] exact deploy commands provided
+- [ ] env/migration changes identified
+
+### Priority Order (POS stabilization)
+1. POS shift/queue workflow
+2. CSR Sales Box selection
+3. Starting/ending inventory
+4. Inventory by box/location
+5. Catalog visibility
+6. Add-to-cart flow
+7. Zappy AI product search/cart assist
+8. Checkout mobile usability
+9. Delivery tracking workflow
+10. Reports/reprints
+11. Admin permissions
+12. Plasmic app-host ✅ done
+
+### Private Server Migration Readiness (build toward)
+- Documented Docker deployment, env vars, backup/restore, migrations, SSL/proxy
+- No hardcoded VPS paths, no Replit-specific dependencies, no preview-only assumptions
+- Target: self-hosted OptiPlex running Docker (Coolify/Traefik or Nginx TBD)
+
+### Plasmic Rules
+- Vite/React codegen only — no Next.js Plasmic loader
+- `/plasmic-host` public + iframe-compatible; `/plasmic-test` for rendered component testing
+- Plasmic controls UI shells, landing pages, cards, visual layouts only
+- Cart, checkout, pricing, auth, inventory, reports, permissions stay in backend/app logic
+
+---
+
 ## Integration Implementation Plan
 
 The following integrations are planned but not yet implemented. Build in this order (each phase unblocks the next).
