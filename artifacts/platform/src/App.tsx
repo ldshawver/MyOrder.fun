@@ -407,9 +407,6 @@ function AuthenticatedApp() {
 function Router() {
   return (
     <Switch>
-      <Route path="/plasmic-host">
-        <PlasmicCanvasHost />
-      </Route>
       <Route path="/" component={HomeRedirect} />
       <Route path="/terms-of-service" component={Terms} />
       <Route path="/privacy" component={Privacy} />
@@ -448,6 +445,25 @@ function ClerkAuthTokenSetter() {
   return null;
 }
 
+/**
+ * AppRoot — top-level path gate.
+ * /plasmic-host renders ONLY PlasmicCanvasHost with zero Clerk / auth / layout
+ * context so Plasmic Studio can iframe it without Clerk initialization blocking.
+ * Everything else falls through to ClerkProviderWithRoutes.
+ */
+function AppRoot() {
+  return (
+    <Switch>
+      <Route path="/plasmic-host">
+        <PlasmicCanvasHost />
+      </Route>
+      <Route>
+        <ClerkProviderWithRoutes />
+      </Route>
+    </Switch>
+  );
+}
+
 function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
 
@@ -473,7 +489,7 @@ function App() {
       <CartProvider>
         <TooltipProvider>
           <WouterRouter base={basePath}>
-            <ClerkProviderWithRoutes />
+            <AppRoot />
           </WouterRouter>
           <Toaster />
         </TooltipProvider>

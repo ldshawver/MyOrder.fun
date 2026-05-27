@@ -1,1 +1,2 @@
-- [Platform Dev workflow fix](platform-dev-workflow.md) — waitForPort must be omitted; dev-server.mjs must handle SIGTERM cleanly; proxy on 0.0.0.0 not ::.
+- [Platform Dev workflow](platform-dev-workflow.md) — remove waitForPort; proxy owns port, Vite on PORT+1 in same process group.
+- [Plasmic host isolation](plasmic-host-isolation.md) — /plasmic-host must be above ClerkProvider in the component tree.
