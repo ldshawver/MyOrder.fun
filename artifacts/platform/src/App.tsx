@@ -5,7 +5,6 @@ import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wo
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
 import { queryClient } from "./lib/queryClient";
-import { PlasmicCanvasHost } from "@plasmicapp/host";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
@@ -49,7 +48,6 @@ import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
 import Layout from "@/components/layout";
-import Homepage from "@/components/Homepage";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -394,9 +392,6 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
-        <Route path="/plasmic-test">
-          <Homepage />
-        </Route>
         <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -445,24 +440,6 @@ function ClerkAuthTokenSetter() {
   return null;
 }
 
-/**
- * AppRoot — top-level path gate.
- * /plasmic-host renders ONLY PlasmicCanvasHost with zero Clerk / auth / layout
- * context so Plasmic Studio can iframe it without Clerk initialization blocking.
- * Everything else falls through to ClerkProviderWithRoutes.
- */
-function AppRoot() {
-  return (
-    <Switch>
-      <Route path="/plasmic-host">
-        <PlasmicCanvasHost />
-      </Route>
-      <Route>
-        <ClerkProviderWithRoutes />
-      </Route>
-    </Switch>
-  );
-}
 
 function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
@@ -489,7 +466,7 @@ function App() {
       <CartProvider>
         <TooltipProvider>
           <WouterRouter base={basePath}>
-            <AppRoot />
+            <ClerkProviderWithRoutes />
           </WouterRouter>
           <Toaster />
         </TooltipProvider>
