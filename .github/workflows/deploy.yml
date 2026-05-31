@@ -101,10 +101,28 @@ jobs:
           echo "  Message: $(git log -1 --pretty=%s)"
           echo "════════════════════════════════════════════════════════"
 
-      - name: Set up SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+      - name: Install SSH deploy key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -z "${VPS_SSH_KEY}" ]; then
+            echo "::error::VPS_SSH_KEY is empty. Copy the target VPS private deploy key into the GitHub Actions secret."
+            exit 1
+          fi
+
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/vps_deploy_key
+          chmod 600 ~/.ssh/vps_deploy_key
+
+          if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
+            echo "::error::VPS_SSH_KEY is not a valid private key, or it was pasted incorrectly."
+            exit 1
+          fi
+
+          echo "VPS_SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "${GITHUB_ENV}"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
 
       - name: Add VPS to known_hosts
         run: |
@@ -119,9 +137,54 @@ jobs:
           echo "Unable to scan VPS SSH host key after retries"
           exit 1
 
+      - name: Verify SSH access to VPS
+        run: |
+          set -euo pipefail
+
+          SSH_OPTS=(
+            -i "${VPS_SSH_KEY_PATH}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=20
+          )
+
+          if ! ssh "${SSH_OPTS[@]}" \
+                   ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                   'printf "ssh-ok user=%s host=%s\n" "$(whoami)" "$(hostname)"'; then
+            cat <<'EOF'
+          ::error::GitHub Actions could not authenticate to the VPS before rsync.
+
+          Fix the VPS deploy credentials, then re-run this workflow:
+            1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
+               The setup script creates /root/.ssh/github_deploy if needed and
+               installs its public key into /root/.ssh/authorized_keys.
+            2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
+               On the VPS, print it with: cat /root/.ssh/github_deploy
+            3. Ensure VPS_USER matches the account that has that public key
+               installed (normally root for this deploy path).
+            4. Ensure VPS_HOST points to the new VPS public IP/DNS.
+          EOF
+            exit 1
+          fi
+
       - name: Sync code to VPS
         run: |
+          set -euo pipefail
+          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          SSH_OPTS=(
+            -i "${VPS_SSH_KEY_PATH}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=20
+          )
+
+          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p /opt/alavont"
+
           rsync -az --delete \
+            -e "${RSYNC_RSH}" \
             --exclude='.git' \
             --exclude='deploy/.env' \
             --exclude='deploy/nginx/ssl' \
@@ -129,17 +192,27 @@ jobs:
             --exclude='**/node_modules' \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
 
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "chmod +x /opt/alavont/deploy/renew-cert.sh || true"
+          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "chmod +x /opt/alavont/deploy/renew-cert.sh /opt/alavont/deploy/release-web-ports.sh || true"
 
       - name: Clean stale node_modules on VPS
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+          ssh -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
 
       - name: Build images
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+          ssh -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
 
             echo "Building from source synced at: $(date -u)"
@@ -159,14 +232,19 @@ jobs:
 
       - name: Deploy with cert renewal
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+          ssh -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
 
             cd /opt/alavont/deploy
             DOMAIN="myorder.fun"
 
-            echo "▶ Releasing public web ports from Coolify proxy if present..."
-            docker stop coolify-proxy 2>/dev/null || true
+            echo "▶ Releasing public web ports from old VPS proxies if present..."
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             echo "▶ Stopping all services..."
             docker compose down 2>&1 || true
@@ -222,25 +300,14 @@ jobs:
             echo "MIGRATE SUCCESS"
 
             echo "▶ Opening host firewall ports (idempotent)..."
-            iptables -C INPUT -p tcp --dport 80  -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80  -j ACCEPT || true
-            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
-            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             echo "▶ Starting all services..."
-            docker stop coolify-proxy 2>/dev/null || true
+            bash /opt/alavont/deploy/release-web-ports.sh
             docker compose up -d < /dev/null
 
             echo "▶ Refreshing public web edge..."
-            ufw allow 80/tcp || true
-            ufw allow 443/tcp || true
-            ufw reload || true
-            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
-            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 80 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 443 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 80 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT || true
-            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             docker compose up -d db api platform nginx < /dev/null
             docker compose restart nginx < /dev/null
