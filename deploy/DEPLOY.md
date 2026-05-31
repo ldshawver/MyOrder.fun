@@ -91,18 +91,39 @@ Every push to `main` triggers an automatic deploy. You need to add three secrets
 | `VPS_SSH_KEY` | your SSH private key (see below) |
 
 ### Generating the SSH deploy key (run on VPS)
+
+The first-time setup script now creates the deploy key and installs its public
+key for root SSH automatically:
+
 ```bash
-ssh-keygen -t ed25519 -C "github-deploy" -f /root/.ssh/github_deploy
-# Press Enter for all prompts (no passphrase)
+cd /opt/alavont
+bash deploy/setup.sh
+```
 
-# Allow this key to log in
-cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+If you need to repair the key manually, run:
 
-# Print the PRIVATE key — copy this into GitHub secret VPS_SSH_KEY
+```bash
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+ssh-keygen -t ed25519 -C "github-deploy" -f /root/.ssh/github_deploy -N "" || true
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+grep -qxF "$(cat /root/.ssh/github_deploy.pub)" /root/.ssh/authorized_keys || \
+  cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+```
+
+Then update GitHub Actions secrets for the target VPS:
+
+```bash
+# VPS_USER should normally be root for this deploy path.
+# Copy this PRIVATE key exactly into GitHub secret VPS_SSH_KEY:
 cat /root/.ssh/github_deploy
 ```
 
-After adding the secret, any push to `main` on GitHub will auto-deploy to the VPS.
+The deploy workflow performs a `BatchMode=yes` SSH preflight before `rsync`; if
+that check fails, update `VPS_HOST`, `VPS_USER`, or `VPS_SSH_KEY` and re-run the
+workflow. After the SSH preflight succeeds, any push to `main` will auto-deploy
+to the VPS.
 
 ---
 

@@ -16,31 +16,74 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Set up SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SSH deploy key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -z "${VPS_SSH_KEY}" ]; then
+            echo "::error::VPS_SSH_KEY is empty. Copy the target VPS private deploy key into the GitHub Actions secret."
+            exit 1
+          fi
+
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/vps_deploy_key
+          chmod 600 ~/.ssh/vps_deploy_key
+
+          if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
+            echo "::error::VPS_SSH_KEY is not a valid private key, or it was pasted incorrectly."
+            exit 1
+          fi
+
+          echo "VPS_SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "${GITHUB_ENV}"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+              exit 0
+            fi
+            echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
+            sleep 5
+          done
+          echo "Unable to scan VPS SSH host key after retries"
+          exit 1
+
+      - name: Upload latest port release helper
+        run: |
+          set -euo pipefail
+          scp -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            deploy/release-web-ports.sh \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/release-web-ports.sh
 
       - name: Non-interactive edge restart
         run: |
           timeout 180s ssh \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=2 \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -eux
-            cd /opt/alavont/deploy
 
-            echo "== force allow web ports at host firewall layer =="
-            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
-            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 80 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 443 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 80 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT || true
-            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+            echo "== release old proxies and allow web ports =="
+            chmod +x /tmp/release-web-ports.sh
+            bash /tmp/release-web-ports.sh
+
+            cd /opt/alavont/deploy
 
             echo "== start compose services =="
             docker compose up -d db api platform nginx < /dev/null
