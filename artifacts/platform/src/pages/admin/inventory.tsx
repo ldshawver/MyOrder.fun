@@ -327,9 +327,9 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold">Raw Material Inventory</div>
+          <div className="text-sm font-semibold">Inventory</div>
           <div className="text-xs text-muted-foreground mt-0.5">
-            Current stock auto-deducts when linked menu items are fulfilled. Managers can add, edit, or delete items.
+            Master inventory rows can be linked to menu items; stock auto-deducts when linked items are fulfilled. Managers can add, edit, or delete items.
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1384,14 +1384,14 @@ export default function AdminInventory() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking, shift template, CSR boxes, and per-location stock</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Master inventory, shift template, CSR boxes, storefront, backstock, and per-location stock</p>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
         {[
-          { key: "template" as const, label: "Raw Materials", icon: Settings2 },
+          { key: "template" as const, label: "Inventory", icon: Settings2 },
           { key: "stock" as const, label: "Stock Levels", icon: ClipboardList },
           { key: "boxes" as const, label: "CSR Boxes", icon: Package },
           { key: "locations" as const, label: "Locations", icon: MapPin },

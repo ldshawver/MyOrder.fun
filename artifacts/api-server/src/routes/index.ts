@@ -22,6 +22,7 @@ import feedbackRouter from "./feedback";
 import integrationsRouter from "./integrations";
 import creditsRouter from "./credits";
 import reportsRouter from "./reports";
+import proposalsRouter from "./proposals";
 
 const router: IRouter = Router();
 
@@ -48,5 +49,6 @@ router.use(feedbackRouter);
 router.use(integrationsRouter);
 router.use(creditsRouter);
 router.use(reportsRouter);
+router.use(proposalsRouter);
 
 export default router;

@@ -24,8 +24,13 @@ jobs:
 
       - name: Add VPS to known_hosts
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+            echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
+          fi
 
       # Push the latest renewal script to the VPS in case it isn't there yet
       - name: Sync renewal script to VPS

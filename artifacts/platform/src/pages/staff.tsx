@@ -1384,9 +1384,9 @@ export default function CustomerServiceRepQueue() {
     });
     const contentType = res.headers.get("content-type") ?? "";
     const responseData = contentType.includes("application/json") ? (await res.json() as Record<string, unknown>) : null;
-    if (isAdmin) {
+    if (isAdmin && !res.ok) {
       setDebugEntries(prev => [{
-        label: res.ok ? "Clock-in" : "Clock-in (failed)",
+        label: "Clock-in (failed)",
         method,
         endpoint,
         status: res.status,
@@ -1402,6 +1402,14 @@ export default function CustomerServiceRepQueue() {
         ? ((responseData as { error?: string }).error ?? "Clock-in failed")
         : `Clock-in failed (${res.status})`;
       throw new Error(msg);
+    }
+
+    // POST /api/shifts/clock-in is intentionally idempotent. If the CSR is
+    // already active, the server returns 200 with { alreadyClockedIn: true,
+    // shift }. Treat that as a usable POS state instead of surfacing the raw
+    // JSON/debug response as an error.
+    if (responseData?.shift) {
+      setShift(responseData.shift as ActiveShift);
     }
     await refetchShift();
   };

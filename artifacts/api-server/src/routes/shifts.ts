@@ -581,6 +581,27 @@ router.get(
   }
 );
 
+
+async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$inferSelect) {
+  const snapshotItems = await db
+    .select()
+    .from(shiftInventoryItemsTable)
+    .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
+    .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+  const stats = await computeShiftStats(activeShift.id);
+  const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+  const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+
+  return {
+    ...activeShift,
+    cashBankStart,
+    runningCashBank: cashBankStart + stats.cashSales,
+    inventory,
+    stats,
+  };
+}
+
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
@@ -602,7 +623,9 @@ router.post(
     if (existing.length > 0) {
       // Idempotent re-clock-in: return the existing active shift instead of
       // erroring so the UI doesn't double-create on retry / refresh races.
-      res.status(200).json({ shift: existing[0], alreadyClockedIn: true });
+      // Return the same enriched payload as /api/shifts/current so POS clients
+      // can resume immediately without rendering raw DB rows as an error.
+      res.status(200).json({ shift: await buildActiveShiftPayload(existing[0]), alreadyClockedIn: true });
       return;
     }
 
@@ -686,7 +709,7 @@ router.post(
     }
 
     res.status(201).json({
-      shift,
+      shift: await buildActiveShiftPayload(shift),
       _debug: {
         tenantId: houseTenantId,
         techId: tech.id,
@@ -862,27 +885,7 @@ router.get(
 
     if (!activeShift) { res.json({ shift: null }); return; }
 
-    const snapshotItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-
-    const stats = await computeShiftStats(activeShift.id);
-    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
-
-    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
-    const runningCashBank = cashBankStart + stats.cashSales;
-
-    res.json({
-      shift: {
-        ...activeShift,
-        cashBankStart,
-        runningCashBank,
-        inventory,
-        stats,
-      },
-    });
+    res.json({ shift: await buildActiveShiftPayload(activeShift) });
   }
 );
 
