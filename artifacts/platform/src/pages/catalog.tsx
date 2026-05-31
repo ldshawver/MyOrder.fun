@@ -71,6 +71,7 @@ interface CatalogItemForm {
   name: string;
   description: string;
   price: string;
+  compareAtPrice: string;
   regularPrice: string;
   homiePrice: string;
   category: string;
@@ -269,7 +270,8 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
   const fields: Array<{ label: string; key: StringFormKey; type: string; placeholder?: string }> = [
     { label: "Name *", key: "name", type: "text" },
     { label: "Category *", key: "category", type: "text" },
-    { label: "Price ($) *", key: "price", type: "number" },
+    { label: "Price / Sale Price ($) *", key: "price", type: "number" },
+    { label: "Compare-at Price ($)", key: "compareAtPrice", type: "number" },
     { label: "Regular Price ($)", key: "regularPrice", type: "number" },
     { label: "Homie Price ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
@@ -436,6 +438,7 @@ function emptyCatalogForm(): CatalogItemForm {
     name: "",
     description: "",
     price: "",
+    compareAtPrice: "",
     regularPrice: "",
     homiePrice: "",
     category: "",
@@ -482,6 +485,7 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     name: item.name || "",
     description: item.description || "",
     price: item.price?.toString() || "",
+    compareAtPrice: item.compareAtPrice?.toString() || "",
     regularPrice: item.regularPrice?.toString() || "",
     homiePrice: item.homiePrice?.toString() || "",
     category: item.category || "",
@@ -663,6 +667,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -781,6 +786,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -957,7 +963,7 @@ export default function Catalog() {
       </div>
 
       {!isLC && (
-        <div className="relative overflow-hidden rounded-2xl h-[200px] border border-border/30 catalog-hero">
+        <div className="relative z-0 -mt-2 overflow-hidden rounded-2xl h-[280px] border border-border/30 catalog-hero">
           {bannerImages.map((src, index) => (
             <img
               key={src}
@@ -991,8 +997,6 @@ export default function Catalog() {
           </p>
         </div>
       )}
-
-      <CatalogNotice />
 
       {/* Filters */}
       <div className="flex gap-2 flex-wrap items-center">
@@ -1099,6 +1103,8 @@ export default function Catalog() {
           ))}
         </div>
       )}
+
+      <CatalogNotice className="mt-8" />
 
       {/* Dialogs */}
       <EditItemDialog item={editItem} open={!!editItem} onClose={() => setEditItem(null)} />
