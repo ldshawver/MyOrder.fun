@@ -42,9 +42,12 @@ echo "  And add the PRIVATE key (/root/.ssh/github_deploy) to GitHub:"
 echo "    Repo → Settings → Secrets → Actions → VPS_SSH_KEY"
 echo ""
 
+echo "▶ Releasing public web ports before requesting SSL..."
+bash "${DEPLOY_DIR}/release-web-ports.sh" || true
+
 echo "▶ Obtaining SSL certificate for ${DOMAIN}..."
 echo "  Make sure your DNS A record points: ${DOMAIN} → this server's IP"
-echo "  Port 80 must be free (nothing running on it yet)."
+echo "  Port 80 must be free (the setup script stops old proxy containers first)."
 read -p "  Press Enter to get SSL cert now, or Ctrl+C to skip..."
 certbot certonly --standalone \
   -d "${DOMAIN}" -d "www.${DOMAIN}" \

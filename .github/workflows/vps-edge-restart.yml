@@ -33,14 +33,9 @@ jobs:
             set -eux
             cd /opt/alavont/deploy
 
-            echo "== force allow web ports at host firewall layer =="
-            iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
-            iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 80 -j ACCEPT || true
-            iptables -C FORWARD -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I FORWARD -p tcp --dport 443 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 80 -j ACCEPT || true
-            iptables -C DOCKER-USER -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 443 -j ACCEPT || true
-            command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+            echo "== release old proxies and allow web ports =="
+            chmod +x /opt/alavont/deploy/release-web-ports.sh || true
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             echo "== start compose services =="
             docker compose up -d db api platform nginx < /dev/null

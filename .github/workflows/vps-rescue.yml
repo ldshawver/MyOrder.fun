@@ -49,10 +49,9 @@ jobs:
             cd /opt/alavont/deploy
             docker compose ps || true
 
-            echo "== reopen standard web ports if ufw is active =="
-            ufw allow 80/tcp || true
-            ufw allow 443/tcp || true
-            ufw reload || true
+            echo "== release old proxies and reopen standard web ports =="
+            chmod +x /opt/alavont/deploy/release-web-ports.sh || true
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             echo "== restart nginx edge =="
             docker compose up -d db api platform nginx < /dev/null
