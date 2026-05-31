@@ -80,10 +80,8 @@ jobs:
             set -eux
 
             echo "== release old proxies and allow web ports =="
-            chmod +x /tmp/release-web-ports.sh
-            bash /tmp/release-web-ports.sh
-
-            cd /opt/alavont/deploy
+            chmod +x /opt/alavont/deploy/release-web-ports.sh || true
+            bash /opt/alavont/deploy/release-web-ports.sh
 
             echo "== start compose services =="
             docker compose up -d db api platform nginx < /dev/null

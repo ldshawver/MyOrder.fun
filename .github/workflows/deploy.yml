@@ -192,7 +192,7 @@ jobs:
             --exclude='**/node_modules' \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
 
-          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "chmod +x /opt/alavont/deploy/renew-cert.sh /opt/alavont/deploy/release-web-ports.sh || true"
 
       - name: Clean stale node_modules on VPS
