@@ -20,8 +20,9 @@ import {
   printSettingsTable,
   adminSettingsTable,
 } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
+import { charWidth, getLogo } from "./print/index";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
   selectActiveOperator,
@@ -44,7 +45,17 @@ export function makeIdempotencyKey(orderId: number, printerId: number, jobType: 
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
+let printSettingsSchemaEnsured = false;
+
+async function ensurePrintSettingsSchema(): Promise<void> {
+  if (printSettingsSchemaEnsured) return;
+  await db.execute(sql`ALTER TABLE "print_settings" ADD COLUMN IF NOT EXISTS "receipt_template_style" text NOT NULL DEFAULT 'clean'`);
+  await db.execute(sql`ALTER TABLE "print_settings" ADD COLUMN IF NOT EXISTS "label_template_style" text NOT NULL DEFAULT 'thank_you_personalized'`);
+  printSettingsSchemaEnsured = true;
+}
+
 export async function getSettings() {
+  await ensurePrintSettingsSchema();
   const rows = await db.select().from(printSettingsTable).limit(1);
   if (rows.length) return rows[0];
   const [created] = await db.insert(printSettingsTable).values({}).returning();
@@ -412,7 +423,7 @@ export async function enqueueOrderPrintJobs(order: {
   shippingAddress?: string | null;
 }) {
   const settings = await getSettings();
-  if (!settings.autoPrintOrders) return;
+  if (!settings.autoPrintOrders && !settings.autoPrintReceipts && !settings.autoPrintLabels) return;
 
   // Load receiptLineNameMode from admin settings (dual-brand receipt control)
   let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
@@ -428,6 +439,11 @@ export async function enqueueOrderPrintJobs(order: {
   // Resolve operator
   const operator = await selectActiveOperator();
   const profile = operator?.profile ?? null;
+  const operatorName = operator
+    ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email || undefined
+    : undefined;
+  const receiptWidth = charWidth(settings.paperWidth ?? "80mm");
+  const receiptLogoLines = settings.includeLogo !== false ? getLogo(receiptWidth) : [];
 
   const printOrder = {
     id: order.id,
@@ -435,6 +451,14 @@ export async function enqueueOrderPrintJobs(order: {
     fulfillmentType: order.fulfillmentType,
     notes: order.notes ?? undefined,
     receiptLineNameMode,
+    paperWidth: settings.paperWidth ?? "80mm",
+    logoLines: receiptLogoLines,
+    dualBrandName: settings.brandName ?? undefined,
+    footerMessage: settings.footerMessage ?? undefined,
+    showDiscreetNotice: settings.showDiscreetNotice ?? false,
+    showOperatorName: settings.includeOperatorName !== false,
+    operatorName,
+    receiptTemplateStyle: (settings.receiptTemplateStyle as "clean" | "classic" | "compact" | null) ?? "clean",
     items: order.items.map(i => ({
       quantity: i.quantity,
       name: i.catalogItemName,
@@ -461,7 +485,7 @@ export async function enqueueOrderPrintJobs(order: {
   // ── Receipt ───────────────────────────────────────────────────────────────
   const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
 
-  if (receiptPrinter) {
+  if ((settings.autoPrintReceipts || settings.autoPrintOrders) && receiptPrinter) {
     const renderedText = renderCustomerReceipt(printOrder);
     const key = makeIdempotencyKey(order.id, receiptPrinter.id, "receipt");
     const existing = await db.select().from(printJobsTable)
@@ -487,11 +511,13 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Kitchen ticket ────────────────────────────────────────────────────────
   // Falls back to any active kitchen/expo printer if no profile
-  const kitchenPrinters = await db.select().from(printPrintersTable)
-    .where(and(
-      eq(printPrintersTable.isActive, true),
-      eq(printPrintersTable.role, "kitchen"),
-    )).limit(3);
+  const kitchenPrinters = settings.autoPrintOrders
+    ? await db.select().from(printPrintersTable)
+        .where(and(
+          eq(printPrintersTable.isActive, true),
+          eq(printPrintersTable.role, "kitchen"),
+        )).limit(3)
+    : [];
 
   for (const kp of kitchenPrinters) {
     const renderedText = renderKitchenTicket(printOrder);
@@ -517,11 +543,13 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Expo ticket ───────────────────────────────────────────────────────────
   // Expo printers get the same kitchen ticket as a bump-screen / pass station.
-  const expoPrinters = await db.select().from(printPrintersTable)
-    .where(and(
-      eq(printPrintersTable.isActive, true),
-      eq(printPrintersTable.role, "expo"),
-    )).limit(3);
+  const expoPrinters = settings.autoPrintOrders
+    ? await db.select().from(printPrintersTable)
+        .where(and(
+          eq(printPrintersTable.isActive, true),
+          eq(printPrintersTable.role, "expo"),
+        )).limit(3)
+    : [];
 
   for (const ep of expoPrinters) {
     const renderedText = renderKitchenTicket(printOrder);

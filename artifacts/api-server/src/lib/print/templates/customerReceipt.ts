@@ -30,6 +30,7 @@ export interface CustomerReceiptData {
   // ── Options ─────────────────────────────────────────────────────────────────
   showDiscreetNotice?: boolean;
   showOperatorName?: boolean;
+  receiptTemplateStyle?: "clean" | "classic" | "compact";
   // ── Legacy (ignored — kept for backward compat) ──────────────────────────────
   brandName?: string | null;
 }
@@ -41,9 +42,10 @@ export function buildCustomerReceiptBlocks(data: CustomerReceiptData): PrintBloc
   // HEADER — Logo + brand
   // ═══════════════════════════════════════════════════════
 
-  blocks.push({ type: "divider", char: "=" });
+  const templateStyle = data.receiptTemplateStyle ?? "clean";
+  blocks.push({ type: "divider", char: templateStyle === "compact" ? "-" : "=" });
 
-  if (data.logoLines?.length) {
+  if (templateStyle !== "compact" && data.logoLines?.length) {
     blocks.push({ type: "spacer" });
     blocks.push({ type: "logo", lines: data.logoLines });
     if (data.dualBrandName?.trim()) {
@@ -51,14 +53,16 @@ export function buildCustomerReceiptBlocks(data: CustomerReceiptData): PrintBloc
       blocks.push({ type: "center", text: `- ${data.dualBrandName.trim().toUpperCase()} -` });
     }
     blocks.push({ type: "spacer" });
+  } else if (templateStyle === "compact" && data.dualBrandName?.trim()) {
+    blocks.push({ type: "center", text: data.dualBrandName.trim().toUpperCase() });
   }
 
-  blocks.push({ type: "divider", char: "=" });
+  blocks.push({ type: "divider", char: templateStyle === "compact" ? "-" : "=" });
 
   // ── Document title ───────────────────────────────────────────────────────────
-  blocks.push({ type: "spacer" });
-  blocks.push({ type: "center", text: spacedText("RECEIPT") });
-  blocks.push({ type: "spacer" });
+  if (templateStyle !== "compact") blocks.push({ type: "spacer" });
+  blocks.push({ type: "center", text: templateStyle === "classic" ? spacedText("CUSTOMER RECEIPT") : spacedText("RECEIPT") });
+  if (templateStyle !== "compact") blocks.push({ type: "spacer" });
 
   // ═══════════════════════════════════════════════════════
   // ORDER INFO

@@ -55,6 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [test]
+    env:
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
 
     steps:
       - name: Checkout code
@@ -107,16 +110,16 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          if [ -z "${VPS_SSH_KEY}" ]; then
-            echo "::error::VPS_SSH_KEY is empty. Copy the target VPS private deploy key into the GitHub Actions secret."
+          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+            echo "::error::No VPS private key found. Set VPS_SSH_KEY or VPS_SECRET_KEY to the PRIVATE key that matches the public key in the VPS user's authorized_keys."
             exit 1
           fi
 
-          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/vps_deploy_key
+          printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
           chmod 600 ~/.ssh/vps_deploy_key
 
           if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
-            echo "::error::VPS_SSH_KEY is not a valid private key, or it was pasted incorrectly."
+            echo "::error::The configured VPS private key is invalid. VPS_SSH_KEY/VPS_SECRET_KEY must contain a PRIVATE key, not the public key."
             exit 1
           fi
 
@@ -132,7 +135,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
           for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+            if ssh-keyscan -T 15 -p "${VPS_PORT:-22}" -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
               exit 0
             fi
             echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
@@ -151,6 +154,7 @@ jobs:
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=accept-new
             -o ConnectTimeout=20
+            -p "${VPS_PORT:-22}"
           )
 
           if ! ssh "${SSH_OPTS[@]}" \
@@ -163,6 +167,13 @@ jobs:
             1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
                The setup script creates /root/.ssh/github_deploy if needed and
                installs its public key into /root/.ssh/authorized_keys.
+            2. Put the matching PRIVATE key in VPS_SSH_KEY or VPS_SECRET_KEY.
+               On the VPS, print it with: cat /root/.ssh/github_deploy
+            3. The PUBLIC key belongs on the VPS in ~/.ssh/authorized_keys;
+               GitHub repository Deploy Keys are only for GitHub-to-repo access.
+            4. Ensure VPS_USER matches the account that has that public key
+               installed (normally root for this deploy path).
+            5. Ensure VPS_HOST points to the new VPS public IP/DNS and VPS_PORT matches the SSH port.
             2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
                On the VPS, print it with: cat /root/.ssh/github_deploy
             3. Ensure VPS_USER matches the account that has that public key
@@ -206,13 +217,14 @@ jobs:
       - name: Sync code to VPS
         run: |
           set -euo pipefail
-          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p ${VPS_PORT:-22}"
           SSH_OPTS=(
             -i "${VPS_SSH_KEY_PATH}"
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=accept-new
             -o ConnectTimeout=20
+            -p "${VPS_PORT:-22}"
           )
 
           ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
@@ -237,6 +249,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
+            -p "${VPS_PORT:-22}" \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
 
@@ -247,6 +260,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
+            -p "${VPS_PORT:-22}" \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
 
@@ -272,6 +286,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
+            -p "${VPS_PORT:-22}" \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
 

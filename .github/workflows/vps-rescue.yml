@@ -13,6 +13,9 @@ jobs:
     name: Inspect and restart VPS edge
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
 
     steps:
       - name: Checkout code
@@ -24,16 +27,16 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          if [ -z "${VPS_SSH_KEY}" ]; then
-            echo "::error::VPS_SSH_KEY is empty. Copy the target VPS private deploy key into the GitHub Actions secret."
+          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+            echo "::error::No VPS private key found. Set VPS_SSH_KEY or VPS_SECRET_KEY to the PRIVATE key that matches the public key in the VPS user's authorized_keys."
             exit 1
           fi
 
-          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/vps_deploy_key
+          printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
           chmod 600 ~/.ssh/vps_deploy_key
 
           if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
-            echo "::error::VPS_SSH_KEY is not a valid private key, or it was pasted incorrectly."
+            echo "::error::The configured VPS private key is invalid. VPS_SSH_KEY/VPS_SECRET_KEY must contain a PRIVATE key, not the public key."
             exit 1
           fi
 
@@ -49,7 +52,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
           for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+            if ssh-keyscan -T 15 -p "${VPS_PORT:-22}" -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
               exit 0
             fi
             echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
@@ -66,6 +69,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
+            -P "${VPS_PORT:-22}" \
             deploy/release-web-ports.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/release-web-ports.sh
 
@@ -76,6 +80,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
+            -p "${VPS_PORT:-22}" \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -euxo pipefail
 

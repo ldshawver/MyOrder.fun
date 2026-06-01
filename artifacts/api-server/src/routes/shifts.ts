@@ -482,11 +482,12 @@ async function computeShiftStats(shiftId: number) {
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cashapp: 0, paypal: 0, venmo: 0, comp: 0, other: 0,
+    cash: 0, card: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
   };
 
   for (const order of shiftOrders) {
-    const method = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
+    const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
+    const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
     const orderTotal = parseFloat(order.total as string);
     if (method in paymentTotals) {
       paymentTotals[method] += orderTotal;
@@ -856,9 +857,14 @@ router.post(
     }
 
     const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+    const reportedInventoryDifference = enriched.reduce((sum, item) => {
+      if (item.rowType !== "item" || item.discrepancy == null || item.discrepancy <= 0) return sum;
+      return sum + (item.discrepancy * item.unitPrice);
+    }, 0);
     const expectedCashBank = cashBankStart + stats.cashSales;
     const cashBankEndVal = cashBankEnd ?? null;
     const cashDiscrepancy = cashBankEndVal != null ? expectedCashBank - cashBankEndVal : null;
+    const differenceAmount = Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100;
 
     const inventorySummary = enriched
       .filter(i => i.rowType !== "spacer")
@@ -882,6 +888,8 @@ router.post(
       cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
+      reportedInventoryDifference: Math.round(reportedInventoryDifference * 100) / 100,
+      differenceAmount,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
     };
@@ -1536,8 +1544,11 @@ router.post(
       .orderBy(asc(shiftInventoryItemsTable.displayOrder));
     const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
-    // Tip is calculated on eligible completed sales subtotal (non-comp, non-voided)
-    const eligibleSalesBase = stats.totalRevenue - stats.compSales;
+    // Commission is supervisor-selected (15–18%) and excludes comp/employee-discount sales.
+    // Sale/package exclusions are enforced at checkout/catalog pricing; the closeout keeps the
+    // auditable base as non-comp sales until richer discount metadata is attached to order rows.
+    const employeeDiscountSales = 0;
+    const eligibleSalesBase = Math.max(0, stats.totalRevenue - stats.compSales - employeeDiscountSales);
     const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
 
     // Inventory shortage: sum of flagged item discrepancies converted to monetary value
@@ -1554,8 +1565,9 @@ router.post(
 
     const cashBankStart = parseFloat(String(shift.cashBankStart ?? 0));
     const cashBankEndReported = parseFloat(String(shift.cashBankEndReported ?? 0));
-    // deposit = ending cash - starting cash - final tip - difference
-    const depositAmount = Math.max(0, cashBankEndReported - cashBankStart - finalTip - differenceAmount);
+    // Deposit = Cash Sales - commission - starting bank. This matches the cash-box closeout sheet.
+    const depositAmount = Math.max(0, stats.cashSales - finalTip - cashBankStart);
+    const newCashBalance = finalTip - differenceAmount;
 
     const [finalized] = await db
       .update(labTechShiftsTable)
@@ -1582,6 +1594,15 @@ router.post(
         cashBankStart,
         cashBankEndReported,
         depositAmount,
+        newCashBalance,
+        cashAppSales: stats.paymentTotals.cashapp ?? 0,
+        venmoSales: stats.paymentTotals.venmo ?? 0,
+        applePaySales: stats.paymentTotals.apple_pay ?? 0,
+        zelleSales: stats.paymentTotals.zelle ?? 0,
+        paypalSales: stats.paymentTotals.paypal ?? 0,
+        employeeDiscountPercent: 20,
+        employeeDiscountSales,
+        commissionRule: "Supervisor selects 15–18%; employee-discounted sales are excluded from commission.",
         paymentTotals: stats.paymentTotals,
         flaggedItems: inventory.filter(i => i.isFlagged),
       },

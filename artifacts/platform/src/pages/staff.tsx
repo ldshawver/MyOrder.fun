@@ -84,6 +84,7 @@ type ShiftStats = {
   cashSales: number;
   cardSales: number;
   compSales: number;
+  paymentTotals?: Record<string, number>;
   byItem: { catalogItemId: number; name: string; qtySold: number; revenue: number }[];
   byCustomer: { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }[];
 };
@@ -665,6 +666,8 @@ type SummaryData = {
   cashBankEnd: number | null;
   expectedCashBank: number;
   cashDiscrepancy: number | null;
+  reportedInventoryDifference?: number;
+  differenceAmount?: number;
   inventorySummary: {
     itemName: string;
     sectionName: string | null;
@@ -695,6 +698,14 @@ function ShiftSummaryModal({ summary, onClose }: {
   const hasCashDisc = summary.cashDiscrepancy != null && Math.abs(summary.cashDiscrepancy) > 0.005;
   const hasProblems = flaggedItems.length > 0 || hasCashDisc;
   const hasActualCounts = summary.inventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
+  const paymentTotals = summary.stats.paymentTotals ?? {};
+  const cashAppSales = paymentTotals.cashapp ?? 0;
+  const venmoSales = paymentTotals.venmo ?? 0;
+  const applePaySales = paymentTotals.apple_pay ?? 0;
+  const zelleSales = paymentTotals.zelle ?? 0;
+  const paypalSales = paymentTotals.paypal ?? 0;
+  const differenceAmount = summary.differenceAmount ?? summary.stats.totalRevenue;
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -758,6 +769,20 @@ function ShiftSummaryModal({ summary, onClose }: {
             </div>
           </div>
 
+          {/* Payment method totals */}
+          <div className="rounded-xl border border-border/30 overflow-hidden">
+            <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
+              Payment Method Totals
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-border/20 text-sm">
+              <PaymentStat label="Cash App" amount={cashAppSales} />
+              <PaymentStat label="Venmo" amount={venmoSales} />
+              <PaymentStat label="Apple Pay" amount={applePaySales} />
+              <PaymentStat label="Zelle" amount={zelleSales} />
+              <PaymentStat label="PayPal" amount={paypalSales} />
+            </div>
+          </div>
+
           {/* Cash bank reconciliation */}
           <div className="rounded-xl border border-border/30 overflow-hidden">
             <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
@@ -776,6 +801,10 @@ function ShiftSummaryModal({ summary, onClose }: {
               <div className="flex justify-between px-4 py-2.5 font-bold">
                 <span>Expected Bank Total</span>
                 <span className="font-mono text-emerald-400">{fmtMoney(summary.expectedCashBank)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">Difference / Total Sales</span>
+                <span className="font-mono">{fmtMoney(differenceAmount)}</span>
               </div>
               {summary.cashBankEnd != null && (
                 <div className="flex justify-between px-4 py-2.5">
@@ -894,6 +923,15 @@ function ShiftSummaryModal({ summary, onClose }: {
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PaymentStat({ label, amount }: { label: string; amount: number }) {
+  return (
+    <div className="bg-background/50 px-3 py-2.5">
+      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</div>
+      <div className="font-mono font-semibold">{fmtMoney(amount)}</div>
     </div>
   );
 }
