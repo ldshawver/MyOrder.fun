@@ -327,9 +327,9 @@ function ShiftTemplateTab({ getToken }: { getToken: () => Promise<string | null>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold">Raw Material Inventory</div>
+          <div className="text-sm font-semibold">Inventory</div>
           <div className="text-xs text-muted-foreground mt-0.5">
-            Current stock auto-deducts when linked menu items are fulfilled. Managers can add, edit, or delete items.
+            Master inventory rows can be linked to menu items; stock auto-deducts when linked items are fulfilled. Managers can add, edit, or delete items.
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1237,6 +1237,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<number, string>>({});
+  const [parEdits, setParEdits] = useState<Record<number, string>>({});
   const [saving, setSaving] = useState<Record<number, boolean>>({});
   const [filterLoc, setFilterLoc] = useState<number | "all">("all");
 
@@ -1252,6 +1253,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
       setBalances(data.balances ?? []);
       setLocations(data.locations ?? []);
       setEdits({});
+      setParEdits({});
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Network error"); }
     setLoading(false);
   }, [getToken, filterLoc]);
@@ -1259,22 +1261,33 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   useEffect(() => { fetchBalances(); }, [fetchBalances]);
 
   const saveBalance = async (balance: InventoryBalance) => {
-    const raw = edits[balance.id];
-    if (raw === undefined) return;
-    const qty = parseFloat(raw);
-    if (isNaN(qty)) return;
+    const rawQty = edits[balance.id];
+    const rawPar = parEdits[balance.id];
+    if (rawQty === undefined && rawPar === undefined) return;
+    const payload: { quantityOnHand?: number; parLevel?: number } = {};
+    if (rawQty !== undefined) {
+      const qty = parseFloat(rawQty);
+      if (isNaN(qty)) return;
+      payload.quantityOnHand = qty;
+    }
+    if (rawPar !== undefined) {
+      const par = parseFloat(rawPar);
+      if (isNaN(par)) return;
+      payload.parLevel = par;
+    }
     setSaving(s => ({ ...s, [balance.id]: true }));
     try {
       const token = await getToken();
       const res = await fetch(`/api/admin/inventory-balances/${balance.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ quantityOnHand: qty }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error("Save failed");
       const data = await res.json();
-      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand } : b));
+      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand, parLevel: data.balance.parLevel } : b));
       setEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
+      setParEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
     } catch { setError("Failed to save."); }
     setSaving(s => ({ ...s, [balance.id]: false }));
   };
@@ -1305,7 +1318,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <p className="text-xs text-muted-foreground flex-1">
-          Per-product, per-location quantities. WooCommerce items excluded. Inline edit → blur to save.
+          One imported row is one inventory product. Only Alavont/master inventory rows appear here; safe/cart-conversion columns stay hidden. Edit quantity and location par inline; row totals show on-hand stock available to sell.
         </p>
         <div className="flex items-center gap-2">
           <select
@@ -1330,37 +1343,53 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
         <div className="rounded-xl border border-border/40 overflow-hidden">
           {/* Header */}
           <div className="grid gap-2 px-4 py-2 bg-muted/20 border-b border-border/30 text-[10px] font-bold text-muted-foreground uppercase tracking-widest"
-            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
             <div>Product</div>
-            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}</div>)}
+            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}<span className="block text-[9px] font-medium normal-case tracking-normal">Qty / Par</span></div>)}
+            <div className="text-center">Total</div>
           </div>
 
           {/* Rows */}
           {products.map(([productId, { name, balances: pBalances }]) => (
             <div key={productId}
               className="grid gap-2 px-4 py-2 border-b border-border/20 last:border-0 hover:bg-muted/10 transition-colors items-center"
-              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
               <div className="text-xs font-medium truncate">{name}</div>
               {activeLocations.map(loc => {
                 const b = pBalances.find(pb => pb.locationId === loc.id);
                 if (!b) return <div key={loc.id} className="text-center text-muted-foreground/30 text-xs">—</div>;
                 const editVal = edits[b.id];
+                const parEditVal = parEdits[b.id];
                 const isDirty = editVal !== undefined;
+                const isParDirty = parEditVal !== undefined;
                 return (
-                  <div key={loc.id} className="flex items-center justify-center">
+                  <div key={loc.id} className="flex items-center justify-center gap-1">
                     {saving[b.id] ? (
                       <Loader2 size={11} className="animate-spin text-muted-foreground" />
                     ) : (
-                      <Input
-                        value={isDirty ? editVal : String(b.quantityOnHand)}
-                        onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
-                        onBlur={() => saveBalance(b)}
-                        className={`h-6 w-16 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
-                      />
+                      <>
+                        <Input
+                          value={isDirty ? editVal : String(b.quantityOnHand)}
+                          onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
+                          onBlur={() => saveBalance(b)}
+                          title={`${loc.name} on-hand quantity`}
+                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
+                        />
+                        <Input
+                          value={isParDirty ? parEditVal : String(b.parLevel)}
+                          onChange={e => setParEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
+                          onBlur={() => saveBalance(b)}
+                          title={`${loc.name} par level`}
+                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isParDirty ? "border-amber-400/50 bg-amber-400/5" : "bg-transparent border-transparent hover:border-border/50"}`}
+                        />
+                      </>
                     )}
                   </div>
                 );
               })}
+              <div className="text-center text-xs font-mono font-semibold text-emerald-400">
+                {pBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0)}
+              </div>
             </div>
           ))}
         </div>
@@ -1384,14 +1413,14 @@ export default function AdminInventory() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Raw material tracking, shift template, CSR boxes, and per-location stock</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Master inventory, shift template, CSR boxes, storefront, backstock, and per-location stock</p>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
         {[
-          { key: "template" as const, label: "Raw Materials", icon: Settings2 },
+          { key: "template" as const, label: "Inventory", icon: Settings2 },
           { key: "stock" as const, label: "Stock Levels", icon: ClipboardList },
           { key: "boxes" as const, label: "CSR Boxes", icon: Package },
           { key: "locations" as const, label: "Locations", icon: MapPin },

@@ -433,6 +433,8 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
   if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
   if (b.brandName !== undefined) updates.brandName = b.brandName ? String(b.brandName) : null;
   if (b.footerMessage !== undefined) updates.footerMessage = b.footerMessage ? String(b.footerMessage) : null;
+  if (b.receiptTemplateStyle !== undefined) updates.receiptTemplateStyle = String(b.receiptTemplateStyle || "clean");
+  if (b.labelTemplateStyle !== undefined) updates.labelTemplateStyle = String(b.labelTemplateStyle || "thank_you_personalized");
   const settings = await getSettings();
   const [updated] = await db.update(printSettingsTable)
     .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
@@ -449,6 +451,7 @@ router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void>
   const width = charWidth(s.paperWidth as string ?? "80mm");
   const dualBrandName = s.brandName as string | undefined;
   const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+  const receiptTemplateStyle = (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ?? "clean";
   const body = req.body ?? {};
   const blocks = buildCustomerReceiptBlocks({
     orderId: body.orderId ?? 0,
@@ -472,6 +475,7 @@ router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void>
     footerMessage: s.footerMessage as string | undefined,
     showDiscreetNotice: Boolean(s.showDiscreetNotice),
     showOperatorName: s.includeOperatorName !== false,
+    receiptTemplateStyle,
   });
   res.type("text/plain").send(renderBlocks(blocks, width));
 });
@@ -703,6 +707,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     showDiscreetNotice: Boolean(s.showDiscreetNotice),
     showOperatorName: s.includeOperatorName !== false,
     operatorName,
+    receiptTemplateStyle: (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ?? "clean",
   };
 
   const { renderCustomerReceipt } = await import("../lib/receiptRenderer.js");
@@ -738,10 +743,6 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
-  if (process.env.LABEL_PRINT_ENABLED !== "true") {
-    res.status(503).json({ error: "Label printing is not enabled (LABEL_PRINT_ENABLED=false)" });
-    return;
-  }
   const orderId = parseInt(String(req.params.id), 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
@@ -760,20 +761,9 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
     return;
   }
 
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  // Labels default to 58mm paper
-  const width = charWidth((s.paperWidth as string ?? "58mm"));
-
-  // Delivery label: customer first name is the headline, order details below
-  const blocks = buildLabelBlocks({
-    title: firstName.toUpperCase(),
-    line1: `Order #${orderId}`,
-    line2: order.shippingAddress ?? undefined,
-    line3: `Total: $${parseFloat(order.total as string).toFixed(2)}`,
-    footer: new Date(order.createdAt).toLocaleTimeString(),
-  });
-  const renderedText = renderBlocks(blocks, width);
+  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
+  const png = await generateThankYouLabel(firstName);
+  const renderedText = `Thank you label for ${firstName} — Order #${orderId}`;
 
   const iKey = makeIdempotencyKey(orderId, labelPrinter.id, `label:reprint:${Date.now()}`);
   const [job] = await db.insert(printJobsTable).values({
@@ -782,8 +772,16 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
     jobType: "label",
     status: "queued",
     idempotencyKey: iKey,
-    renderFormat: "text",
-    payloadJson: { orderId, customerName, firstName, shippingAddress: order.shippingAddress ?? null },
+    renderFormat: "png",
+    payloadJson: {
+      orderId,
+      customerName,
+      firstName,
+      shippingAddress: order.shippingAddress ?? null,
+      labelType: "thank-you",
+      template: "thank_you_personalized",
+      imageData: png.toString("base64"),
+    },
     renderedText,
     operatorUserId: operator?.userId ?? null,
   }).returning();

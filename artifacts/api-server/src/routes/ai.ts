@@ -44,9 +44,23 @@ export function renderConciergePrompt(
 }
 
 async function loadConciergePromptTemplate(): Promise<string> {
-  const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
-  const stored = row?.p?.trim();
-  return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
+  try {
+    const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
+    const stored = row?.p?.trim();
+    return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
+  } catch (err) {
+    logger.warn({ err }, "AI concierge prompt unavailable; using built-in default");
+    return DEFAULT_AI_CONCIERGE_PROMPT;
+  }
+}
+
+async function loadAvailableCatalog(): Promise<Array<typeof catalogItemsTable.$inferSelect>> {
+  try {
+    return await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  } catch (err) {
+    logger.error({ err }, "AI catalog load failed");
+    return [];
+  }
 }
 
 function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
@@ -178,7 +192,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  const catalog = await loadAvailableCatalog();
   const availableItems = catalog.filter(i => i.isAvailable === true && i.alavontInStock !== false);
 
   // Build catalog context with IDs so function calling can reference them
@@ -301,19 +315,24 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
   const { query, limit = 10 } = body.data;
   const q = query.trim().toLowerCase();
 
-  const catalog = await db.select().from(catalogItemsTable)
-    .where(
-      or(
-        like(catalogItemsTable.name, `%${q}%`),
-        like(catalogItemsTable.category, `%${q}%`),
-        like(catalogItemsTable.description, `%${q}%`),
+  try {
+    const catalog = await db.select().from(catalogItemsTable)
+      .where(
+        or(
+          like(catalogItemsTable.name, `%${q}%`),
+          like(catalogItemsTable.category, `%${q}%`),
+          like(catalogItemsTable.description, `%${q}%`),
+        )
       )
-    )
-    .orderBy(asc(catalogItemsTable.name))
-    .limit(limit);
+      .orderBy(asc(catalogItemsTable.name))
+      .limit(limit);
 
-  const available = catalog.filter(i => i.isAvailable === true);
-  res.json(AiCatalogSearchResponse.parse({ items: available.map(mapCatalogItem), query }));
+    const available = catalog.filter(i => i.isAvailable === true);
+    res.json(AiCatalogSearchResponse.parse({ items: available.map(mapCatalogItem), query }));
+  } catch (err) {
+    logger.error({ err, query }, "AI catalog search failed");
+    res.json(AiCatalogSearchResponse.parse({ items: [], query }));
+  }
 });
 
 // POST /api/ai/upsell
@@ -324,7 +343,7 @@ router.post("/ai/upsell", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  const catalog = await loadAvailableCatalog();
   const cartItems = catalog.filter(i => body.data.cartItemIds.includes(i.id));
   const otherItems = catalog.filter(i => !body.data.cartItemIds.includes(i.id) && i.isAvailable);
 

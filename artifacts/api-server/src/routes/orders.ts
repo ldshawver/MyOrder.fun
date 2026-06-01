@@ -1306,6 +1306,13 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "custo
   const orderId = parseInt(raw, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { trackingUrl } = req.body as { trackingUrl?: string };
+  if (trackingUrl) {
+    const parsedTracking = SubmitTrackingLinkBody.safeParse({ trackingUrl });
+    if (!parsedTracking.success) {
+      res.status(400).json({ error: parsedTracking.error.issues[0]?.message ?? "Invalid tracking link" });
+      return;
+    }
+  }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const [updated] = await db.update(ordersTable)

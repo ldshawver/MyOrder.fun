@@ -617,7 +617,14 @@ router.post(
       return;
     }
 
-    const spec = await loadImportSpec();
+    let spec: ImportTemplateSpec;
+    try {
+      spec = await loadImportSpec();
+    } catch (e) {
+      res.status(503).json({ error: `Could not load import template spec: ${(e as Error)?.message ?? "unknown"}` });
+      return;
+    }
+
     let parsed: ParsedFile;
     try {
       parsed = parseBuffer(req.file.buffer, req.file.originalname, spec);

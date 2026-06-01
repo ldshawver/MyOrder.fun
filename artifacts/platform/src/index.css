@@ -205,14 +205,14 @@
 }
 
 @keyframes catalog-hero-fade {
-  0%, 24% { opacity: 0; transform: scale(1.02); }
-  7%, 18% { opacity: 0.9; transform: scale(1); }
-  35%, 100% { opacity: 0; transform: scale(1); }
+  0% { opacity: 0; transform: scale(1.025); }
+  6%, 36% { opacity: 0.94; transform: scale(1); }
+  46%, 100% { opacity: 0; transform: scale(1.01); }
 }
 
 .catalog-hero-frame {
   opacity: 0;
-  animation: catalog-hero-fade 15s ease-in-out infinite;
+  animation: catalog-hero-fade 30s ease-in-out infinite;
 }
 
 @keyframes catalog-card-gallery {

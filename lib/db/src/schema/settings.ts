@@ -19,6 +19,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   enabledProcessors: text("enabled_processors").array().notNull().default(["stripe"]),
   checkoutConversionPreview: boolean("checkout_conversion_preview").notNull().default(false),
   merchantImageEnabled: boolean("merchant_image_enabled").notNull().default(true),
+  merchantProcessorConfig: text("merchant_processor_config"),
   // Printing
   autoPrintOnPayment: boolean("auto_print_on_payment").notNull().default(false),
   receiptTemplateStyle: text("receipt_template_style").notNull().default("standard"),

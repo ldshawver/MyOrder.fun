@@ -71,6 +71,7 @@ interface CatalogItemForm {
   name: string;
   description: string;
   price: string;
+  compareAtPrice: string;
   regularPrice: string;
   homiePrice: string;
   category: string;
@@ -269,7 +270,8 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
   const fields: Array<{ label: string; key: StringFormKey; type: string; placeholder?: string }> = [
     { label: "Name *", key: "name", type: "text" },
     { label: "Category *", key: "category", type: "text" },
-    { label: "Price ($) *", key: "price", type: "number" },
+    { label: "Price / Sale Price ($) *", key: "price", type: "number" },
+    { label: "Compare-at Price ($)", key: "compareAtPrice", type: "number" },
     { label: "Regular Price ($)", key: "regularPrice", type: "number" },
     { label: "Homie Price ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
@@ -436,6 +438,7 @@ function emptyCatalogForm(): CatalogItemForm {
     name: "",
     description: "",
     price: "",
+    compareAtPrice: "",
     regularPrice: "",
     homiePrice: "",
     category: "",
@@ -482,6 +485,7 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     name: item.name || "",
     description: item.description || "",
     price: item.price?.toString() || "",
+    compareAtPrice: item.compareAtPrice?.toString() || "",
     regularPrice: item.regularPrice?.toString() || "",
     homiePrice: item.homiePrice?.toString() || "",
     category: item.category || "",
@@ -663,6 +667,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -781,6 +786,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
+          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -909,67 +915,71 @@ export default function Catalog() {
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1
-            className="text-2xl md:text-3xl font-bold tracking-tight"
-            data-testid="text-title"
-          >
-            {isLC ? "Lucifer Cruz" : "Menu"}
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            {isLC ? "Adult boutique items available for ordering" : "Browse and order from the Alavont catalog"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {canEdit && !isLC && (
-            <Button size="sm" className="rounded-xl text-xs h-9" onClick={() => setAddOpen(true)} data-testid="button-add-product">
-              <Plus size={13} className="mr-1.5" /> Add Item
-            </Button>
-          )}
+      {/* Hero/header: banner sits behind the title and brand buttons. */}
+      <div className="relative overflow-hidden rounded-3xl border border-border/30 min-h-[380px] md:min-h-[460px] catalog-hero">
+        {!isLC && (
+          <div className="absolute inset-0 z-0">
+            {bannerImages.map((src, index) => (
+              <img
+                key={src}
+                src={src}
+                alt=""
+                className="absolute inset-0 h-full w-full object-cover catalog-hero-frame"
+                style={{ animationDelay: `${index * 10}s` }}
+              />
+            ))}
+            <div className="absolute inset-0 bg-gradient-to-b from-background/35 via-background/10 to-background/80" />
+            <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-background via-background/55 to-transparent" />
+          </div>
+        )}
+
+        <div className="relative z-10 flex min-h-[380px] md:min-h-[460px] flex-col justify-between gap-6 p-5 md:p-8">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+            <div className="max-w-2xl rounded-2xl bg-background/35 p-4 backdrop-blur-sm border border-border/20">
+              <h1
+                className="text-3xl md:text-5xl font-bold tracking-tight drop-shadow-lg"
+                data-testid="text-title"
+              >
+                {isLC ? "Lucifer Cruz" : "Menu"}
+              </h1>
+              <p className="text-sm md:text-base text-muted-foreground mt-2" data-testid="text-subtitle">
+                {isLC ? "Adult boutique items available for ordering" : "Browse sales, packages, and the Alavont catalog"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 relative z-20">
+              {canEdit && !isLC && (
+                <Button size="sm" className="rounded-xl text-xs h-9 shadow-lg" onClick={() => setAddOpen(true)} data-testid="button-add-product">
+                  <Plus size={13} className="mr-1.5" /> Add Item
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="relative z-20 inline-flex w-fit p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl">
+            <button
+              onClick={() => setMenuMode("alavont")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                !isLC ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20" : "text-muted-foreground hover:text-foreground"
+              }`}
+              data-testid="tab-alavont"
+            >
+              <FlaskConical size={12} />
+              Alavont Therapeutics
+            </button>
+            <button
+              onClick={() => setMenuMode("lucifer")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                isLC ? "text-white" : "text-muted-foreground hover:text-foreground"
+              }`}
+              style={isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", boxShadow: "0 4px 16px rgba(220,20,60,0.35)" } : {}}
+              data-testid="tab-lucifer"
+            >
+              <Flame size={12} />
+              Lucifer Cruz
+            </button>
+          </div>
         </div>
       </div>
-
-      {/* Brand toggle */}
-      <div className="inline-flex p-1 rounded-xl border border-border/40 bg-muted/10">
-        <button
-          onClick={() => setMenuMode("alavont")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-            !isLC ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20" : "text-muted-foreground hover:text-foreground"
-          }`}
-          data-testid="tab-alavont"
-        >
-          <FlaskConical size={12} />
-          Alavont Therapeutics
-        </button>
-        <button
-          onClick={() => setMenuMode("lucifer")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-            isLC ? "text-white" : "text-muted-foreground hover:text-foreground"
-          }`}
-          style={isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", boxShadow: "0 4px 16px rgba(220,20,60,0.35)" } : {}}
-          data-testid="tab-lucifer"
-        >
-          <Flame size={12} />
-          Lucifer Cruz
-        </button>
-      </div>
-
-      {!isLC && (
-        <div className="relative overflow-hidden rounded-2xl h-[200px] border border-border/30 catalog-hero">
-          {bannerImages.map((src, index) => (
-            <img
-              key={src}
-              src={src}
-              alt=""
-              className="absolute inset-0 h-full w-full object-cover catalog-hero-frame"
-              style={{ animationDelay: `${index * 5}s` }}
-            />
-          ))}
-          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-background via-background/45 to-transparent" />
-        </div>
-      )}
 
       {/* LC branded banner */}
       {isLC && (
@@ -991,8 +1001,6 @@ export default function Catalog() {
           </p>
         </div>
       )}
-
-      <CatalogNotice />
 
       {/* Filters */}
       <div className="flex gap-2 flex-wrap items-center">
@@ -1099,6 +1107,8 @@ export default function Catalog() {
           ))}
         </div>
       )}
+
+      <CatalogNotice className="mt-8" />
 
       {/* Dialogs */}
       <EditItemDialog item={editItem} open={!!editItem} onClose={() => setEditItem(null)} />
