@@ -172,6 +172,37 @@ jobs:
             exit 1
           fi
 
+      - name: Verify SSH access to VPS
+        run: |
+          set -euo pipefail
+
+          SSH_OPTS=(
+            -i "${VPS_SSH_KEY_PATH}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=20
+          )
+
+          if ! ssh "${SSH_OPTS[@]}" \
+                   ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                   'printf "ssh-ok user=%s host=%s\n" "$(whoami)" "$(hostname)"'; then
+            cat <<'EOF'
+          ::error::GitHub Actions could not authenticate to the VPS before rsync.
+
+          Fix the VPS deploy credentials, then re-run this workflow:
+            1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
+               The setup script creates /root/.ssh/github_deploy if needed and
+               installs its public key into /root/.ssh/authorized_keys.
+            2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
+               On the VPS, print it with: cat /root/.ssh/github_deploy
+            3. Ensure VPS_USER matches the account that has that public key
+               installed (normally root for this deploy path).
+            4. Ensure VPS_HOST points to the new VPS public IP/DNS.
+          EOF
+            exit 1
+          fi
+
       - name: Sync code to VPS
         run: |
           set -euo pipefail
