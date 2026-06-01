@@ -48,7 +48,17 @@ type TemplateRow = {
 
 type InventorySnapshot = { templateItemId: number; quantityStart: number };
 type CsrBoxOption = { id: string; label: string };
-type ShiftSetup = { boxAssignmentId: string; wifiReady: boolean; printerReady: boolean; locationReady: boolean };
+type ShiftLocationOption = { id: string; label: string; address?: string; pickupInstructionId?: string; deliveryOptionId?: string };
+type DeliveryOption = { id: string; label: string; instructions?: string; separatePaymentRequired?: boolean };
+type PrinterNetworkConfig = { onsiteMode: string; ssid: string; passwordSet?: boolean; raspberryPiBluetooth?: boolean };
+type ShiftSetup = {
+  boxAssignmentId: string;
+  shiftLocationId: string;
+  deliveryOptionId: string;
+  wifiReady: boolean;
+  printerReady: boolean;
+  locationReady: boolean;
+};
 
 type EnrichedItem = {
   id: number;
@@ -128,9 +138,10 @@ function fmtMoney(n: number) {
 }
 
 function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
-  if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
-  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+  const normalized = role?.trim().toLowerCase();
+  if (normalized === "global_admin") return "global_admin";
+  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "customer_service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "customer_service" || normalized === "customer_success" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
     return "customer_service_rep";
   }
   return "user";
@@ -150,6 +161,11 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [template, setTemplate] = useState<TemplateRow[]>([]);
   const [boxes, setBoxes] = useState<CsrBoxOption[]>(CLOCK_IN_DEFAULT_BOXES);
   const [boxAssignmentId, setBoxAssignmentId] = useState("sales-box-1");
+  const [shiftLocations, setShiftLocations] = useState<ShiftLocationOption[]>([]);
+  const [deliveryOptions, setDeliveryOptions] = useState<DeliveryOption[]>([]);
+  const [printerNetworkConfig, setPrinterNetworkConfig] = useState<PrinterNetworkConfig | null>(null);
+  const [shiftLocationId, setShiftLocationId] = useState("sales-box-1");
+  const [deliveryOptionId, setDeliveryOptionId] = useState("pickup");
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
   const [locationReady, setLocationReady] = useState(true);
@@ -173,7 +189,14 @@ function ClockInPanel({ onClockIn, getToken }: {
           const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : CLOCK_IN_DEFAULT_BOXES;
           setTemplate(rows);
           setBoxes(boxOptions);
+          const nextShiftLocations: ShiftLocationOption[] = Array.isArray(data.shiftLocationOptions) ? data.shiftLocationOptions : [];
+          const nextDeliveryOptions: DeliveryOption[] = Array.isArray(data.deliveryOptions) ? data.deliveryOptions : [];
+          setShiftLocations(nextShiftLocations);
+          setDeliveryOptions(nextDeliveryOptions);
+          setPrinterNetworkConfig(data.printerNetworkConfig ?? null);
           setBoxAssignmentId(prev => boxOptions.some(box => box.id === prev) ? prev : (boxOptions[0]?.id ?? "sales-box-1"));
+          setShiftLocationId(prev => nextShiftLocations.some(location => location.id === prev) ? prev : (nextShiftLocations[0]?.id ?? boxOptions[0]?.id ?? "sales-box-1"));
+          setDeliveryOptionId(prev => nextDeliveryOptions.some(option => option.id === prev) ? prev : (nextDeliveryOptions[0]?.id ?? "pickup"));
           const defaults: Record<number, string> = {};
           for (const row of rows) {
             if (row.rowType === "item" || row.rowType === "cash") {
@@ -206,6 +229,8 @@ function ClockInPanel({ onClockIn, getToken }: {
         }));
       await onClockIn(snapshot, parseFloat(cashBankStart) || 0, {
         boxAssignmentId,
+        shiftLocationId,
+        deliveryOptionId,
         wifiReady,
         printerReady,
         locationReady,
@@ -260,7 +285,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div>
           <div className="text-sm font-bold">Start Your Shift</div>
-          <div className="text-xs text-muted-foreground">Assign your sales box, confirm inventory, then become active for orders</div>
+          <div className="text-xs text-muted-foreground">Select tenant-wide location/delivery options, confirm inventory, then become active for orders</div>
         </div>
       </div>
 
@@ -269,7 +294,7 @@ function ClockInPanel({ onClockIn, getToken }: {
           <Boxes size={11} />
           Box Assignment & Setup
         </div>
-        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
+        <div className="grid gap-3 md:grid-cols-3 md:items-end">
           <label className="block">
             <span className="text-xs text-muted-foreground mb-1 block">Assigned sales box</span>
             <select
@@ -281,9 +306,52 @@ function ClockInPanel({ onClockIn, getToken }: {
               {boxes.map(box => <option key={box.id} value={box.id}>{box.label}</option>)}
             </select>
           </label>
-          <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
-          <SetupCheck label="WiFi" checked={wifiReady} onChange={setWifiReady} />
-          <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
+          <label className="block">
+            <span className="text-xs text-muted-foreground mb-1 block">Shift location</span>
+            <select
+              value={shiftLocationId}
+              onChange={e => {
+                const nextLocationId = e.target.value;
+                setShiftLocationId(nextLocationId);
+                const location = shiftLocations.find(option => option.id === nextLocationId);
+                if (location?.deliveryOptionId) setDeliveryOptionId(location.deliveryOptionId);
+                if (boxes.some(box => box.id === nextLocationId)) setBoxAssignmentId(nextLocationId);
+              }}
+              className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-medium"
+              data-testid="select-shift-location"
+            >
+              {(shiftLocations.length > 0 ? shiftLocations : boxes).map(location => (
+                <option key={location.id} value={location.id}>{location.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-muted-foreground mb-1 block">Delivery option</span>
+            <select
+              value={deliveryOptionId}
+              onChange={e => setDeliveryOptionId(e.target.value)}
+              className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-medium"
+              data-testid="select-delivery-option"
+            >
+              {(deliveryOptions.length > 0 ? deliveryOptions : [{ id: "pickup", label: "Customer Pickup" }]).map(option => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <div className="md:col-span-3 grid gap-3 md:grid-cols-3 md:items-center">
+            <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
+            <SetupCheck
+              label={printerNetworkConfig?.ssid ? `WiFi: ${printerNetworkConfig.ssid}` : "WiFi"}
+              checked={wifiReady}
+              onChange={setWifiReady}
+            />
+            <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
+          </div>
+          {printerNetworkConfig?.onsiteMode === "auto" && (
+            <div className="md:col-span-3 text-[11px] text-muted-foreground bg-muted/20 border border-border/30 rounded-xl px-3 py-2">
+              Auto-detect uses the tenant-wide saved SSID and Tailscale printer bridge; browsers cannot scan every nearby Wi-Fi network directly.
+            </div>
+          )}
         </div>
       </div>
 
@@ -1376,6 +1444,8 @@ export default function CustomerServiceRepQueue() {
         cashBankStart,
         boxAssignmentId: setup.boxAssignmentId,
         setup: {
+          shiftLocationId: setup.shiftLocationId,
+          deliveryOptionId: setup.deliveryOptionId,
           wifiReady: setup.wifiReady,
           printerReady: setup.printerReady,
           locationReady: setup.locationReady,
@@ -1396,7 +1466,7 @@ export default function CustomerServiceRepQueue() {
     }
     if (!res.ok) {
       if (res.status === 403) {
-        throw new Error("Access denied — ask an admin to set your role to \"Customer Service Rep\" in Admin → Users.");
+        throw new Error("Access denied — ask an admin to confirm this account is active and has a CSR alias such as Customer Service Rep/CSR/QSR.");
       }
       const msg = responseData
         ? ((responseData as { error?: string }).error ?? "Clock-in failed")

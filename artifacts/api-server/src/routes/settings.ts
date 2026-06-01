@@ -128,6 +128,9 @@ const DEFAULT_PICKUP_INSTRUCTIONS = [
 
 const DEFAULT_SHIFT_LOCATIONS = [
   { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "sales-box-2", label: "CSR Sales Box 2", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "storefront", label: "Storefront", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
 ];
 
 const DEFAULT_DELIVERY_OPTIONS = [
@@ -383,7 +386,7 @@ router.get("/admin/csr-settings", requireRole("global_admin", "admin", "customer
   });
 });
 
-router.put("/admin/csr-settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.put("/admin/csr-settings", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
   const shiftLocationOptions = req.body?.shiftLocationOptions;
   const deliveryOptions = req.body?.deliveryOptions;
