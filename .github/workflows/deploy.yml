@@ -126,7 +126,11 @@ jobs:
 
       - name: Add VPS to known_hosts
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
           for attempt in 1 2 3 4 5; do
             if ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
               exit 0
@@ -134,8 +138,39 @@ jobs:
             echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
             sleep 5
           done
-          echo "Unable to scan VPS SSH host key after retries"
-          exit 1
+
+          echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
+
+      - name: Verify SSH access to VPS
+        run: |
+          set -euo pipefail
+
+          SSH_OPTS=(
+            -i "${VPS_SSH_KEY_PATH}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=accept-new
+            -o ConnectTimeout=20
+          )
+
+          if ! ssh "${SSH_OPTS[@]}" \
+                   ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+                   'printf "ssh-ok user=%s host=%s\n" "$(whoami)" "$(hostname)"'; then
+            cat <<'EOF'
+          ::error::GitHub Actions could not authenticate to the VPS before rsync.
+
+          Fix the VPS deploy credentials, then re-run this workflow:
+            1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
+               The setup script creates /root/.ssh/github_deploy if needed and
+               installs its public key into /root/.ssh/authorized_keys.
+            2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
+               On the VPS, print it with: cat /root/.ssh/github_deploy
+            3. Ensure VPS_USER matches the account that has that public key
+               installed (normally root for this deploy path).
+            4. Ensure VPS_HOST points to the new VPS public IP/DNS.
+          EOF
+            exit 1
+          fi
 
       - name: Verify SSH access to VPS
         run: |
@@ -171,12 +206,12 @@ jobs:
       - name: Sync code to VPS
         run: |
           set -euo pipefail
-          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
           SSH_OPTS=(
             -i "${VPS_SSH_KEY_PATH}"
             -o BatchMode=yes
             -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=yes
+            -o StrictHostKeyChecking=accept-new
             -o ConnectTimeout=20
           )
 
@@ -192,7 +227,7 @@ jobs:
             --exclude='**/node_modules' \
             ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
 
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "chmod +x /opt/alavont/deploy/renew-cert.sh /opt/alavont/deploy/release-web-ports.sh || true"
 
       - name: Clean stale node_modules on VPS
@@ -200,7 +235,7 @@ jobs:
           ssh -i "${VPS_SSH_KEY_PATH}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
@@ -210,7 +245,7 @@ jobs:
           ssh -i "${VPS_SSH_KEY_PATH}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e
@@ -235,7 +270,7 @@ jobs:
           ssh -i "${VPS_SSH_KEY_PATH}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -e

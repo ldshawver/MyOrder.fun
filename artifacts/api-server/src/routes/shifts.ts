@@ -12,6 +12,7 @@ import {
   ordersTable,
   orderItemsTable,
   usersTable,
+  adminSettingsTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 
@@ -39,6 +40,59 @@ const DEFAULT_CSR_BOXES = [
   { slug: "sales-box-1", label: "CSR Sales Box 1", displayOrder: 1 },
   { slug: "sales-box-2", label: "CSR Sales Box 2", displayOrder: 2 },
 ];
+
+const DEFAULT_SHIFT_LOCATIONS = [
+  { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "sales-box-2", label: "CSR Sales Box 2", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "storefront", label: "Storefront", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
+];
+
+const DEFAULT_DELIVERY_OPTIONS = [
+  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
+  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
+];
+
+const DEFAULT_PICKUP_INSTRUCTIONS = [
+  { id: "front-counter", label: "Front Counter", instructions: "Please come to the front counter and show your order confirmation." },
+  { id: "side-door", label: "Side Door", instructions: "Please wait by the side-door pickup area and have your order confirmation ready." },
+  { id: "courier-handoff", label: "Courier Handoff", instructions: "Your order will be handed to the assigned courier at the pickup location." },
+];
+
+function parseSettingsArray<T>(raw: string | null | undefined, fallback: T[]): T[] {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as T[] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parsePrinterNetworkConfig(raw: string | null | undefined) {
+  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
+      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
+      raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
+    };
+  } catch {
+    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  }
+}
+
+async function getTenantCsrSettings() {
+  const [settings] = await db.select().from(adminSettingsTable).limit(1);
+  return {
+    pickupInstructionOptions: parseSettingsArray(settings?.pickupInstructionOptions, DEFAULT_PICKUP_INSTRUCTIONS),
+    shiftLocationOptions: parseSettingsArray(settings?.shiftLocationOptions, DEFAULT_SHIFT_LOCATIONS),
+    deliveryOptions: parseSettingsArray(settings?.deliveryOptions, DEFAULT_DELIVERY_OPTIONS),
+    printerNetworkConfig: parsePrinterNetworkConfig(settings?.printerNetworkConfig),
+  };
+}
 
 let shiftSchemaEnsured = false;
 
@@ -325,7 +379,7 @@ router.use(async (_req, res, next) => {
 
 async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const houseTenantId = await getHouseTenantId();
-  const rows = await db
+  const allTemplateRows = await db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
@@ -343,7 +397,9 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     )
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
 
-  if (catalogRows.length === 0) return rows;
+  if (catalogRows.length === 0) return allTemplateRows;
+
+  const allowedCatalogIds = new Set(catalogRows.map(row => row.id));
 
   const existingTemplateRows = await db
     .select()
@@ -384,11 +440,12 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     await db.insert(inventoryTemplatesTable).values(toInsert);
   }
 
-  return db
+  const updatedRows = await db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
+  return updatedRows.filter(row => row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -539,6 +596,7 @@ router.get(
     const boxes = dbBoxes.length > 0
       ? dbBoxes.map(b => ({ id: b.slug, label: b.label, description: b.description, location: b.location }))
       : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
+    const csrSettings = await getTenantCsrSettings();
 
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
@@ -558,6 +616,7 @@ router.get(
 
     res.json({
       boxes,
+      ...csrSettings,
       template: rows.map(r => {
         const balanceQty = r.catalogItemId != null ? balanceMap.get(r.catalogItemId) : undefined;
         const startingQty = balanceQty !== undefined
@@ -581,6 +640,27 @@ router.get(
   }
 );
 
+
+async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$inferSelect) {
+  const snapshotItems = await db
+    .select()
+    .from(shiftInventoryItemsTable)
+    .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
+    .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+  const stats = await computeShiftStats(activeShift.id);
+  const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+  const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+
+  return {
+    ...activeShift,
+    cashBankStart,
+    runningCashBank: cashBankStart + stats.cashSales,
+    inventory,
+    stats,
+  };
+}
+
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
@@ -602,7 +682,9 @@ router.post(
     if (existing.length > 0) {
       // Idempotent re-clock-in: return the existing active shift instead of
       // erroring so the UI doesn't double-create on retry / refresh races.
-      res.status(200).json({ shift: existing[0], alreadyClockedIn: true });
+      // Return the same enriched payload as /api/shifts/current so POS clients
+      // can resume immediately without rendering raw DB rows as an error.
+      res.status(200).json({ shift: await buildActiveShiftPayload(existing[0]), alreadyClockedIn: true });
       return;
     }
 
@@ -614,7 +696,7 @@ router.post(
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
       cashBankStart?: number;
       boxAssignmentId?: string;
-      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean };
+      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean; shiftLocationId?: string; deliveryOptionId?: string };
     };
 
     const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
@@ -632,6 +714,8 @@ router.post(
         boxAssignmentId: selectedBox,
         setupJson: {
           boxAssignmentId: selectedBox,
+          shiftLocationId: setup?.shiftLocationId ?? selectedBox,
+          deliveryOptionId: setup?.deliveryOptionId ?? "pickup",
           wifiReady: setup?.wifiReady ?? false,
           printerReady: setup?.printerReady ?? false,
           locationReady: setup?.locationReady ?? true,
@@ -686,7 +770,7 @@ router.post(
     }
 
     res.status(201).json({
-      shift,
+      shift: await buildActiveShiftPayload(shift),
       _debug: {
         tenantId: houseTenantId,
         techId: tech.id,
@@ -862,27 +946,7 @@ router.get(
 
     if (!activeShift) { res.json({ shift: null }); return; }
 
-    const snapshotItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-
-    const stats = await computeShiftStats(activeShift.id);
-    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
-
-    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
-    const runningCashBank = cashBankStart + stats.cashSales;
-
-    res.json({
-      shift: {
-        ...activeShift,
-        cashBankStart,
-        runningCashBank,
-        inventory,
-        stats,
-      },
-    });
+    res.json({ shift: await buildActiveShiftPayload(activeShift) });
   }
 );
 
@@ -1352,9 +1416,15 @@ router.get(
     const houseTenantId = await getHouseTenantId();
     await ensureInventoryLocations(houseTenantId);
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
+    const baseWhereClause = and(
+      eq(inventoryBalancesTable.tenantId, houseTenantId),
+      eq(catalogItemsTable.isAvailable, true),
+      sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
+      sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+    );
     const whereClause = locationId && !isNaN(locationId)
-      ? and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.locationId, locationId))
-      : eq(inventoryBalancesTable.tenantId, houseTenantId);
+      ? and(baseWhereClause, eq(inventoryBalancesTable.locationId, locationId))
+      : baseWhereClause;
 
     const balances = await db
       .select({

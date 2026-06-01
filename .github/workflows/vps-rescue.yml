@@ -43,7 +43,11 @@ jobs:
 
       - name: Add VPS to known_hosts
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
           for attempt in 1 2 3 4 5; do
             if ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
               exit 0
@@ -51,8 +55,8 @@ jobs:
             echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
             sleep 5
           done
-          echo "Unable to scan VPS SSH host key after retries"
-          exit 1
+
+          echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
 
       - name: Upload latest port release helper
         run: |
@@ -60,7 +64,7 @@ jobs:
           scp -i "${VPS_SSH_KEY_PATH}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             deploy/release-web-ports.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/release-web-ports.sh
@@ -70,7 +74,7 @@ jobs:
           ssh -i "${VPS_SSH_KEY_PATH}" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=20 \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             set -euxo pipefail
@@ -95,8 +99,10 @@ jobs:
             docker compose ps || true
 
             echo "== release old proxies and reopen standard web ports =="
-            chmod +x /opt/alavont/deploy/release-web-ports.sh || true
-            bash /opt/alavont/deploy/release-web-ports.sh
+            chmod +x /tmp/release-web-ports.sh
+            bash /tmp/release-web-ports.sh
+
+            cd /opt/alavont/deploy
 
             echo "== restart nginx edge =="
             docker compose up -d db api platform nginx < /dev/null

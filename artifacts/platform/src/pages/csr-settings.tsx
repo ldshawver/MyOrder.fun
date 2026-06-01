@@ -262,7 +262,7 @@ export default function CsrSettings() {
               <Input disabled={!canEdit} type="password" placeholder={printerConfig.passwordSet ? "Saved" : ""} onChange={(e) => setPrinterConfig(prev => ({ ...prev, password: e.target.value }))} className="mt-1 rounded-sm" />
             </div>
             <div className="md:col-span-3 text-xs text-muted-foreground">
-              CSR Wi-Fi is saved so the Raspberry Pi can join the same network, bring up Tailscale, and keep receipt/label printers reachable.
+              CSR Wi-Fi is tenant-wide. Auto detect uses this saved SSID plus the Tailscale printer bridge; browsers cannot scan every nearby Wi-Fi network directly, so enter the shared SSID here for CSR clock-in and Raspberry Pi printer routing.
             </div>
             {canEdit && <Button onClick={saveFromClick} className="rounded-sm">Save Wi-Fi Settings</Button>}
           </CardContent>
