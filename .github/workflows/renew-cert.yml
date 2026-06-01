@@ -48,6 +48,7 @@ jobs:
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           if ! ssh-keyscan -T 15 -p "${VPS_PORT:-22}" -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+          if ! ssh-keyscan -T 15 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
             echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
           fi
 
