@@ -1,43 +1,20 @@
 import { centerText } from "./formatter";
 
-const MARK_WIDE = [
-  "          /\\",
-  "         /  \\",
-  "        / /\\ \\",
-  "       / ____ \\",
-  "      /_/    \\_\\",
-];
-const MARK_NARROW = [
-  "    /\\",
-  "   /  \\",
-  "  / /\\ \\",
-  " /_/  \\_\\",
-];
-
-const PRIMARY_WIDE = "ALAVONT";
-const TAGLINE_WIDE = "THERAPEUTICS";
-const PRIMARY_NARROW = "ALAVONT";
-const TAGLINE_NARROW = "THERAPEUTICS";
+const PRIMARY = "ALAVONT";
+const TAGLINE = "THERAPEUTICS";
 
 /**
- * Returns centered Alavont Therapeutics logo lines for the given paper width.
- * Dual-brand lines are NOT included here — the receipt template adds them separately
- * via the `dualBrandName` field so they can be positioned correctly in the layout.
+ * Returns a clean centered text logo for thermal receipt printers.
  *
- * @param width Char width of the paper (32 = 58mm, 48 = 80mm).
+ * The previous ASCII-art mark was hard to read on small thermal paper. The
+ * app still shows the full image asset in the admin preview, but receipt text
+ * output uses this simple high-legibility wordmark so it prints cleanly on
+ * both 58mm and 80mm printers.
  */
 export function getLogo(width: number): string[] {
-  if (width >= 40) {
-    return [
-      ...MARK_WIDE.map(line => centerText(line, width)),
-      centerText(PRIMARY_WIDE, width),
-      centerText(TAGLINE_WIDE, width),
-    ];
-  }
   return [
-    ...MARK_NARROW.map(line => centerText(line, width)),
-    centerText(PRIMARY_NARROW, width),
-    centerText(TAGLINE_NARROW, width),
+    centerText(PRIMARY, width),
+    centerText(TAGLINE, width),
   ];
 }
 

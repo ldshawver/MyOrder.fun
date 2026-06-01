@@ -48,7 +48,17 @@ type TemplateRow = {
 
 type InventorySnapshot = { templateItemId: number; quantityStart: number };
 type CsrBoxOption = { id: string; label: string };
-type ShiftSetup = { boxAssignmentId: string; wifiReady: boolean; printerReady: boolean; locationReady: boolean };
+type ShiftLocationOption = { id: string; label: string; address?: string; pickupInstructionId?: string; deliveryOptionId?: string };
+type DeliveryOption = { id: string; label: string; instructions?: string; separatePaymentRequired?: boolean };
+type PrinterNetworkConfig = { onsiteMode: string; ssid: string; passwordSet?: boolean; raspberryPiBluetooth?: boolean };
+type ShiftSetup = {
+  boxAssignmentId: string;
+  shiftLocationId: string;
+  deliveryOptionId: string;
+  wifiReady: boolean;
+  printerReady: boolean;
+  locationReady: boolean;
+};
 
 type EnrichedItem = {
   id: number;
@@ -74,6 +84,7 @@ type ShiftStats = {
   cashSales: number;
   cardSales: number;
   compSales: number;
+  paymentTotals?: Record<string, number>;
   byItem: { catalogItemId: number; name: string; qtySold: number; revenue: number }[];
   byCustomer: { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }[];
 };
@@ -128,9 +139,10 @@ function fmtMoney(n: number) {
 }
 
 function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
-  if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
-  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+  const normalized = role?.trim().toLowerCase();
+  if (normalized === "global_admin") return "global_admin";
+  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "customer_service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "customer_service" || normalized === "customer_success" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
     return "customer_service_rep";
   }
   return "user";
@@ -150,6 +162,11 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [template, setTemplate] = useState<TemplateRow[]>([]);
   const [boxes, setBoxes] = useState<CsrBoxOption[]>(CLOCK_IN_DEFAULT_BOXES);
   const [boxAssignmentId, setBoxAssignmentId] = useState("sales-box-1");
+  const [shiftLocations, setShiftLocations] = useState<ShiftLocationOption[]>([]);
+  const [deliveryOptions, setDeliveryOptions] = useState<DeliveryOption[]>([]);
+  const [printerNetworkConfig, setPrinterNetworkConfig] = useState<PrinterNetworkConfig | null>(null);
+  const [shiftLocationId, setShiftLocationId] = useState("sales-box-1");
+  const [deliveryOptionId, setDeliveryOptionId] = useState("pickup");
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
   const [locationReady, setLocationReady] = useState(true);
@@ -173,7 +190,14 @@ function ClockInPanel({ onClockIn, getToken }: {
           const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : CLOCK_IN_DEFAULT_BOXES;
           setTemplate(rows);
           setBoxes(boxOptions);
+          const nextShiftLocations: ShiftLocationOption[] = Array.isArray(data.shiftLocationOptions) ? data.shiftLocationOptions : [];
+          const nextDeliveryOptions: DeliveryOption[] = Array.isArray(data.deliveryOptions) ? data.deliveryOptions : [];
+          setShiftLocations(nextShiftLocations);
+          setDeliveryOptions(nextDeliveryOptions);
+          setPrinterNetworkConfig(data.printerNetworkConfig ?? null);
           setBoxAssignmentId(prev => boxOptions.some(box => box.id === prev) ? prev : (boxOptions[0]?.id ?? "sales-box-1"));
+          setShiftLocationId(prev => nextShiftLocations.some(location => location.id === prev) ? prev : (nextShiftLocations[0]?.id ?? boxOptions[0]?.id ?? "sales-box-1"));
+          setDeliveryOptionId(prev => nextDeliveryOptions.some(option => option.id === prev) ? prev : (nextDeliveryOptions[0]?.id ?? "pickup"));
           const defaults: Record<number, string> = {};
           for (const row of rows) {
             if (row.rowType === "item" || row.rowType === "cash") {
@@ -206,6 +230,8 @@ function ClockInPanel({ onClockIn, getToken }: {
         }));
       await onClockIn(snapshot, parseFloat(cashBankStart) || 0, {
         boxAssignmentId,
+        shiftLocationId,
+        deliveryOptionId,
         wifiReady,
         printerReady,
         locationReady,
@@ -260,7 +286,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div>
           <div className="text-sm font-bold">Start Your Shift</div>
-          <div className="text-xs text-muted-foreground">Assign your sales box, confirm inventory, then become active for orders</div>
+          <div className="text-xs text-muted-foreground">Select tenant-wide location/delivery options, confirm inventory, then become active for orders</div>
         </div>
       </div>
 
@@ -269,7 +295,7 @@ function ClockInPanel({ onClockIn, getToken }: {
           <Boxes size={11} />
           Box Assignment & Setup
         </div>
-        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] md:items-center">
+        <div className="grid gap-3 md:grid-cols-3 md:items-end">
           <label className="block">
             <span className="text-xs text-muted-foreground mb-1 block">Assigned sales box</span>
             <select
@@ -281,9 +307,52 @@ function ClockInPanel({ onClockIn, getToken }: {
               {boxes.map(box => <option key={box.id} value={box.id}>{box.label}</option>)}
             </select>
           </label>
-          <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
-          <SetupCheck label="WiFi" checked={wifiReady} onChange={setWifiReady} />
-          <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
+          <label className="block">
+            <span className="text-xs text-muted-foreground mb-1 block">Shift location</span>
+            <select
+              value={shiftLocationId}
+              onChange={e => {
+                const nextLocationId = e.target.value;
+                setShiftLocationId(nextLocationId);
+                const location = shiftLocations.find(option => option.id === nextLocationId);
+                if (location?.deliveryOptionId) setDeliveryOptionId(location.deliveryOptionId);
+                if (boxes.some(box => box.id === nextLocationId)) setBoxAssignmentId(nextLocationId);
+              }}
+              className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-medium"
+              data-testid="select-shift-location"
+            >
+              {(shiftLocations.length > 0 ? shiftLocations : boxes).map(location => (
+                <option key={location.id} value={location.id}>{location.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs text-muted-foreground mb-1 block">Delivery option</span>
+            <select
+              value={deliveryOptionId}
+              onChange={e => setDeliveryOptionId(e.target.value)}
+              className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-medium"
+              data-testid="select-delivery-option"
+            >
+              {(deliveryOptions.length > 0 ? deliveryOptions : [{ id: "pickup", label: "Customer Pickup" }]).map(option => (
+                <option key={option.id} value={option.id}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+          <div className="md:col-span-3 grid gap-3 md:grid-cols-3 md:items-center">
+            <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
+            <SetupCheck
+              label={printerNetworkConfig?.ssid ? `WiFi: ${printerNetworkConfig.ssid}` : "WiFi"}
+              checked={wifiReady}
+              onChange={setWifiReady}
+            />
+            <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
+          </div>
+          {printerNetworkConfig?.onsiteMode === "auto" && (
+            <div className="md:col-span-3 text-[11px] text-muted-foreground bg-muted/20 border border-border/30 rounded-xl px-3 py-2">
+              Auto-detect uses the tenant-wide saved SSID and Tailscale printer bridge; browsers cannot scan every nearby Wi-Fi network directly.
+            </div>
+          )}
         </div>
       </div>
 
@@ -597,6 +666,8 @@ type SummaryData = {
   cashBankEnd: number | null;
   expectedCashBank: number;
   cashDiscrepancy: number | null;
+  reportedInventoryDifference?: number;
+  differenceAmount?: number;
   inventorySummary: {
     itemName: string;
     sectionName: string | null;
@@ -627,6 +698,14 @@ function ShiftSummaryModal({ summary, onClose }: {
   const hasCashDisc = summary.cashDiscrepancy != null && Math.abs(summary.cashDiscrepancy) > 0.005;
   const hasProblems = flaggedItems.length > 0 || hasCashDisc;
   const hasActualCounts = summary.inventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
+  const paymentTotals = summary.stats.paymentTotals ?? {};
+  const cashAppSales = paymentTotals.cashapp ?? 0;
+  const venmoSales = paymentTotals.venmo ?? 0;
+  const applePaySales = paymentTotals.apple_pay ?? 0;
+  const zelleSales = paymentTotals.zelle ?? 0;
+  const paypalSales = paymentTotals.paypal ?? 0;
+  const differenceAmount = summary.differenceAmount ?? summary.stats.totalRevenue;
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -690,6 +769,20 @@ function ShiftSummaryModal({ summary, onClose }: {
             </div>
           </div>
 
+          {/* Payment method totals */}
+          <div className="rounded-xl border border-border/30 overflow-hidden">
+            <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
+              Payment Method Totals
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-border/20 text-sm">
+              <PaymentStat label="Cash App" amount={cashAppSales} />
+              <PaymentStat label="Venmo" amount={venmoSales} />
+              <PaymentStat label="Apple Pay" amount={applePaySales} />
+              <PaymentStat label="Zelle" amount={zelleSales} />
+              <PaymentStat label="PayPal" amount={paypalSales} />
+            </div>
+          </div>
+
           {/* Cash bank reconciliation */}
           <div className="rounded-xl border border-border/30 overflow-hidden">
             <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
@@ -708,6 +801,10 @@ function ShiftSummaryModal({ summary, onClose }: {
               <div className="flex justify-between px-4 py-2.5 font-bold">
                 <span>Expected Bank Total</span>
                 <span className="font-mono text-emerald-400">{fmtMoney(summary.expectedCashBank)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2.5">
+                <span className="text-muted-foreground">Difference / Total Sales</span>
+                <span className="font-mono">{fmtMoney(differenceAmount)}</span>
               </div>
               {summary.cashBankEnd != null && (
                 <div className="flex justify-between px-4 py-2.5">
@@ -826,6 +923,15 @@ function ShiftSummaryModal({ summary, onClose }: {
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PaymentStat({ label, amount }: { label: string; amount: number }) {
+  return (
+    <div className="bg-background/50 px-3 py-2.5">
+      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</div>
+      <div className="font-mono font-semibold">{fmtMoney(amount)}</div>
     </div>
   );
 }
@@ -1376,6 +1482,8 @@ export default function CustomerServiceRepQueue() {
         cashBankStart,
         boxAssignmentId: setup.boxAssignmentId,
         setup: {
+          shiftLocationId: setup.shiftLocationId,
+          deliveryOptionId: setup.deliveryOptionId,
           wifiReady: setup.wifiReady,
           printerReady: setup.printerReady,
           locationReady: setup.locationReady,
@@ -1384,9 +1492,9 @@ export default function CustomerServiceRepQueue() {
     });
     const contentType = res.headers.get("content-type") ?? "";
     const responseData = contentType.includes("application/json") ? (await res.json() as Record<string, unknown>) : null;
-    if (isAdmin) {
+    if (isAdmin && !res.ok) {
       setDebugEntries(prev => [{
-        label: res.ok ? "Clock-in" : "Clock-in (failed)",
+        label: "Clock-in (failed)",
         method,
         endpoint,
         status: res.status,
@@ -1396,12 +1504,20 @@ export default function CustomerServiceRepQueue() {
     }
     if (!res.ok) {
       if (res.status === 403) {
-        throw new Error("Access denied — ask an admin to set your role to \"Customer Service Rep\" in Admin → Users.");
+        throw new Error("Access denied — ask an admin to confirm this account is active and has a CSR alias such as Customer Service Rep/CSR/QSR.");
       }
       const msg = responseData
         ? ((responseData as { error?: string }).error ?? "Clock-in failed")
         : `Clock-in failed (${res.status})`;
       throw new Error(msg);
+    }
+
+    // POST /api/shifts/clock-in is intentionally idempotent. If the CSR is
+    // already active, the server returns 200 with { alreadyClockedIn: true,
+    // shift }. Treat that as a usable POS state instead of surfacing the raw
+    // JSON/debug response as an error.
+    if (responseData?.shift) {
+      setShift(responseData.shift as ActiveShift);
     }
     await refetchShift();
   };

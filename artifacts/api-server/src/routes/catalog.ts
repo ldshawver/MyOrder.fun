@@ -512,17 +512,13 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   // Compute merged state for conditional validation.
   // When null is sent for LC/Woo fields (common from Alavont-mode UI which suppresses them),
   // fall back to the existing DB value so validation doesn't reject standard catalog edits.
-  const mergedMode = body.data.merchantProcessingMode ?? existing.merchantProcessingMode ?? "mapped_lucifer";
-  const mergedLcName = (body.data.luciferCruzName != null) ? body.data.luciferCruzName : existing.luciferCruzName;
   const mergedIsWoo = body.data.isWooManaged ?? existing.isWooManaged;
   const mergedWooProductId = (body.data.wooProductId != null) ? body.data.wooProductId : existing.wooProductId;
 
-  if (mergedMode === "mapped_lucifer" && !mergedLcName) {
-    res.status(400).json({
-      error: "merchantProcessingMode=mapped_lucifer requires a luciferCruzName. Set a Lucifer Cruz merchant name before saving.",
-    });
-    return;
-  }
+  // Do not block ordinary catalog edits just because a legacy/imported row is
+  // missing its Lucifer Cruz mapped name. The checkout normalizer still enforces
+  // merchant-safe conversion before payment; admins must be able to repair the
+  // customer-facing name/category/image/description/price first.
   if (mergedIsWoo && !mergedWooProductId) {
     res.status(400).json({
       error: "isWooManaged=true requires a wooProductId. Set the WooCommerce product ID before enabling Woo-managed mode.",

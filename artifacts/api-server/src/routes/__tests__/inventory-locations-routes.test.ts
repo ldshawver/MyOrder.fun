@@ -58,6 +58,7 @@ vi.mock("@workspace/db", () => {
   const ordersTable = cols(["assignedShiftId", "id", "customerId"]);
   const orderItemsTable = cols(["orderId"]);
   const auditLogsTable = {};
+  const adminSettingsTable = cols(["pickupInstructionOptions", "shiftLocationOptions", "deliveryOptions", "printerNetworkConfig"]);
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -86,6 +87,7 @@ vi.mock("@workspace/db", () => {
     ordersTable,
     orderItemsTable,
     auditLogsTable,
+    adminSettingsTable,
   };
 });
 

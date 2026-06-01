@@ -34,17 +34,32 @@ apt-get install -y -qq certbot
 
 echo ""
 echo "▶ Setting up SSH key for GitHub Actions..."
-echo "  Run this to generate a deploy key (press Enter for all prompts):"
-echo "  ssh-keygen -t ed25519 -C 'github-deploy' -f /root/.ssh/github_deploy"
-echo "  Then add the PUBLIC key (/root/.ssh/github_deploy.pub) to:"
-echo "    /root/.ssh/authorized_keys"
-echo "  And add the PRIVATE key (/root/.ssh/github_deploy) to GitHub:"
-echo "    Repo → Settings → Secrets → Actions → VPS_SSH_KEY"
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+if [ ! -f /root/.ssh/github_deploy ]; then
+  ssh-keygen -t ed25519 -C 'github-deploy' -f /root/.ssh/github_deploy -N ''
+fi
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+if ! grep -qxF "$(cat /root/.ssh/github_deploy.pub)" /root/.ssh/authorized_keys; then
+  cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+fi
+chmod 600 /root/.ssh/github_deploy
+chmod 644 /root/.ssh/github_deploy.pub
+echo "  ✓ Deploy public key installed in /root/.ssh/authorized_keys"
+echo "  Add/update these GitHub Actions secrets before running deploy:"
+echo "    VPS_USER=root"
+echo "    VPS_HOST=<this VPS public IP or DNS>"
+echo "    VPS_SSH_KEY=<contents of /root/.ssh/github_deploy>"
+echo "  To print the private key for GitHub, run: cat /root/.ssh/github_deploy"
 echo ""
+
+echo "▶ Releasing public web ports before requesting SSL..."
+bash "${DEPLOY_DIR}/release-web-ports.sh" || true
 
 echo "▶ Obtaining SSL certificate for ${DOMAIN}..."
 echo "  Make sure your DNS A record points: ${DOMAIN} → this server's IP"
-echo "  Port 80 must be free (nothing running on it yet)."
+echo "  Port 80 must be free (the setup script stops old proxy containers first)."
 read -p "  Press Enter to get SSL cert now, or Ctrl+C to skip..."
 certbot certonly --standalone \
   -d "${DOMAIN}" -d "www.${DOMAIN}" \

@@ -169,6 +169,8 @@ export const printSettingsTable = pgTable("print_settings", {
   paperWidth: text("paper_width").notNull().default("80mm"),
   brandName: text("brand_name"),
   footerMessage: text("footer_message"),
+  receiptTemplateStyle: text("receipt_template_style").notNull().default("clean"),
+  labelTemplateStyle: text("label_template_style").notNull().default("thank_you_personalized"),
   // ── Simplified printer settings (Task #9) ─────────────────────────────────
   // The new simplified UI exposes only the eight fields below. Receipts and
   // labels each have an enabled flag, a method (local CUPS or Tailscale
