@@ -29,6 +29,7 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['stripe']::text[]`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "checkout_conversion_preview" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_image_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_processor_config" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "auto_print_on_payment" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "receipt_template_style" text NOT NULL DEFAULT 'standard'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "label_template_style" text NOT NULL DEFAULT 'standard'`,
@@ -74,6 +75,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     enabledProcessors: s.enabledProcessors,
     checkoutConversionPreview: s.checkoutConversionPreview,
     merchantImageEnabled: s.merchantImageEnabled,
+    merchantProcessorConfig: parseMerchantProcessorConfig(s.merchantProcessorConfig),
     autoPrintOnPayment: s.autoPrintOnPayment,
     receiptTemplateStyle: s.receiptTemplateStyle,
     labelTemplateStyle: s.labelTemplateStyle,
@@ -168,6 +170,43 @@ function parseDeliveryOptions(raw: string | null | undefined) {
   }
 }
 
+const DEFAULT_MERCHANT_PROCESSOR_CONFIG: Record<string, Record<string, unknown>> = {
+  stripe: { displayName: "Stripe", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  apple_pay: { displayName: "Apple Pay", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  cashapp: { displayName: "Cash App", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  venmo: { displayName: "Venmo", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  paypal: { displayName: "PayPal", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  cash: { displayName: "Cash", accountId: "", publicKey: "", webhookConfigured: false, notes: "Cash is collected by the active CSR and reconciled at shift close." },
+};
+
+function parseMerchantProcessorConfig(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+    return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...parsed };
+  } catch {
+    return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  }
+}
+
+function cleanMerchantProcessorConfig(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[a-z0-9_]+$/.test(key) || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    out[key] = {
+      displayName: String(row.displayName ?? key).slice(0, 80),
+      accountId: String(row.accountId ?? "").slice(0, 200),
+      publicKey: String(row.publicKey ?? "").slice(0, 500),
+      webhookConfigured: row.webhookConfigured === true,
+      notes: String(row.notes ?? "").slice(0, 1000),
+    };
+  }
+  return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...out };
+}
+
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
   if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
   try {
@@ -254,6 +293,10 @@ router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, 
       .slice(0, 6);
     update.catalogBannerImages = JSON.stringify(banners.length ? banners : DEFAULT_CATALOG_BANNERS);
   }
+  if (body.merchantProcessorConfig !== undefined) {
+    update.merchantProcessorConfig = JSON.stringify(cleanMerchantProcessorConfig(body.merchantProcessorConfig));
+  }
+
   if (body.orderRoutingRule !== undefined) {
     if (typeof body.orderRoutingRule !== "string" || !(ROUTING_RULES as readonly string[]).includes(body.orderRoutingRule)) {
       res.status(400).json({ error: `orderRoutingRule must be one of ${ROUTING_RULES.join(", ")}` });

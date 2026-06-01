@@ -393,6 +393,9 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
         eq(catalogItemsTable.isAvailable, true),
         sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
         sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+        sql`LOWER(COALESCE(${catalogItemsTable.name}, '')) NOT LIKE 'safe%'`,
+        sql`LOWER(COALESCE(${catalogItemsTable.alavontName}, '')) NOT LIKE 'safe%'`,
+        sql`LOWER(COALESCE(${catalogItemsTable.displayName}, '')) NOT LIKE 'safe%'`,
       )
     )
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
@@ -426,7 +429,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
         startingQuantityDefault: String(stockValue ?? "0"),
         currentStock: String(stockValue ?? "0"),
         menuPrice: String(item.price ?? "0"),
-        payoutPrice: String(item.costBasis ?? item.price ?? "0"),
+        payoutPrice: String(item.price ?? "0"),
         displayOrder: currentMaxOrder + ((idx + 1) * 10),
         isActive: true,
         catalogItemId: item.id,
@@ -445,7 +448,10 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-  return updatedRows.filter(row => row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
+  return updatedRows.filter(row => {
+    const name = String(row.itemName ?? "").trim().toLowerCase();
+    return !name.startsWith("safe") && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
+  });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -599,6 +605,20 @@ router.get(
       : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
     const csrSettings = await getTenantCsrSettings();
 
+    const templateCatalogIds = rows
+      .map(r => r.catalogItemId)
+      .filter((id): id is number => typeof id === "number");
+    const catalogPriceMap = new Map<number, number>();
+    if (templateCatalogIds.length > 0) {
+      const priceRows = await db
+        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
+        .from(catalogItemsTable)
+        .where(sql`${catalogItemsTable.id} = ANY(${sql.raw(`ARRAY[${templateCatalogIds.join(",")}]::int[]`)})`);
+      for (const priceRow of priceRows) {
+        catalogPriceMap.set(priceRow.id, parseFloat(String(priceRow.price ?? "0")));
+      }
+    }
+
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
     let balanceMap: Map<number, number> = new Map();
@@ -634,7 +654,9 @@ router.get(
           alavontId: r.alavontId,
           displayOrder: r.displayOrder,
           menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
-          payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
+          payoutPrice: r.catalogItemId != null && catalogPriceMap.has(r.catalogItemId)
+            ? catalogPriceMap.get(r.catalogItemId)!
+            : (r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null),
         };
       }),
     });

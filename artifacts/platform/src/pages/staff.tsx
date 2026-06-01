@@ -171,7 +171,7 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [printerReady, setPrinterReady] = useState(false);
   const [locationReady, setLocationReady] = useState(true);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
-  const [cashBankStart, setCashBankStart] = useState("0");
+  const [cashBankStart, setCashBankStart] = useState("100");
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [clocking, setClocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -364,7 +364,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <div className="text-xs text-muted-foreground mb-1">Count the cash in the box and enter the total</div>
+            <div className="text-xs text-muted-foreground mb-1">Cash bank par is $100. Confirm the box starts at par or enter the counted total</div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-emerald-400">$</span>
@@ -375,7 +375,7 @@ function ClockInPanel({ onClockIn, getToken }: {
               value={cashBankStart}
               onChange={e => setCashBankStart(e.target.value)}
               className="h-9 w-28 text-right text-sm rounded-xl bg-background/50 border-emerald-500/30 font-mono font-bold text-emerald-400 focus:border-emerald-500/60"
-              placeholder="0.00"
+              placeholder="100.00"
             />
           </div>
         </div>
@@ -407,7 +407,7 @@ function ClockInPanel({ onClockIn, getToken }: {
                   )}
                   {row.payoutPrice != null && (
                     <div className="text-[10px] text-emerald-400/80 shrink-0 text-right w-16 font-mono">
-                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Payout</span>
+                      <span className="text-[9px] text-muted-foreground/50 block uppercase tracking-wider">Sale</span>
                       ${row.payoutPrice.toFixed(2)}
                     </div>
                   )}
