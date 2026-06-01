@@ -12,6 +12,9 @@ type ReceiptSettings = {
   includeOperatorName: boolean;
   showDiscreetNotice: boolean;
   autoPrintReceipts: boolean;
+  autoPrintLabels: boolean;
+  receiptTemplateStyle: string;
+  labelTemplateStyle: string;
 };
 
 const DEFAULTS: ReceiptSettings = {
@@ -22,6 +25,9 @@ const DEFAULTS: ReceiptSettings = {
   includeOperatorName: true,
   showDiscreetNotice: false,
   autoPrintReceipts: false,
+  autoPrintLabels: false,
+  receiptTemplateStyle: "clean",
+  labelTemplateStyle: "thank_you_personalized",
 };
 
 export default function AdminReceipts() {
@@ -56,6 +62,9 @@ export default function AdminReceipts() {
         includeOperatorName: s.includeOperatorName !== false,
         showDiscreetNotice: Boolean(s.showDiscreetNotice),
         autoPrintReceipts: Boolean(s.autoPrintReceipts),
+        autoPrintLabels: Boolean(s.autoPrintLabels),
+        receiptTemplateStyle: s.receiptTemplateStyle ?? "clean",
+        labelTemplateStyle: s.labelTemplateStyle ?? "thank_you_personalized",
       });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Network error");
@@ -91,6 +100,9 @@ export default function AdminReceipts() {
         includeOperatorName: s.includeOperatorName !== false,
         showDiscreetNotice: Boolean(s.showDiscreetNotice),
         autoPrintReceipts: Boolean(s.autoPrintReceipts),
+        autoPrintLabels: Boolean(s.autoPrintLabels),
+        receiptTemplateStyle: s.receiptTemplateStyle ?? prev.receiptTemplateStyle,
+        labelTemplateStyle: s.labelTemplateStyle ?? prev.labelTemplateStyle,
       }));
       setSavedAt(Date.now());
       setTimeout(() => setSavedAt(null), 2500);
@@ -180,17 +192,43 @@ export default function AdminReceipts() {
             data-testid="input-receipt-footer"
           />
         </div>
-        <div>
-          <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Paper width</label>
-          <select
-            value={settings.paperWidth}
-            onChange={e => update("paperWidth", e.target.value)}
-            className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
-            data-testid="select-receipt-paper-width"
-          >
-            <option value="58mm">58mm</option>
-            <option value="80mm">80mm</option>
-          </select>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Paper width</label>
+            <select
+              value={settings.paperWidth}
+              onChange={e => update("paperWidth", e.target.value)}
+              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+              data-testid="select-receipt-paper-width"
+            >
+              <option value="58mm">58mm</option>
+              <option value="80mm">80mm</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Receipt template</label>
+            <select
+              value={settings.receiptTemplateStyle}
+              onChange={e => update("receiptTemplateStyle", e.target.value)}
+              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+              data-testid="select-receipt-template"
+            >
+              <option value="clean">Clean wordmark</option>
+              <option value="classic">Classic receipt</option>
+              <option value="compact">Compact no-logo</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Label template</label>
+            <select
+              value={settings.labelTemplateStyle}
+              onChange={e => update("labelTemplateStyle", e.target.value)}
+              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+              data-testid="select-label-template"
+            >
+              <option value="thank_you_personalized">Thank-you sticker + customer name</option>
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
@@ -202,11 +240,13 @@ export default function AdminReceipts() {
             onChange={v => update("showDiscreetNotice", v)} testId="toggle-receipt-discreet" />
           <ToggleRow label="Auto-print receipts on payment" checked={settings.autoPrintReceipts}
             onChange={v => update("autoPrintReceipts", v)} testId="toggle-receipt-autoprint" />
+          <ToggleRow label="Auto-print delivery thank-you labels" checked={settings.autoPrintLabels}
+            onChange={v => update("autoPrintLabels", v)} testId="toggle-label-autoprint" />
         </div>
         <div className="rounded-lg border border-border/40 bg-background/40 p-3 flex items-center gap-3">
           <img src="/alavont-receipt-logo.png" alt="Alavont Therapeutics receipt logo" className="h-16 w-16 object-contain bg-black rounded-md border border-border/30" />
           <div className="text-xs text-muted-foreground leading-relaxed">
-            This logo is the receipt brand reference. Thermal receipt text uses a centered monochrome version so it prints reliably on 58mm and 80mm printers.
+            This image remains the brand reference, while thermal receipt text now uses a clean centered wordmark for reliable 58mm/80mm printing. Delivery labels use the thank-you sticker template with the customer's first name superimposed.
           </div>
         </div>
       </div>

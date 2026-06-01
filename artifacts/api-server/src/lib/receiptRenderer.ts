@@ -40,6 +40,7 @@ interface PrintOrder {
   showDiscreetNotice?: boolean;
   showOperatorName?: boolean;
   operatorName?: string;
+  receiptTemplateStyle?: "clean" | "classic" | "compact";
   // Receipt line name mode (dual-brand)
   receiptLineNameMode?: "alavont_only" | "lucifer_only" | "both";
   // Legacy (ignored)
@@ -112,6 +113,7 @@ export function renderKitchenTicket(order: PrintOrder): string {
     footerMessage: order.footerMessage,
     showDiscreetNotice: order.showDiscreetNotice ?? false,
     showOperatorName: order.showOperatorName ?? true,
+    receiptTemplateStyle: order.receiptTemplateStyle ?? "clean",
   });
   return renderBlocks(blocks, width);
 }

@@ -80,7 +80,7 @@ docker compose exec api node scripts/promote-admin.mjs 1
 
 ## GitHub Actions Auto-Deploy Setup
 
-Every push to `main` triggers an automatic deploy. You need to add three secrets in GitHub:
+Every push to `main` triggers an automatic deploy. Add these GitHub Actions secrets:
 
 **GitHub → your repo → Settings → Secrets → Actions**
 
@@ -88,21 +88,44 @@ Every push to `main` triggers an automatic deploy. You need to add three secrets
 |---|---|
 | `VPS_HOST` | `195.35.11.5` |
 | `VPS_USER` | `root` |
-| `VPS_SSH_KEY` | your SSH private key (see below) |
+| `VPS_SSH_KEY` or `VPS_SECRET_KEY` | the VPS SSH **private** key (see below) |
+| `VPS_SSH_PUBLIC_KEY` | optional reference copy of the matching public key; install this in the VPS user's `~/.ssh/authorized_keys` |
+| `VPS_PORT` | SSH port for the VPS (defaults to `22`) |
 
 ### Generating the SSH deploy key (run on VPS)
+
+The first-time setup script now creates the deploy key and installs its public
+key for root SSH automatically:
+
 ```bash
-ssh-keygen -t ed25519 -C "github-deploy" -f /root/.ssh/github_deploy
-# Press Enter for all prompts (no passphrase)
+cd /opt/alavont
+bash deploy/setup.sh
+```
 
-# Allow this key to log in
-cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+If you need to repair the key manually, run:
 
-# Print the PRIVATE key — copy this into GitHub secret VPS_SSH_KEY
+```bash
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+ssh-keygen -t ed25519 -C "github-deploy" -f /root/.ssh/github_deploy -N "" || true
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+grep -qxF "$(cat /root/.ssh/github_deploy.pub)" /root/.ssh/authorized_keys || \
+  cat /root/.ssh/github_deploy.pub >> /root/.ssh/authorized_keys
+```
+
+Then update GitHub Actions secrets for the target VPS:
+
+```bash
+# VPS_USER should normally be root for this deploy path.
+# Copy this PRIVATE key exactly into GitHub secret VPS_SSH_KEY:
 cat /root/.ssh/github_deploy
 ```
 
-After adding the secret, any push to `main` on GitHub will auto-deploy to the VPS.
+The deploy workflow performs a `BatchMode=yes` SSH preflight before `rsync`; if
+that check fails, update `VPS_HOST`, `VPS_USER`, `VPS_PORT`, or the private key secret (`VPS_SSH_KEY`/`VPS_SECRET_KEY`) and re-run the
+workflow. After the SSH preflight succeeds, any push to `main` will auto-deploy
+to the VPS.
 
 ---
 
@@ -204,7 +227,7 @@ pm2 delete alavont-api        # remove process (then re-add with pm2 start)
 | `GET /` or `GET /login` returns 404 | Frontend not built or nginx root path wrong — run `bash deploy/build.sh`, then reload nginx with `deploy/nginx.conf` |
 | `Cannot find module '/app/scripts/...'` | Rebuild: `docker compose build api && docker compose up -d api` |
 | Nginx won't start | Check `deploy/nginx/ssl/` has `fullchain.pem` + `privkey.pem` |
-| GitHub Actions fails to connect | Verify `VPS_SSH_KEY` secret and that the public key is in `/root/.ssh/authorized_keys` |
+| GitHub Actions fails to connect | Verify `VPS_PORT`, `VPS_HOST`, the private key secret (`VPS_SSH_KEY` or `VPS_SECRET_KEY`), and that the matching public key is in the target VPS user's `~/.ssh/authorized_keys`. GitHub repository Deploy Keys do not grant SSH access to the VPS. |
 
 ---
 
