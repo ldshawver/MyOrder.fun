@@ -344,9 +344,6 @@ export default function AdminSettingsPage() {
               <div className="flex flex-wrap gap-2">
                 {PAYMENT_PROCESSORS.map(({ id, label }) => {
                   const active = settings.enabledProcessors.includes(id);
-                {["stripe", "apple_pay", "paypal", "cashapp", "venmo", "cash"].map(p => {
-                  const active = settings.enabledProcessors.includes(p);
-                  const label = p === "apple_pay" ? "Apple Pay" : p === "cashapp" ? "Cash App" : p === "cash" ? "Cash" : p;
                   return (
                     <button
                       key={id}
