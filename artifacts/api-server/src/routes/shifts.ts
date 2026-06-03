@@ -12,7 +12,6 @@ import {
   ordersTable,
   orderItemsTable,
   usersTable,
-  adminSettingsTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
@@ -170,58 +169,11 @@ const DEFAULT_CSR_BOXES = [
   { slug: "sales-box-2", label: "CSR Sales Box 2", displayOrder: 2 },
 ];
 
-const DEFAULT_SHIFT_LOCATIONS = [
-  { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
-  { id: "sales-box-2", label: "CSR Sales Box 2", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
-  { id: "storefront", label: "Storefront", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
-  { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
-];
 
-const DEFAULT_DELIVERY_OPTIONS = [
-  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
-  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
-];
 
-const DEFAULT_PICKUP_INSTRUCTIONS = [
-  { id: "front-counter", label: "Front Counter", instructions: "Please come to the front counter and show your order confirmation." },
-  { id: "side-door", label: "Side Door", instructions: "Please wait by the side-door pickup area and have your order confirmation ready." },
-  { id: "courier-handoff", label: "Courier Handoff", instructions: "Your order will be handed to the assigned courier at the pickup location." },
-];
 
-function parseSettingsArray<T>(raw: string | null | undefined, fallback: T[]): T[] {
-  if (!raw) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed as T[] : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
-function parsePrinterNetworkConfig(raw: string | null | undefined) {
-  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
-      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
-      passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
-      raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
-    };
-  } catch {
-    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
-  }
-}
 
-async function getTenantCsrSettings() {
-  const [settings] = await db.select().from(adminSettingsTable).limit(1);
-  return {
-    pickupInstructionOptions: parseSettingsArray(settings?.pickupInstructionOptions, DEFAULT_PICKUP_INSTRUCTIONS),
-    shiftLocationOptions: parseSettingsArray(settings?.shiftLocationOptions, DEFAULT_SHIFT_LOCATIONS),
-    deliveryOptions: parseSettingsArray(settings?.deliveryOptions, DEFAULT_DELIVERY_OPTIONS),
-    printerNetworkConfig: parsePrinterNetworkConfig(settings?.printerNetworkConfig),
-  };
-}
 
 let shiftSchemaEnsured = false;
 
@@ -761,7 +713,6 @@ router.get(
 
     res.json({
       boxes,
-      ...csrSettings,
       template: rows.map(r => {
         const balanceQty = r.catalogItemId != null ? balanceMap.get(r.catalogItemId) : undefined;
         const startingQty = balanceQty !== undefined
@@ -778,9 +729,7 @@ router.get(
           alavontId: r.alavontId,
           displayOrder: r.displayOrder,
           menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
-          payoutPrice: r.catalogItemId != null && catalogPriceMap.has(r.catalogItemId)
-            ? catalogPriceMap.get(r.catalogItemId)!
-            : (r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null),
+          payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
         };
       }),
     });
