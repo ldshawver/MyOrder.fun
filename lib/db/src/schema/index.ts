@@ -10,3 +10,4 @@ export * from "./print";
 export * from "./settings";
 export * from "./feedback";
 export * from "./credits";
+export * from "./visual-editor";
