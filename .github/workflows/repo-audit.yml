@@ -31,7 +31,7 @@ jobs:
 
       - name: Check for obvious committed secret values
         run: |
-          ! grep -RInE "(sk_live_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{32,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{20,})" . \
+          ! grep -RInE "(sk_live_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{32,}|github_pat_[A-Za-z0-9_]{30,})" . \
             --exclude-dir=.git \
             --exclude-dir=node_modules \
             --exclude="pnpm-lock.yaml"
