@@ -597,27 +597,22 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    await ensureInventoryLocations(houseTenantId);
 
     const dbBoxes = await getActiveCsrBoxes(houseTenantId);
-    const boxes = dbBoxes.length > 0
-      ? dbBoxes.map(b => ({ id: b.slug, label: b.label, description: b.description, location: b.location }))
-      : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
-    const csrSettings = await getTenantCsrSettings();
 
-    const templateCatalogIds = rows
-      .map(r => r.catalogItemId)
-      .filter((id): id is number => typeof id === "number");
-    const catalogPriceMap = new Map<number, number>();
-    if (templateCatalogIds.length > 0) {
-      const priceRows = await db
-        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
-        .from(catalogItemsTable)
-        .where(sql`${catalogItemsTable.id} = ANY(${sql.raw(`ARRAY[${templateCatalogIds.join(",")}]::int[]`)})`);
-      for (const priceRow of priceRows) {
-        catalogPriceMap.set(priceRow.id, parseFloat(String(priceRow.price ?? "0")));
-      }
-    }
+    await ensureInventoryLocations(houseTenantId);
+
+    const boxes = dbBoxes.length > 0
+      ? dbBoxes.map((b) => ({
+          id: b.slug,
+          label: b.label,
+          description: b.description,
+          location: b.location,
+        }))
+      : DEFAULT_CSR_BOXES.map((b) => ({
+          id: b.slug,
+          label: b.label,
+        }));
 
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
