@@ -332,7 +332,7 @@ export default function AdminSettingsPage() {
           <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-1">
             <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Checkout Settings</div>
 
-            <SettingRow label="Checkout Conversion Preview" description="Show customers a brief summary before payment that the cart has been converted to merchant naming. Does not reveal internal mapping logic.">
+            <SettingRow label="Checkout Conversion Preview" description="Show customers a brief summary before payment that the cart has been converted to merchant naming. Does not reveal internal Lucifer Cruz names.">
               <Switch checked={settings.checkoutConversionPreview} onCheckedChange={v => set("checkoutConversionPreview", v)} />
             </SettingRow>
 
@@ -344,9 +344,6 @@ export default function AdminSettingsPage() {
               <div className="flex flex-wrap gap-2">
                 {PAYMENT_PROCESSORS.map(({ id, label }) => {
                   const active = settings.enabledProcessors.includes(id);
-                {["stripe", "apple_pay", "paypal", "cashapp", "venmo", "cash"].map(p => {
-                  const active = settings.enabledProcessors.includes(p);
-                  const label = p === "apple_pay" ? "Apple Pay" : p === "cashapp" ? "Cash App" : p === "cash" ? "Cash" : p;
                   return (
                     <button
                       key={id}
@@ -354,7 +351,7 @@ export default function AdminSettingsPage() {
                         ? settings.enabledProcessors.filter(x => x !== id)
                         : [...settings.enabledProcessors, id]
                       )}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground hover:border-border"}`}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground"}`}
                     >
                       {label}
                     </button>
@@ -513,7 +510,7 @@ export default function AdminSettingsPage() {
               ].map(({ mode, title, desc }) => (
                 <div
                   key={mode}
-                  className={`p-4 rounded-xl border text-xs leading-relaxed cursor-pointer transition-all ${settings.purgeMode === mode ? "border-primary/40 bg-primary/[0.06]" : "border-border/30 bg-muted/10"}`}
+                  className={`p-4 rounded-xl border text-xs leading-relaxed cursor-pointer transition-all ${settings.purgeMode === mode ? "border-primary/40 bg-primary/[0.06]" : "border-border/30"}`}
                   onClick={() => set("purgeMode", mode)}
                 >
                   <div className={`font-semibold mb-1 ${settings.purgeMode === mode ? "text-primary" : ""}`}>{title}</div>
@@ -542,11 +539,11 @@ export default function AdminSettingsPage() {
 
               {/* Status badges */}
               <div className="flex flex-wrap gap-2 mb-5">
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerKeySet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerKeySet ? "bg-green-500/10 text-green-400 border border-green-500/30" : "bg-muted/20 border border-border/30"}`}>
                   <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerKeySet ? "bg-green-400" : "bg-muted-foreground"}`} />
                   Consumer Key: {settings.wcConsumerKeySet ? "Saved" : "Not set"}
                 </div>
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerSecretSet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerSecretSet ? "bg-green-500/10 text-green-400 border border-green-500/30" : "bg-muted/20 border border-border/30"}`}>
                   <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerSecretSet ? "bg-green-400" : "bg-muted-foreground"}`} />
                   Consumer Secret: {settings.wcConsumerSecretSet ? "Saved" : "Not set"}
                 </div>
