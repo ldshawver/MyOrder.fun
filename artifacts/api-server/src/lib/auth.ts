@@ -27,16 +27,20 @@ export type LegacyRole =
 export type Role = CanonicalRole | LegacyRole;
 
 export function normalizeRole(role: unknown): CanonicalRole {
-  const normalized = typeof role === "string" ? role.trim().toLowerCase() : "";
+  const normalized = typeof role === "string"
+    ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
+    : "";
   if (normalized === "global_admin") return "global_admin";
   if (normalized === "admin" || normalized === "supervisor") return "admin";
   if (
     normalized === "customer_service_rep" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
+    normalized === "customer_service_representative" ||
     normalized === "customer_service" ||
     normalized === "customer_service_specialist" ||
     normalized === "customer_success" ||
+    normalized === "service_rep" ||
+    normalized === "csr" ||
+    normalized === "qsr" ||
     normalized === "business_sitter" ||
     normalized === "sales_rep" ||
     normalized === "lab_tech" ||
@@ -235,6 +239,14 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
   const user = req.dbUser;
   if (!user) {
     res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (user.isActive === false || user.status === "deactivated") {
+    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    return;
+  }
+  if (user.status === "rejected") {
+    res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
   // Elevated/staff roles are implicitly approved — having been assigned a

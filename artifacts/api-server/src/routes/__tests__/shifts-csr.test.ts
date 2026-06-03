@@ -102,8 +102,8 @@ vi.mock("../../lib/logger", () => ({
 import { db } from "@workspace/db";
 import shiftsRouter from "../shifts";
 
-function makeUser(role: string, status: string = "pending") {
-  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive: true };
+function makeUser(role: string, status: string = "pending", isActive = true) {
+  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive };
 }
 
 /**
@@ -140,7 +140,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     mockUserId = "csr-clerk-id";
   });
 
-  for (const role of ["customer_service_rep", "sales_rep", "lab_tech", "lab_technician", "global_admin"] as const) {
+  for (const role of ["customer_service_rep", "Customer Service Rep", "CSR", "service_rep", "sales_rep", "lab_tech", "lab_technician", "global_admin"] as const) {
     it(`role=${role} (status=pending) is allowed past requireApproved + requireRole on clock-in`, async () => {
       configureDb({ user: makeUser(role, "pending") });
       const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
@@ -179,6 +179,21 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(row.actorRole).toBe("customer_service_rep");
     expect(row.resourceType).toBe("lab_tech_shift");
     expect(row.resourceId).toBe("888");
+  });
+
+
+  it("inactive approved CSR is blocked before clock-in", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved", false) });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/deactivated/i);
+  });
+
+  it("rejected CSR is blocked before clock-in", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "rejected") });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    expect(res.status).toBe(403);
+    expect(res.body.status).toBe("rejected");
   });
 
   it("plain status=pending user (role=user) is still blocked with 403", async () => {

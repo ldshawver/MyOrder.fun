@@ -55,9 +55,10 @@ type NavSection = {
 };
 
 function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
-  if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
-  if (role === "customer_service_rep" || role === "business_sitter" || role === "sales_rep" || role === "lab_tech" || role === "lab_technician") {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "global_admin") return "global_admin";
+  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
     return "customer_service_rep";
   }
   return "user";

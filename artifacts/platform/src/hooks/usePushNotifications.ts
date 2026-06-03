@@ -3,15 +3,18 @@ import { useEffect, useCallback, useRef } from "react";
 export type NotificationRole = "user" | "customer_service_rep" | "admin" | "global_admin";
 
 export function normalizeNotificationRole(role?: string | null): NotificationRole {
-  const normalized = role?.trim().toLowerCase();
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
   if (normalized === "admin" || normalized === "supervisor") return "admin";
   if (
     normalized === "customer_service_rep" ||
+    normalized === "customer_service_representative" ||
     normalized === "csr" ||
     normalized === "qsr" ||
     normalized === "customer_service" ||
+    normalized === "customer_service_specialist" ||
     normalized === "customer_success" ||
+    normalized === "service_rep" ||
     normalized === "business_sitter" ||
     normalized === "sales_rep" ||
     normalized === "lab_tech" ||
