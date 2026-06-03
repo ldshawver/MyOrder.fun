@@ -1,0 +1,59 @@
+name: Deploy App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-myorderfun
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: true
+          script: |
+            set -e
+
+            cd /opt/alavont
+
+            echo "Pulling latest code..."
+            git fetch origin
+            git reset --hard origin/main
+
+            echo "Installing dependencies..."
+            pnpm install --frozen-lockfile
+
+            echo "Building containers..."
+            cd deploy
+
+            docker compose pull || true
+            docker compose build
+
+            echo "Running migrations..."
+            docker compose run --rm migrate || true
+
+            echo "Restarting stack..."
+            docker compose up -d
+
+            echo "Waiting for health..."
+            sleep 15
+
+            curl -f http://localhost/api/healthz || exit 1
+
+            echo "Deploy successful"
