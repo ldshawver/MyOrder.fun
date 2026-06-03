@@ -1,4 +1,4 @@
-import { Router, type IRouter, type Request } from "express";
+import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { eq, and, desc, asc, sql } from "drizzle-orm";
 import {
   db,
@@ -14,7 +14,8 @@ import {
   usersTable,
   adminSettingsTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+import { getAuth } from "@clerk/express";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
 // requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
@@ -24,10 +25,138 @@ const SHIFT_OPERATOR_ROLES = [
   "admin",
   "global_admin",
 ] as const;
+const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+
+
+function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
+  const auth = getAuth(req);
+  const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  const user = req.dbUser;
+  const assignedCompanyStoreLocation = {
+    tenantId: user?.tenantId ?? null,
+    companyId: user?.tenantId ?? null,
+    storeId: null,
+    locationId: null,
+  };
+
+  return {
+    clerkUserId: auth.userId ?? user?.clerkId ?? null,
+    email: user?.email ?? (sessionClaims.email as string | undefined) ?? (sessionClaims.primaryEmailAddress as string | undefined) ?? null,
+    clerkRoleMetadata: publicMetadata.role ?? null,
+    clerkStatusMetadata: publicMetadata.status ?? null,
+    backendUserRecord: user
+      ? {
+          id: user.id,
+          clerkId: user.clerkId,
+          email: user.email,
+          role: user.role,
+          normalizedRole: normalizeRole(user.role),
+          status: user.status,
+          isActive: user.isActive,
+          tenantId: user.tenantId,
+        }
+      : null,
+    backendRole: user?.role ?? null,
+    approvalStatus: user?.status ?? null,
+    assignedCompanyStoreLocation,
+    csrPermissionFlag: user ? normalizeRole(user.role) === "customer_service_rep" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
+    failedCondition,
+  };
+}
+
+function shouldLogMarekCsrDebug(req: Request): boolean {
+  const user = req.dbUser;
+  const auth = getAuth(req);
+  const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  return [
+    user?.email,
+    user?.firstName,
+    user?.lastName,
+    auth.userId,
+    sessionClaims.email,
+    sessionClaims.primaryEmailAddress,
+    publicMetadata.role,
+  ].some((value) => typeof value === "string" && MAREK_DEBUG_EMAIL_PATTERN.test(value));
+}
+
+function logMarekCsrAuthDebug(req: Request, failedCondition: string | null = null): void {
+  if (!shouldLogMarekCsrDebug(req)) return;
+  req.log?.info?.(buildCsrAuthDebug(req, failedCondition), "CSR auth debug for Marek sign-on");
+}
+
+
+function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunction): void {
+  if (!shouldLogMarekCsrDebug(req)) {
+    requireApproved(req, res, next);
+    return;
+  }
+
+  const user = req.dbUser;
+  if (!user) {
+    logMarekCsrAuthDebug(req, "missing_db_user");
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (user.isActive === false || user.status === "deactivated") {
+    logMarekCsrAuthDebug(req, "inactive_or_deactivated_user");
+    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    return;
+  }
+  if (user.status === "rejected") {
+    logMarekCsrAuthDebug(req, "rejected_user");
+    res.status(403).json({ error: "Account rejected", status: user.status });
+    return;
+  }
+  const actorRole = normalizeRole(user.role);
+  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "customer_service_rep") {
+    logMarekCsrAuthDebug(req, null);
+    next();
+    return;
+  }
+  if (user.status !== "approved") {
+    logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
+    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    return;
+  }
+  logMarekCsrAuthDebug(req, null);
+  next();
+}
+
+function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {
+  const user = req.dbUser;
+  if (!user) {
+    logMarekCsrAuthDebug(req, "missing_db_user");
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const actorRole = normalizeRole(user.role);
+  const hasRole = (SHIFT_OPERATOR_ROLES as readonly string[]).includes(actorRole);
+
+  logMarekCsrAuthDebug(req, hasRole ? null : `role_not_allowed:${String(user.role)}`);
+
+  if (!hasRole) {
+    res.status(403).json({
+      error: "Forbidden: insufficient role",
+      failedCondition: "csr_role_required",
+    });
+    return;
+  }
+
+  next();
+}
 
 function getClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
@@ -593,7 +722,7 @@ function enrichInventoryWithSales(
 // inventory_templates.current_stock (falls back if no balance row exists).
 router.get(
   "/shifts/inventory-template",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
@@ -682,7 +811,7 @@ async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$i
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -804,7 +933,7 @@ router.post(
 // ─── POST /api/shifts/clock-out ───────────────────────────────────────────────
 router.post(
   "/shifts/clock-out",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -954,7 +1083,7 @@ router.post(
 // kept for backward-compat with the existing UI.
 router.get(
   ["/shifts/current", "/shifts/active"],
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -1012,7 +1141,7 @@ router.get(
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
