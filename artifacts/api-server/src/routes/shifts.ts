@@ -199,17 +199,26 @@ function parseSettingsArray<T>(raw: string | null | undefined, fallback: T[]): T
 }
 
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
-  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  const empty = { onsiteMode: "auto", ssid: "", approvedSsids: [] as string[], passwordSet: false, raspberryPiBluetooth: true };
+  if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const primarySsid = typeof parsed.ssid === "string" ? parsed.ssid : "";
+    const savedList: string[] = Array.isArray(parsed.approvedSsids)
+      ? (parsed.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+    const approvedSsids = primarySsid && !savedList.includes(primarySsid)
+      ? [primarySsid, ...savedList]
+      : savedList;
     return {
       onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
-      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      ssid: primarySsid,
+      approvedSsids,
       passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
       raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
     };
   } catch {
-    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+    return empty;
   }
 }
 
@@ -816,15 +825,53 @@ async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$i
   const stats = await computeShiftStats(activeShift.id);
   const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
   const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+  const csrDeliveryEarnings = parseFloat(String(activeShift.csrDeliveryEarnings ?? 0));
 
   return {
     ...activeShift,
     cashBankStart,
+    csrDeliveryEarnings,
+    csrDeliveryOptIn: activeShift.csrDeliveryOptIn ?? false,
     runningCashBank: cashBankStart + stats.cashSales,
     inventory,
     stats,
   };
 }
+
+// ─── GET /api/shifts/active-csr-status ─────────────────────────────────────
+// Returns whether any CSR is currently active and has opted into personal delivery.
+// Used by customer checkout to show/hide the CSR delivery option.
+router.get(
+  "/shifts/active-csr-status",
+  requireAuth, loadDbUser, requireDbUser,
+  async (_req, res): Promise<void> => {
+    const [activeShift] = await db
+      .select({
+        id: labTechShiftsTable.id,
+        csrDeliveryOptIn: labTechShiftsTable.csrDeliveryOptIn,
+        setupJson: labTechShiftsTable.setupJson,
+      })
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "active"))
+      .orderBy(desc(labTechShiftsTable.clockedInAt))
+      .limit(1);
+
+    if (!activeShift) {
+      res.json({ hasActiveShift: false, csrDeliveryAvailable: false });
+      return;
+    }
+
+    const setup = (activeShift.setupJson ?? {}) as Record<string, unknown>;
+    res.json({
+      hasActiveShift: true,
+      csrDeliveryAvailable: activeShift.csrDeliveryOptIn === true,
+      shiftId: activeShift.id,
+      shiftLocationId: setup.shiftLocationId ?? null,
+      pickupNote: setup.pickupNote ?? null,
+      deliveryOptionId: setup.deliveryOptionId ?? null,
+    });
+  }
+);
 
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
@@ -861,12 +908,37 @@ router.post(
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
       cashBankStart?: number;
       boxAssignmentId?: string;
-      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean; shiftLocationId?: string; deliveryOptionId?: string };
+      setup?: {
+        wifiReady?: boolean;
+        printerReady?: boolean;
+        locationReady?: boolean;
+        shiftLocationId?: string;
+        deliveryOptionId?: string;
+        csrDeliveryOptIn?: boolean;
+        wifiSsid?: string;
+        pickupNote?: string;
+        smsOptIn?: boolean;
+      };
     };
 
     const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
       ? boxAssignmentId
       : DEFAULT_CSR_BOXES[0].slug;
+
+    // Auto-validate WiFi: compare entered SSID against admin-approved list
+    const csrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const enteredSsid = (setup?.wifiSsid ?? "").trim();
+    const wifiMatchesApproved = enteredSsid.length > 0 &&
+      approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
+    const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
+
+    // Update user's SMS opt-in preference if provided at clock-in
+    if (setup?.smsOptIn !== undefined) {
+      await db.update(usersTable).set({ smsOptIn: setup.smsOptIn }).where(eq(usersTable.id, tech.id));
+    }
+
+    const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -877,13 +949,19 @@ router.post(
         ipAddress: ip,
         cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
         boxAssignmentId: selectedBox,
+        csrDeliveryOptIn,
+        csrDeliveryEarnings: "0",
         setupJson: {
           boxAssignmentId: selectedBox,
           shiftLocationId: setup?.shiftLocationId ?? selectedBox,
           deliveryOptionId: setup?.deliveryOptionId ?? "pickup",
-          wifiReady: setup?.wifiReady ?? false,
+          wifiReady: computedWifiReady,
+          wifiSsid: enteredSsid || null,
+          wifiApproved: wifiMatchesApproved,
           printerReady: setup?.printerReady ?? false,
           locationReady: setup?.locationReady ?? true,
+          pickupNote: (setup?.pickupNote ?? "").trim() || null,
+          csrDeliveryOptIn,
         },
       })
       .returning();

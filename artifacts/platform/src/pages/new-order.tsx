@@ -13,7 +13,13 @@ import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
-type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct";
+type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
+type CsrDeliveryStatus = {
+  hasActiveShift: boolean;
+  csrDeliveryAvailable: boolean;
+  shiftId?: number;
+  pickupNote?: string | null;
+};
 type DeliveryQuote = {
   provider: "uber_direct";
   quoteId: string;
@@ -85,6 +91,8 @@ export default function NewOrder() {
   const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
   const [tipMode, setTipMode] = useState<"none" | "10" | "15" | "20" | "custom">("none");
   const [customTip, setCustomTip] = useState("");
+  const [csrStatus, setCsrStatus] = useState<CsrDeliveryStatus | null>(null);
+  const [smsOptIn, setSmsOptIn] = useState(false);
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
   const { getToken } = useAuth();
@@ -132,6 +140,15 @@ export default function NewOrder() {
       .then(res => res.ok ? res.json() : [])
       .then((items: PromotedItem[]) => setPromotedItems(Array.isArray(items) ? items.filter(item => item.isAvailable) : []))
       .catch(() => setPromotedItems([]));
+  }, [getToken]);
+
+  // Fetch active CSR delivery status — drives whether "CSR Delivery" option is shown
+  useEffect(() => {
+    getToken()
+      .then(token => fetch("/api/shifts/active-csr-status", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then(res => res.ok ? res.json() : null)
+      .then((data: CsrDeliveryStatus | null) => setCsrStatus(data))
+      .catch(() => setCsrStatus(null));
   }, [getToken]);
 
   useEffect(() => {
@@ -215,14 +232,24 @@ export default function NewOrder() {
   const handleSubmit = async () => {
     if (cart.length === 0 || !conversionPreview) return;
     if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
-    if (deliveryMethod !== "pickup" && !shippingAddress.trim()) return;
+    if (requiresDeliveryAddress && !shippingAddress.trim()) return;
+
+    // Save SMS opt-in preference (fire-and-forget)
+    if (smsOptIn) {
+      getToken().then(token => fetch("/api/users/me", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ smsOptIn: true }),
+      })).catch(() => {});
+    }
 
     try {
       const order = await createOrderMutation.mutateAsync({
         data: {
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
-          shippingAddress: deliveryMethod === "pickup" ? "" : shippingAddress,
+          shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
           notes,
+          deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation: {
             acceptedAllSalesFinal: true,
@@ -253,7 +280,12 @@ export default function NewOrder() {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null ? deliveryQuote.fee : 0;
+  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((5 + 0.03 * subtotal) * 100) / 100 : 0;
+  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
+    ? deliveryQuote.fee
+    : deliveryMethod === "csr_delivery"
+      ? csrDeliveryFee
+      : 0;
   const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
   const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
   const tipAmount = tipMode === "none"
@@ -262,9 +294,10 @@ export default function NewOrder() {
       ? Math.round(customTipAmount * 100) / 100
       : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
   const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
-  const requiresDeliveryAddress = deliveryMethod !== "pickup";
+  const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
   const deliveryReady = deliveryMethod === "pickup"
+    || deliveryMethod === "csr_delivery"
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
@@ -374,7 +407,9 @@ export default function NewOrder() {
                 )}
                 {deliveryFee > 0 && (
                   <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Uber Courier</span>
+                    <span className="text-muted-foreground">
+                      {deliveryMethod === "csr_delivery" ? "CSR Delivery Fee" : "Uber Courier"}
+                    </span>
                     <span className="font-mono">${deliveryFee.toFixed(2)}</span>
                   </div>
                 )}
@@ -403,11 +438,12 @@ export default function NewOrder() {
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 <MapPin size={14} /> 1. Delivery or Pickup
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className={`grid gap-2 ${csrStatus?.csrDeliveryAvailable ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
                     {[
                       { id: "pickup", label: "Pickup" },
                       { id: "manual_delivery", label: "Delivery" },
                       { id: "uber_direct", label: "Uber Courier" },
+                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "CSR Delivery" }] : []),
                     ].map(option => (
                       <button
                         key={option.id}
@@ -420,6 +456,18 @@ export default function NewOrder() {
                       </button>
                     ))}
                   </div>
+
+                  {deliveryMethod === "csr_delivery" && (
+                    <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
+                      <div className="font-semibold text-primary">CSR Personal Delivery</div>
+                      <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep.</div>
+                      <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($5 + 3% of subtotal)</div>
+                      {csrStatus?.pickupNote && (
+                        <div className="text-muted-foreground italic mt-1">{csrStatus.pickupNote}</div>
+                      )}
+                    </div>
+                  )}
+
                   {requiresDeliveryAddress && (
                     <Input
                       placeholder="Delivery address"
@@ -487,6 +535,19 @@ export default function NewOrder() {
                   <span>
                     <span className="font-semibold">All Sales Final confirmation.</span>{" "}
                     <span className="text-muted-foreground">{FINAL_SALE_TEXT}</span>
+                  </span>
+                </label>
+
+                <label className="flex items-center gap-3 text-sm leading-relaxed cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={smsOptIn}
+                    onChange={(e) => setSmsOptIn(e.target.checked)}
+                    className="size-4 accent-primary"
+                    data-testid="checkbox-sms-opt-in"
+                  />
+                  <span className="text-muted-foreground text-xs">
+                    Send me text alerts for order status updates. <span className="text-muted-foreground/60">Reply STOP at any time.</span>
                   </span>
                 </label>
             </div>

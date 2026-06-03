@@ -558,6 +558,17 @@ export type CreateOrderBodyCheckoutConfirmation = {
   tipPercent?: number | null;
 };
 
+export type CreateOrderBodyDeliveryMethod = typeof CreateOrderBodyDeliveryMethod[keyof typeof CreateOrderBodyDeliveryMethod] | null;
+
+
+export const CreateOrderBodyDeliveryMethod = {
+  pickup: 'pickup',
+  manual_delivery: 'manual_delivery',
+  uber_direct: 'uber_direct',
+  uber_courier: 'uber_courier',
+  csr_delivery: 'csr_delivery',
+} as const;
+
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
@@ -565,6 +576,8 @@ export interface CreateOrderBody {
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
+  deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  smsOptIn?: boolean | null;
 }
 
 export type CreateDeliveryQuoteBodyItemsItem = {
@@ -738,6 +751,7 @@ export interface UpdateCurrentUserBody {
   notificationPreferences?: UpdateCurrentUserBodyNotificationPreferences;
   /** @maxLength 2048 */
   avatarUrl?: string | null;
+  smsOptIn?: boolean | null;
 }
 
 export type UpdateUserRoleBodyRole = typeof UpdateUserRoleBodyRole[keyof typeof UpdateUserRoleBodyRole];

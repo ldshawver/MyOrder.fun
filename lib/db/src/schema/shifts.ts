@@ -94,6 +94,10 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   // Payment method breakdown: { cash, card, cashapp, paypal, venmo, comp, other }
   paymentTotalsJson: json("payment_totals_json"),
   summary: json("summary"),
+  // CSR personal delivery opt-in (set at clock-in)
+  csrDeliveryOptIn: boolean("csr_delivery_opt_in").notNull().default(false),
+  // Running total of delivery fees earned by this CSR this shift (all go to CSR as gratuity)
+  csrDeliveryEarnings: numeric("csr_delivery_earnings", { precision: 10, scale: 2 }).default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
