@@ -1,0 +1,25 @@
+1. CI workflows:
+   - ci.yml
+   - repo-audit.yml
+   - deploy-app.yml
+
+2. AI support:
+   - copilot-instructions.md
+   - ai-fix.yml
+   - PULL_REQUEST_TEMPLATE.md
+   - copilot-setup-steps.yml
+
+3. Branch protection:
+   Require only:
+   - repo-audit
+   - typecheck
+   - build
+   - test
+
+4. App Doctor env:
+   - GITHUB_TOKEN
+   - GITHUB_REPO
+
+5. AI rule:
+   AI opens PRs only.
+   No AI direct push to main.
