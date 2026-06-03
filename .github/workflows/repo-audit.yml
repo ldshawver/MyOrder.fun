@@ -19,10 +19,19 @@ jobs:
           test -f pnpm-lock.yaml
           test -f .gitignore
 
-      - name: Check for obvious committed secrets
+      - name: Fail if real env files are committed
         run: |
-          ! grep -R "OPENAI_API_KEY\|DATABASE_URL=\|SESSION_SECRET=\|STRIPE_SECRET_KEY\|TWILIO_AUTH_TOKEN\|CLERK_SECRET_KEY" . \
+          ! find . \
+            -path "./node_modules" -prune -o \
+            -path "./.git" -prune -o \
+            -name ".env" -o \
+            -name ".env.production" -o \
+            -name ".env.local" \
+            | grep .
+
+      - name: Check for obvious committed secret values
+        run: |
+          ! grep -RInE "(sk_live_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{32,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{20,})" . \
             --exclude-dir=.git \
             --exclude-dir=node_modules \
-            --exclude="*.md" \
             --exclude="pnpm-lock.yaml"
