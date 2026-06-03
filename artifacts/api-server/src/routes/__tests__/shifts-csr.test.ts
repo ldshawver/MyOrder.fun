@@ -53,6 +53,7 @@ vi.mock("@workspace/db", () => {
   const csrBoxesTable = { id: "id_col", tenantId: "tenantId_col", slug: "slug_col", label: "label_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
   const inventoryLocationsTable = { id: "id_col", tenantId: "tenantId_col", name: "name_col", type: "type_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
   const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col" };
+  const adminSettingsTable = {};
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -83,7 +84,7 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn(),
   };
 
-  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable };
+  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable, adminSettingsTable };
 });
 
 vi.mock("drizzle-orm", () => ({
@@ -92,6 +93,7 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
   sql: vi.fn(),
+  inArray: vi.fn(() => ({})),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn().mockResolvedValue(1) }));
