@@ -2,8 +2,7 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -11,37 +10,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Typecheck, Lint & Test
+  typecheck:
+    name: typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: "10.26.1"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
 
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Lint warning ratchet
-        run: pnpm lint:ratchet
-
-      - name: Run tests
-        run: pnpm test
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm lint:ratchet
+      - run: pnpm test
