@@ -302,11 +302,31 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         (STAFF_ROLES as readonly string[]).includes(dbRole) &&
         !(STAFF_ROLES as readonly string[]).includes(clerkRole);
       if (!isRoleDowngrade) {
+        logger.info(
+          {
+            userId: user.id,
+            email: user.email,
+            dbRoleRaw: user.role,
+            dbRoleNormalized: dbRole,
+            clerkRoleRaw: meta.role,
+            clerkRoleNormalized: clerkRole,
+            willWriteToDb: true,
+          },
+          "loadDbUser: role mismatch — writing Clerk-sourced normalized role to DB",
+        );
         updates.role = clerkRole;
       } else {
         logger.warn(
-          { userId: user.id, dbRole: user.role, clerkRole: meta.role },
-          "Ignoring Clerk metadata role downgrade (staff → user) — DB is authoritative",
+          {
+            userId: user.id,
+            email: user.email,
+            dbRoleRaw: user.role,
+            dbRoleNormalized: dbRole,
+            clerkRoleRaw: meta.role,
+            clerkRoleNormalized: clerkRole,
+            willWriteToDb: false,
+          },
+          "loadDbUser: ignoring Clerk role (staff→non-staff downgrade) — DB is authoritative",
         );
       }
     }
@@ -317,12 +337,35 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
           .set(updates)
           .where(eq(usersTable.id, user.id))
           .returning();
+        logger.info(
+          {
+            userId: user.id,
+            email: user.email,
+            updates,
+            finalRole: reconciled?.role ?? user.role,
+            finalStatus: reconciled?.status ?? user.status,
+          },
+          "loadDbUser: DB user reconciled from Clerk metadata",
+        );
         req.dbUser = reconciled ?? user;
       } catch (err) {
         logger.error({ err, userId: user.id, updates }, "Failed to reconcile DB user from Clerk metadata");
         req.dbUser = user;
       }
     } else {
+      logger.info(
+        {
+          userId: user.id,
+          email: user.email,
+          dbRoleRaw: user.role,
+          dbRoleNormalized: normalizeRole(user.role),
+          status: user.status,
+          isActive: user.isActive,
+          clerkRoleJwt: meta.role ?? null,
+          clerkStatusJwt: meta.status ?? null,
+        },
+        "loadDbUser: no sync needed — DB user loaded as-is",
+      );
       req.dbUser = user;
     }
   }

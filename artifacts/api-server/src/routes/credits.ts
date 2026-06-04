@@ -5,7 +5,6 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole, w
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 let creditSchemaEnsured = false;
 
@@ -35,7 +34,9 @@ function balanceFor(entries: Array<typeof userCreditsTable.$inferSelect>): numbe
   return entries.reduce((sum, entry) => sum + money(entry.amount), 0);
 }
 
-router.get("/credits/me", async (req, res): Promise<void> => {
+const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved] as const;
+
+router.get("/credits/me", ...authChain, async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const user = req.dbUser!;
   const entries = await db
@@ -56,7 +57,7 @@ router.get("/credits/me", async (req, res): Promise<void> => {
   });
 });
 
-router.get("/admin/credits", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   await ensureCreditSchema();
   const [users, credits] = await Promise.all([
     db.select().from(usersTable).orderBy(usersTable.createdAt),
@@ -83,7 +84,7 @@ router.get("/admin/credits", requireRole("global_admin", "admin"), async (_req, 
   });
 });
 
-router.post("/admin/credits", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.post("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const actor = req.dbUser!;
   const userId = Number(req.body?.userId);

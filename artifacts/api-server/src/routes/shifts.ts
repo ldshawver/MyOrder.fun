@@ -28,6 +28,41 @@ const SHIFT_OPERATOR_ROLES = [
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
 
+// Always-on structured log for every shift auth decision.
+// Fires for ALL users so production logs capture the full picture.
+function logCsrShiftAuth(
+  req: Request,
+  gate: "approval" | "role",
+  result: "pass" | "deny",
+  reason?: string,
+): void {
+  const user = req.dbUser;
+  const auth = getAuth(req);
+  const sessionClaims = (auth?.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  req.log?.info?.(
+    {
+      gate,
+      result,
+      reason: reason ?? null,
+      userId: user?.id ?? null,
+      email: user?.email ?? (sessionClaims.email as string | undefined) ?? null,
+      dbRoleRaw: user?.role ?? null,
+      dbRoleNormalized: user ? normalizeRole(user.role) : null,
+      clerkRoleJwt: (publicMetadata.role as string | undefined) ?? null,
+      clerkStatusJwt: (publicMetadata.status as string | undefined) ?? null,
+      status: user?.status ?? null,
+      isActive: user?.isActive ?? null,
+      tenantId: user?.tenantId ?? null,
+      clerkUserId: auth?.userId ?? user?.clerkId ?? null,
+    },
+    `shift_auth:${gate}:${result}`,
+  );
+}
+
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
 
@@ -98,38 +133,43 @@ function logMarekCsrAuthDebug(req: Request, failedCondition: string | null = nul
 
 
 function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunction): void {
-  if (!shouldLogMarekCsrDebug(req)) {
+  const user = req.dbUser;
+
+  if (!user) {
+    // Delegate to requireApproved so the mock in tests (noop) remains effective.
+    // In production requireApproved returns 401 for missing user — same outcome.
+    logCsrShiftAuth(req, "approval", "deny", "missing_db_user");
+    logMarekCsrAuthDebug(req, "missing_db_user");
     requireApproved(req, res, next);
     return;
   }
-
-  const user = req.dbUser;
-  if (!user) {
-    logMarekCsrAuthDebug(req, "missing_db_user");
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
   if (user.isActive === false || user.status === "deactivated") {
+    logCsrShiftAuth(req, "approval", "deny", "inactive_or_deactivated");
     logMarekCsrAuthDebug(req, "inactive_or_deactivated_user");
     res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
     return;
   }
   if (user.status === "rejected") {
+    logCsrShiftAuth(req, "approval", "deny", "rejected");
     logMarekCsrAuthDebug(req, "rejected_user");
     res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
   const actorRole = normalizeRole(user.role);
+  // Staff roles (CSR / admin / global_admin) are implicitly approved.
   if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "customer_service_rep") {
+    logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
     logMarekCsrAuthDebug(req, null);
     next();
     return;
   }
   if (user.status !== "approved") {
+    logCsrShiftAuth(req, "approval", "deny", `not_approved:${user.status ?? "pending"}`);
     logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
     res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
     return;
   }
+  logCsrShiftAuth(req, "approval", "pass");
   logMarekCsrAuthDebug(req, null);
   next();
 }
@@ -137,6 +177,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
 function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;
   if (!user) {
+    logCsrShiftAuth(req, "role", "deny", "missing_db_user");
     logMarekCsrAuthDebug(req, "missing_db_user");
     res.status(401).json({ error: "Unauthorized" });
     return;
@@ -145,12 +186,19 @@ function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: Ne
   const actorRole = normalizeRole(user.role);
   const hasRole = (SHIFT_OPERATOR_ROLES as readonly string[]).includes(actorRole);
 
+  logCsrShiftAuth(
+    req,
+    "role",
+    hasRole ? "pass" : "deny",
+    hasRole ? undefined : `role_not_allowed:raw=${String(user.role)},normalized=${actorRole}`,
+  );
   logMarekCsrAuthDebug(req, hasRole ? null : `role_not_allowed:${String(user.role)}`);
 
   if (!hasRole) {
     res.status(403).json({
       error: "Forbidden: insufficient role",
       failedCondition: "csr_role_required",
+      debug: { dbRoleRaw: user.role, dbRoleNormalized: actorRole },
     });
     return;
   }
