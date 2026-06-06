@@ -1,0 +1,148 @@
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── Database Migrations (one-shot) ───────────────────────
+  # Usage: docker compose run --rm migrate
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      # The `db` container runs Postgres without SSL (Docker-internal network).
+      # DB_SSL=false tells drizzle.config.ts to disable SSL negotiation so
+      # drizzle-kit can connect without an SSL handshake failure.
+      DB_SSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  # ── API Server ────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+      args:
+        DEPLOY_SHA: ${DEPLOY_SHA:-unknown}
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      # Pass DEPLOY_SHA straight from the deploy shell into the container at
+      # runtime (the bare-key form looks up the variable in the host env every
+      # time the container starts, so a fresh `git rev-parse HEAD` value reaches
+      # the API even when the image was built earlier with a different SHA).
+      DEPLOY_SHA:
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      # Accept either CLERK_PUBLISHABLE_KEY or VITE_CLERK_PUBLISHABLE_KEY from .env
+      # (the platform build uses VITE_CLERK_PUBLISHABLE_KEY; the API needs the same key)
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-${VITE_CLERK_PUBLISHABLE_KEY}}
+      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
+      CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      UBER_CLIENT_ID: ${UBER_CLIENT_ID:-${Uber_Client_ID:-}}
+      UBER_CUSTOMER_ID: ${UBER_CUSTOMER_ID:-${Uber_Customer_ID:-}}
+      UBER_CLIENT_SECRET: ${UBER_CLIENT_SECRET:-${Uber_Client_secret:-}}
+      UBER_PICKUP_ADDRESS: ${UBER_PICKUP_ADDRESS:-${Uber_Pickup_Address:-}}
+      UBER_PICKUP_ACTION: ${UBER_PICKUP_ACTION:-${Uber_Pickup_Action:-pick_pack_pay}}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Tell the bundled cups-client (lp/lpstat) which CUPS server to talk to.
+      # Default uses the bind-mounted host socket below; override with an
+      # IP:port like "host.docker.internal:631" if you front CUPS over IPP.
+      CUPS_SERVER: ${CUPS_SERVER:-/var/run/cups/cups.sock}
+      # Tailscale print bridge settings. These are used for Mac Studio USB
+      # label printing and remote receipt/label bridge diagnostics.
+      PRINT_BRIDGE_URL: ${PRINT_BRIDGE_URL:-}
+      PRINT_BRIDGE_API_KEY: ${PRINT_BRIDGE_API_KEY:-}
+      PRINT_SERVER_HOST: ${PRINT_SERVER_HOST:-}
+      RECEIPT_PRINT_ENABLED: ${RECEIPT_PRINT_ENABLED:-false}
+      RECEIPT_PRINTER_NAME: ${RECEIPT_PRINTER_NAME:-receipt}
+      LABEL_PRINT_ENABLED: ${LABEL_PRINT_ENABLED:-false}
+      LABEL_PRINTER_NAME: ${LABEL_PRINTER_NAME:-Label_Themal_Printer}
+    volumes:
+      # Bind-mount the host's CUPS socket so `lp -d <queue>` inside the
+      # container drives the host's CUPS daemon. The host MUST have CUPS
+      # installed (apt-get install -y cups cups-bsd) and a queue named in
+      # admin → printers configured BEFORE this mount works. If the host
+      # file does not yet exist, docker will create an empty directory in
+      # its place — install CUPS first to avoid that footgun.
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # ── Platform (SPA) ────────────────────────────────────────
+  platform:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.platform
+      args:
+        # Fall back to the plain CLERK_PUBLISHABLE_KEY so a single-key .env
+        # still produces a SPA bundle with a real Clerk publishable key.
+        # An empty key here causes the deployed app to treat every visitor as
+        # signed-out and redirect them to the waitlist.
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY (or VITE_CLERK_PUBLISHABLE_KEY) must be set in .env}}
+        VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
+        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # deploy.yml copies /etc/letsencrypt/live/myorder.fun/{fullchain,privkey}.pem
+      # into nginx/ssl/ before starting the container — plain files, no symlinks.
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - platform
+    networks:
+      - internal
+      - external
+
+volumes:
+  postgres_data:
+  nginx_logs:
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge

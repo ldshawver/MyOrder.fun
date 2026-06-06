@@ -1,0 +1,21 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--token-Yq556PvPjGii);
+  row-gap: 8px;
+  column-gap: 0px;
+  position: relative;
+  min-width: 0;
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid #efdbff80;
+}
+.h2 {
+  display: flex;
+  flex-direction: row;
+}
+.h4 {
+  display: flex;
+  flex-direction: row;
+}

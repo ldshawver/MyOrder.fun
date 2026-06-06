@@ -1,0 +1,21 @@
+[Unit]
+Description=Alavont Print Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/print-bridge
+ExecStart=/usr/bin/node /opt/print-bridge/server.js
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/print-bridge/.env
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/print-bridge /tmp /var/tmp
+
+[Install]
+WantedBy=multi-user.target

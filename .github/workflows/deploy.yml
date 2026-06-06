@@ -1,0 +1,223 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-myorderfun
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck, Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Lint ratchet
+        run: pnpm lint:ratchet
+
+      - name: Run tests
+        run: pnpm test
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      DEPLOY_PATH: /opt/alavont
+      VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Confirm deploy commit
+        run: |
+          echo "Deploying SHA: $GITHUB_SHA"
+          git log --oneline -n 1
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+            echo "::error::Missing VPS SSH private key. Add VPS_SSH_KEY in GitHub Secrets."
+            exit 1
+          fi
+
+          printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
+          chmod 600 ~/.ssh/vps_deploy_key
+
+          ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
+
+          echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
+
+      - name: Add VPS to known hosts
+        run: |
+          set -euo pipefail
+          ssh-keyscan -T 15 -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Verify SSH access
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            'echo "SSH OK:" $(whoami)@$(hostname)'
+
+      - name: Sync repository to VPS
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "mkdir -p $DEPLOY_PATH"
+
+          rsync -az --delete \
+            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='**/node_modules' \
+            --exclude='deploy/.env' \
+            --exclude='deploy/nginx/ssl' \
+            ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
+
+      - name: Build and deploy on VPS
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" << 'ENDSSH'
+              set -euo pipefail
+
+              cd /opt/alavont
+
+              echo "SHA=${GITHUB_SHA:-unknown}" > .deployed-sha
+              date -u >> .deployed-sha
+
+              chmod +x deploy/*.sh 2>/dev/null || true
+
+              cd /opt/alavont/deploy
+
+              echo "Stopping current containers..."
+              docker compose down || true
+
+              echo "Building containers..."
+              DEPLOY_SHA="${GITHUB_SHA:-unknown}" docker compose build --pull
+
+              echo "Starting database..."
+              docker compose up -d db
+
+              echo "Waiting for database..."
+              for i in $(seq 1 30); do
+                if docker compose exec -T db pg_isready -q; then
+                  echo "Database ready"
+                  break
+                fi
+
+                if [ "$i" = "30" ]; then
+                  echo "Database failed to become ready"
+                  docker compose logs db --tail=80
+                  exit 1
+                fi
+
+                sleep 2
+              done
+
+              echo "Running migrations..."
+              docker compose run --rm migrate
+
+              echo "Starting app stack..."
+              docker compose up -d db api platform nginx
+
+              echo "Waiting for API health..."
+              for i in $(seq 1 30); do
+                if curl -fsS http://127.0.0.1/api/healthz; then
+                  echo "API healthy"
+                  break
+                fi
+
+                if [ "$i" = "30" ]; then
+                  echo "API failed health check"
+                  docker compose ps
+                  docker compose logs api --tail=100
+                  exit 1
+                fi
+
+                sleep 2
+              done
+
+              docker compose ps
+              docker image prune -f
+
+              echo "Deploy complete"
+          ENDSSH
+
+      - name: Verify public site
+        run: |
+          set -euo pipefail
+
+          for i in $(seq 1 30); do
+            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              echo "Public health check passed"
+              exit 0
+            fi
+
+            echo "Public health not ready yet: $i/30"
+            sleep 2
+          done
+
+          echo "::error::Public health check failed"
+          exit 1

@@ -1,0 +1,12 @@
+{
+  "name": "alavont-print-bridge",
+  "version": "1.0.0",
+  "description": "Thermal print bridge for Alavont Therapeutics",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0"
+  }
+}

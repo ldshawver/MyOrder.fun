@@ -1,0 +1,150 @@
+name: VPS Rescue Diagnostics
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/vps-rescue.yml"
+  workflow_dispatch:
+
+jobs:
+  rescue:
+    name: Inspect and restart VPS edge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SSH deploy key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+            echo "::error::No VPS private key found. Set VPS_SSH_KEY or VPS_SECRET_KEY to the PRIVATE key that matches the public key in the VPS user's authorized_keys."
+            exit 1
+          fi
+
+          printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
+          chmod 600 ~/.ssh/vps_deploy_key
+
+          if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
+            echo "::error::The configured VPS private key is invalid. VPS_SSH_KEY/VPS_SECRET_KEY must contain a PRIVATE key, not the public key."
+            exit 1
+          fi
+
+          echo "VPS_SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "${GITHUB_ENV}"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -T 15 -p "${VPS_PORT:-22}" -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+              exit 0
+            fi
+            echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
+            sleep 5
+          done
+
+          echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
+
+      - name: Upload latest port release helper
+        run: |
+          set -euo pipefail
+          scp -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
+            -P "${VPS_PORT:-22}" \
+            deploy/release-web-ports.sh \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/release-web-ports.sh
+
+      - name: Inspect, reopen web ports, and restart compose edge
+        run: |
+          ssh -i "${VPS_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=20 \
+            -p "${VPS_PORT:-22}" \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
+            set -euxo pipefail
+
+            echo "== host =="
+            hostname
+            uptime
+            date -u
+
+            echo "== deployed sha =="
+            cat /opt/alavont/.deployed-sha || true
+
+            echo "== listening ports before =="
+            ss -ltnp || true
+
+            echo "== firewall before =="
+            ufw status verbose || true
+            iptables -S INPUT || true
+
+            echo "== docker compose status before =="
+            cd /opt/alavont/deploy
+            docker compose ps || true
+
+            echo "== release old proxies and reopen standard web ports =="
+            chmod +x /tmp/release-web-ports.sh
+            bash /tmp/release-web-ports.sh
+
+            cd /opt/alavont/deploy
+
+            echo "== restart nginx edge =="
+            docker compose up -d db api platform nginx < /dev/null
+            docker compose restart nginx < /dev/null
+
+            echo "== docker compose status after =="
+            docker compose ps
+
+            echo "== listening ports after =="
+            ss -ltnp || true
+
+            echo "== local health probes =="
+            curl -fsS --max-time 10 http://127.0.0.1/health || true
+            for attempt in $(seq 1 30); do
+              if curl -fsS --max-time 10 http://127.0.0.1/api/healthz; then
+                break
+              fi
+              echo "  API not ready yet — retry ${attempt}/30"
+              sleep 2
+            done
+            curl -kfsS --max-time 10 https://127.0.0.1/api/healthz || true
+
+            echo "== recent nginx logs =="
+            docker compose logs --tail=80 nginx || true
+
+            echo "== recent api logs =="
+            docker compose logs --tail=80 api || true
+          ENDSSH
+
+      - name: External verification from GitHub runner
+        run: |
+          curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
+          for attempt in $(seq 1 30); do
+            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              exit 0
+            fi
+            echo "API not reachable publicly yet — retry ${attempt}/30"
+            sleep 2
+          done
+          exit 1

@@ -1,0 +1,18 @@
+
+> @workspace/platform@0.0.0 dev /home/runner/workspace/artifacts/platform
+> CI=true vite --config vite.config.ts
+
+
+  [32m[1mVITE[22m v7.3.2[39m  [2mready in [0m[1m261[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.24.0.2:[1m5173[22m/[39m
+
+> @workspace/platform@0.0.0 dev /home/runner/workspace/artifacts/platform
+> CI=true vite --config vite.config.ts
+
+
+  [32m[1mVITE[22m v7.3.2[39m  [2mready in [0m[1m260[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+  [32m➜[39m  [1mNetwork[22m: [36mhttp://172.24.0.2:[1m5173[22m/[39m

@@ -1,0 +1,79 @@
+# ── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+# sharp uses prebuilt Alpine (musl) binaries — no native build tools required.
+# canvas has been removed; all image composition is done via sharp + SVG.
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+# Copy workspace manifests first for layer caching
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY lib/db/package.json                  lib/db/
+COPY lib/api-zod/package.json             lib/api-zod/
+COPY lib/api-client-react/package.json    lib/api-client-react/
+COPY artifacts/api-server/package.json    artifacts/api-server/
+
+RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
+
+# Install all workspace deps
+RUN pnpm install --no-frozen-lockfile --filter @workspace/db... \
+                                      --filter @workspace/api-zod... \
+                                      --filter @workspace/api-server...
+
+# Copy source
+COPY lib/db/                   lib/db/
+COPY lib/api-zod/              lib/api-zod/
+COPY lib/api-client-react/     lib/api-client-react/
+COPY artifacts/api-server/     artifacts/api-server/
+COPY tsconfig.base.json        ./
+COPY tsconfig.json             ./
+
+# Build
+RUN pnpm --filter @workspace/api-server run build
+
+# ── Stage 2: Runtime ────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+# sharp bundles its own libvips for musl/Alpine.
+# cups-client provides `lp` and `lpstat` so the API can drive the host CUPS
+# daemon for receipt printing. The host's CUPS socket is bind-mounted in via
+# docker-compose (see `volumes:` on the api service).
+RUN apk add --no-cache cups-client
+
+RUN npm install -g pnpm@10
+
+WORKDIR /app
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY lib/db/package.json               lib/db/
+COPY lib/api-zod/package.json          lib/api-zod/
+COPY lib/api-client-react/package.json lib/api-client-react/
+COPY artifacts/api-server/package.json artifacts/api-server/
+
+RUN echo "auto-install-peers=false\nstrict-peer-dependencies=false" > .npmrc
+
+ENV HUSKY=0
+RUN pnpm install --no-frozen-lockfile --prod \
+                 --filter @workspace/db... \
+                 --filter @workspace/api-zod... \
+                 --filter @workspace/api-server...
+
+# Copy built output
+COPY --from=builder /app/artifacts/api-server/dist artifacts/api-server/dist
+
+# Copy utility scripts (promote-admin, etc.)
+COPY scripts/ scripts/
+
+# Bake the exact git SHA into the image at build time.
+# Defaults to "unknown" for local docker builds (not via CI).
+ARG DEPLOY_SHA=unknown
+ENV DEPLOY_SHA=$DEPLOY_SHA
+
+ENV NODE_ENV=production
+ENV PORT=8080
+
+EXPOSE 8080
+
+CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]

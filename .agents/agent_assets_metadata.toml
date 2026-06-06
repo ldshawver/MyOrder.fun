@@ -1,0 +1,13 @@
+uploads = []
+
+[[generated]]
+id = "_WEgOwsarIE8QAD-k4x39"
+uri = "file://attached_assets/generated_images/zappy-v3-full.png"
+type = "image"
+title = "cute stub-arm floating robot mascot portrait"
+
+[[outputs]]
+id = "drTiuG7fHQLAXtMUikbSU"
+uri = "file://attached_assets/generated_images/zappy-v3-full.png"
+type = "image"
+title = "Zappy v3 — Full Body (header + modal + sidebar)"

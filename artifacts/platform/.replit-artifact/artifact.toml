@@ -1,0 +1,38 @@
+kind = "web"
+previewPath = "/"
+title = "OrderFlow Platform"
+version = "1.0.0"
+id = "artifacts/platform"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 5173
+
+[services.development]
+run = "node dev-server.mjs"
+
+[services.production]
+publicDir = "artifacts/platform/dist"
+serve = "static"
+
+[services.production.build]
+args = [ "pnpm", "--filter", "@workspace/platform", "run", "build" ]
+
+[services.production.build.env]
+NODE_ENV = "production"
+PORT = "5173"
+BASE_PATH = "/"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "5173"
+BASE_PATH = "/"
