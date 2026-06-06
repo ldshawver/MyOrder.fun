@@ -383,6 +383,7 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end_actual" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "discrepancy" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "is_flagged" boolean DEFAULT false`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "location_id" integer`,
     // csr_boxes — tenant-scoped physical/logical sales boxes
     sql`CREATE TABLE IF NOT EXISTS "csr_boxes" (
       "id" serial PRIMARY KEY,
@@ -1035,6 +1036,44 @@ router.post(
     if (inventorySnapshot && inventorySnapshot.length > 0) {
       const templateRows = await ensureClockInInventoryTemplate();
 
+      // Resolve the inventory_location for the chosen CSR box so we can
+      // (a) tag each shift_inventory_items row with the box it belongs to, and
+      // (b) seed quantityStart from the live inventory_balances if they exist.
+      const csrBoxRows = await db
+        .select()
+        .from(csrBoxesTable)
+        .where(eq(csrBoxesTable.tenantId, houseTenantId));
+      const chosenCsrBox = csrBoxRows.find(b => b.slug === selectedBox);
+      let shiftBoxLocationId: number | null = null;
+      const balanceByProductId = new Map<number, number>();
+      if (chosenCsrBox) {
+        const [boxLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.csrBoxId, chosenCsrBox.id),
+            )
+          )
+          .limit(1);
+        shiftBoxLocationId = boxLoc?.id ?? null;
+        if (shiftBoxLocationId) {
+          const balances = await db
+            .select()
+            .from(inventoryBalancesTable)
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.locationId, shiftBoxLocationId),
+              )
+            );
+          for (const b of balances) {
+            balanceByProductId.set(b.productId, parseFloat(String(b.quantityOnHand)));
+          }
+        }
+      }
+
       const qtyByTemplateId = new Map<number, number>(
         inventorySnapshot.map(s => [s.templateItemId, s.quantityStart])
       );
@@ -1049,10 +1088,13 @@ router.post(
         catalogItemId: row.catalogItemId ?? null,
         itemName: row.itemName ?? row.sectionName ?? "",
         unitPrice: "0",
+        locationId: shiftBoxLocationId,
         quantityStart: String(
           qtyByTemplateId.has(row.id)
             ? qtyByTemplateId.get(row.id)!
-            : parseFloat(String(row.startingQuantityDefault ?? 0))
+            : (row.catalogItemId != null && balanceByProductId.has(row.catalogItemId)
+                ? balanceByProductId.get(row.catalogItemId)!
+                : parseFloat(String(row.startingQuantityDefault ?? 0)))
         ),
         quantitySold: "0",
       }));

@@ -10,6 +10,9 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
+  inventoryBalancesTable,
+  inventoryLocationsTable,
+  csrBoxesTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -728,6 +731,84 @@ router.post("/orders", async (req, res): Promise<void> => {
       wooVariationId: line.woo_variation_id ?? null,
     });
   }
+
+  // Decrement inventory_balances for the CSR's assigned box location (fire-and-forget).
+  // If no active shift with a box assignment, decrement the Storefront balance instead.
+  // Errors are logged and never surface to the customer.
+  (async () => {
+    try {
+      let targetLocationId: number | null = null;
+
+      if (assignedShiftId) {
+        const [activeShift] = await db
+          .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+          .from(labTechShiftsTable)
+          .where(eq(labTechShiftsTable.id, assignedShiftId))
+          .limit(1);
+
+        if (activeShift?.boxAssignmentId) {
+          const [box] = await db
+            .select({ id: csrBoxesTable.id })
+            .from(csrBoxesTable)
+            .where(
+              and(
+                eq(csrBoxesTable.tenantId, houseTenantId),
+                eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+              )
+            )
+            .limit(1);
+          if (box) {
+            const [loc] = await db
+              .select({ id: inventoryLocationsTable.id })
+              .from(inventoryLocationsTable)
+              .where(
+                and(
+                  eq(inventoryLocationsTable.tenantId, houseTenantId),
+                  eq(inventoryLocationsTable.csrBoxId, box.id),
+                )
+              )
+              .limit(1);
+            targetLocationId = loc?.id ?? null;
+          }
+        }
+      }
+
+      // Fallback: storefront balance when no active CSR box
+      if (!targetLocationId) {
+        const [storefrontLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.type, "storefront"),
+            )
+          )
+          .limit(1);
+        targetLocationId = storefrontLoc?.id ?? null;
+      }
+
+      if (targetLocationId) {
+        for (const line of normalizedLines) {
+          if (!line.catalog_item_id) continue;
+          await db
+            .update(inventoryBalancesTable)
+            .set({
+              quantityOnHand: sql`GREATEST(0, ${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)})`,
+            })
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.productId, line.catalog_item_id),
+                eq(inventoryBalancesTable.locationId, targetLocationId),
+              )
+            );
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, orderId: order.id }, "inventory_balances decrement failed — order unaffected");
+    }
+  })();
 
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {

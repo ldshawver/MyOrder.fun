@@ -155,6 +155,8 @@ export const shiftInventoryItemsTable = pgTable("shift_inventory_items", {
   // discrepancy = quantityEnd (expected) - quantityEndActual (physical), positive = shortage
   discrepancy: numeric("discrepancy", { precision: 10, scale: 3 }),
   isFlagged: boolean("is_flagged").default(false), // negative ending inventory or discrepancy
+  // Location linkage: which box/storefront/backstock this snapshot row tracks
+  locationId: integer("location_id").references(() => inventoryLocationsTable.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
