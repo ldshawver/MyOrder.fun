@@ -66,7 +66,6 @@ function logCsrShiftAuth(
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
 
-
 function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
   const auth = getAuth(req);
   const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
