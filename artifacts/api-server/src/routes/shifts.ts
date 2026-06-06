@@ -634,10 +634,26 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-  return updatedRows.filter(row => {
+  const filtered = updatedRows.filter(row => {
     const name = String(row.itemName ?? "").trim().toLowerCase();
     return !name.startsWith("safe") && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
   });
+
+  // Deduplicate by catalogItemId — keep the lowest-displayOrder row per product.
+  // This removes LC/customer-facing duplicate rows that reference the same catalog item.
+  const seenCatalogIds = new Set<number>();
+  const deduped: typeof filtered = [];
+  for (const row of filtered) {
+    if (row.catalogItemId == null) {
+      deduped.push(row);
+      continue;
+    }
+    if (!seenCatalogIds.has(row.catalogItemId)) {
+      seenCatalogIds.add(row.catalogItemId);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

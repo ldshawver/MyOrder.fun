@@ -213,9 +213,74 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
   });
 
   // ── Router-order regression tests ──────────────────────────────────────────
-  // These guard against the bug where adminRouter (router.use requireRole admin)
-  // was mounted before shiftsRouter and blocked CSR requests with 403 before
-  // they could reach the shift handlers.
+  // Guards against the bug where auditRouter AND adminRouter (both have
+  // router.use(requireRole(...)) without a path prefix) were mounted before
+  // shiftsRouter and blocked CSR requests with 403 before they could reach
+  // the shift handlers.
+  //
+  // VPS-confirmed fix: index.ts order must be:
+  //   notificationsRouter → shiftsRouter → auditRouter → adminRouter
+  //
+  // These tests reproduce both problematic routers and verify the fix holds.
+
+  it("auditRouter requireRole guard (global_admin/admin only) does not intercept /api/shifts/* when mounted after shiftsRouter", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const auditOnlyApp = express();
+    auditOnlyApp.use(express.json());
+    auditOnlyApp.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
+      next();
+    });
+    // Simulate auditRouter middleware (no path prefix, global_admin/admin only) — AFTER shifts
+    const mockAuditRouter = express.Router();
+    mockAuditRouter.use((_req, res, next) => {
+      const user = (_req as unknown as Record<string, unknown>).dbUser as { role?: string } | undefined;
+      const role = user?.role ?? "";
+      if (role !== "admin" && role !== "global_admin") {
+        res.status(403).json({ error: "Forbidden: audit/admin only" });
+        return;
+      }
+      next();
+    });
+    mockAuditRouter.get("/audit", (_req, res) => res.json({ entries: [] }));
+    // CORRECT ordering: shifts first, audit after
+    auditOnlyApp.use("/api", shiftsRouter);
+    auditOnlyApp.use("/api", mockAuditRouter);
+
+    const shiftRes = await supertest(auditOnlyApp).get("/api/shifts/current");
+    expect(shiftRes.status).toBe(200);
+
+    // Audit route still blocked for CSR
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const auditRes = await supertest(auditOnlyApp).get("/api/audit");
+    expect(auditRes.status).toBe(403);
+  });
+
+  it("auditRouter mounted BEFORE shiftsRouter blocks CSR from shift routes (reproduces pre-fix bug)", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const brokenAuditApp = express();
+    brokenAuditApp.use(express.json());
+    brokenAuditApp.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
+      next();
+    });
+    const mockAuditRouter = express.Router();
+    mockAuditRouter.use((_req, res, next) => {
+      const user = (_req as unknown as Record<string, unknown>).dbUser as { role?: string } | undefined;
+      const role = user?.role ?? "";
+      if (role !== "admin" && role !== "global_admin") {
+        res.status(403).json({ error: "Forbidden: audit/admin only" });
+        return;
+      }
+      next();
+    });
+    // BUG: audit before shifts — CSR should be blocked
+    brokenAuditApp.use("/api", mockAuditRouter);
+    brokenAuditApp.use("/api", shiftsRouter);
+
+    const res = await supertest(brokenAuditApp).get("/api/shifts/current");
+    expect(res.status).toBe(403);
+  });
 
   it("approved CSR can access GET /api/shifts/current and receives { shift: null } when no active shift", async () => {
     configureDb({ user: makeUser("customer_service_rep", "approved") });
