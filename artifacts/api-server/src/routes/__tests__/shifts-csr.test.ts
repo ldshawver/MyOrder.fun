@@ -211,4 +211,97 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(res.status).toBe(200);
     expect(res.body.shift).toBeNull();
   });
+
+  // ── Router-order regression tests ──────────────────────────────────────────
+  // These guard against the bug where adminRouter (router.use requireRole admin)
+  // was mounted before shiftsRouter and blocked CSR requests with 403 before
+  // they could reach the shift handlers.
+
+  it("approved CSR can access GET /api/shifts/current and receives { shift: null } when no active shift", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const res = await supertest(buildApp()).get("/api/shifts/current");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("shift", null);
+  });
+
+  it("approved CSR can access GET /api/shifts/inventory-template and does not receive a generic admin-only 403", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
+    // Must not be blocked by an admin-role gate (403 with "insufficient role" from admin middleware)
+    expect(res.status).not.toBe(403);
+    if (res.status === 403) {
+      // Surface the exact reason so future failures are easy to read
+      expect(res.body).not.toMatchObject({ failedCondition: "csr_role_required" });
+    }
+  });
+
+  it("non-admin CSR is blocked when an admin-only gate comes before the shift handler (regression guard)", async () => {
+    // Build a composite app that reproduces the pre-fix ordering bug:
+    // admin-only middleware BEFORE the shifts router. The CSR must be blocked.
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const brokenApp = express();
+    brokenApp.use(express.json());
+    brokenApp.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
+      next();
+    });
+    // Simulate an admin-gated router mounted BEFORE shiftsRouter (the old bug)
+    const mockAdminRouter = express.Router();
+    mockAdminRouter.use((_req, res, next) => {
+      const user = (_req as unknown as Record<string, unknown>).dbUser as { role?: string } | undefined;
+      const role = user?.role ?? "";
+      if (role !== "admin" && role !== "global_admin") {
+        res.status(403).json({ error: "Forbidden: admin only" });
+        return;
+      }
+      next();
+    });
+    mockAdminRouter.get("/admin/settings", (_req, res) => res.json({ settings: {} }));
+    brokenApp.use("/api", mockAdminRouter);
+    brokenApp.use("/api", shiftsRouter);
+
+    const res = await supertest(brokenApp).get("/api/shifts/current");
+    // With old ordering, CSR gets 403 from the admin middleware
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/admin only/i);
+  });
+
+  it("non-admin CSR cannot access true admin routes (GET /api/admin/settings) via the shifts app", async () => {
+    // Build a composite app with the CORRECT ordering (shifts before admin-like router)
+    // and verify CSR still cannot reach admin-gated endpoints.
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+    const fixedApp = express();
+    fixedApp.use(express.json());
+    fixedApp.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
+      next();
+    });
+    fixedApp.use("/api", shiftsRouter); // shifts first (the fix)
+    // Admin-only router mounted after
+    const mockAdminRouter = express.Router();
+    mockAdminRouter.use((_req, res, next) => {
+      const user = (_req as unknown as Record<string, unknown>).dbUser as { role?: string } | undefined;
+      const role = user?.role ?? "";
+      if (role !== "admin" && role !== "global_admin") {
+        res.status(403).json({ error: "Forbidden: admin only" });
+        return;
+      }
+      next();
+    });
+    mockAdminRouter.get("/admin/settings", (_req, res) => res.json({ settings: {} }));
+    fixedApp.use("/api", mockAdminRouter);
+
+    // Shift route is now reachable (CSR user is approved, role passes)
+    const shiftRes = await supertest(fixedApp).get("/api/shifts/current");
+    expect(shiftRes.status).toBe(200);
+    expect(shiftRes.body).toHaveProperty("shift", null);
+
+    // Reset the mock counter so the second request gets a fresh user lookup
+    configureDb({ user: makeUser("customer_service_rep", "approved") });
+
+    // Admin route is still blocked for CSR even after router order fix
+    const adminRes = await supertest(fixedApp).get("/api/admin/settings");
+    expect(adminRes.status).toBe(403);
+    expect(adminRes.body.error).toMatch(/admin only/i);
+  });
 });
