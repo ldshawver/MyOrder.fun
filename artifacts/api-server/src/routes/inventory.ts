@@ -6,10 +6,13 @@ import {
   adminSettingsTable,
   inventoryBalancesTable,
   inventoryLocationsTable,
-  csrBoxesTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import {
+  ensureStandardLocations,
+  ensureAllInventoryBalances,
+} from "../lib/inventoryBalances";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -69,110 +72,6 @@ async function ensureInventorySchema(): Promise<void> {
   ];
   for (const stmt of stmts) await db.execute(stmt);
   inventorySchemaEnsured = true;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-async function ensureStandardBoxes(tenantId: number): Promise<void> {
-  const [first] = await db
-    .select({ id: csrBoxesTable.id })
-    .from(csrBoxesTable)
-    .where(eq(csrBoxesTable.tenantId, tenantId))
-    .limit(1);
-  if (!first) {
-    await db.insert(csrBoxesTable).values([
-      { tenantId, slug: "sales-box-1", label: "CSR Sales Box 1", displayOrder: 1, isActive: true },
-      { tenantId, slug: "sales-box-2", label: "CSR Sales Box 2", displayOrder: 2, isActive: true },
-    ]);
-  }
-}
-
-async function ensureStandardLocations(tenantId: number): Promise<void> {
-  await ensureStandardBoxes(tenantId);
-  const boxes = await db
-    .select()
-    .from(csrBoxesTable)
-    .where(eq(csrBoxesTable.tenantId, tenantId));
-  const box1 = boxes.find(b => b.slug === "sales-box-1");
-  const box2 = boxes.find(b => b.slug === "sales-box-2");
-
-  const seeds = [
-    { type: "backstock",  name: "Backstock",        csrBoxId: null,             displayOrder: 1 },
-    { type: "storefront", name: "Storefront",        csrBoxId: null,             displayOrder: 2 },
-    { type: "csr_box",   name: "CSR Sales Box 1",   csrBoxId: box1?.id ?? null, displayOrder: 3 },
-    { type: "csr_box",   name: "CSR Sales Box 2",   csrBoxId: box2?.id ?? null, displayOrder: 4 },
-  ];
-  for (const seed of seeds) {
-    const [ex] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, tenantId),
-        eq(inventoryLocationsTable.name, seed.name),
-      ))
-      .limit(1);
-    if (!ex) {
-      await db.insert(inventoryLocationsTable).values({
-        tenantId,
-        type: seed.type,
-        csrBoxId: seed.csrBoxId,
-        name: seed.name,
-        isActive: true,
-        displayOrder: seed.displayOrder,
-      });
-    }
-  }
-}
-
-// Ensure every non-WooManaged catalog product has an inventory_balances row for
-// every active location. Initialises new rows with qty=0 (backstock row uses the
-// catalog_items.stock_quantity value if present as a seed).
-async function ensureAllInventoryBalances(tenantId: number): Promise<{ created: number }> {
-  await ensureStandardLocations(tenantId);
-  const [products, locations] = await Promise.all([
-    db
-      .select({ id: catalogItemsTable.id, stockQuantity: catalogItemsTable.stockQuantity, parLevel: catalogItemsTable.parLevel })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
-      )),
-    db
-      .select()
-      .from(inventoryLocationsTable)
-      .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
-  ]);
-
-  const backstockLoc = locations.find(l => l.type === "backstock");
-  let created = 0;
-
-  for (const prod of products) {
-    for (const loc of locations) {
-      const [exists] = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(and(
-          eq(inventoryBalancesTable.tenantId, tenantId),
-          eq(inventoryBalancesTable.productId, prod.id),
-          eq(inventoryBalancesTable.locationId, loc.id),
-        ))
-        .limit(1);
-      if (!exists) {
-        const initQty = loc.id === backstockLoc?.id
-          ? String(prod.stockQuantity ?? "0")
-          : "0";
-        await db.insert(inventoryBalancesTable).values({
-          tenantId,
-          productId: prod.id,
-          locationId: loc.id,
-          quantityOnHand: initQty,
-          parLevel: String(prod.parLevel ?? "0"),
-        });
-        created++;
-      }
-    }
-  }
-  return { created };
 }
 
 router.use(async (_req, res, next) => {
