@@ -79,6 +79,10 @@ expertMode = true
   PRINT_SERVER_HOST = "100.83.99.2"
   PRINT_SERVER_PORT = "631"
 
+[userenv.development]
+VITE_CLERK_JS_URL = "https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+VITE_CLERK_UI_URL = "https://cdn.jsdelivr.net/npm/@clerk/ui@1/dist/ui.browser.js"
+
 [[ports]]
 localPort = 8080
 externalPort = 80

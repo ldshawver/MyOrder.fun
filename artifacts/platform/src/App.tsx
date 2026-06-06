@@ -56,6 +56,11 @@ const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 const clerkProxyUrl = import.meta.env.PROD
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
+// Override the Clerk JS/UI CDN URLs via env vars (e.g. in Replit dev set
+// VITE_CLERK_JS_URL and VITE_CLERK_UI_URL to the standard CDN; leave unset
+// in production so the custom domain is used).
+const clerkJsUrl = (import.meta.env.VITE_CLERK_JS_URL as string | undefined) || undefined;
+const clerkUiUrl = (import.meta.env.VITE_CLERK_UI_URL as string | undefined) || undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function stripBase(path: string): string {
@@ -448,6 +453,11 @@ function ClerkProviderWithRoutes() {
     <ClerkProvider
       publishableKey={clerkPubKey}
       proxyUrl={clerkProxyUrl}
+      clerkJSUrl={clerkJsUrl}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {...(clerkJsUrl ? { __internal_clerkJSUrl: clerkJsUrl } as any : {})}
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {...(clerkUiUrl ? { __internal_clerkUIUrl: clerkUiUrl } as any : {})}
       routerPush={(to) => setLocation(stripBase(to))}
       routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
     >
