@@ -57,6 +57,13 @@
       "when": 1777971600000,
       "tag": "0007_simple_printer_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780502400000,
+      "tag": "0021_visual_editor_pages",
+      "breakpoints": true
     }
   ]
 }

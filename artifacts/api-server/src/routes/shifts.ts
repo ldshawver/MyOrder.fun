@@ -800,6 +800,19 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
+    const csrSettings = await getTenantCsrSettings();
+    const catalogIds = rows
+      .map((row) => row.catalogItemId)
+      .filter((id): id is number => typeof id === "number");
+    const catalogPriceRows = catalogIds.length > 0
+      ? await db
+          .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
+          .from(catalogItemsTable)
+          .where(inArray(catalogItemsTable.id, catalogIds))
+      : [];
+    const catalogPriceMap = new Map(
+      catalogPriceRows.map((row) => [row.id, parseFloat(String(row.price ?? "0"))]),
+    );
 
     const dbBoxes = await getActiveCsrBoxes(houseTenantId);
 
