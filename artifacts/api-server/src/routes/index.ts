@@ -24,6 +24,7 @@ import creditsRouter from "./credits";
 import reportsRouter from "./reports";
 import proposalsRouter from "./proposals";
 import visualEditorRouter from "./visual-editor";
+import webEditorRouter from "./web-editor";
 
 const router: IRouter = Router();
 
@@ -52,5 +53,6 @@ router.use(creditsRouter);
 router.use(reportsRouter);
 router.use(proposalsRouter);
 router.use(visualEditorRouter);
+router.use(webEditorRouter);
 
 export default router;

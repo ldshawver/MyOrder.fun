@@ -11,3 +11,4 @@ export * from "./settings";
 export * from "./feedback";
 export * from "./credits";
 export * from "./visual-editor";
+export * from "./web-pages";

@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import { clerkMiddleware } from "@clerk/express";
 import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxyMiddleware";
 import router from "./routes";
+import webEditorPublicRouter from "./routes/web-editor-public";
 import healthRouter from "./routes/health";
 import { logger } from "./lib/logger";
 import { submitOnboardingRequestHandler } from "./routes/onboarding";
@@ -161,6 +162,9 @@ if (process.env["NODE_ENV"] === "test") {
   // auth-gated subrouter).
   app.use("/api/__contract/known-prefix", express.Router());
 }
+
+// ── Public web-editor pages (no auth — must come before auth-gated router) ───
+app.use("/api", webEditorPublicRouter);
 
 // ── API routes ───────────────────────────────────────────────────────────────
 app.use("/api", router);
