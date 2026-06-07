@@ -68,6 +68,7 @@ export async function printReceiptEscPos(body: string): Promise<LpPrintResult> {
       }
     });
 
+    lp.stdin.on("error", () => { /* surfaced via lp error/close handlers */ });
     lp.stdin.write(Buffer.from(payload, "binary"));
     lp.stdin.end();
   });
