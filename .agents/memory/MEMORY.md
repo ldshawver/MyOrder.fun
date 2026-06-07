@@ -1,3 +1,4 @@
 - [Platform Dev workflow](platform-dev-workflow.md) — remove waitForPort; proxy owns port, Vite on PORT+1 in same process group.
 - [Operating rules](operating-rules.md) — pre-migration stabilization rules: source of truth, DO NOTs, schema change process, priority order.
 - [Cash checkout silent failure](cash-checkout-silent-failure.md) — handleSubmit catch was empty; customFetch throws ApiError but shows no toast; fix: useToast in catch.
+- [Router-level requireRole bug](router-level-requirerole.md) — router.use(requireRole) without a path prefix blocks ALL requests, not just matching routes; always attach requireRole per-route instead.

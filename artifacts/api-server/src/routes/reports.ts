@@ -4,7 +4,7 @@ import { db, labTechShiftsTable, orderItemsTable, ordersTable, usersTable } from
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 let reportSchemaEnsured = false;
 
 async function ensureReportSchema(): Promise<void> {
@@ -203,11 +203,11 @@ async function buildReport(query: Record<string, unknown>) {
   };
 }
 
-router.get("/admin/reports/summary", async (req, res): Promise<void> => {
+router.get("/admin/reports/summary", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   res.json(await buildReport(req.query));
 });
 
-router.get("/admin/reports/export.csv", async (req, res): Promise<void> => {
+router.get("/admin/reports/export.csv", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const report = await buildReport(req.query);
   const lines = [
     ["section", "name", "count", "revenue"].map(csvEscape).join(","),

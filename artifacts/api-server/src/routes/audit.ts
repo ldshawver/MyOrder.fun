@@ -8,9 +8,9 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-router.get("/audit", async (req, res): Promise<void> => {
+router.get("/audit", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const query = ListAuditLogsQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });

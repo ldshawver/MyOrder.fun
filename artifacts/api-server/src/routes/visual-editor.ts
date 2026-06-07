@@ -5,7 +5,7 @@ import { loadDbUser, requireApproved, requireAuth, requireDbUser, requireRole, w
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const ALLOWED_COMPONENTS = new Set([
   "DashboardCard",
@@ -128,7 +128,7 @@ function mapPage(page: typeof visualEditorPagesTable.$inferSelect) {
   };
 }
 
-router.get("/admin/visual-editor/pages/:slug", async (req, res): Promise<void> => {
+router.get("/admin/visual-editor/pages/:slug", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const slug = validateSlug(req.params.slug ?? "");
   if (!slug) {
     res.status(400).json({ error: "Invalid page slug" });
@@ -138,7 +138,7 @@ router.get("/admin/visual-editor/pages/:slug", async (req, res): Promise<void> =
   res.json(mapPage(page));
 });
 
-router.put("/admin/visual-editor/pages/:slug/draft", async (req, res): Promise<void> => {
+router.put("/admin/visual-editor/pages/:slug/draft", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const slug = validateSlug(req.params.slug ?? "");
   if (!slug) {
     res.status(400).json({ error: "Invalid page slug" });
@@ -171,7 +171,7 @@ router.put("/admin/visual-editor/pages/:slug/draft", async (req, res): Promise<v
   res.json(mapPage(updated ?? page));
 });
 
-router.post("/admin/visual-editor/pages/:slug/publish", async (req, res): Promise<void> => {
+router.post("/admin/visual-editor/pages/:slug/publish", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const slug = validateSlug(req.params.slug ?? "");
   if (!slug) {
     res.status(400).json({ error: "Invalid page slug" });
