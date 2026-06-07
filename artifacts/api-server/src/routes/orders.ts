@@ -422,17 +422,17 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     customerEmail: c?.email ?? "",
     status: order.status,
     paymentStatus: order.paymentStatus,
-    paymentToken: order.paymentToken,
+    paymentToken: order.paymentToken ?? undefined,
     subtotal: parseFloat(order.subtotal as string),
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
-    shippingAddress: order.shippingAddress,
+    shippingAddress: order.shippingAddress ?? undefined,
     deliveryMethod: order.deliveryMethod ?? null,
     deliveryQuoteId: order.deliveryQuoteId ?? null,
     deliveryFee: order.deliveryFee == null ? null : parseFloat(order.deliveryFee as string),
     deliveryCurrency: order.deliveryCurrency ?? null,
     deliveryQuote: order.deliveryQuoteSnapshot ?? null,
-    notes: order.notes,
+    notes: order.notes ?? undefined,
     trackingUrl: order.trackingUrl ?? null,
     trackingSubmittedAt: order.trackingSubmittedAt ?? null,
     handoffChecklist: (order.handoffChecklist as Record<string, boolean> | null) ?? null,
@@ -530,6 +530,31 @@ router.post("/orders", async (req, res): Promise<void> => {
   const body = CreateOrderBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  // Extract paymentToken from request body — not part of the generated
+  // CreateOrderBody schema, so parsed separately to keep generated files untouched.
+  const paymentMethod = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
+  const rawPaymentToken = (req.body as Record<string, unknown>).paymentToken;
+  const paymentToken: string | null =
+    typeof rawPaymentToken === "string" && rawPaymentToken.length > 0
+      ? rawPaymentToken
+      : null;
+
+  logger.info(
+    { paymentMethod, hasPaymentToken: !!paymentToken, actorId: actor.id },
+    "Order placement: payment method received"
+  );
+
+  // Stripe/card transactions must include a payment token — reject early so a
+  // charge is never attempted on a token-less card order.
+  if (paymentMethod === "stripe" && !paymentToken) {
+    logger.warn(
+      { paymentMethod, actorId: actor.id },
+      "Order validation failed: paymentToken required for Stripe"
+    );
+    res.status(400).json({ error: "paymentToken is required for Stripe card transactions" });
     return;
   }
 
@@ -653,6 +678,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
     legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
     selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+    paymentToken: paymentToken ?? null,
   }).returning();
 
   // Persist dual-brand snapshots on the order for auditability
