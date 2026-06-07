@@ -135,9 +135,19 @@ const DEFAULT_SHIFT_LOCATIONS = [
   { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
 ];
 
+const DEFAULT_UBER_STEPS = [
+  "Select 'Uber Courier Delivery' for your order.",
+  "Place your order to get it paid and receive a confirmation number.",
+  "Wait until your order is marked Ready — the countdown is on your Orders screen.",
+  "Once Ready, open the Uber app and request a Courier pickup to the order location.",
+  "Ensure the car and arrival time are confirmed. When the car arrives, hand off to the driver.",
+  "Promptly receive your package. DO NOT HAVE THE DRIVER WAIT!",
+];
+
 const DEFAULT_DELIVERY_OPTIONS = [
-  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
-  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
+  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false, uberSteps: [] as string[] },
+  { id: "uber_courier", label: "Uber Courier Delivery", instructions: "Delivery is ONLY available when arranged with Uber Courier. You will place your own Uber Courier request after the order is ready.", separatePaymentRequired: false, uberSteps: DEFAULT_UBER_STEPS },
+  { id: "csr_delivery", label: "CSR Personal Delivery", instructions: "The CSR on duty will personally deliver your order. Only available within 2 miles. Delivery fee: $5 + 3% of order total — goes entirely to your CSR as a gratuity.", separatePaymentRequired: false, uberSteps: [] as string[] },
 ];
 
 function parsePickupInstructions(raw: string | null | undefined) {
@@ -164,7 +174,16 @@ function parseDeliveryOptions(raw: string | null | undefined) {
   if (!raw) return DEFAULT_DELIVERY_OPTIONS;
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : DEFAULT_DELIVERY_OPTIONS;
+    if (!Array.isArray(parsed)) return DEFAULT_DELIVERY_OPTIONS;
+    return parsed.map((o: Record<string, unknown>) => ({
+      id: String(o.id ?? ""),
+      label: String(o.label ?? ""),
+      instructions: String(o.instructions ?? ""),
+      separatePaymentRequired: o.separatePaymentRequired === true,
+      uberSteps: Array.isArray(o.uberSteps)
+        ? (o.uberSteps as unknown[]).filter((s): s is string => typeof s === "string")
+        : [],
+    }));
   } catch {
     return DEFAULT_DELIVERY_OPTIONS;
   }
@@ -208,17 +227,26 @@ function cleanMerchantProcessorConfig(value: unknown) {
 }
 
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
-  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  const empty = { onsiteMode: "auto", ssid: "", approvedSsids: [] as string[], passwordSet: false, raspberryPiBluetooth: true };
+  if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const primarySsid = typeof parsed.ssid === "string" ? parsed.ssid : "";
+    const savedList: string[] = Array.isArray(parsed.approvedSsids)
+      ? (parsed.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+    const approvedSsids = primarySsid && !savedList.includes(primarySsid)
+      ? [primarySsid, ...savedList]
+      : savedList;
     return {
       onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
-      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      ssid: primarySsid,
+      approvedSsids,
       passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
       raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
     };
   } catch {
-    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+    return empty;
   }
 }
 
@@ -473,15 +501,22 @@ router.put("/admin/csr-settings", requireRole("global_admin", "admin", "supervis
       label: String(option.label || "Delivery option"),
       instructions: String(option.instructions || ""),
       separatePaymentRequired: option.separatePaymentRequired === true,
+      uberSteps: Array.isArray(option.uberSteps)
+        ? (option.uberSteps as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 20)
+        : [],
     })));
   }
 
   if (printerNetworkConfig !== undefined) {
     const cfg = printerNetworkConfig as Record<string, unknown>;
     const storedCfg = parseStoredPrinterNetworkConfig(existing.printerNetworkConfig);
+    const approvedSsids = Array.isArray(cfg.approvedSsids)
+      ? (cfg.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 10)
+      : (typeof cfg.ssid === "string" && cfg.ssid.trim() ? [cfg.ssid.trim()] : []);
     update.printerNetworkConfig = JSON.stringify({
       onsiteMode: String(cfg.onsiteMode || "auto"),
       ssid: String(cfg.ssid || ""),
+      approvedSsids,
       password: typeof cfg.password === "string" ? cfg.password : String(storedCfg.password || ""),
       raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
     });

@@ -33,6 +33,7 @@ import {
   Store,
   Wifi,
   Zap,
+  Palette,
   PanelsTopLeft
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
@@ -184,6 +185,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin"] },
+        { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
+        { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Admin Settings",

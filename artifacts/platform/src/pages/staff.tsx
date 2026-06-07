@@ -50,7 +50,7 @@ type InventorySnapshot = { templateItemId: number; quantityStart: number };
 type CsrBoxOption = { id: string; label: string };
 type ShiftLocationOption = { id: string; label: string; address?: string; pickupInstructionId?: string; deliveryOptionId?: string };
 type DeliveryOption = { id: string; label: string; instructions?: string; separatePaymentRequired?: boolean };
-type PrinterNetworkConfig = { onsiteMode: string; ssid: string; passwordSet?: boolean; raspberryPiBluetooth?: boolean };
+type PrinterNetworkConfig = { onsiteMode: string; ssid: string; passwordSet?: boolean; raspberryPiBluetooth?: boolean; approvedSsids?: string[] };
 type ShiftSetup = {
   boxAssignmentId: string;
   shiftLocationId: string;
@@ -58,6 +58,10 @@ type ShiftSetup = {
   wifiReady: boolean;
   printerReady: boolean;
   locationReady: boolean;
+  csrDeliveryOptIn?: boolean;
+  wifiSsid?: string;
+  pickupNote?: string;
+  smsOptIn?: boolean;
 };
 
 type EnrichedItem = {
@@ -98,6 +102,8 @@ type ActiveShift = {
   clockedInAt: string;
   cashBankStart: number;
   runningCashBank: number;
+  csrDeliveryOptIn: boolean;
+  csrDeliveryEarnings: number;
   inventory: EnrichedItem[];
   stats: ShiftStats;
 };
@@ -170,6 +176,10 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
   const [locationReady, setLocationReady] = useState(true);
+  const [wifiSsid, setWifiSsid] = useState("");
+  const [pickupNote, setPickupNote] = useState("");
+  const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
+  const [smsOptIn, setSmsOptIn] = useState(true);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [cashBankStart, setCashBankStart] = useState("100");
   const [loadingTemplate, setLoadingTemplate] = useState(true);
@@ -235,6 +245,10 @@ function ClockInPanel({ onClockIn, getToken }: {
         wifiReady,
         printerReady,
         locationReady,
+        csrDeliveryOptIn,
+        wifiSsid: wifiSsid.trim(),
+        pickupNote: pickupNote.trim(),
+        smsOptIn,
       });
     } catch (err) {
       setError((err as Error).message ?? "Clock-in failed. Please try again.");
@@ -339,20 +353,88 @@ function ClockInPanel({ onClockIn, getToken }: {
               ))}
             </select>
           </label>
+          {/* WiFi SSID entry with auto-validation */}
+          <div className="md:col-span-3 space-y-2">
+            <span className="text-xs text-muted-foreground block">Wi-Fi Network (SSID)</span>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  list="approved-ssids-list"
+                  value={wifiSsid}
+                  onChange={e => {
+                    setWifiSsid(e.target.value);
+                    const approved = printerNetworkConfig?.approvedSsids ?? [];
+                    const match = approved.some(s => s.toLowerCase() === e.target.value.trim().toLowerCase());
+                    setWifiReady(match);
+                  }}
+                  placeholder={printerNetworkConfig?.ssid || "Enter Wi-Fi network name (SSID)"}
+                  className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-mono"
+                  data-testid="input-wifi-ssid"
+                />
+                {(printerNetworkConfig?.approvedSsids ?? []).length > 0 && (
+                  <datalist id="approved-ssids-list">
+                    {(printerNetworkConfig?.approvedSsids ?? []).map((s, i) => <option key={i} value={s} />)}
+                  </datalist>
+                )}
+              </div>
+              {wifiSsid.trim() && (
+                <span className={`shrink-0 text-[11px] font-semibold px-2 py-1 rounded-lg ${wifiReady ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30" : "bg-amber-500/10 text-amber-400 border border-amber-500/30"}`}>
+                  {wifiReady ? "✓ Approved" : "⚠ Unrecognized"}
+                </span>
+              )}
+            </div>
+            {!wifiReady && wifiSsid.trim() && (printerNetworkConfig?.approvedSsids ?? []).length > 0 && (
+              <div className="text-[11px] text-amber-400/80">SSID not in the approved list. Confirm your network then proceed — or ask an admin to add it.</div>
+            )}
+          </div>
+
           <div className="md:col-span-3 grid gap-3 md:grid-cols-3 md:items-center">
             <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
-            <SetupCheck
-              label={printerNetworkConfig?.ssid ? `WiFi: ${printerNetworkConfig.ssid}` : "WiFi"}
-              checked={wifiReady}
-              onChange={setWifiReady}
-            />
+            <SetupCheck label="WiFi Ready" checked={wifiReady} onChange={setWifiReady} />
             <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
           </div>
-          {printerNetworkConfig?.onsiteMode === "auto" && (
-            <div className="md:col-span-3 text-[11px] text-muted-foreground bg-muted/20 border border-border/30 rounded-xl px-3 py-2">
-              Auto-detect uses the tenant-wide saved SSID and Tailscale printer bridge; browsers cannot scan every nearby Wi-Fi network directly.
-            </div>
+
+          {/* CSR personal delivery opt-in */}
+          {deliveryOptionId && deliveryOptionId !== "pickup" && (
+            <label className="md:col-span-3 flex items-start gap-3 rounded-xl border border-border/40 bg-primary/5 px-4 py-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={csrDeliveryOptIn}
+                onChange={e => setCsrDeliveryOptIn(e.target.checked)}
+                className="mt-0.5 size-4 accent-primary"
+                data-testid="checkbox-csr-delivery-opt-in"
+              />
+              <div>
+                <div className="text-xs font-semibold">I'll personally deliver orders this shift</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">Customers can choose "CSR Delivery" at checkout. Fee is $5 + 3% of subtotal — paid to you as gratuity.</div>
+              </div>
+            </label>
           )}
+
+          {/* Custom pickup note */}
+          <div className="md:col-span-3 space-y-1">
+            <span className="text-xs text-muted-foreground block">Custom pickup note <span className="text-muted-foreground/50">(optional — shown to customers on pickup)</span></span>
+            <textarea
+              value={pickupNote}
+              onChange={e => setPickupNote(e.target.value)}
+              placeholder="e.g. Pull around to the side door, call when here…"
+              rows={2}
+              className="w-full rounded-xl border border-border/50 bg-background/50 px-3 py-2 text-sm resize-none"
+              data-testid="textarea-pickup-note"
+            />
+          </div>
+
+          {/* SMS opt-in */}
+          <label className="md:col-span-3 flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={smsOptIn}
+              onChange={e => setSmsOptIn(e.target.checked)}
+              className="size-4 accent-primary"
+              data-testid="checkbox-sms-opt-in"
+            />
+            <span className="text-xs text-muted-foreground">Receive SMS text alerts for new orders and updates this shift</span>
+          </label>
         </div>
       </div>
 
@@ -1487,6 +1569,10 @@ export default function CustomerServiceRepQueue() {
           wifiReady: setup.wifiReady,
           printerReady: setup.printerReady,
           locationReady: setup.locationReady,
+          csrDeliveryOptIn: setup.csrDeliveryOptIn ?? false,
+          wifiSsid: setup.wifiSsid ?? "",
+          pickupNote: setup.pickupNote ?? "",
+          smsOptIn: setup.smsOptIn,
         },
       }),
     });
