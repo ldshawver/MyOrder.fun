@@ -11,6 +11,7 @@ import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Ba
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { useToast } from "@/hooks/use-toast";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct";
@@ -67,6 +68,7 @@ const CONVERSION_NOTE = "Items in this cart will be converted to the appropriate
 export default function NewOrder() {
   const [, setLocation] = useLocation();
   const { brand } = useBrand();
+  const { toast } = useToast();
   const { cart, addItem, removeItem, updateQuantity, replaceCart, clearCart } = useCart();
   const preItemId = parseInt(new URLSearchParams(window.location.search).get("item") || "0", 10) || undefined;
   const [search, setSearch] = useState("");
@@ -247,8 +249,9 @@ export default function NewOrder() {
         sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
       } catch { /* ignore storage errors */ }
       setLocation(`/orders/${order.id}`);
-    } catch {
-      // Mutation hooks expose their own error state/toasts through the API client.
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Order submission failed. Please try again.";
+      toast({ title: "Could not place order", description: message, variant: "destructive" });
     }
   };
 
@@ -634,6 +637,13 @@ export default function NewOrder() {
               >
                 {paymentBusy ? "Processing Payment..." : `Pay & Send Order · $${displayedTotal.toFixed(2)}`}
               </Button>
+              {createOrderMutation.isError && (
+                <div className="text-xs text-destructive mt-1" data-testid="text-submit-error">
+                  {createOrderMutation.error instanceof Error
+                    ? createOrderMutation.error.message
+                    : "Order submission failed. Please try again."}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

@@ -929,6 +929,30 @@ router.post(
       inventoryItemsInserted = legacyInserts.length;
     }
 
+    // Fire-and-forget: print shift-open slip if a receipt printer is configured.
+    import("../lib/escposPrinter").then(({ printReceiptEscPos }) => {
+      const W = 40;
+      const div = "=".repeat(W);
+      const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
+      const now = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
+      const cash = parseFloat(String(shift.cashBankStart ?? "0")).toFixed(2);
+      const setupJson = (shift.setupJson ?? {}) as { shiftLocationId?: string };
+      const loc = setupJson.shiftLocationId ?? selectedBox ?? "";
+      const lines = [
+        div,
+        center("SHIFT OPENED"),
+        div,
+        `CSR:       ${tech.email}`,
+        `Time:      ${now}`,
+        `Shift #:   ${shift.id}`,
+        `Location:  ${loc}`,
+        `Cash Bank: $${cash}`,
+        div,
+        "",
+      ];
+      return printReceiptEscPos(lines.join("\n"));
+    }).catch(() => { /* non-critical — printer may not be configured */ });
+
     res.status(201).json({
       shift: await buildActiveShiftPayload(shift),
       _debug: {

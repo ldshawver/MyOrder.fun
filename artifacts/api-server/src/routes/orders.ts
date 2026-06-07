@@ -805,7 +805,9 @@ router.post("/orders", async (req, res): Promise<void> => {
         totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
       })),
     });
-  } catch { /* non-critical */ }
+  } catch (printErr) {
+    req.log.warn({ orderId: order.id, err: (printErr as Error).message }, "enqueueOrderPrintJobs failed — non-critical");
+  }
 
   const orderObj = await buildOrderResponse(order);
 
