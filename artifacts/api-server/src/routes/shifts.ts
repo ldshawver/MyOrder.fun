@@ -1003,8 +1003,8 @@ router.post(
       : DEFAULT_CSR_BOXES[0].slug;
 
     // Auto-validate WiFi: compare entered SSID against admin-approved list
-    const csrSettings = await getTenantCsrSettings();
-    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const activeCsrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = activeCsrSettings.printerNetworkConfig.approvedSsids;
     const enteredSsid = (setup?.wifiSsid ?? "").trim();
     const wifiMatchesApproved = enteredSsid.length > 0 &&
       approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
