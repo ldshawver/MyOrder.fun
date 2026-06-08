@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
 import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, useTokenizePayment, useConfirmPayment, type CatalogItem } from "@workspace/api-client-react";
@@ -111,8 +111,10 @@ export default function NewOrder() {
   // Zappy / catalog
   const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
   const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
+  const [zappySuggestsOpen, setZappySuggestsOpen] = useState(true);
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
+  const upsellDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { getToken } = useAuth();
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -177,13 +179,23 @@ export default function NewOrder() {
       .catch(() => setPromotedItems([]));
   }, [getToken]);
 
-  useEffect(() => {
-    const cartStr = cart.map(c => c.id).sort().join(",");
-    if (cart.length > 0 && cartStr !== prevCartRef.current) {
-      prevCartRef.current = cartStr;
-      upsellMutation.mutate({ data: { cartItemIds: cart.map(c => c.id) } });
-    }
+  const triggerUpsell = useCallback(() => {
+    if (upsellDebounceRef.current) clearTimeout(upsellDebounceRef.current);
+    upsellDebounceRef.current = setTimeout(() => {
+      const cartStr = cart.map(c => c.id).sort().join(",");
+      if (cart.length > 0 && cartStr !== prevCartRef.current) {
+        prevCartRef.current = cartStr;
+        upsellMutation.mutate({ data: { cartItemIds: cart.map(c => c.id) } });
+      }
+    }, 500);
   }, [cart, upsellMutation]);
+
+  useEffect(() => {
+    triggerUpsell();
+    return () => {
+      if (upsellDebounceRef.current) clearTimeout(upsellDebounceRef.current);
+    };
+  }, [triggerUpsell]);
 
   const addToCart = (item: CatalogItem) => addItem(item);
   const addPromotedToCart = (item: PromotedItem) => {
@@ -480,11 +492,23 @@ export default function NewOrder() {
 
         {/* Zappy Suggestions Sidebar */}
         <Card className="overflow-hidden rounded-sm border-primary/20 bg-primary/5 shadow-sm">
-          <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
+          <CardHeader className="pb-3 shrink-0 border-b border-primary/10 cursor-pointer" onClick={() => setZappySuggestsOpen(o => !o)}>
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
-              <Sparkles size={16} /> Zappy Suggestions
+              <Sparkles size={16} /> Zappy Suggests
+              {upsellMutation.isPending && (
+                <span className="ml-1 flex gap-0.5 items-center">
+                  <span className="w-1 h-1 rounded-full bg-primary/50 animate-pulse" />
+                  <span className="w-1 h-1 rounded-full bg-primary/70 animate-pulse delay-75" />
+                  <span className="w-1 h-1 rounded-full bg-primary/90 animate-pulse delay-150" />
+                </span>
+              )}
+              <ChevronRight
+                size={14}
+                className={`ml-auto text-primary/60 transition-transform duration-200 ${zappySuggestsOpen ? "rotate-90" : ""}`}
+              />
             </CardTitle>
           </CardHeader>
+          {zappySuggestsOpen && (
           <CardContent className="p-4">
             {promotedItems.length > 0 && cart.length > 0 && (
               <div className="mb-4 rounded-sm border border-primary/20 bg-background/80 p-3 space-y-2">
@@ -570,6 +594,7 @@ export default function NewOrder() {
               </div>
             )}
           </CardContent>
+          )}
         </Card>
       </div>
 

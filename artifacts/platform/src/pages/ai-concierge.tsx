@@ -410,22 +410,24 @@ export default function AiConcierge() {
           // Execute cart actions returned by Zappy
           if (res.cartActions?.length) {
             const allItems = [...(res.suggestedItems ?? []), ...suggestedItems, ...promotedItems];
-            const feedback: string[] = [];
+            const feedbackLines: string[] = [];
             for (const action of res.cartActions) {
               if (action.action === "add") {
                 const item = allItems.find(i => i.id === action.catalogItemId);
                 if (item) {
-                  addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null }, action.quantity ?? 1);
-                  feedback.push(`+${item.name}`);
+                  const qty = action.quantity ?? 1;
+                  addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null }, qty);
+                  feedbackLines.push(`Zappy added ${item.name} ×${qty} to your cart`);
                 }
               } else if (action.action === "remove") {
                 removeItem(action.catalogItemId);
-                if (action.itemName) feedback.push(`−${action.itemName}`);
+                const name = action.itemName ?? "item";
+                feedbackLines.push(`Zappy removed ${name} from your cart`);
               }
             }
-            if (feedback.length) {
-              setCartActionFeedback(feedback.join(" · "));
-              setTimeout(() => setCartActionFeedback(null), 3500);
+            if (feedbackLines.length) {
+              setCartActionFeedback(feedbackLines.join(" · "));
+              setTimeout(() => setCartActionFeedback(null), 4000);
             }
           }
 
@@ -463,7 +465,7 @@ export default function AiConcierge() {
             exit={{ opacity: 0, y: 8, scale: 0.95 }}
           >
             <ShoppingCart size={14} />
-            Cart updated: {cartActionFeedback}
+            {cartActionFeedback}
           </motion.div>
         )}
       </AnimatePresence>
