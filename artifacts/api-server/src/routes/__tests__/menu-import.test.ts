@@ -337,6 +337,49 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(state.inserted[0].merchantImage).toBe("https://cdn.example.com/lc-swap.jpg");
   });
 
+  it("one CSV row → exactly one catalog_items record with all Alavont, LC, and merchant fields", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "49.99,https://cdn.example.com/full-row.jpg,Full Row Item,Full alavont description,Wellness,true,ALV-FULL-1,10,ml,39.99,Full LC Name,https://cdn.example.com/full-lc.jpg,Full LC desc,Full LC Cat,LC-FULL-1\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "full-row.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    // ONE row in the CSV must produce exactly ONE insert — no splitting across brand columns
+    expect(res.body.inserted).toBe(1);
+    expect(res.body.updated).toBe(0);
+    expect(state.inserted).toHaveLength(1);
+    const rec = state.inserted[0];
+    // Alavont-facing fields
+    expect(rec.alavontName).toBe("Full Row Item");
+    expect(rec.alavontDescription).toBe("Full alavont description");
+    expect(rec.alavontCategory).toBe("Wellness");
+    expect(rec.alavontImageUrl).toBe("https://cdn.example.com/full-row.jpg");
+    expect(rec.alavontInStock).toBe(true);
+    expect(rec.externalMenuId).toBe("ALV-FULL-1");
+    // Quantity / unit
+    expect(rec.inventoryAmount).toBe("10.00");
+    expect(rec.unitMeasurement).toBe("ml");
+    // Lucifer Cruz-facing fields come from the SAME row — not a separate insert
+    expect(rec.luciferCruzName).toBe("Full LC Name");
+    expect(rec.luciferCruzImageUrl).toBe("https://cdn.example.com/full-lc.jpg");
+    expect(rec.luciferCruzDescription).toBe("Full LC desc");
+    expect(rec.luciferCruzCategory).toBe("Full LC Cat");
+    expect(rec.merchantSku).toBe("LC-FULL-1");
+    // Merchant mirrors also from same row
+    expect(rec.merchantName).toBe("Full LC Name");
+    expect(rec.merchantImage).toBe("https://cdn.example.com/full-lc.jpg");
+    // Legacy/generic fields mirror Alavont side
+    expect(rec.name).toBe("Full Row Item");
+    expect(rec.category).toBe("Wellness");
+    expect(rec.price).toBe("49.99");
+    // Image URL never swapped into a name field
+    expect(rec.alavontName).not.toMatch(/^https?:\/\//);
+    expect(rec.luciferCruzName).not.toMatch(/^https?:\/\//);
+  });
+
   it("response shape matches { inserted, updated, skipped, errors:[{row,message}] }", async () => {
     // Bad row — missing required Menu Name (after a valid header set)
     const csv =

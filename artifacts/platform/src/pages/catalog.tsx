@@ -268,15 +268,17 @@ function CatalogItemCard({
 
 function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
   const fields: Array<{ label: string; key: StringFormKey; type: string; placeholder?: string }> = [
-    { label: "Name *", key: "name", type: "text" },
+    { label: "Alavont Display Name *", key: "alavontName", type: "text" },
+    { label: "Safe / Checkout Name", key: "customerSafeName", type: "text", placeholder: "Name shown at checkout (defaults to Alavont name)" },
     { label: "Category *", key: "category", type: "text" },
-    { label: "Price / Sale Price ($) *", key: "price", type: "number" },
-    { label: "Compare-at Price ($)", key: "compareAtPrice", type: "number" },
+    { label: "Price ($) *", key: "price", type: "number" },
+    { label: "Compare-at / Sale Price ($)", key: "compareAtPrice", type: "number" },
     { label: "Regular Price ($)", key: "regularPrice", type: "number" },
     { label: "Homie Price ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
     { label: "Stock Quantity", key: "stockQuantity", type: "number" },
     { label: "Image URL", key: "imageUrl", type: "url", placeholder: "https://example.com/image.jpg" },
+    { label: "Internal Name (legacy)", key: "name", type: "text" },
   ];
   return (
     <>
@@ -528,11 +530,62 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
   };
 }
 
+function handleImageFileUpload(file: File, onUrl: (url: string) => void) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result === "string") onUrl(reader.result);
+  };
+  reader.readAsDataURL(file);
+}
+
+function ImageUploadField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">{label}</label>
+      <div className="flex gap-2">
+        <Input
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="rounded-xl h-9 text-sm bg-background/50 flex-1"
+          placeholder={placeholder ?? "https://example.com/image.jpg"}
+        />
+        <label className="h-9 px-3 flex items-center cursor-pointer rounded-xl border border-border/50 bg-background/50 text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0">
+          Upload
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) handleImageFileUpload(f, onChange);
+              e.currentTarget.value = "";
+            }}
+          />
+        </label>
+      </div>
+      {value && (
+        <div className="mt-1.5 h-20 rounded-xl overflow-hidden bg-muted/20">
+          <img src={value} alt="preview" className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (updater: (prev: CatalogItemForm) => CatalogItemForm) => void }) {
   const alavontStringFields: Array<{ label: string; key: StringFormKey }> = [
     { label: "Alavont Name", key: "alavontName" },
     { label: "Alavont Category", key: "alavontCategory" },
-    { label: "Alavont Image URL", key: "alavontImageUrl" },
   ];
   const luciferStringFields: Array<{ label: string; key: StringFormKey }> = [
     { label: "Lucifer Cruz Name", key: "luciferCruzName" },
@@ -556,6 +609,11 @@ function DualBrandFormFields({ form, setForm }: { form: CatalogItemForm; setForm
           <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" />
         </div>
       ))}
+      <ImageUploadField
+        label="Alavont Image URL"
+        value={form.alavontImageUrl}
+        onChange={v => setForm(p => ({ ...p, alavontImageUrl: v }))}
+      />
       <div>
         <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">Alavont Description</label>
         <textarea value={form.alavontDescription ?? ""} onChange={e => setForm(p => ({ ...p, alavontDescription: e.target.value }))} className="w-full text-sm rounded-xl border border-border/50 bg-background/50 px-3 py-2 resize-none h-16 focus:outline-none focus:ring-1 focus:ring-primary/50" />
@@ -613,7 +671,6 @@ function CheckoutPresentationFields({ form, setForm }: { form: CatalogItemForm; 
   const fields: Array<{ label: string; key: StringFormKey; placeholder?: string }> = [
     { label: "Converted Display Name", key: "displayName" },
     { label: "Converted Category", key: "displayCategory" },
-    { label: "Converted Image URL", key: "displayImage" },
     { label: "Merchant Brand Name", key: "merchantBrandName" },
     { label: "Customer Safe Name", key: "customerSafeName" },
     { label: "Promo Badges", key: "promoBadges", placeholder: "Comma-separated badges" },
@@ -627,6 +684,11 @@ function CheckoutPresentationFields({ form, setForm }: { form: CatalogItemForm; 
           <Input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="rounded-xl h-9 text-sm bg-background/50" placeholder={placeholder} />
         </div>
       ))}
+      <ImageUploadField
+        label="Converted / Safe Image URL"
+        value={form.displayImage}
+        onChange={v => setForm(p => ({ ...p, displayImage: v }))}
+      />
       {[
         { label: "Converted Description", key: "displayDescription" as const },
         { label: "Marketing Copy", key: "marketingCopy" as const },
@@ -935,17 +997,6 @@ export default function Catalog() {
 
         <div className="relative z-10 flex min-h-[380px] md:min-h-[460px] flex-col justify-between gap-6 p-5 md:p-8">
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-            <div className="max-w-2xl rounded-2xl bg-background/35 p-4 backdrop-blur-sm border border-border/20">
-              <h1
-                className="text-3xl md:text-5xl font-bold tracking-tight drop-shadow-lg"
-                data-testid="text-title"
-              >
-                {isLC ? "Lucifer Cruz" : "Menu"}
-              </h1>
-              <p className="text-sm md:text-base text-muted-foreground mt-2" data-testid="text-subtitle">
-                {isLC ? "Adult boutique items available for ordering" : "Browse sales, packages, and the Alavont catalog"}
-              </p>
-            </div>
             <div className="flex items-center gap-2 shrink-0 relative z-20">
               {canEdit && !isLC && (
                 <Button size="sm" className="rounded-xl text-xs h-9 shadow-lg" onClick={() => setAddOpen(true)} data-testid="button-add-product">
@@ -990,14 +1041,6 @@ export default function Catalog() {
           <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
           <p className="text-xs" style={{ color: "#C0C0C0" }}>
             All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
-      {!isLC && (
-        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
-          <p className="text-xs text-muted-foreground">
-            Alavont Thereputics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
           </p>
         </div>
       )}
@@ -1108,7 +1151,15 @@ export default function Catalog() {
         </div>
       )}
 
-      <CatalogNotice className="mt-8" />
+      {!isLC && (
+        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
+          <p className="text-xs text-muted-foreground">
+            Alavont Therapeutics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
+          </p>
+        </div>
+      )}
+
+      <CatalogNotice className="mt-4" />
 
       {/* Dialogs */}
       <EditItemDialog item={editItem} open={!!editItem} onClose={() => setEditItem(null)} />
