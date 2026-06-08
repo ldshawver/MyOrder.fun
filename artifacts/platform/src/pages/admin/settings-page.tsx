@@ -342,20 +342,17 @@ export default function AdminSettingsPage() {
                           const file = e.target.files?.[0];
                           if (!file) return;
                           try {
-                            const formData = new FormData();
-                            formData.append("file", file);
-                            const token = await getToken();
-                            const res = await fetch("/api/admin/settings/banner-image", {
+                            const urlRes = await fetch("/api/storage/uploads/request-url", {
                               method: "POST",
-                              headers: { Authorization: `Bearer ${token}` },
-                              body: formData,
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
                             });
-                            if (res.ok) {
-                              const data = await res.json();
-                              const next = [...settings.catalogBannerImages];
-                              next[index] = data.url;
-                              set("catalogBannerImages", next);
-                            }
+                            if (!urlRes.ok) return;
+                            const { uploadURL, objectPath } = await urlRes.json() as { uploadURL: string; objectPath: string };
+                            await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+                            const next = [...settings.catalogBannerImages];
+                            next[index] = `/api/storage${objectPath}`;
+                            set("catalogBannerImages", next);
                           } catch {
                             // Upload error — user can still enter a URL manually.
                           }
