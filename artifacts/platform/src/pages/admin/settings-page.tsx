@@ -342,14 +342,21 @@ export default function AdminSettingsPage() {
                           const file = e.target.files?.[0];
                           if (!file) return;
                           try {
+                            const token = await getToken();
                             const urlRes = await fetch("/api/storage/uploads/request-url", {
                               method: "POST",
-                              headers: { "Content-Type": "application/json" },
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
                               body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
                             });
                             if (!urlRes.ok) return;
                             const { uploadURL, objectPath } = await urlRes.json() as { uploadURL: string; objectPath: string };
                             await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+                            // Mark the object as publicly readable so it can be served on the storefront.
+                            await fetch("/api/storage/uploads/publish", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                              body: JSON.stringify({ objectPath }),
+                            });
                             const next = [...settings.catalogBannerImages];
                             next[index] = `/api/storage${objectPath}`;
                             set("catalogBannerImages", next);
