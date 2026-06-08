@@ -800,7 +800,6 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    const csrSettings = await getTenantCsrSettings();
     const catalogIds = rows
       .map((row) => row.catalogItemId)
       .filter((id): id is number => typeof id === "number");

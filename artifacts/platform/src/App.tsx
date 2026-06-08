@@ -44,6 +44,7 @@ import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
+import FeedbackPage from "@/pages/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
@@ -392,6 +393,9 @@ function AuthenticatedApp() {
             <Route path="/csr-settings/:section" component={CsrSettings} />
           </>
         )}
+
+        {/* Feedback — accessible to all authenticated, approved users */}
+        <Route path="/feedback" component={FeedbackPage} />
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
