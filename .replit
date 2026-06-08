@@ -78,6 +78,7 @@ expertMode = true
   RECEIPT_PRINTER_NAME = "receipt"
   PRINT_SERVER_HOST = "100.83.99.2"
   PRINT_SERVER_PORT = "631"
+ZELLE_CONTACT = "luke@adiken.com"
 
 [[ports]]
 localPort = 8080

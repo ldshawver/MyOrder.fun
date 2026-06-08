@@ -230,7 +230,7 @@ export default function NewOrder() {
             acceptedAllSalesFinal: true,
             confirmedAt: conversionPreview.confirmation.confirmedAt,
             legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
-            paymentMethod: selectedPaymentMethod as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual",
+            paymentMethod: selectedPaymentMethod as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual" | "zelle",
             tipAmount,
             tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
           },
@@ -603,7 +603,7 @@ export default function NewOrder() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {conversionPreview.converted.paymentMethods.map(method => {
-                      const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
+                      const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : method.id === "zelle" ? HandCoins : CheckCircle2;
                       const active = selectedPaymentMethod === method.id;
                       return (
                         <button
@@ -622,6 +622,17 @@ export default function NewOrder() {
                       );
                     })}
                   </div>
+                  {selectedPaymentMethod === "zelle" && (
+                    <div className="rounded-sm border border-blue-500/30 bg-blue-500/10 p-3 text-xs space-y-1">
+                      <div className="font-semibold text-blue-400 uppercase tracking-wider text-[10px]">Zelle Payment Instructions</div>
+                      <p className="text-foreground/80 leading-relaxed">
+                        {conversionPreview.converted.paymentMethods.find(m => m.id === "zelle")?.message ?? "Send payment via Zelle."}
+                      </p>
+                      <p className="text-muted-foreground leading-relaxed">
+                        Include your order number in the memo after placing your order. Your order will be confirmed once payment is received.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="rounded-sm border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">

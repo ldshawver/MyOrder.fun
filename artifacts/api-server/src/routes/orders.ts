@@ -186,6 +186,7 @@ function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.inf
       paymentMethods: [
         { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
         { id: "cash_app", label: "Cash App", promoted: false },
+        { id: "zelle", label: "Zelle", promoted: false, message: process.env.ZELLE_CONTACT ? `Send payment to: ${process.env.ZELLE_CONTACT}` : "Send payment via Zelle." },
         { id: "stripe", label: "Stripe card", promoted: false },
         { id: "venmo", label: "Venmo", promoted: false },
         { id: "gift_card", label: "Gift Card", promoted: false },
