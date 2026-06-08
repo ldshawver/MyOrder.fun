@@ -28,6 +28,41 @@ const SHIFT_OPERATOR_ROLES = [
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
 
+// Always-on structured log for every shift auth decision.
+// Fires for ALL users so production logs capture the full picture.
+function logCsrShiftAuth(
+  req: Request,
+  gate: "approval" | "role",
+  result: "pass" | "deny",
+  reason?: string,
+): void {
+  const user = req.dbUser;
+  const auth = getAuth(req);
+  const sessionClaims = (auth?.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  req.log?.info?.(
+    {
+      gate,
+      result,
+      reason: reason ?? null,
+      userId: user?.id ?? null,
+      email: user?.email ?? (sessionClaims.email as string | undefined) ?? null,
+      dbRoleRaw: user?.role ?? null,
+      dbRoleNormalized: user ? normalizeRole(user.role) : null,
+      clerkRoleJwt: (publicMetadata.role as string | undefined) ?? null,
+      clerkStatusJwt: (publicMetadata.status as string | undefined) ?? null,
+      status: user?.status ?? null,
+      isActive: user?.isActive ?? null,
+      tenantId: user?.tenantId ?? null,
+      clerkUserId: auth?.userId ?? user?.clerkId ?? null,
+    },
+    `shift_auth:${gate}:${result}`,
+  );
+}
+
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
 
@@ -98,38 +133,43 @@ function logMarekCsrAuthDebug(req: Request, failedCondition: string | null = nul
 
 
 function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunction): void {
-  if (!shouldLogMarekCsrDebug(req)) {
+  const user = req.dbUser;
+
+  if (!user) {
+    // Delegate to requireApproved so the mock in tests (noop) remains effective.
+    // In production requireApproved returns 401 for missing user — same outcome.
+    logCsrShiftAuth(req, "approval", "deny", "missing_db_user");
+    logMarekCsrAuthDebug(req, "missing_db_user");
     requireApproved(req, res, next);
     return;
   }
-
-  const user = req.dbUser;
-  if (!user) {
-    logMarekCsrAuthDebug(req, "missing_db_user");
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
   if (user.isActive === false || user.status === "deactivated") {
+    logCsrShiftAuth(req, "approval", "deny", "inactive_or_deactivated");
     logMarekCsrAuthDebug(req, "inactive_or_deactivated_user");
     res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
     return;
   }
   if (user.status === "rejected") {
+    logCsrShiftAuth(req, "approval", "deny", "rejected");
     logMarekCsrAuthDebug(req, "rejected_user");
     res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
   const actorRole = normalizeRole(user.role);
+  // Staff roles (CSR / admin / global_admin) are implicitly approved.
   if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "customer_service_rep") {
+    logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
     logMarekCsrAuthDebug(req, null);
     next();
     return;
   }
   if (user.status !== "approved") {
+    logCsrShiftAuth(req, "approval", "deny", `not_approved:${user.status ?? "pending"}`);
     logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
     res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
     return;
   }
+  logCsrShiftAuth(req, "approval", "pass");
   logMarekCsrAuthDebug(req, null);
   next();
 }
@@ -137,6 +177,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
 function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;
   if (!user) {
+    logCsrShiftAuth(req, "role", "deny", "missing_db_user");
     logMarekCsrAuthDebug(req, "missing_db_user");
     res.status(401).json({ error: "Unauthorized" });
     return;
@@ -145,12 +186,19 @@ function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: Ne
   const actorRole = normalizeRole(user.role);
   const hasRole = (SHIFT_OPERATOR_ROLES as readonly string[]).includes(actorRole);
 
+  logCsrShiftAuth(
+    req,
+    "role",
+    hasRole ? "pass" : "deny",
+    hasRole ? undefined : `role_not_allowed:raw=${String(user.role)},normalized=${actorRole}`,
+  );
   logMarekCsrAuthDebug(req, hasRole ? null : `role_not_allowed:${String(user.role)}`);
 
   if (!hasRole) {
     res.status(403).json({
       error: "Forbidden: insufficient role",
       failedCondition: "csr_role_required",
+      debug: { dbRoleRaw: user.role, dbRoleNormalized: actorRole },
     });
     return;
   }
@@ -199,17 +247,26 @@ function parseSettingsArray<T>(raw: string | null | undefined, fallback: T[]): T
 }
 
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
-  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  const empty = { onsiteMode: "auto", ssid: "", approvedSsids: [] as string[], passwordSet: false, raspberryPiBluetooth: true };
+  if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const primarySsid = typeof parsed.ssid === "string" ? parsed.ssid : "";
+    const savedList: string[] = Array.isArray(parsed.approvedSsids)
+      ? (parsed.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+    const approvedSsids = primarySsid && !savedList.includes(primarySsid)
+      ? [primarySsid, ...savedList]
+      : savedList;
     return {
       onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
-      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      ssid: primarySsid,
+      approvedSsids,
       passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
       raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
     };
   } catch {
-    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+    return empty;
   }
 }
 
@@ -326,6 +383,7 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end_actual" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "discrepancy" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "is_flagged" boolean DEFAULT false`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "location_id" integer`,
     // csr_boxes — tenant-scoped physical/logical sales boxes
     sql`CREATE TABLE IF NOT EXISTS "csr_boxes" (
       "id" serial PRIMARY KEY,
@@ -577,10 +635,26 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
-  return updatedRows.filter(row => {
+  const filtered = updatedRows.filter(row => {
     const name = String(row.itemName ?? "").trim().toLowerCase();
     return !name.startsWith("safe") && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
   });
+
+  // Deduplicate by catalogItemId — keep the lowest-displayOrder row per product.
+  // This removes LC/customer-facing duplicate rows that reference the same catalog item.
+  const seenCatalogIds = new Set<number>();
+  const deduped: typeof filtered = [];
+  for (const row of filtered) {
+    if (row.catalogItemId == null) {
+      deduped.push(row);
+      continue;
+    }
+    if (!seenCatalogIds.has(row.catalogItemId)) {
+      seenCatalogIds.add(row.catalogItemId);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -772,6 +846,24 @@ router.get(
       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
     }
 
+    // Load CSR settings (pickup instructions, shift locations, delivery options)
+    const csrSettings = await getTenantCsrSettings();
+
+    // Build catalog price map so template rows can fall back to catalog price
+    const catalogItemIds = rows
+      .map(r => r.catalogItemId)
+      .filter((id): id is number => id != null);
+    let catalogPriceMap: Map<number, number> = new Map();
+    if (catalogItemIds.length > 0) {
+      const catalogRows = await db
+        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
+        .from(catalogItemsTable)
+        .where(inArray(catalogItemsTable.id, catalogItemIds));
+      catalogPriceMap = new Map(
+        catalogRows.map(r => [r.id, parseFloat(String(r.price ?? "0"))]),
+      );
+    }
+
     res.json({
       boxes,
       ...csrSettings,
@@ -811,15 +903,53 @@ async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$i
   const stats = await computeShiftStats(activeShift.id);
   const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
   const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+  const csrDeliveryEarnings = parseFloat(String(activeShift.csrDeliveryEarnings ?? 0));
 
   return {
     ...activeShift,
     cashBankStart,
+    csrDeliveryEarnings,
+    csrDeliveryOptIn: activeShift.csrDeliveryOptIn ?? false,
     runningCashBank: cashBankStart + stats.cashSales,
     inventory,
     stats,
   };
 }
+
+// ─── GET /api/shifts/active-csr-status ─────────────────────────────────────
+// Returns whether any CSR is currently active and has opted into personal delivery.
+// Used by customer checkout to show/hide the CSR delivery option.
+router.get(
+  "/shifts/active-csr-status",
+  requireAuth, loadDbUser, requireDbUser,
+  async (_req, res): Promise<void> => {
+    const [activeShift] = await db
+      .select({
+        id: labTechShiftsTable.id,
+        csrDeliveryOptIn: labTechShiftsTable.csrDeliveryOptIn,
+        setupJson: labTechShiftsTable.setupJson,
+      })
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "active"))
+      .orderBy(desc(labTechShiftsTable.clockedInAt))
+      .limit(1);
+
+    if (!activeShift) {
+      res.json({ hasActiveShift: false, csrDeliveryAvailable: false });
+      return;
+    }
+
+    const setup = (activeShift.setupJson ?? {}) as Record<string, unknown>;
+    res.json({
+      hasActiveShift: true,
+      csrDeliveryAvailable: activeShift.csrDeliveryOptIn === true,
+      shiftId: activeShift.id,
+      shiftLocationId: setup.shiftLocationId ?? null,
+      pickupNote: setup.pickupNote ?? null,
+      deliveryOptionId: setup.deliveryOptionId ?? null,
+    });
+  }
+);
 
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
@@ -856,12 +986,37 @@ router.post(
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
       cashBankStart?: number;
       boxAssignmentId?: string;
-      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean; shiftLocationId?: string; deliveryOptionId?: string };
+      setup?: {
+        wifiReady?: boolean;
+        printerReady?: boolean;
+        locationReady?: boolean;
+        shiftLocationId?: string;
+        deliveryOptionId?: string;
+        csrDeliveryOptIn?: boolean;
+        wifiSsid?: string;
+        pickupNote?: string;
+        smsOptIn?: boolean;
+      };
     };
 
     const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
       ? boxAssignmentId
       : DEFAULT_CSR_BOXES[0].slug;
+
+    // Auto-validate WiFi: compare entered SSID against admin-approved list
+    const csrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const enteredSsid = (setup?.wifiSsid ?? "").trim();
+    const wifiMatchesApproved = enteredSsid.length > 0 &&
+      approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
+    const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
+
+    // Update user's SMS opt-in preference if provided at clock-in
+    if (setup?.smsOptIn !== undefined) {
+      await db.update(usersTable).set({ smsOptIn: setup.smsOptIn }).where(eq(usersTable.id, tech.id));
+    }
+
+    const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -872,13 +1027,19 @@ router.post(
         ipAddress: ip,
         cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
         boxAssignmentId: selectedBox,
+        csrDeliveryOptIn,
+        csrDeliveryEarnings: "0",
         setupJson: {
           boxAssignmentId: selectedBox,
           shiftLocationId: setup?.shiftLocationId ?? selectedBox,
           deliveryOptionId: setup?.deliveryOptionId ?? "pickup",
-          wifiReady: setup?.wifiReady ?? false,
+          wifiReady: computedWifiReady,
+          wifiSsid: enteredSsid || null,
+          wifiApproved: wifiMatchesApproved,
           printerReady: setup?.printerReady ?? false,
           locationReady: setup?.locationReady ?? true,
+          pickupNote: (setup?.pickupNote ?? "").trim() || null,
+          csrDeliveryOptIn,
         },
       })
       .returning();
@@ -887,6 +1048,44 @@ router.post(
 
     if (inventorySnapshot && inventorySnapshot.length > 0) {
       const templateRows = await ensureClockInInventoryTemplate();
+
+      // Resolve the inventory_location for the chosen CSR box so we can
+      // (a) tag each shift_inventory_items row with the box it belongs to, and
+      // (b) seed quantityStart from the live inventory_balances if they exist.
+      const csrBoxRows = await db
+        .select()
+        .from(csrBoxesTable)
+        .where(eq(csrBoxesTable.tenantId, houseTenantId));
+      const chosenCsrBox = csrBoxRows.find(b => b.slug === selectedBox);
+      let shiftBoxLocationId: number | null = null;
+      const balanceByProductId = new Map<number, number>();
+      if (chosenCsrBox) {
+        const [boxLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.csrBoxId, chosenCsrBox.id),
+            )
+          )
+          .limit(1);
+        shiftBoxLocationId = boxLoc?.id ?? null;
+        if (shiftBoxLocationId) {
+          const balances = await db
+            .select()
+            .from(inventoryBalancesTable)
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.locationId, shiftBoxLocationId),
+              )
+            );
+          for (const b of balances) {
+            balanceByProductId.set(b.productId, parseFloat(String(b.quantityOnHand)));
+          }
+        }
+      }
 
       const qtyByTemplateId = new Map<number, number>(
         inventorySnapshot.map(s => [s.templateItemId, s.quantityStart])
@@ -902,10 +1101,13 @@ router.post(
         catalogItemId: row.catalogItemId ?? null,
         itemName: row.itemName ?? row.sectionName ?? "",
         unitPrice: "0",
+        locationId: shiftBoxLocationId,
         quantityStart: String(
           qtyByTemplateId.has(row.id)
             ? qtyByTemplateId.get(row.id)!
-            : parseFloat(String(row.startingQuantityDefault ?? 0))
+            : (row.catalogItemId != null && balanceByProductId.has(row.catalogItemId)
+                ? balanceByProductId.get(row.catalogItemId)!
+                : parseFloat(String(row.startingQuantityDefault ?? 0)))
         ),
         quantitySold: "0",
       }));
@@ -928,30 +1130,6 @@ router.post(
       await db.insert(shiftInventoryItemsTable).values(legacyInserts);
       inventoryItemsInserted = legacyInserts.length;
     }
-
-    // Fire-and-forget: print shift-open slip if a receipt printer is configured.
-    import("../lib/escposPrinter").then(({ printReceiptEscPos }) => {
-      const W = 40;
-      const div = "=".repeat(W);
-      const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
-      const now = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
-      const cash = parseFloat(String(shift.cashBankStart ?? "0")).toFixed(2);
-      const setupJson = (shift.setupJson ?? {}) as { shiftLocationId?: string };
-      const loc = setupJson.shiftLocationId ?? selectedBox ?? "";
-      const lines = [
-        div,
-        center("SHIFT OPENED"),
-        div,
-        `CSR:       ${tech.email}`,
-        `Time:      ${now}`,
-        `Shift #:   ${shift.id}`,
-        `Location:  ${loc}`,
-        `Cash Bank: $${cash}`,
-        div,
-        "",
-      ];
-      return printReceiptEscPos(lines.join("\n"));
-    }).catch(() => { /* non-critical — printer may not be configured */ });
 
     res.status(201).json({
       shift: await buildActiveShiftPayload(shift),

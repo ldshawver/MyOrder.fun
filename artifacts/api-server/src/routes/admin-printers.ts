@@ -62,7 +62,7 @@ async function loadOrCreateSettings(): Promise<typeof printSettingsTable.$inferS
   if (rows[0]) return rows[0];
   const [row] = await db.insert(printSettingsTable).values({
     receiptEnabled: true,
-    receiptMethod: "local_cups",
+    receiptMethod: "bridge",
     receiptPrinterName: "receipt",
     labelEnabled: true,
     labelMethod: "local_cups",

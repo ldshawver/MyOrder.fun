@@ -125,7 +125,7 @@ describe("/api/admin/printers/settings round-trip", () => {
     expect(get1.status).toBe(200);
     expect(get1.body.ok).toBe(true);
     expect(get1.body.settings.receiptEnabled).toBe(true);
-    expect(get1.body.settings.receiptMethod).toBe("local_cups");
+    expect(get1.body.settings.receiptMethod).toBe("bridge");
     expect(get1.body.settings.receiptPrinterName).toBe("receipt");
     expect(get1.body.settings.labelPrinterName).toBe("Label_Themal_Printer");
     expect(get1.body.settings.autoPrintReceipts).toBe(false);

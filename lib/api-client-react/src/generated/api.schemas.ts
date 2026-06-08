@@ -5,36 +5,6 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
-export interface UploadUrlRequest {
-  /**
-     * Original file name.
-     * @minLength 1
-     */
-  name: string;
-  /**
-     * File size in bytes.
-     * @minimum 1
-     */
-  size: number;
-  /**
-     * MIME type of the file.
-     * @minLength 1
-     */
-  contentType: string;
-}
-
-export interface UploadUrlResponse {
-  /** Presigned GCS URL for PUT upload. */
-  uploadURL: string;
-  /** Normalized object path (e.g. /objects/uploads/uuid). Store this as the URL. */
-  objectPath: string;
-  metadata?: UploadUrlRequest;
-}
-
-export interface ErrorEnvelope {
-  error: string;
-}
-
 export interface HealthStatus {
   status: string;
   sha?: string;
@@ -196,7 +166,6 @@ export interface CatalogItem {
   price: number;
   compareAtPrice?: number;
   stockQuantity?: number;
-  stockUnit?: string | null;
   isAvailable: boolean;
   imageUrl?: string;
   mediaGallery?: CatalogItemMediaGalleryItem[];
@@ -253,7 +222,6 @@ export interface CreateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
-  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
@@ -324,7 +292,6 @@ export interface UpdateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
-  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
@@ -591,6 +558,17 @@ export type CreateOrderBodyCheckoutConfirmation = {
   tipPercent?: number | null;
 };
 
+export type CreateOrderBodyDeliveryMethod = typeof CreateOrderBodyDeliveryMethod[keyof typeof CreateOrderBodyDeliveryMethod] | null;
+
+
+export const CreateOrderBodyDeliveryMethod = {
+  pickup: 'pickup',
+  manual_delivery: 'manual_delivery',
+  uber_direct: 'uber_direct',
+  uber_courier: 'uber_courier',
+  csr_delivery: 'csr_delivery',
+} as const;
+
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
@@ -598,6 +576,8 @@ export interface CreateOrderBody {
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
+  deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  smsOptIn?: boolean | null;
 }
 
 export type CreateDeliveryQuoteBodyItemsItem = {
@@ -771,6 +751,7 @@ export interface UpdateCurrentUserBody {
   notificationPreferences?: UpdateCurrentUserBodyNotificationPreferences;
   /** @maxLength 2048 */
   avatarUrl?: string | null;
+  smsOptIn?: boolean | null;
 }
 
 export type UpdateUserRoleBodyRole = typeof UpdateUserRoleBodyRole[keyof typeof UpdateUserRoleBodyRole];

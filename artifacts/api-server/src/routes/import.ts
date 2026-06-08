@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, adminSettingsTable, inventoryTemplatesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -522,11 +523,6 @@ function isValidUrl(s: string): boolean {
   try { new URL(s); return true; } catch { return false; }
 }
 
-function rejectIfUrl(v: string | null | undefined): string | null {
-  if (!v) return null;
-  return isValidUrl(v) ? null : v;
-}
-
 // ─── Header validation ────────────────────────────────────────────────────────
 type HeaderValidation = {
   ok: boolean;
@@ -781,16 +777,8 @@ router.post(
         errors.push({ row: rowNum, message: "Menu Name is required" });
         continue;
       }
-      if (isValidUrl(rec.alavontName)) {
-        errors.push({ row: rowNum, message: `Menu Name looks like a URL ("${rec.alavontName}") — possible column swap. Expected a product name.` });
-        continue;
-      }
       if (!rec.alavontCategory) {
         errors.push({ row: rowNum, message: "Menu Category is required" });
-        continue;
-      }
-      if (isValidUrl(rec.alavontCategory)) {
-        errors.push({ row: rowNum, message: `Menu Category looks like a URL ("${rec.alavontCategory}") — possible column swap. Expected a category name.` });
         continue;
       }
       const regularPrice = parsePrice(rec.regularPrice);
@@ -816,18 +804,18 @@ router.post(
       const values: typeof catalogItemsTable.$inferInsert = {
         tenantId: houseTenantId,
         // Legacy generic fields (mirrored from alavont fields)
-        name: rejectIfUrl(rec.alavontName) ?? rec.alavontName,
-        description: rejectIfUrl(rec.alavontDesc),
-        category: rejectIfUrl(rec.alavontCategory) ?? rec.alavontCategory,
+        name: rec.alavontName,
+        description: rec.alavontDesc || null,
+        category: rec.alavontCategory,
         sku: rec.luciferCruzInventory || null,
         price: regularPrice.toFixed(2),
         regularPrice: regularPrice.toFixed(2),
         isAvailable: inStock,
         imageUrl: alavontImageUrl,
         // Alavont-facing fields
-        alavontName: rejectIfUrl(rec.alavontName) ?? rec.alavontName,
-        alavontDescription: rejectIfUrl(rec.alavontDesc),
-        alavontCategory: rejectIfUrl(rec.alavontCategory) ?? rec.alavontCategory,
+        alavontName: rec.alavontName,
+        alavontDescription: rec.alavontDesc || null,
+        alavontCategory: rec.alavontCategory,
         alavontImageUrl,
         alavontInStock: inStock,
         alavontId: rec.alavontId || null,
@@ -865,8 +853,11 @@ router.post(
       }
 
       try {
-        // Upsert key: (tenantId, sku) if lucifer_cruz_Inventory present,
-        // else (tenantId, externalMenuId) if alavont_id present
+        // Upsert key priority:
+        //   1. (tenantId, sku) — lucifer_cruz_Inventory matches any existing sku
+        //   2. (tenantId, externalMenuId) — alavont_id matches any existing externalMenuId
+        //   3. (tenantId, luciferCruzName, isWooManaged=true) — catch woo-synced rows that
+        //      represent the same real product so re-importing the CSV reclassifies them.
         let existingId: number | undefined;
         if (rec.luciferCruzInventory) {
           const [existing] = await db
@@ -875,7 +866,8 @@ router.post(
             .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.sku, rec.luciferCruzInventory)))
             .limit(1);
           existingId = existing?.id;
-        } else if (rec.alavontId) {
+        }
+        if (!existingId && rec.alavontId) {
           const [existing] = await db
             .select({ id: catalogItemsTable.id })
             .from(catalogItemsTable)
@@ -885,6 +877,23 @@ router.post(
             ))
             .limit(1);
           existingId = existing?.id;
+        }
+        // Fallback: find an existing woo-managed row whose luciferCruzName matches
+        // the CSV product name — this reclassifies it as a local Alavont item on update.
+        if (!existingId) {
+          const lcName = rec.luciferCruzName || rec.alavontName;
+          if (lcName) {
+            const [existing] = await db
+              .select({ id: catalogItemsTable.id })
+              .from(catalogItemsTable)
+              .where(and(
+                eq(catalogItemsTable.tenantId, houseTenantId),
+                sql`coalesce(${catalogItemsTable.isWooManaged}, false) = true`,
+                eq(catalogItemsTable.luciferCruzName, lcName),
+              ))
+              .limit(1);
+            existingId = existing?.id;
+          }
         }
 
         if (existingId) {
@@ -900,6 +909,7 @@ router.post(
     }
 
     let inventoryTemplates = { inserted: 0, updated: 0 };
+    let inventoryBalances = { created: 0 };
 
     if (!dryRun) {
       try {
@@ -907,6 +917,14 @@ router.post(
       } catch (err) {
         errors.push({ row: 0, message: `inventory template sync failed — ${formatDatabaseError(err)}` });
       }
+
+      // Seed inventory_balances for every local Alavont product × all 4 locations.
+      // This is idempotent and runs after every import so newly-reclassified rows
+      // immediately appear in the inventory grid with qty=0 (backstock uses stock_quantity).
+      try {
+        await ensureStandardLocations(houseTenantId);
+        inventoryBalances = await ensureAllInventoryBalances(houseTenantId);
+      } catch { /* non-fatal — inventory grid still works, just shows no balance rows yet */ }
 
       try {
         await db.insert(auditLogsTable).values({
@@ -929,7 +947,58 @@ router.post(
       } catch { /* audit failure is non-fatal */ }
     }
 
-    res.json({ inserted, updated, skipped, errors, inventoryTemplates });
+    res.json({ inserted, updated, skipped, errors, inventoryTemplates, inventoryBalances });
+  }
+);
+
+// ─── POST /api/admin/catalog/reclassify-local ─────────────────────────────────
+// One-shot fix for rows that are incorrectly flagged is_woo_managed=true but
+// should be local Alavont products (identified by having an alavontId that does
+// NOT start with "wc_" — those are always set by the WooCommerce sync).
+// Also reclassifies rows where isWooManaged=true but alavontId IS NULL (old
+// import code that inferred woo-managed from the presence of LC fields).
+// After reclassifying, seeds inventory_balances for the newly-local rows.
+// Pass ?dryRun=true to preview the count without writing.
+router.post(
+  "/admin/catalog/reclassify-local",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const dryRun = req.query.dryRun === "true";
+    const houseTenantId = await getHouseTenantId();
+
+    // Find rows that are marked woo-managed but whose alavontId was NOT assigned
+    // by the WooCommerce sync (sync always uses the pattern "wc_<numeric_id>").
+    const candidates = await db
+      .select({ id: catalogItemsTable.id, alavontId: catalogItemsTable.alavontId, name: catalogItemsTable.name })
+      .from(catalogItemsTable)
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = true`,
+        sql`(${catalogItemsTable.alavontId} IS NULL OR ${catalogItemsTable.alavontId} NOT LIKE 'wc\\_%' ESCAPE '\\')`,
+      ));
+
+    if (dryRun) {
+      res.json({ dryRun: true, wouldReclassify: candidates.length, rows: candidates.map(r => ({ id: r.id, name: r.name, alavontId: r.alavontId })) });
+      return;
+    }
+
+    let reclassified = 0;
+    for (const row of candidates) {
+      await db
+        .update(catalogItemsTable)
+        .set({ isWooManaged: false, isLocalAlavont: true, isAvailable: true })
+        .where(eq(catalogItemsTable.id, row.id));
+      reclassified++;
+    }
+
+    // Seed inventory_balances for all newly-local and existing local products.
+    let inventoryBalances = { created: 0 };
+    try {
+      await ensureStandardLocations(houseTenantId);
+      inventoryBalances = await ensureAllInventoryBalances(houseTenantId);
+    } catch { /* non-fatal */ }
+
+    res.json({ reclassified, inventoryBalances });
   }
 );
 

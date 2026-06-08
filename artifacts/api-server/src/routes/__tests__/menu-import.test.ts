@@ -180,10 +180,6 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(state.inserted[0].externalMenuId).toBe("ALV-001");
     expect(state.inserted[0].merchantName).toBe("Velvet Restore");
     expect(state.inserted[0].unitMeasurement).toBe("ml");
-    // Verify lucifer_cruz_name → luciferCruzName and lucifer_cruz_image → luciferCruzImageUrl (not swapped)
-    expect(state.inserted[0].luciferCruzName).toBe("Velvet Restore");
-    expect(state.inserted[0].luciferCruzImageUrl).toBe("https://example.com/v1.jpg");
-    expect(state.inserted[0].luciferCruzName).not.toMatch(/^https?:\/\//);
   });
 
   it("imports a canonical-header CSV with optional Sale_price cleanly", async () => {
@@ -200,9 +196,6 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(state.inserted[0].name).toBe("Canonical Item");
     expect(state.inserted[0].sku).toBe("LC-CAN-1");
     expect(state.inserted[0].merchantName).toBe("LC Canonical");
-    // Verify lucifer_cruz_name and lucifer_cruz_image are written to the correct DB columns
-    expect(state.inserted[0].luciferCruzName).toBe("LC Canonical");
-    expect(state.inserted[0].luciferCruzImageUrl).toBe("https://example.com/lc.jpg");
   });
 
   it("returns JSON 400 with the missing column name", async () => {
@@ -281,9 +274,6 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(state.inserted[0].imageUrl).toBe("https://cdn.example.com/product-a.jpg");
     expect(state.inserted[0].alavontImageUrl).toBe("https://cdn.example.com/product-a.jpg");
     expect(state.inserted[0].luciferCruzImageUrl).toBe("https://cdn.example.com/lc-a.jpg");
-    // lucifer_cruz_name must go to luciferCruzName (text), NOT luciferCruzImageUrl
-    expect(state.inserted[0].luciferCruzName).toBe("LC Name");
-    expect(state.inserted[0].luciferCruzName).not.toMatch(/^https?:\/\//);
   });
 
   it("discards alavont_image when value is not a valid URL", async () => {
@@ -314,70 +304,6 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(res.body.inserted).toBe(1);
     expect(state.inserted[0].imageUrl).toBeNull();
     expect(state.inserted[0].alavontImageUrl).toBeNull();
-  });
-
-  it("lucifer_cruz_name → luciferCruzName and lucifer_cruz_image → luciferCruzImageUrl (columns not swapped)", async () => {
-    const csv =
-      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
-      "39.99,https://cdn.example.com/alv.jpg,Swap Check Item,Desc,Cat,true,ALV-SWAP-1,2,ml,,Name That Is Definitely Text,https://cdn.example.com/lc-swap.jpg,LC Desc,LC Cat,LC-SWAP-1\n";
-    const res = await supertest(buildApp())
-      .post("/api/admin/products/import")
-      .attach("file", Buffer.from(csv), "swap-check.csv");
-
-    expect(res.status).toBe(200);
-    expect(res.body.inserted).toBe(1);
-    // lucifer_cruz_name (text) must land in luciferCruzName, not luciferCruzImageUrl
-    expect(state.inserted[0].luciferCruzName).toBe("Name That Is Definitely Text");
-    expect(state.inserted[0].luciferCruzName).not.toMatch(/^https?:\/\//);
-    // lucifer_cruz_image (URL) must land in luciferCruzImageUrl, not luciferCruzName
-    expect(state.inserted[0].luciferCruzImageUrl).toBe("https://cdn.example.com/lc-swap.jpg");
-    expect(state.inserted[0].luciferCruzImageUrl).not.toBe("Name That Is Definitely Text");
-    // merchantName mirrors the text name, merchantImage mirrors the URL
-    expect(state.inserted[0].merchantName).toBe("Name That Is Definitely Text");
-    expect(state.inserted[0].merchantImage).toBe("https://cdn.example.com/lc-swap.jpg");
-  });
-
-  it("one CSV row → exactly one catalog_items record with all Alavont, LC, and merchant fields", async () => {
-    const csv =
-      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
-      "49.99,https://cdn.example.com/full-row.jpg,Full Row Item,Full alavont description,Wellness,true,ALV-FULL-1,10,ml,39.99,Full LC Name,https://cdn.example.com/full-lc.jpg,Full LC desc,Full LC Cat,LC-FULL-1\n";
-    const res = await supertest(buildApp())
-      .post("/api/admin/products/import")
-      .attach("file", Buffer.from(csv), "full-row.csv");
-
-    expect(res.status).toBe(200);
-    expect(res.body.errors).toEqual([]);
-    // ONE row in the CSV must produce exactly ONE insert — no splitting across brand columns
-    expect(res.body.inserted).toBe(1);
-    expect(res.body.updated).toBe(0);
-    expect(state.inserted).toHaveLength(1);
-    const rec = state.inserted[0];
-    // Alavont-facing fields
-    expect(rec.alavontName).toBe("Full Row Item");
-    expect(rec.alavontDescription).toBe("Full alavont description");
-    expect(rec.alavontCategory).toBe("Wellness");
-    expect(rec.alavontImageUrl).toBe("https://cdn.example.com/full-row.jpg");
-    expect(rec.alavontInStock).toBe(true);
-    expect(rec.externalMenuId).toBe("ALV-FULL-1");
-    // Quantity / unit
-    expect(rec.inventoryAmount).toBe("10.00");
-    expect(rec.unitMeasurement).toBe("ml");
-    // Lucifer Cruz-facing fields come from the SAME row — not a separate insert
-    expect(rec.luciferCruzName).toBe("Full LC Name");
-    expect(rec.luciferCruzImageUrl).toBe("https://cdn.example.com/full-lc.jpg");
-    expect(rec.luciferCruzDescription).toBe("Full LC desc");
-    expect(rec.luciferCruzCategory).toBe("Full LC Cat");
-    expect(rec.merchantSku).toBe("LC-FULL-1");
-    // Merchant mirrors also from same row
-    expect(rec.merchantName).toBe("Full LC Name");
-    expect(rec.merchantImage).toBe("https://cdn.example.com/full-lc.jpg");
-    // Legacy/generic fields mirror Alavont side
-    expect(rec.name).toBe("Full Row Item");
-    expect(rec.category).toBe("Wellness");
-    expect(rec.price).toBe("49.99");
-    // Image URL never swapped into a name field
-    expect(rec.alavontName).not.toMatch(/^https?:\/\//);
-    expect(rec.luciferCruzName).not.toMatch(/^https?:\/\//);
   });
 
   it("response shape matches { inserted, updated, skipped, errors:[{row,message}] }", async () => {

@@ -24,8 +24,6 @@ import creditsRouter from "./credits";
 import reportsRouter from "./reports";
 import proposalsRouter from "./proposals";
 import visualEditorRouter from "./visual-editor";
-import webEditorRouter from "./web-editor";
-import storageRouter from "./storage";
 
 const router: IRouter = Router();
 
@@ -35,12 +33,12 @@ router.use(onboardingRouter);
 router.use(tenantsRouter);
 router.use(catalogRouter);
 router.use(ordersRouter);
-router.use(auditRouter);
 router.use(notificationsRouter);
+router.use(shiftsRouter);
+router.use(auditRouter);
 router.use(adminRouter);
 router.use(aiRouter);
 router.use(paymentsRouter);
-router.use(shiftsRouter);
 router.use(printRouter);
 router.use(adminPrintersRouter);
 router.use(importRouter);
@@ -54,7 +52,5 @@ router.use(creditsRouter);
 router.use(reportsRouter);
 router.use(proposalsRouter);
 router.use(visualEditorRouter);
-router.use(webEditorRouter);
-router.use(storageRouter);
 
 export default router;

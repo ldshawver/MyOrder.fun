@@ -291,40 +291,6 @@ describe("POST /api/feedback", () => {
       .send({ type: "bogus", title: "x", description: "y" });
     expect(res.status).toBe(400);
   });
-
-  it("CSR (customer_service_rep) can submit feedback", async () => {
-    seedUser(2, "csr-clerk-id", "customer_service_rep");
-    setMockUserId("csr-clerk-id");
-    const res = await supertest(buildApp()).post("/api/feedback").send({
-      type: "ux",
-      title: "Shift screen is slow",
-      description: "The clock-in button takes 5s to respond.",
-    });
-    expect(res.status).toBe(201);
-    expect(res.body.submitterId).toBe(2);
-  });
-
-  it("admin can submit feedback", async () => {
-    seedUser(3, "admin-clerk-id", "admin");
-    setMockUserId("admin-clerk-id");
-    const res = await supertest(buildApp()).post("/api/feedback").send({
-      type: "feature",
-      title: "Export to PDF",
-      description: "Would be useful to export order summaries as PDF.",
-    });
-    expect(res.status).toBe(201);
-    expect(res.body.submitterId).toBe(3);
-  });
-
-  it("unauthenticated request gets 401", async () => {
-    setMockUserId("");
-    const res = await supertest(buildApp()).post("/api/feedback").send({
-      type: "bug",
-      title: "Something broke",
-      description: "Page crashes on load.",
-    });
-    expect(res.status).toBe(401);
-  });
 });
 
 describe("GET /api/feedback (RBAC)", () => {

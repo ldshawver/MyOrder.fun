@@ -23,10 +23,10 @@ import qrcode from "qrcode";
 import crypto from "crypto";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin"));
 
 // GET /api/admin/stats
-router.get("/admin/stats", requireRole("admin"), async (req, res): Promise<void> => {
+router.get("/admin/stats", async (req, res): Promise<void> => {
   const [{ count: totalTenants }] = await db.select({ count: count() }).from(tenantsTable);
   const [{ count: activeTenants }] = await db.select({ count: count() }).from(tenantsTable).where(eq(tenantsTable.status, "active"));
   const [{ count: pendingOnboarding }] = await db.select({ count: count() }).from(onboardingRequestsTable).where(eq(onboardingRequestsTable.status, "submitted"));
@@ -66,7 +66,7 @@ router.get("/admin/stats", requireRole("admin"), async (req, res): Promise<void>
 });
 
 // POST /api/admin/mfa/setup
-router.post("/admin/mfa/setup", requireRole("admin"), async (req, res): Promise<void> => {
+router.post("/admin/mfa/setup", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const secret = generateSecret();
   const otpauth = generateURI({ label: actor.email ?? "unknown", issuer: "OrderFlow Admin", secret });
@@ -95,7 +95,7 @@ router.post("/admin/mfa/setup", requireRole("admin"), async (req, res): Promise<
 });
 
 // POST /api/admin/mfa/verify
-router.post("/admin/mfa/verify", requireRole("admin"), async (req, res): Promise<void> => {
+router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = VerifyMfaBody.safeParse(req.body);
   if (!body.success) {
@@ -142,7 +142,7 @@ router.post("/admin/mfa/verify", requireRole("admin"), async (req, res): Promise
 // POST /api/admin/purge — Emergency Kill Switch
 // Deletes all active (non-delivered, non-cancelled) orders and their items/notes.
 // Only callable by global_admin. Logs the action.
-router.post("/admin/purge", requireRole("admin"), async (req, res): Promise<void> => {
+router.post("/admin/purge", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const { confirm } = req.body as { confirm?: string };
   if (confirm !== "PURGE_ALL_SESSIONS") {

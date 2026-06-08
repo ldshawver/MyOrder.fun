@@ -306,84 +306,22 @@ export default function AdminSettingsPage() {
             </SettingRow>
 
             <div className="pt-4 mt-4 border-t border-border/40 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Alavont Catalog Banners</div>
-                  <p className="text-xs text-muted-foreground mt-1">These images rotate at the top of the Alavont catalog. Upload a file or paste a URL.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => set("catalogBannerImages", [...(settings.catalogBannerImages ?? []), ""])}
-                  className="shrink-0 h-8 px-3 rounded-xl border border-border/50 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  + Add
-                </button>
+              <div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Alavont Catalog Banners</div>
+                <p className="text-xs text-muted-foreground mt-1">These images rotate at the top of the Alavont catalog.</p>
               </div>
-              {(settings.catalogBannerImages ?? []).map((url, index) => (
-                <div key={index} className="space-y-1.5">
-                  <div className="flex gap-2">
-                    <Input
-                      value={url}
-                      onChange={(e) => {
-                        const next = [...settings.catalogBannerImages];
-                        next[index] = e.target.value;
-                        set("catalogBannerImages", next);
-                      }}
-                      className="rounded-xl h-9 text-sm bg-background/50 flex-1"
-                      placeholder="/banners/banner1.png or https://..."
-                    />
-                    <label className="h-9 px-3 flex items-center cursor-pointer rounded-xl border border-border/50 bg-background/50 text-xs text-muted-foreground hover:text-foreground transition-colors shrink-0">
-                      Upload
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          try {
-                            const token = await getToken();
-                            const urlRes = await fetch("/api/storage/uploads/request-url", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                              body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
-                            });
-                            if (!urlRes.ok) return;
-                            const { uploadURL, objectPath } = await urlRes.json() as { uploadURL: string; objectPath: string };
-                            await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-                            // Mark the object as publicly readable so it can be served on the storefront.
-                            await fetch("/api/storage/uploads/publish", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                              body: JSON.stringify({ objectPath }),
-                            });
-                            const next = [...settings.catalogBannerImages];
-                            next[index] = `/api/storage${objectPath}`;
-                            set("catalogBannerImages", next);
-                          } catch {
-                            // Upload error — user can still enter a URL manually.
-                          }
-                          e.currentTarget.value = "";
-                        }}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = settings.catalogBannerImages.filter((_, i) => i !== index);
-                        set("catalogBannerImages", next);
-                      }}
-                      className="h-9 w-9 flex items-center justify-center rounded-xl border border-border/50 text-muted-foreground hover:text-red-400 hover:border-red-500/30 transition-colors shrink-0 text-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  {url && (
-                    <div className="h-16 rounded-xl overflow-hidden bg-muted/20">
-                      <img src={url} alt={`Banner ${index + 1}`} className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                    </div>
-                  )}
-                </div>
+              {(settings.catalogBannerImages ?? []).slice(0, 6).map((url, index) => (
+                <Input
+                  key={index}
+                  value={url}
+                  onChange={(e) => {
+                    const next = [...settings.catalogBannerImages];
+                    next[index] = e.target.value;
+                    set("catalogBannerImages", next);
+                  }}
+                  className="rounded-xl h-9 text-sm bg-background/50"
+                  placeholder="/banners/banner1.png"
+                />
               ))}
             </div>
           </div>

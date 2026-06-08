@@ -10,6 +10,9 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
+  inventoryBalancesTable,
+  inventoryLocationsTable,
+  csrBoxesTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -148,7 +151,6 @@ const PreviewCartLineInput = z.object({
 
 const PreviewConversionBody = z.object({
   items: z.array(PreviewCartLineInput).min(1),
-  paymentMethod: z.string().optional(),
   confirmation: z.object({
     acceptedAllSalesFinal: z.literal(true),
     confirmedAt: z.string().datetime().optional(),
@@ -156,15 +158,8 @@ const PreviewConversionBody = z.object({
   }),
 }).strict();
 
-function buildConversionPreview(
-  lines: NormalizedCartLine[],
-  confirmation: z.infer<typeof PreviewConversionBody>["confirmation"],
-  paymentMethod?: string,
-) {
+function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"]) {
   const totals = computeCheckoutTotals(lines);
-  const cashDiscount = paymentMethod === "cash"
-    ? Math.round(totals.subtotal * 0.10 * 100) / 100
-    : 0;
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -182,9 +177,8 @@ function buildConversionPreview(
     })),
     pricingSnapshot: {
       subtotal: totals.subtotal,
-      cashDiscount,
       tax: totals.tax,
-      total: parseFloat((totals.total - cashDiscount).toFixed(2)),
+      total: totals.total,
       taxRate: totals.taxRate,
     },
     converted: {
@@ -195,7 +189,6 @@ function buildConversionPreview(
       paymentMethods: [
         { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
         { id: "cash_app", label: "Cash App", promoted: false },
-        { id: "zelle", label: "Zelle", promoted: false, message: process.env.ZELLE_CONTACT ? `Send payment to: ${process.env.ZELLE_CONTACT}` : "Send payment via Zelle." },
         { id: "stripe", label: "Stripe card", promoted: false },
         { id: "venmo", label: "Venmo", promoted: false },
         { id: "gift_card", label: "Gift Card", promoted: false },
@@ -278,27 +271,6 @@ function normalizeCheckoutTip(raw: unknown): number {
 // POST /api/orders/preview-conversion
 // Mandatory pre-payment conversion stage. Zappy/customer clients call this
 // after the final cart confirmation and before any payment UI appears.
-// GET /api/orders/delivery-config
-// Returns delivery capability flags so the checkout UI can conditionally show
-// Uber courier and personal delivery options. Uber is enabled only when all
-// required env credentials are present; personal delivery is enabled only
-// when the active CSR shift has deliveryOptionId === "delivery" in its setupJson.
-router.get("/orders/delivery-config", async (_req, res): Promise<void> => {
-  const uberEnabled = hasUberDirectConfig();
-
-  const [activeShift] = await db
-    .select()
-    .from(labTechShiftsTable)
-    .where(eq(labTechShiftsTable.status, "active"))
-    .orderBy(desc(labTechShiftsTable.clockedInAt))
-    .limit(1);
-
-  const setupJson = activeShift?.setupJson as { deliveryOptionId?: string } | null ?? null;
-  const personalDeliveryEnabled = setupJson?.deliveryOptionId === "delivery";
-
-  res.json({ uberEnabled, personalDeliveryEnabled });
-});
-
 router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = PreviewConversionBody.safeParse(req.body);
@@ -332,7 +304,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const preview = buildConversionPreview(normalizedLines, body.data.confirmation, body.data.paymentMethod);
+  const preview = buildConversionPreview(normalizedLines, body.data.confirmation);
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -453,17 +425,17 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     customerEmail: c?.email ?? "",
     status: order.status,
     paymentStatus: order.paymentStatus,
-    paymentToken: order.paymentToken ?? undefined,
+    paymentToken: order.paymentToken,
     subtotal: parseFloat(order.subtotal as string),
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
-    shippingAddress: order.shippingAddress ?? undefined,
+    shippingAddress: order.shippingAddress,
     deliveryMethod: order.deliveryMethod ?? null,
     deliveryQuoteId: order.deliveryQuoteId ?? null,
     deliveryFee: order.deliveryFee == null ? null : parseFloat(order.deliveryFee as string),
     deliveryCurrency: order.deliveryCurrency ?? null,
     deliveryQuote: order.deliveryQuoteSnapshot ?? null,
-    notes: order.notes ?? undefined,
+    notes: order.notes,
     trackingUrl: order.trackingUrl ?? null,
     trackingSubmittedAt: order.trackingSubmittedAt ?? null,
     handoffChecklist: (order.handoffChecklist as Record<string, boolean> | null) ?? null,
@@ -564,50 +536,6 @@ router.post("/orders", async (req, res): Promise<void> => {
     return;
   }
 
-  // Extract paymentToken from request body — not part of the generated
-  // CreateOrderBody schema, so parsed separately to keep generated files untouched.
-  const paymentMethod = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
-  const rawPaymentToken = (req.body as Record<string, unknown>).paymentToken;
-  const paymentToken: string | null =
-    typeof rawPaymentToken === "string" && rawPaymentToken.length > 0
-      ? rawPaymentToken
-      : null;
-
-  logger.info(
-    { paymentMethod, hasPaymentToken: !!paymentToken, actorId: actor.id },
-    "Order placement: payment method received"
-  );
-
-  // Stripe/card transactions must include a payment token — reject early so a
-  // charge is never attempted on a token-less card order.
-  if (paymentMethod === "stripe" && !paymentToken) {
-    logger.warn(
-      { paymentMethod, actorId: actor.id },
-      "Order validation failed: paymentToken required for Stripe"
-    );
-    res.status(400).json({ error: "paymentToken is required for Stripe card transactions" });
-    return;
-  }
-
-  // Server-side gate: personal (manual) delivery is only allowed when the
-  // active CSR shift has been configured with deliveryOptionId === "delivery".
-  // Only apply to manual_delivery intent: shippingAddress present but no
-  // Uber deliveryQuote (Uber orders have their own independent capability gate).
-  if (body.data.shippingAddress && !body.data.deliveryQuote) {
-    const [activeShift] = await db
-      .select()
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "active"))
-      .orderBy(desc(labTechShiftsTable.clockedInAt))
-      .limit(1);
-    const shiftSetup = activeShift?.setupJson as { deliveryOptionId?: string } | null ?? null;
-    if (shiftSetup?.deliveryOptionId !== "delivery") {
-      logger.warn({ actorId: actor.id }, "Order rejected: personal delivery not enabled in active shift");
-      res.status(400).json({ error: "Personal delivery is not available — the active CSR shift does not have delivery enabled." });
-      return;
-    }
-  }
-
   // Strict re-parse of cart lines: rejects any client-supplied unitPrice,
   // total, sku, merchantName, etc. Server is the single source of truth for
   // pricing — clients send only catalogItemId + quantity.
@@ -656,13 +584,17 @@ router.post("/orders", async (req, res): Promise<void> => {
   const totals = computeCheckoutTotals(normalizedLines);
   const subtotal = totals.subtotal;
   const tax = totals.tax;
+  const merchandiseTotal = totals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
-  const cashDiscount = paymentMethod === "cash"
-    ? Math.round(subtotal * 0.10 * 100) / 100
-    : 0;
-  const merchandiseTotal = Math.round((totals.total - cashDiscount) * 100) / 100;
   const deliveryQuote = body.data.deliveryQuote ?? null;
-  const deliveryFee = deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
+  const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
+  const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
+
+  // CSR personal delivery fee: $5 flat + 3% of subtotal → goes to CSR as gratuity
+  const csrDeliveryFee = isCsrDelivery ? Math.round((5 + 0.03 * subtotal) * 100) / 100 : 0;
+  const deliveryFee = isCsrDelivery
+    ? csrDeliveryFee
+    : deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
   let tipAmount: number;
   try {
     tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
@@ -713,11 +645,13 @@ router.post("/orders", async (req, res): Promise<void> => {
     tax: String(tax.toFixed(2)),
     total: String(finalTotal.toFixed(2)),
     shippingAddress: body.data.shippingAddress ?? null,
-    deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+    deliveryMethod: isCsrDelivery
+      ? "csr_delivery"
+      : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
     deliveryQuoteId: deliveryQuote?.quoteId ?? null,
     deliveryQuoteSnapshot: deliveryQuote ?? null,
-    deliveryFee: deliveryQuote?.fee != null ? String(deliveryFee.toFixed(2)) : null,
-    deliveryCurrency: deliveryQuote?.currency ?? null,
+    deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
+    deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
     notes: body.data.notes ?? null,
     assignedTechId,
     assignedShiftId,
@@ -731,7 +665,6 @@ router.post("/orders", async (req, res): Promise<void> => {
     legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
     legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
     selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-    paymentToken: paymentToken ?? null,
   }).returning();
 
   // Persist dual-brand snapshots on the order for auditability
@@ -799,6 +732,84 @@ router.post("/orders", async (req, res): Promise<void> => {
     });
   }
 
+  // Decrement inventory_balances for the CSR's assigned box location (fire-and-forget).
+  // If no active shift with a box assignment, decrement the Storefront balance instead.
+  // Errors are logged and never surface to the customer.
+  (async () => {
+    try {
+      let targetLocationId: number | null = null;
+
+      if (assignedShiftId) {
+        const [activeShift] = await db
+          .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+          .from(labTechShiftsTable)
+          .where(eq(labTechShiftsTable.id, assignedShiftId))
+          .limit(1);
+
+        if (activeShift?.boxAssignmentId) {
+          const [box] = await db
+            .select({ id: csrBoxesTable.id })
+            .from(csrBoxesTable)
+            .where(
+              and(
+                eq(csrBoxesTable.tenantId, houseTenantId),
+                eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+              )
+            )
+            .limit(1);
+          if (box) {
+            const [loc] = await db
+              .select({ id: inventoryLocationsTable.id })
+              .from(inventoryLocationsTable)
+              .where(
+                and(
+                  eq(inventoryLocationsTable.tenantId, houseTenantId),
+                  eq(inventoryLocationsTable.csrBoxId, box.id),
+                )
+              )
+              .limit(1);
+            targetLocationId = loc?.id ?? null;
+          }
+        }
+      }
+
+      // Fallback: storefront balance when no active CSR box
+      if (!targetLocationId) {
+        const [storefrontLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.type, "storefront"),
+            )
+          )
+          .limit(1);
+        targetLocationId = storefrontLoc?.id ?? null;
+      }
+
+      if (targetLocationId) {
+        for (const line of normalizedLines) {
+          if (!line.catalog_item_id) continue;
+          await db
+            .update(inventoryBalancesTable)
+            .set({
+              quantityOnHand: sql`GREATEST(0, ${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)})`,
+            })
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.productId, line.catalog_item_id),
+                eq(inventoryBalancesTable.locationId, targetLocationId),
+              )
+            );
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, orderId: order.id }, "inventory_balances decrement failed — order unaffected");
+    }
+  })();
+
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {
     const merchantLines = buildMerchantPayloadLines(normalizedLines);
@@ -823,7 +834,9 @@ router.post("/orders", async (req, res): Promise<void> => {
       finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
       legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
       selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+      deliveryMethod: isCsrDelivery
+        ? "csr_delivery"
+        : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
       deliveryQuoteId: deliveryQuote?.quoteId ?? null,
       deliveryFee,
       tipAmount,
@@ -841,6 +854,14 @@ router.post("/orders", async (req, res): Promise<void> => {
     metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
     ipAddress: req.ip,
   });
+
+  // CSR delivery earnings: atomically increment shift csrDeliveryEarnings (fire-and-forget)
+  if (isCsrDelivery && assignedShiftId && csrDeliveryFee > 0) {
+    db.update(labTechShiftsTable)
+      .set({ csrDeliveryEarnings: sql`coalesce(${labTechShiftsTable.csrDeliveryEarnings}, 0) + ${String(csrDeliveryFee.toFixed(2))}` })
+      .where(eq(labTechShiftsTable.id, assignedShiftId))
+      .catch(err => logger.warn({ err, shiftId: assignedShiftId, csrDeliveryFee }, "Failed to update csrDeliveryEarnings"));
+  }
 
   // SMS: confirm to customer + alert assigned tech (fire-and-forget)
   let customerName = "";
@@ -884,9 +905,7 @@ router.post("/orders", async (req, res): Promise<void> => {
         totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
       })),
     });
-  } catch (printErr) {
-    req.log.warn({ orderId: order.id, err: (printErr as Error).message }, "enqueueOrderPrintJobs failed — non-critical");
-  }
+  } catch { /* non-critical */ }
 
   const orderObj = await buildOrderResponse(order);
 

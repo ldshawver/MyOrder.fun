@@ -242,7 +242,6 @@ export const ListCatalogItemsResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -295,7 +294,6 @@ export const CreateCatalogItemBody = zod.object({
   "regularPrice": zod.number().nullish(),
   "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -362,7 +360,6 @@ export const GetCatalogItemResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -415,7 +412,6 @@ export const UpdateCatalogItemBody = zod.object({
   "regularPrice": zod.number().nullish(),
   "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -474,7 +470,6 @@ export const UpdateCatalogItemResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -671,7 +666,9 @@ export const CreateOrderBody = zod.object({
   "sku": zod.string().optional(),
   "special_instructions": zod.string().optional()
 })).optional()
-}).optional()
+}).optional(),
+  "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
+  "smsOptIn": zod.boolean().nullish()
 })
 
 
@@ -1550,7 +1547,8 @@ export const UpdateCurrentUserBody = zod.object({
   "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
   "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
 }).nullish(),
-  "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
+  "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish(),
+  "smsOptIn": zod.boolean().nullish()
 })
 
 export const UpdateCurrentUserResponse = zod.object({
@@ -1859,7 +1857,6 @@ export const AiConciergeChatResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -1922,7 +1919,6 @@ export const AiCatalogSearchResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -1979,7 +1975,6 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
-  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -2366,55 +2361,6 @@ export const CompleteDeliveryHandoffParams = zod.object({
 export const CompleteDeliveryHandoffResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish()
-})
-
-
-/**
- * Returns a presigned GCS URL for direct upload. The client sends JSON
-metadata here, then uploads the file directly to the returned URL.
-
- * @summary Request a presigned URL for file upload
- */
-
-
-
-
-
-export const RequestUploadUrlBody = zod.object({
-  "name": zod.string().min(1).describe('Original file name.'),
-  "size": zod.number().min(1).describe('File size in bytes.'),
-  "contentType": zod.string().min(1).describe('MIME type of the file.')
-})
-
-
-
-
-
-
-export const RequestUploadUrlResponse = zod.object({
-  "uploadURL": zod.string().url().describe('Presigned GCS URL for PUT upload.'),
-  "objectPath": zod.string().describe('Normalized object path (e.g. \/objects\/uploads\/uuid). Store this as the URL.'),
-  "metadata": zod.object({
-  "name": zod.string().min(1).describe('Original file name.'),
-  "size": zod.number().min(1).describe('File size in bytes.'),
-  "contentType": zod.string().min(1).describe('MIME type of the file.')
-}).optional()
-})
-
-
-/**
- * @summary Serve a public asset from PUBLIC_OBJECT_SEARCH_PATHS
- */
-export const GetPublicObjectParams = zod.object({
-  "filePath": zod.coerce.string()
-})
-
-
-/**
- * @summary Serve an object entity from PRIVATE_OBJECT_DIR
- */
-export const GetStorageObjectParams = zod.object({
-  "objectPath": zod.coerce.string()
 })
 
 
