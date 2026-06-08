@@ -148,6 +148,7 @@ const PreviewCartLineInput = z.object({
 
 const PreviewConversionBody = z.object({
   items: z.array(PreviewCartLineInput).min(1),
+  paymentMethod: z.string().optional(),
   confirmation: z.object({
     acceptedAllSalesFinal: z.literal(true),
     confirmedAt: z.string().datetime().optional(),
@@ -155,8 +156,15 @@ const PreviewConversionBody = z.object({
   }),
 }).strict();
 
-function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"]) {
+function buildConversionPreview(
+  lines: NormalizedCartLine[],
+  confirmation: z.infer<typeof PreviewConversionBody>["confirmation"],
+  paymentMethod?: string,
+) {
   const totals = computeCheckoutTotals(lines);
+  const cashDiscount = paymentMethod === "cash"
+    ? Math.round(totals.subtotal * 0.10 * 100) / 100
+    : 0;
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -174,8 +182,9 @@ function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.inf
     })),
     pricingSnapshot: {
       subtotal: totals.subtotal,
+      cashDiscount,
       tax: totals.tax,
-      total: totals.total,
+      total: parseFloat((totals.total - cashDiscount).toFixed(2)),
       taxRate: totals.taxRate,
     },
     converted: {
@@ -302,7 +311,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const preview = buildConversionPreview(normalizedLines, body.data.confirmation);
+  const preview = buildConversionPreview(normalizedLines, body.data.confirmation, body.data.paymentMethod);
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -607,8 +616,11 @@ router.post("/orders", async (req, res): Promise<void> => {
   const totals = computeCheckoutTotals(normalizedLines);
   const subtotal = totals.subtotal;
   const tax = totals.tax;
-  const merchandiseTotal = totals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
+  const cashDiscount = paymentMethod === "cash"
+    ? Math.round(subtotal * 0.10 * 100) / 100
+    : 0;
+  const merchandiseTotal = Math.round((totals.total - cashDiscount) * 100) / 100;
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const deliveryFee = deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
   let tipAmount: number;

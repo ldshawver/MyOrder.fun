@@ -47,20 +47,6 @@ vi.mock("@workspace/db", () => {
   const webPagesTable = { _tableName: "web_pages", id: "id", tenantId: "tenant_id", slug: "slug", status: "status" };
   const webPageVersionsTable = { _tableName: "web_page_versions", pageId: "page_id", versionNumber: "version_number" };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  function makeChain(resolveWith: () => unknown) {
-    const chain: Record<string, unknown> = {};
-    const methods = ["select", "from", "where", "limit", "orderBy", "returning", "insert", "values", "update", "set", "delete", "onConflictDoNothing"];
-    for (const m of methods) {
-      chain[m] = vi.fn(() => ({
-        ...chain,
-        then: (res: (v: unknown) => unknown) => Promise.resolve(resolveWith()).then(res),
-        [Symbol.iterator]: function* () { yield* (resolveWith() as unknown[]); },
-      }));
-    }
-    return chain;
-  }
-
   const db = {
     execute: vi.fn().mockResolvedValue(undefined),
     select: vi.fn((_fields?: unknown) => ({
