@@ -33,6 +33,7 @@ const LC_MAIN_CATEGORIES = [
 const DEFAULT_CATALOG_BANNERS = ["/banners/banner1.png", "/banners/banner2.png", "/banners/banner3.png"];
 
 type ExtendedCatalogItem = CatalogItem & {
+  stockUnit?: string | null;
   luciferCruzName?: string | null;
   luciferCruzCategory?: string | null;
   luciferCruzImageUrl?: string | null;
@@ -78,6 +79,7 @@ interface CatalogItemForm {
   sku: string;
   imageUrl: string;
   stockQuantity: string;
+  stockUnit: string;
   isAvailable: boolean;
   alavontName: string;
   alavontDescription: string;
@@ -277,6 +279,7 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
     { label: "Homie Price ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
     { label: "Stock Quantity", key: "stockQuantity", type: "number" },
+    { label: "Stock Unit", key: "stockUnit", type: "text", placeholder: "#, g, oz, pkg" },
     { label: "Image URL", key: "imageUrl", type: "url", placeholder: "https://example.com/image.jpg" },
     { label: "Internal Name (legacy)", key: "name", type: "text" },
   ];
@@ -447,6 +450,7 @@ function emptyCatalogForm(): CatalogItemForm {
     sku: "",
     imageUrl: "",
     stockQuantity: "0",
+    stockUnit: "",
     isAvailable: true,
     alavontName: "",
     alavontDescription: "",
@@ -494,6 +498,7 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     sku: item.sku || "",
     imageUrl: item.imageUrl || "",
     stockQuantity: item.stockQuantity?.toString() || "0",
+    stockUnit: (item as ExtendedCatalogItem & { stockUnit?: string | null }).stockUnit || "",
     isAvailable: item.isAvailable ?? true,
     alavontName: item.alavontName || "",
     alavontDescription: item.alavontDescription || "",
@@ -737,6 +742,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           imageUrl: form.imageUrl || undefined,
           mediaGallery,
           stockQuantity: parseInt(form.stockQuantity) || 0,
+          stockUnit: form.stockUnit || undefined,
           isAvailable: form.isAvailable,
           alavontName: form.alavontName || undefined,
           alavontDescription: form.alavontDescription || undefined,
@@ -856,6 +862,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
           imageUrl: form.imageUrl || undefined,
           mediaGallery,
           stockQuantity: parseInt(form.stockQuantity) || 0,
+          stockUnit: form.stockUnit || undefined,
           isAvailable: true,
           isFeatured: form.isFeatured,
           isSaleFeatured: form.isSaleFeatured,

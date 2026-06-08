@@ -159,6 +159,7 @@ function mapItem(
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
+    stockUnit: i.stockUnit ?? null,
     isAvailable: i.isAvailable,
     imageUrl: resolvedImageUrl,
     mediaGallery,
@@ -435,6 +436,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     isAvailable: body.data.isAvailable ?? true,
     stockQuantity: String(body.data.stockQuantity ?? 0),
     inventoryAmount: String(body.data.stockQuantity ?? 0),
+    stockUnit: body.data.stockUnit ?? "#",
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
   await syncCatalogItemToInventoryTemplate(row);
   res.status(201).json(mapItem(row));

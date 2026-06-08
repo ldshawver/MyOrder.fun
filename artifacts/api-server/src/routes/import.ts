@@ -522,6 +522,11 @@ function isValidUrl(s: string): boolean {
   try { new URL(s); return true; } catch { return false; }
 }
 
+function rejectIfUrl(v: string | null | undefined): string | null {
+  if (!v) return null;
+  return isValidUrl(v) ? null : v;
+}
+
 // ─── Header validation ────────────────────────────────────────────────────────
 type HeaderValidation = {
   ok: boolean;
@@ -776,8 +781,16 @@ router.post(
         errors.push({ row: rowNum, message: "Menu Name is required" });
         continue;
       }
+      if (isValidUrl(rec.alavontName)) {
+        errors.push({ row: rowNum, message: `Menu Name looks like a URL ("${rec.alavontName}") — possible column swap. Expected a product name.` });
+        continue;
+      }
       if (!rec.alavontCategory) {
         errors.push({ row: rowNum, message: "Menu Category is required" });
+        continue;
+      }
+      if (isValidUrl(rec.alavontCategory)) {
+        errors.push({ row: rowNum, message: `Menu Category looks like a URL ("${rec.alavontCategory}") — possible column swap. Expected a category name.` });
         continue;
       }
       const regularPrice = parsePrice(rec.regularPrice);
@@ -803,18 +816,18 @@ router.post(
       const values: typeof catalogItemsTable.$inferInsert = {
         tenantId: houseTenantId,
         // Legacy generic fields (mirrored from alavont fields)
-        name: rec.alavontName,
-        description: rec.alavontDesc || null,
-        category: rec.alavontCategory,
+        name: rejectIfUrl(rec.alavontName) ?? rec.alavontName,
+        description: rejectIfUrl(rec.alavontDesc),
+        category: rejectIfUrl(rec.alavontCategory) ?? rec.alavontCategory,
         sku: rec.luciferCruzInventory || null,
         price: regularPrice.toFixed(2),
         regularPrice: regularPrice.toFixed(2),
         isAvailable: inStock,
         imageUrl: alavontImageUrl,
         // Alavont-facing fields
-        alavontName: rec.alavontName,
-        alavontDescription: rec.alavontDesc || null,
-        alavontCategory: rec.alavontCategory,
+        alavontName: rejectIfUrl(rec.alavontName) ?? rec.alavontName,
+        alavontDescription: rejectIfUrl(rec.alavontDesc),
+        alavontCategory: rejectIfUrl(rec.alavontCategory) ?? rec.alavontCategory,
         alavontImageUrl,
         alavontInStock: inStock,
         alavontId: rec.alavontId || null,

@@ -166,6 +166,7 @@ export interface CatalogItem {
   price: number;
   compareAtPrice?: number;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable: boolean;
   imageUrl?: string;
   mediaGallery?: CatalogItemMediaGalleryItem[];
@@ -222,6 +223,7 @@ export interface CreateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
@@ -292,6 +294,7 @@ export interface UpdateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];

@@ -18,6 +18,7 @@ export interface CreateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];

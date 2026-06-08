@@ -1,11 +1,29 @@
 import { Router, type IRouter } from "express";
 import { eq, sql } from "drizzle-orm";
+import { randomUUID } from "crypto";
+import multer from "multer";
 import { db, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
 
 const router: IRouter = Router();
+
+// In-memory banner image store — persists for the lifetime of the server process.
+// Clients save URL references in catalogBannerImages; images are served from here.
+const bannerStore = new Map<string, { data: Buffer; contentType: string }>();
+const bannerUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+// PUBLIC — no auth, because banner images are displayed on the public storefront.
+router.get("/admin/settings/banner-image/:id", (req, res): void => {
+  const entry = bannerStore.get(req.params.id);
+  if (!entry) { res.status(404).json({ error: "Not found" }); return; }
+  res.setHeader("Content-Type", entry.contentType);
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.send(entry.data);
+});
+
+// All routes below this line require authentication.
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
@@ -596,6 +614,19 @@ router.put("/admin/concierge-steps", requireRole("global_admin", "admin"), async
     .returning();
   res.json(parseSteps(updated.conciergeIntroSteps));
 });
+
+// POST /api/admin/settings/banner-image — upload a banner image (admin only)
+router.post(
+  "/admin/settings/banner-image",
+  requireRole("global_admin", "admin"),
+  bannerUpload.single("file") as Parameters<typeof router.post>[1],
+  (req, res): void => {
+    if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
+    const id = randomUUID();
+    bannerStore.set(id, { data: req.file.buffer, contentType: req.file.mimetype });
+    res.json({ url: `/api/admin/settings/banner-image/${id}` });
+  }
+);
 
 export { getOrCreateSettings, getDecryptedWooCreds };
 export default router;

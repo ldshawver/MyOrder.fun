@@ -1510,6 +1510,9 @@ components:
           type: number
         stockQuantity:
           type: integer
+        stockUnit:
+          type: string
+          nullable: true
         isAvailable:
           type: boolean
         imageUrl:
@@ -1625,6 +1628,9 @@ components:
           nullable: true
         stockQuantity:
           type: integer
+        stockUnit:
+          type: string
+          nullable: true
         isAvailable:
           type: boolean
         imageUrl:
@@ -1784,6 +1790,9 @@ components:
           nullable: true
         stockQuantity:
           type: integer
+        stockUnit:
+          type: string
+          nullable: true
         isAvailable:
           type: boolean
         imageUrl:

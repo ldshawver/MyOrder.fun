@@ -242,6 +242,7 @@ export const ListCatalogItemsResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -294,6 +295,7 @@ export const CreateCatalogItemBody = zod.object({
   "regularPrice": zod.number().nullish(),
   "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -360,6 +362,7 @@ export const GetCatalogItemResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -412,6 +415,7 @@ export const UpdateCatalogItemBody = zod.object({
   "regularPrice": zod.number().nullish(),
   "homiePrice": zod.number().nullish(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean().optional(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -470,6 +474,7 @@ export const UpdateCatalogItemResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -1854,6 +1859,7 @@ export const AiConciergeChatResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -1916,6 +1922,7 @@ export const AiCatalogSearchResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({
@@ -1972,6 +1979,7 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "price": zod.number(),
   "compareAtPrice": zod.number().optional(),
   "stockQuantity": zod.number().optional(),
+  "stockUnit": zod.string().nullish(),
   "isAvailable": zod.boolean(),
   "imageUrl": zod.string().optional(),
   "mediaGallery": zod.array(zod.object({

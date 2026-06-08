@@ -338,18 +338,27 @@ export default function AdminSettingsPage() {
                         type="file"
                         accept="image/*"
                         className="hidden"
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            if (typeof reader.result === "string") {
+                          try {
+                            const formData = new FormData();
+                            formData.append("file", file);
+                            const token = await getToken();
+                            const res = await fetch("/api/admin/settings/banner-image", {
+                              method: "POST",
+                              headers: { Authorization: `Bearer ${token}` },
+                              body: formData,
+                            });
+                            if (res.ok) {
+                              const data = await res.json();
                               const next = [...settings.catalogBannerImages];
-                              next[index] = reader.result;
+                              next[index] = data.url;
                               set("catalogBannerImages", next);
                             }
-                          };
-                          reader.readAsDataURL(file);
+                          } catch {
+                            // Upload error — user can still enter a URL manually.
+                          }
                           e.currentTarget.value = "";
                         }}
                       />

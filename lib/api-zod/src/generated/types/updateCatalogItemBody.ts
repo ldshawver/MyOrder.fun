@@ -18,6 +18,7 @@ export interface UpdateCatalogItemBody {
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];

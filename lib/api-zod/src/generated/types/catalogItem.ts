@@ -18,6 +18,7 @@ export interface CatalogItem {
   price: number;
   compareAtPrice?: number;
   stockQuantity?: number;
+  stockUnit?: string | null;
   isAvailable: boolean;
   imageUrl?: string;
   mediaGallery?: CatalogItemMediaGalleryItem[];
