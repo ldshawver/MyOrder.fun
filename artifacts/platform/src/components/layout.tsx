@@ -172,7 +172,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["global_admin", "admin"] },
-            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
+            { href: "/admin/sales-packages", label: "Sales & Packages", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },
           ],
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },

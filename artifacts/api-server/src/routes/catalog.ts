@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, asc, sql } from "drizzle-orm";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
+import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, productBundlesTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -387,17 +387,109 @@ router.get("/catalog", async (req, res): Promise<void> => {
   });
 
   const stockByCatalogId = await getLinkedInventoryStockByCatalogId();
-  const total = rows.length;
-  const paged = rows.slice((page - 1) * limit, page * limit);
+
+  // Inject active bundles as synthetic catalog items with "Bundles" category.
+  // Bundles are merged into the pre-pagination pool so pagination totals and
+  // slicing are consistent across pages.
+  // Skip in Lucifer mode or when filtering for an incompatible category.
+  const BUNDLE_ID_OFFSET = 10_000_000;
+  const bundleCategory = "Bundles";
+  const includeBundles = !isLuciferMode && (!query.data.category || query.data.category === bundleCategory);
+  let bundleSynthetic: ReturnType<typeof mapItem>[] = [];
+  if (includeBundles) {
+    try {
+      const activeBundles = await db
+        .select()
+        .from(productBundlesTable)
+        .where(and(eq(productBundlesTable.isActive, true), eq(productBundlesTable.tenantId, actor.tenantId)));
+      bundleSynthetic = activeBundles
+        .filter(b => {
+          if (!query.data.search) return true;
+          const s = query.data.search.toLowerCase();
+          return (
+            b.name.toLowerCase().includes(s) ||
+            (b.description ?? "").toLowerCase().includes(s)
+          );
+        })
+        .map(b => ({
+          id: BUNDLE_ID_OFFSET + b.id,
+          tenantId: b.tenantId,
+          name: b.name,
+          description: b.description ?? undefined,
+          category: bundleCategory,
+          sku: undefined,
+          price: parseFloat(b.price as string),
+          compareAtPrice: undefined,
+          stockQuantity: null,
+          isAvailable: true,
+          imageUrl: undefined,
+          mediaGallery: [],
+          tags: ["bundle"],
+          metadata: { bundleId: b.id, memberItemIds: b.memberItemIds },
+          isFeatured: false,
+          isSaleFeatured: false,
+          internalName: null,
+          internalDescription: null,
+          internalCategory: null,
+          supplierName: null,
+          supplierCategory: null,
+          backendInventoryNotes: null,
+          vendorSku: null,
+          sourceInventoryId: null,
+          costBasis: null,
+          inventoryTrackingData: {},
+          createdAt: b.createdAt,
+          updatedAt: b.updatedAt,
+          alavontName: b.name,
+          alavontDescription: b.description ?? null,
+          alavontCategory: bundleCategory,
+          alavontImageUrl: null,
+          alavontInStock: null,
+          luciferCruzName: null,
+          luciferCruzImageUrl: null,
+          luciferCruzDescription: null,
+          luciferCruzCategory: null,
+          displayName: null,
+          displayDescription: null,
+          displayCategory: null,
+          displayImage: null,
+          merchantBrandName: null,
+          marketingCopy: b.description ?? null,
+          customerSafeName: null,
+          customerSafeDescription: null,
+          upsellCopy: null,
+          promoBadges: ["Bundle"],
+          regularPrice: null,
+          homiePrice: null,
+          receiptName: null,
+          labName: null,
+          merchantProcessingMode: null,
+          merchantProductSource: null,
+          isWooManaged: false,
+          isLocalAlavont: true,
+          wooProductId: null,
+          wooVariationId: null,
+        }));
+    } catch {
+      // bundles table may not exist yet; skip gracefully
+    }
+  }
+
+  // Merge bundles into the mapped item list BEFORE paginating so total/page
+  // semantics are correct and no page overflows the limit.
+  const mappedRows = rows.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id)));
+  const fullList = [...mappedRows, ...bundleSynthetic];
+  const total = fullList.length;
+  const allItems = fullList.slice((page - 1) * limit, page * limit);
 
   req.log.info(
-    { catalogMode, totalInDb: totalBeforeFilters, afterFilters: total, returned: paged.length,
+    { catalogMode, totalInDb: totalBeforeFilters, afterFilters: rows.length, bundles: bundleSynthetic.length, returned: allItems.length,
       category: query.data.category, search: query.data.search },
     "catalog list"
   );
 
   res.json(ListCatalogItemsResponse.parse({
-    items: paged.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id))),
+    items: allItems,
     total,
     page,
     limit,

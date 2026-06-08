@@ -111,3 +111,18 @@ export const catalogItemsTable = pgTable("catalog_items", {
 
 export type CatalogItem = typeof catalogItemsTable.$inferSelect;
 export type InsertCatalogItem = typeof catalogItemsTable.$inferInsert;
+
+export const productBundlesTable = pgTable("product_bundles", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  memberItemIds: jsonb("member_item_ids").notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
+export type ProductBundle = typeof productBundlesTable.$inferSelect;
+export type InsertProductBundle = typeof productBundlesTable.$inferInsert;
