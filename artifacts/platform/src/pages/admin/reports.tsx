@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { BarChart3, Printer } from "lucide-react";
+import { BarChart3, Printer, Loader2 } from "lucide-react";
 
 type ReportsSummary = {
   totals: {
@@ -35,6 +35,10 @@ export default function AdminReports() {
   const [csrId, setCsrId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("all");
   const [product, setProduct] = useState("");
+  const [reprinting, setReprinting] = useState<number | null>(null);
+  const [reprintMsg, setReprintMsg] = useState<{ id: number; ok: boolean; text: string } | null>(null);
+  const [printingReport, setPrintingReport] = useState(false);
+  const [printReportMsg, setPrintReportMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const buildQuery = useCallback(() => {
     const params = new URLSearchParams();
@@ -56,6 +60,62 @@ export default function AdminReports() {
     setData(body);
     setLoading(false);
   }, [buildQuery, getToken]);
+
+  async function reprintReceipt(orderId: number) {
+    setReprinting(orderId);
+    setReprintMsg(null);
+    try {
+      const token = await getToken();
+      const r = await fetch(`/api/print/orders/${orderId}/receipt`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await r.json().catch(() => ({})) as { ok?: boolean; error?: string; printerName?: string };
+      setReprintMsg({ id: orderId, ok: d.ok !== false && r.ok, text: d.ok !== false && r.ok ? `Sent to ${d.printerName ?? "printer"}` : (d.error ?? `Failed (${r.status})`) });
+    } catch (e) {
+      setReprintMsg({ id: orderId, ok: false, text: e instanceof Error ? e.message : "Print failed" });
+    } finally {
+      setReprinting(null);
+    }
+  }
+
+  async function printReport() {
+    if (!data) { window.print(); return; }
+    setPrintingReport(true);
+    setPrintReportMsg(null);
+    try {
+      const token = await getToken();
+      const t = data.totals;
+      const rows = [
+        { label: "Orders", value: String(t.orderCount) },
+        { label: "Revenue", value: `$${Number(t.revenue || 0).toFixed(2)}` },
+        { label: "Avg Order", value: `$${Number(t.averageOrderValue || 0).toFixed(2)}` },
+        { label: "Discrepancy", value: `$${Number(t.discrepancyTotal || 0).toFixed(2)}` },
+        { label: "Active Shifts", value: String(t.activeShiftCount) },
+      ];
+      const dateLabel = dateFrom || dateTo ? `${dateFrom || "…"} – ${dateTo || "…"}` : "All time";
+      const r = await fetch("/api/print/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title: `Sales Report — ${dateLabel}`, rows }),
+      });
+      const d = await r.json().catch(() => ({})) as { ok?: boolean; noprinter?: boolean; printerName?: string };
+      if (d.noprinter) {
+        window.print();
+        setPrintReportMsg({ ok: true, text: "Sent to browser print (no printer configured)" });
+      } else if (d.ok) {
+        setPrintReportMsg({ ok: true, text: `Sent to ${d.printerName ?? "printer"}` });
+      } else {
+        window.print();
+        setPrintReportMsg({ ok: false, text: "Server print failed — browser print opened" });
+      }
+    } catch {
+      window.print();
+      setPrintReportMsg({ ok: false, text: "Server unreachable — browser print opened" });
+    } finally {
+      setPrintingReport(false);
+    }
+  }
 
   async function exportCsv() {
     const token = await getToken();
@@ -82,6 +142,15 @@ export default function AdminReports() {
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => exportCsv().catch(err => setError(err.message))} className="rounded-sm">Export CSV</Button>
           <Button variant="outline" onClick={() => load().catch(err => setError(err.message))} className="rounded-sm">Refresh</Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button variant="outline" onClick={printReport} disabled={printingReport} className="rounded-sm gap-1.5">
+              {printingReport ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />}
+              {printingReport ? "Printing…" : "Print Report"}
+            </Button>
+            {printReportMsg && (
+              <span className={`text-[10px] ${printReportMsg.ok ? "text-emerald-400" : "text-amber-400"}`}>{printReportMsg.text}</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -160,9 +229,25 @@ export default function AdminReports() {
                     <div className="text-sm font-medium">Order #{receipt.orderId}</div>
                     <div className="text-xs text-muted-foreground">{new Date(receipt.createdAt).toLocaleString()} · {receipt.paymentStatus} · {receipt.paymentMethod ?? "cash"}</div>
                   </div>
-                  <Button asChild size="sm" variant="outline" className="rounded-sm">
-                    <a href={`/api/print/orders/${receipt.orderId}/receipt`} target="_blank" rel="noreferrer">Reprint</a>
-                  </Button>
+                  <div className="flex flex-col items-end gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="rounded-sm gap-1"
+                      onClick={() => reprintReceipt(receipt.orderId)}
+                      disabled={reprinting === receipt.orderId}
+                    >
+                      {reprinting === receipt.orderId
+                        ? <Loader2 size={11} className="animate-spin" />
+                        : <Printer size={11} />}
+                      {reprinting === receipt.orderId ? "Printing…" : "Print"}
+                    </Button>
+                    {reprintMsg?.id === receipt.orderId && (
+                      <span className={`text-[10px] ${reprintMsg.ok ? "text-emerald-400" : "text-destructive"}`}>
+                        {reprintMsg.text}
+                      </span>
+                    )}
+                  </div>
                 </div>
               ))}
             </CardContent>

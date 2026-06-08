@@ -84,6 +84,131 @@ router.get("/print/routing", adminOnly, async (_req, res): Promise<void> => {
   });
 });
 
+// ── GET /api/print/status ─────────────────────────────────────────────────
+// CSR-accessible printer health check. Probes the active receipt printer
+// and returns tri-state: "connected" | "idle" | "error" + lastError.
+router.get("/print/status", async (_req, res): Promise<void> => {
+  const operator = await selectActiveOperator();
+  const { primary: receiptPrinter } = await resolveReceiptPrinters(operator?.profile ?? null);
+
+  if (!receiptPrinter) {
+    res.json({ configured: false, connected: false, state: "unconfigured", printerName: null, lastError: null });
+    return;
+  }
+
+  let connected = false;
+  let lastError: string | null = null;
+  try {
+    connected = await probePrinter(receiptPrinter);
+    if (!connected) lastError = "Printer not responding";
+  } catch (e) {
+    lastError = e instanceof Error ? e.message : "Probe failed";
+  }
+
+  res.json({
+    configured: true,
+    connected,
+    state: connected ? "connected" : "error",
+    printerName: receiptPrinter.name,
+    bridgeConfigured: Boolean(receiptPrinter.bridgeUrl),
+    lastError: connected ? null : lastError,
+  });
+});
+
+// ── PATCH /api/print/routing ───────────────────────────────────────────────
+// Records the CSR's current Wi-Fi SSID in printerNetworkConfig.lastSeenSsid,
+// then probes the active printer bridge to confirm network reachability.
+// CSR-accessible.
+router.patch("/print/routing", async (req, res): Promise<void> => {
+  const wifiSsid = String(req.body?.wifiSsid ?? "").trim();
+  if (!wifiSsid) { res.json({ ok: false, note: "No SSID provided" }); return; }
+
+  const [existing] = await db.select().from(adminSettingsTable).limit(1);
+  if (!existing) { res.json({ ok: true, note: "No admin settings" }); return; }
+
+  let cfg: Record<string, unknown> = {};
+  try {
+    const raw = (existing as Record<string, unknown>).printerNetworkConfig;
+    if (typeof raw === "string" && raw) cfg = JSON.parse(raw) as Record<string, unknown>;
+  } catch { /* ignore */ }
+  cfg.lastSeenSsid = wifiSsid;
+  cfg.lastSeenSsidAt = new Date().toISOString();
+
+  await db
+    .update(adminSettingsTable)
+    .set({ printerNetworkConfig: JSON.stringify(cfg) } as Partial<typeof adminSettingsTable.$inferInsert>)
+    .where(eq(adminSettingsTable.id, existing.id));
+
+  // Probe the active receipt printer bridge to confirm this SSID can reach it
+  let bridgeOnline: boolean | null = null;
+  let bridgePrinterName: string | null = null;
+  try {
+    const operator = await selectActiveOperator();
+    const { primary: activePrinter } = await resolveReceiptPrinters(operator?.profile ?? null);
+    if (activePrinter) {
+      bridgePrinterName = activePrinter.name;
+      bridgeOnline = await probePrinter(activePrinter);
+    }
+  } catch { /* probe failure is non-fatal */ }
+
+  res.json({ ok: true, recorded: wifiSsid, bridgeOnline, bridgePrinterName });
+});
+
+// ── POST /api/print/report ────────────────────────────────────────────────
+// Builds a formatted summary receipt from provided rows and dispatches to the
+// active receipt printer. Returns { ok, printerName } or { ok:false, noprinter }.
+// Admin-only (reports page is admin-only).
+router.post("/print/report", adminOnly, async (req, res): Promise<void> => {
+  const settings = await getSettings();
+  const s = settings as Record<string, unknown>;
+  const width = charWidth(s.paperWidth as string ?? "80mm");
+  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+  const body = req.body ?? {};
+  const title = String(body.title ?? "Sales Report").toUpperCase();
+  const rows = Array.isArray(body.rows) ? (body.rows as Array<{ label: string; value: string }>) : [];
+  const footerMessage = s.footerMessage as string | undefined;
+
+  const blocks: import("../lib/print/index").PrintBlock[] = [
+    { type: "logo", lines: logoLines },
+    { type: "spacer" },
+    { type: "center", text: title },
+    { type: "center", text: new Date().toLocaleDateString() },
+    { type: "divider" },
+    ...rows.map(r => ({ type: "kv" as const, left: r.label, right: r.value })),
+    { type: "divider" },
+    ...(footerMessage ? [{ type: "center" as const, text: footerMessage }] : []),
+    { type: "spacer" },
+  ];
+  const renderedText = renderBlocks(blocks, width);
+
+  const operator = await selectActiveOperator();
+  const { primary: receiptPrinter } = await resolveReceiptPrinters(operator?.profile ?? null);
+
+  if (!receiptPrinter) {
+    res.json({ ok: false, noprinter: true });
+    return;
+  }
+
+  const iKey = `report:${Date.now()}:${receiptPrinter.id}`;
+  const [job] = await db
+    .insert(printJobsTable)
+    .values({
+      orderId: null,
+      printerId: receiptPrinter.id,
+      jobType: "receipt",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "text",
+      payloadJson: { type: "report", title },
+      renderedText,
+      operatorUserId: operator?.userId ?? null,
+    })
+    .returning();
+
+  dispatchReceiptJob(job, receiptPrinter).catch(() => {});
+  res.json({ ok: true, printerName: receiptPrinter.name });
+});
+
 // ── GET /api/print/health ─────────────────────────────────────────────────
 router.get("/print/health", adminOnly, async (_req, res): Promise<void> => {
   const printers = await db.select().from(printPrintersTable)

@@ -27,6 +27,7 @@ const SHIFT_OPERATOR_ROLES = [
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
+import { enqueueShiftPrintJob } from "../lib/printService";
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -829,8 +830,6 @@ router.get(
           label: b.label,
         }));
 
-    const csrSettings = await getTenantCsrSettings();
-
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
     let balanceMap: Map<number, number> = new Map();
@@ -846,6 +845,8 @@ router.get(
         );
       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
     }
+
+    const csrSettings = await getTenantCsrSettings();
 
     res.json({
       boxes,
@@ -1114,6 +1115,17 @@ router.post(
       inventoryItemsInserted = legacyInserts.length;
     }
 
+    // Fire-and-forget: print starting inventory sheet
+    if (inventoryItemsInserted > 0) {
+      const operatorName = `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email || "";
+      enqueueShiftPrintJob({
+        type: "shift_start",
+        shiftId: shift.id,
+        operatorName,
+        clockedInAt: new Date(shift.clockedInAt),
+      }).catch(() => {});
+    }
+
     res.status(201).json({
       shift: await buildActiveShiftPayload(shift),
       _debug: {
@@ -1270,6 +1282,41 @@ router.post(
       },
       ipAddress: getClientIp(req),
     });
+
+    // Fire-and-forget: print ending inventory sheet + shift sales summary
+    {
+      const operatorName = `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email || "";
+      const clockedInAt = new Date(activeShift.clockedInAt);
+      const clockedOutAt = new Date();
+      enqueueShiftPrintJob({
+        type: "shift_end",
+        shiftId: updatedShift.id,
+        operatorName,
+        clockedInAt,
+        clockedOutAt,
+        totalSales: stats.totalRevenue,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_sales",
+        shiftId: updatedShift.id,
+        operatorName,
+        clockedInAt,
+        clockedOutAt,
+        totalSales: stats.totalRevenue,
+        cashSales: stats.cashSales,
+        cardSales: stats.cardSales ?? undefined,
+        compSales: stats.compSales ?? undefined,
+        orderCount: stats.orderCount,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_tip_summary",
+        shiftId: updatedShift.id,
+        operatorName,
+        clockedInAt,
+        clockedOutAt,
+        totalSales: stats.totalRevenue,
+      }).catch(() => {});
+    }
 
     res.json({ summary, shift: updatedShift });
   }
@@ -1926,6 +1973,72 @@ router.post(
       })
       .where(eq(labTechShiftsTable.id, shiftId))
       .returning();
+
+    // Fire-and-forget: print supervisor checkout documents
+    // (ending inventory, commission slip, deposit slip)
+    {
+      const supervisorName = `${supervisor.firstName ?? ""} ${supervisor.lastName ?? ""}`.trim() || supervisor.email || "";
+      const ciAt = new Date(shift.clockedInAt);
+      const coAt = shift.clockedOutAt ? new Date(shift.clockedOutAt) : new Date();
+      enqueueShiftPrintJob({
+        type: "shift_end",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+        totalSales: stats.totalRevenue,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_commission",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+        eligibleSalesBase,
+        tipPercent,
+        tipAmount: finalTip,
+        differenceAmount,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_deposit",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+        cashSales: stats.cashSales,
+        cashBankStart,
+        tipAmount: finalTip,
+        depositAmount,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_restock",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_discrepancy",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+      }).catch(() => {});
+      enqueueShiftPrintJob({
+        type: "shift_sales_report",
+        shiftId,
+        operatorName: supervisorName,
+        clockedInAt: ciAt,
+        clockedOutAt: coAt,
+        totalSales: stats.totalRevenue,
+        cashSales: stats.cashSales,
+        cardSales: stats.cardSales ?? undefined,
+        compSales: stats.compSales ?? undefined,
+        orderCount: stats.orderCount,
+        tipAmount: finalTip,
+        depositAmount,
+      }).catch(() => {});
+    }
 
     res.json({
       shift: finalized,
