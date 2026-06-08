@@ -589,6 +589,24 @@ router.post("/orders", async (req, res): Promise<void> => {
     return;
   }
 
+  // Server-side gate: personal (manual) delivery is only allowed when the
+  // active CSR shift has been configured with deliveryOptionId === "delivery".
+  // A shipping address in the request body signals a manual_delivery intent.
+  if (body.data.shippingAddress) {
+    const [activeShift] = await db
+      .select()
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "active"))
+      .orderBy(desc(labTechShiftsTable.clockedInAt))
+      .limit(1);
+    const shiftSetup = activeShift?.setupJson as { deliveryOptionId?: string } | null ?? null;
+    if (shiftSetup?.deliveryOptionId !== "delivery") {
+      logger.warn({ actorId: actor.id }, "Order rejected: personal delivery not enabled in active shift");
+      res.status(400).json({ error: "Personal delivery is not available — the active CSR shift does not have delivery enabled." });
+      return;
+    }
+  }
+
   // Strict re-parse of cart lines: rejects any client-supplied unitPrice,
   // total, sku, merchantName, etc. Server is the single source of truth for
   // pricing — clients send only catalogItemId + quantity.

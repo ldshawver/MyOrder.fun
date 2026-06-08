@@ -106,6 +106,7 @@ export default function NewOrder() {
 
   // Delivery config from server (Uber capability + CSR personal delivery gate)
   const [deliveryConfig, setDeliveryConfig] = useState<{ uberEnabled: boolean; personalDeliveryEnabled: boolean } | null>(null);
+  const [deliveryConfigError, setDeliveryConfigError] = useState(false);
 
   // Zappy / catalog
   const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
@@ -157,11 +158,15 @@ export default function NewOrder() {
   useEffect(() => {
     getToken()
       .then(token => fetch("/api/orders/delivery-config", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
-      .then(res => res.ok ? res.json() : null)
-      .then((cfg: { uberEnabled: boolean; personalDeliveryEnabled: boolean } | null) => {
-        if (cfg) setDeliveryConfig(cfg);
+      .then(res => {
+        if (!res.ok) throw new Error("config-load-failed");
+        return res.json();
       })
-      .catch(() => {});
+      .then((cfg: { uberEnabled: boolean; personalDeliveryEnabled: boolean }) => {
+        setDeliveryConfig(cfg);
+        setDeliveryConfigError(false);
+      })
+      .catch(() => setDeliveryConfigError(true));
   }, [getToken]);
 
   useEffect(() => {
@@ -584,6 +589,11 @@ export default function NewOrder() {
           {/* Step 1: Delivery Selection */}
           {checkoutStep === 1 && (
             <div className="space-y-5 pt-2">
+              {deliveryConfigError && (
+                <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-2.5 text-sm text-destructive">
+                  Could not load delivery options. Pickup is available; other options may be unavailable until the page reloads.
+                </div>
+              )}
               <div className="grid grid-cols-3 gap-3">
                 {[
                   { id: "pickup", label: "Pickup", sub: "Ready at counter", disabled: false },
@@ -593,7 +603,7 @@ export default function NewOrder() {
                     sub: deliveryConfig?.personalDeliveryEnabled
                       ? "CSR brings to you"
                       : "Requires CSR setup",
-                    disabled: deliveryConfig !== null && !deliveryConfig.personalDeliveryEnabled,
+                    disabled: !deliveryConfig?.personalDeliveryEnabled,
                   },
                   {
                     id: "uber_direct",
