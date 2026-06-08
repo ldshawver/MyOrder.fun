@@ -118,6 +118,19 @@ vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock("../../lib/sms", () => ({
+  sendSms: vi.fn().mockResolvedValue(undefined),
+  smsOrderConfirmation: vi.fn().mockReturnValue(""),
+  smsNewOrderAlert: vi.fn().mockReturnValue(""),
+  smsStatusUpdate: vi.fn().mockReturnValue(""),
+  smsTrackingReady: vi.fn().mockReturnValue(""),
+}));
+
+vi.mock("../../lib/printService", () => ({
+  enqueueOrderPrintJobs: vi.fn().mockResolvedValue(undefined),
+  startPrintWorker: vi.fn(),
+}));
+
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
   const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
@@ -394,5 +407,60 @@ describe("SSE event emission via the live route handlers", () => {
     const csrs = await supertest(app).get("/api/orders/active-csrs");
     expect(delayed.status).toBe(403);
     expect(csrs.status).toBe(403);
+  });
+});
+
+describe("POST /api/orders — cash checkout without paymentToken", () => {
+  it("cash order with no paymentToken succeeds (201/200) — Stripe guard must not fire", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({
+        items: [{ catalogItemId: 1, quantity: 1 }],
+        shippingAddress: "123 Main St",
+        notes: "",
+        checkoutConfirmation: {
+          acceptedAllSalesFinal: true,
+          legalDisclaimerText: "All sales final.",
+          paymentMethod: "cash",
+        },
+      });
+    expect([200, 201]).toContain(res.status);
+    const order = dbState.orders[0]!;
+    expect(order.paymentMethod).toBe("cash");
+  });
+
+  it("cash_app order without paymentToken also succeeds", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({
+        items: [{ catalogItemId: 1, quantity: 1 }],
+        shippingAddress: "456 Elm St",
+        notes: "",
+        checkoutConfirmation: {
+          acceptedAllSalesFinal: true,
+          legalDisclaimerText: "All sales final.",
+          paymentMethod: "cash_app",
+        },
+      });
+    expect([200, 201]).toContain(res.status);
+  });
+
+  it("venmo order without paymentToken also succeeds", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({
+        items: [{ catalogItemId: 1, quantity: 1 }],
+        shippingAddress: "789 Oak Ave",
+        notes: "",
+        checkoutConfirmation: {
+          acceptedAllSalesFinal: true,
+          legalDisclaimerText: "All sales final.",
+          paymentMethod: "venmo",
+        },
+      });
+    expect([200, 201]).toContain(res.status);
   });
 });

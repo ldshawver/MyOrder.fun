@@ -261,6 +261,20 @@ beforeEach(() => {
 });
 
 describe("POST /api/feedback", () => {
+  it("CSR role returns 201 — same gate as any approved user", async () => {
+    seedUser(1, "actor-clerk-id", "customer_service_rep");
+    setMockUserId("actor-clerk-id");
+    const res = await supertest(buildApp()).post("/api/feedback").send({
+      type: "general",
+      severity: "low",
+      title: "CSR feedback entry",
+      description: "Testing CSR can submit.",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.submitterId).toBe(1);
+    expect(res.body.status).toBe("new");
+  });
+
   it("creates a ticket for any approved user and notifies all admins", async () => {
     seedUser(1, "actor-clerk-id", "user");
     seedUser(99, "admin1", "admin");

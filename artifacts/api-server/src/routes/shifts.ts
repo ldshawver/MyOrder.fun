@@ -829,6 +829,8 @@ router.get(
           label: b.label,
         }));
 
+    const csrSettings = await getTenantCsrSettings();
+
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
     let balanceMap: Map<number, number> = new Map();
@@ -843,24 +845,6 @@ router.get(
           )
         );
       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
-    }
-
-    // Load CSR settings (pickup instructions, shift locations, delivery options)
-    const csrSettings = await getTenantCsrSettings();
-
-    // Build catalog price map so template rows can fall back to catalog price
-    const catalogItemIds = rows
-      .map(r => r.catalogItemId)
-      .filter((id): id is number => id != null);
-    let catalogPriceMap: Map<number, number> = new Map();
-    if (catalogItemIds.length > 0) {
-      const catalogRows = await db
-        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
-        .from(catalogItemsTable)
-        .where(inArray(catalogItemsTable.id, catalogItemIds));
-      catalogPriceMap = new Map(
-        catalogRows.map(r => [r.id, parseFloat(String(r.price ?? "0"))]),
-      );
     }
 
     res.json({
