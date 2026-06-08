@@ -648,6 +648,12 @@ export default function OrderDetail() {
                 <span className="text-muted-foreground">Subtotal</span>
                 <span className="font-mono">${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
               </div>
+              {order.paymentMethod === "cash" && (
+                <div className="flex justify-between text-sm text-emerald-600">
+                  <span>Cash discount (–10%)</span>
+                  <span className="font-mono">–${(Number(order.subtotal) * 0.10).toFixed(2)}</span>
+                </div>
+              )}
               {order.tax !== undefined && (
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Tax</span>

@@ -278,6 +278,27 @@ function normalizeCheckoutTip(raw: unknown): number {
 // POST /api/orders/preview-conversion
 // Mandatory pre-payment conversion stage. Zappy/customer clients call this
 // after the final cart confirmation and before any payment UI appears.
+// GET /api/orders/delivery-config
+// Returns delivery capability flags so the checkout UI can conditionally show
+// Uber courier and personal delivery options. Uber is enabled only when all
+// required env credentials are present; personal delivery is enabled only
+// when the active CSR shift has deliveryOptionId === "delivery" in its setupJson.
+router.get("/orders/delivery-config", async (_req, res): Promise<void> => {
+  const uberEnabled = hasUberDirectConfig();
+
+  const [activeShift] = await db
+    .select()
+    .from(labTechShiftsTable)
+    .where(eq(labTechShiftsTable.status, "active"))
+    .orderBy(desc(labTechShiftsTable.clockedInAt))
+    .limit(1);
+
+  const setupJson = activeShift?.setupJson as { deliveryOptionId?: string } | null ?? null;
+  const personalDeliveryEnabled = setupJson?.deliveryOptionId === "delivery";
+
+  res.json({ uberEnabled, personalDeliveryEnabled });
+});
+
 router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = PreviewConversionBody.safeParse(req.body);

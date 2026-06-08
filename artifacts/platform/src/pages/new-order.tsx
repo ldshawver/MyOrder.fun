@@ -104,6 +104,9 @@ export default function NewOrder() {
   // Order submitted overlay
   const [orderSubmitted, setOrderSubmitted] = useState<{ orderId: number } | null>(null);
 
+  // Delivery config from server (Uber capability + CSR personal delivery gate)
+  const [deliveryConfig, setDeliveryConfig] = useState<{ uberEnabled: boolean; personalDeliveryEnabled: boolean } | null>(null);
+
   // Zappy / catalog
   const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
   const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
@@ -150,6 +153,16 @@ export default function NewOrder() {
     setDeliveryQuote(null);
     setDeliveryQuoteError(null);
   }, [cart, shippingAddress, deliveryMethod]);
+
+  useEffect(() => {
+    getToken()
+      .then(token => fetch("/api/orders/delivery-config", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then(res => res.ok ? res.json() : null)
+      .then((cfg: { uberEnabled: boolean; personalDeliveryEnabled: boolean } | null) => {
+        if (cfg) setDeliveryConfig(cfg);
+      })
+      .catch(() => {});
+  }, [getToken]);
 
   useEffect(() => {
     getToken()
@@ -573,15 +586,27 @@ export default function NewOrder() {
             <div className="space-y-5 pt-2">
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { id: "pickup", label: "Pickup", sub: "Ready at counter" },
-                  { id: "manual_delivery", label: "Delivery", sub: "CSR brings to you" },
-                  { id: "uber_direct", label: "Uber Courier", sub: "Coming soon", disabled: true },
+                  { id: "pickup", label: "Pickup", sub: "Ready at counter", disabled: false },
+                  {
+                    id: "manual_delivery",
+                    label: "Delivery",
+                    sub: deliveryConfig?.personalDeliveryEnabled
+                      ? "CSR brings to you"
+                      : "Requires CSR setup",
+                    disabled: deliveryConfig !== null && !deliveryConfig.personalDeliveryEnabled,
+                  },
+                  {
+                    id: "uber_direct",
+                    label: "Uber Courier",
+                    sub: deliveryConfig?.uberEnabled ? "Courier dispatch" : "Coming soon",
+                    disabled: !deliveryConfig?.uberEnabled,
+                  },
                 ].map(option => (
                   <button
                     key={option.id}
                     type="button"
                     disabled={option.disabled}
-                    onClick={() => setDeliveryMethod(option.id as DeliveryMethod)}
+                    onClick={() => !option.disabled && setDeliveryMethod(option.id as DeliveryMethod)}
                     className={`rounded-sm border p-3 text-center transition-colors text-sm font-semibold ${
                       option.disabled
                         ? "border-border/30 bg-muted/10 text-muted-foreground/40 cursor-not-allowed"
