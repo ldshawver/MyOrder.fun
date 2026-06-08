@@ -840,12 +840,12 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
   const queryClient = useQueryClient();
 
   const handleCreate = () => {
-    if (!form.name || !form.price || !form.category) return;
+    if (!form.alavontName || !form.price || !form.category) return;
     const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
     createMutation.mutate(
       {
         data: {
-          name: form.name,
+          name: form.name || form.alavontName,
           description: form.description || undefined,
           price: parseFloat(form.price),
           compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
@@ -888,7 +888,7 @@ function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }
           <Button
             className="w-full rounded-xl"
             onClick={handleCreate}
-            disabled={createMutation.isPending || !form.name || !form.price || !form.category}
+            disabled={createMutation.isPending || !form.alavontName || !form.price || !form.category}
           >
             {createMutation.isPending ? "Adding..." : "Add to Menu"}
           </Button>
@@ -986,7 +986,7 @@ export default function Catalog() {
                 key={src}
                 src={src}
                 alt=""
-                className="absolute inset-0 h-full w-full object-cover catalog-hero-frame"
+                className="absolute inset-0 h-full w-full object-contain catalog-hero-frame"
                 style={{ animationDelay: `${index * 10}s` }}
               />
             ))}
