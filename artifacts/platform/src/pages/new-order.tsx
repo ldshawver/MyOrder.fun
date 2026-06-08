@@ -182,8 +182,13 @@ export default function NewOrder() {
   const triggerUpsell = useCallback(() => {
     if (upsellDebounceRef.current) clearTimeout(upsellDebounceRef.current);
     upsellDebounceRef.current = setTimeout(() => {
-      const cartStr = cart.map(c => c.id).sort().join(",");
-      if (cart.length > 0 && cartStr !== prevCartRef.current) {
+      if (cart.length === 0) {
+        prevCartRef.current = "";
+        upsellMutation.reset();
+        return;
+      }
+      const cartStr = cart.map(c => `${c.id}:${c.quantity}`).sort().join(",");
+      if (cartStr !== prevCartRef.current) {
         prevCartRef.current = cartStr;
         upsellMutation.mutate({ data: { cartItemIds: cart.map(c => c.id) } });
       }
