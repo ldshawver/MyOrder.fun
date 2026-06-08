@@ -591,8 +591,9 @@ router.post("/orders", async (req, res): Promise<void> => {
 
   // Server-side gate: personal (manual) delivery is only allowed when the
   // active CSR shift has been configured with deliveryOptionId === "delivery".
-  // A shipping address in the request body signals a manual_delivery intent.
-  if (body.data.shippingAddress) {
+  // Only apply to manual_delivery intent: shippingAddress present but no
+  // Uber deliveryQuote (Uber orders have their own independent capability gate).
+  if (body.data.shippingAddress && !body.data.deliveryQuote) {
     const [activeShift] = await db
       .select()
       .from(labTechShiftsTable)
