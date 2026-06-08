@@ -799,7 +799,6 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    const csrSettings = await getTenantCsrSettings();
     const catalogIds = rows
       .map((row) => row.catalogItemId)
       .filter((id): id is number => typeof id === "number");
@@ -848,20 +847,6 @@ router.get(
     // Load CSR settings (pickup instructions, shift locations, delivery options)
     const csrSettings = await getTenantCsrSettings();
 
-    // Build catalog price map so template rows can fall back to catalog price
-    const catalogItemIds = rows
-      .map(r => r.catalogItemId)
-      .filter((id): id is number => id != null);
-    let catalogPriceMap: Map<number, number> = new Map();
-    if (catalogItemIds.length > 0) {
-      const catalogRows = await db
-        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
-        .from(catalogItemsTable)
-        .where(inArray(catalogItemsTable.id, catalogItemIds));
-      catalogPriceMap = new Map(
-        catalogRows.map(r => [r.id, parseFloat(String(r.price ?? "0"))]),
-      );
-    }
 
     res.json({
       boxes,
