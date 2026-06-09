@@ -125,6 +125,8 @@ export default function NewOrder() {
   const tokenizeMutation = useTokenizePayment();
   const confirmMutation = useConfirmPayment();
   const upsellMutation = useAiUpsellSuggestions();
+  const upsellMutateRef = useRef(upsellMutation.mutate);
+  upsellMutateRef.current = upsellMutation.mutate;
 
   useEffect(() => {
     setConversionPreview(null);
