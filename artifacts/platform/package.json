@@ -82,6 +82,7 @@
     "@clerk/shared": "^4.6.0",
     "@measured/puck": "^0.20.2",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "regexparam": "^3.0.0"
+    "regexparam": "^3.0.0",
+    "uuid": "^14.0.0"
   }
 }
