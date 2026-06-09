@@ -43,6 +43,14 @@ const UpdateCurrentUserBody = z.object({
   notificationPreferences: z.object({
     orderAlerts: z.enum(["in_app", "silent", "sound", "vibrate"]).default("sound"),
     platformUpdates: z.enum(["in_app", "silent", "sound", "vibrate"]).default("in_app"),
+    smsEnabled: z.boolean().optional(),
+    emailEnabled: z.boolean().optional(),
+    pushEnabled: z.boolean().optional(),
+    newOrderAlerts: z.boolean().optional(),
+    orderReadyAlerts: z.boolean().optional(),
+    overdueOrderAlerts: z.boolean().optional(),
+    shiftReminders: z.boolean().optional(),
+    systemHealthAlerts: z.boolean().optional(),
   }).nullish(),
 });
 

@@ -30,6 +30,7 @@ import GlobalAdminTenants from "@/pages/global-admin/tenants";
 import GlobalAdminAudit from "@/pages/global-admin/audit";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
+import NotificationSettings from "@/pages/notification-settings";
 import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
@@ -395,6 +396,7 @@ function AuthenticatedApp() {
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />
+        <Route path="/notification-settings" component={NotificationSettings} />
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
