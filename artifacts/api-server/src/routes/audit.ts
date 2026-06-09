@@ -8,7 +8,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
+router.use("/audit", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
 
 router.get("/audit", async (req, res): Promise<void> => {
   const query = ListAuditLogsQueryParams.safeParse(req.query);

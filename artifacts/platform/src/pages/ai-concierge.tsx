@@ -410,21 +410,26 @@ export default function AiConcierge() {
           // Execute cart actions returned by Zappy
           if (res.cartActions?.length) {
             const allItems = [...(res.suggestedItems ?? []), ...suggestedItems, ...promotedItems];
-            const feedback: string[] = [];
+            const addedParts: string[] = [];
+            const removedParts: string[] = [];
             for (const action of res.cartActions) {
               if (action.action === "add") {
                 const item = allItems.find(i => i.id === action.catalogItemId);
                 if (item) {
-                  addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null }, action.quantity ?? 1);
-                  feedback.push(`+${item.name}`);
+                  const qty = action.quantity ?? 1;
+                  addItem({ id: item.id, name: item.name, price: item.price, imageUrl: item.imageUrl ?? null }, qty);
+                  addedParts.push(qty > 1 ? `${item.name} ×${qty}` : item.name);
                 }
               } else if (action.action === "remove") {
                 removeItem(action.catalogItemId);
-                if (action.itemName) feedback.push(`−${action.itemName}`);
+                if (action.itemName) removedParts.push(action.itemName);
               }
             }
-            if (feedback.length) {
-              setCartActionFeedback(feedback.join(" · "));
+            const parts: string[] = [];
+            if (addedParts.length) parts.push(`Zappy added ${addedParts.join(", ")} to your cart`);
+            if (removedParts.length) parts.push(`Zappy removed ${removedParts.join(", ")} from your cart`);
+            if (parts.length) {
+              setCartActionFeedback(parts.join(" · "));
               setTimeout(() => setCartActionFeedback(null), 3500);
             }
           }
@@ -463,7 +468,7 @@ export default function AiConcierge() {
             exit={{ opacity: 0, y: 8, scale: 0.95 }}
           >
             <ShoppingCart size={14} />
-            Cart updated: {cartActionFeedback}
+            {cartActionFeedback}
           </motion.div>
         )}
       </AnimatePresence>

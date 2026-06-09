@@ -23,7 +23,7 @@ import qrcode from "qrcode";
 import crypto from "crypto";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin"));
+router.use("/admin", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin"));
 
 // GET /api/admin/stats
 router.get("/admin/stats", async (req, res): Promise<void> => {

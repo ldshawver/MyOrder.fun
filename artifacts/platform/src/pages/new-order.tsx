@@ -93,7 +93,9 @@ export default function NewOrder() {
   const [customTip, setCustomTip] = useState("");
   const [csrStatus, setCsrStatus] = useState<CsrDeliveryStatus | null>(null);
   const [smsOptIn, setSmsOptIn] = useState(false);
+  const [zappyOpen, setZappyOpen] = useState(true);
   const prevCartRef = useRef("");
+  const upsellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preloaded = useRef(false);
   const { getToken } = useAuth();
 
@@ -152,12 +154,18 @@ export default function NewOrder() {
   }, [getToken]);
 
   useEffect(() => {
-    const cartStr = cart.map(c=>c.id).sort().join(",");
-    if (cart.length > 0 && cartStr !== prevCartRef.current) {
-      prevCartRef.current = cartStr;
-      upsellMutation.mutate({ data: { cartItemIds: cart.map(c=>c.id) } });
-    }
-  }, [cart, upsellMutation]);
+    const cartKey = cart.map(c => `${c.id}:${c.quantity}`).sort().join(",");
+    if (cartKey === prevCartRef.current) return;
+    prevCartRef.current = cartKey;
+    if (upsellTimerRef.current) clearTimeout(upsellTimerRef.current);
+    if (cart.length === 0) return;
+    upsellTimerRef.current = setTimeout(() => {
+      upsellMutateRef.current({ data: { cartItemIds: cart.map(c => c.id) } });
+    }, 500);
+    return () => {
+      if (upsellTimerRef.current) clearTimeout(upsellTimerRef.current);
+    };
+  }, [cart]);
 
   const addToCart = (item: CatalogItem) => addItem(item);
 
@@ -702,11 +710,22 @@ export default function NewOrder() {
         {/* Zappy Suggestions + Product Conversion */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20">
           <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
-            <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
-              <Sparkles size={16} /> Zappy Suggestions
-            </CardTitle>
+            <button
+              type="button"
+              className="w-full flex items-center justify-between gap-2 text-left"
+              onClick={() => setZappyOpen(o => !o)}
+              aria-expanded={zappyOpen}
+              data-testid="button-zappy-toggle"
+            >
+              <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
+                <Sparkles size={16} /> Zappy Suggests
+              </CardTitle>
+              <span className="text-primary/60 shrink-0">
+                {zappyOpen ? <Minus size={14} /> : <Plus size={14} />}
+              </span>
+            </button>
           </CardHeader>
-          <CardContent className="p-4">
+          {zappyOpen && <CardContent className="p-4">
             {conversionPreview ? (
               <div className="space-y-4" data-testid="conversion-preview">
                 <div className="rounded-sm border border-primary/25 bg-background/95 p-4 space-y-2">
@@ -784,7 +803,7 @@ export default function NewOrder() {
                 ))}
               </div>
             )}
-          </CardContent>
+          </CardContent>}
         </Card>
       </div>
     </div>
