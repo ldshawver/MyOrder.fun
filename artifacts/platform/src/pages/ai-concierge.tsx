@@ -430,7 +430,9 @@ export default function AiConcierge() {
             const parts: string[] = [];
             if (addedParts.length) parts.push(`Zappy added ${addedParts.join(", ")} to your cart`);
             if (removedParts.length) parts.push(`Zappy removed ${removedParts.join(", ")} from your cart`);
-            setCartModifying(false);
+            // Defer clearing so the in-progress indicator is visible for at
+            // least one render tick (React batching collapses same-tick true→false).
+            setTimeout(() => setCartModifying(false), 600);
             if (parts.length) {
               setCartActionFeedback(parts.join(" · "));
               setTimeout(() => setCartActionFeedback(null), 3500);
