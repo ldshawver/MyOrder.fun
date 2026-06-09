@@ -46,7 +46,7 @@ export default function NotificationSettings() {
     if (user) {
       const stored = user.notificationPreferences as Partial<NotifPrefs> | undefined;
       const loaded: NotifPrefs = {
-        smsEnabled: (user.smsOptIn as boolean | undefined) ?? stored?.smsEnabled ?? DEFAULTS.smsEnabled,
+        smsEnabled: stored?.smsEnabled ?? DEFAULTS.smsEnabled,
         emailEnabled: stored?.emailEnabled ?? DEFAULTS.emailEnabled,
         pushEnabled: stored?.pushEnabled ?? DEFAULTS.pushEnabled,
         newOrderAlerts: stored?.newOrderAlerts ?? DEFAULTS.newOrderAlerts,
