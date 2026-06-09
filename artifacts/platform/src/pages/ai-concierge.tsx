@@ -367,6 +367,7 @@ export default function AiConcierge() {
   const [introSteps, setIntroSteps] = useState<IntroStep[]>(DEFAULT_STEPS);
   const [promotedItems, setPromotedItems] = useState<CatalogItem[]>([]);
   const [cartActionFeedback, setCartActionFeedback] = useState<string | null>(null);
+  const [cartModifying, setCartModifying] = useState(false);
 
   useEffect(() => {
     getToken().then(token => {
@@ -409,6 +410,7 @@ export default function AiConcierge() {
 
           // Execute cart actions returned by Zappy
           if (res.cartActions?.length) {
+            setCartModifying(true);
             const allItems = [...(res.suggestedItems ?? []), ...suggestedItems, ...promotedItems];
             const addedParts: string[] = [];
             const removedParts: string[] = [];
@@ -428,6 +430,7 @@ export default function AiConcierge() {
             const parts: string[] = [];
             if (addedParts.length) parts.push(`Zappy added ${addedParts.join(", ")} to your cart`);
             if (removedParts.length) parts.push(`Zappy removed ${removedParts.join(", ")} from your cart`);
+            setCartModifying(false);
             if (parts.length) {
               setCartActionFeedback(parts.join(" · "));
               setTimeout(() => setCartActionFeedback(null), 3500);
@@ -455,6 +458,27 @@ export default function AiConcierge() {
       <SendFlash show={sendFlash} />
       <AnimatePresence>
         {showIntro && <WelcomeModal onClose={() => setShowIntro(false)} steps={introSteps} />}
+      </AnimatePresence>
+
+      {/* In-progress cart modification indicator */}
+      <AnimatePresence>
+        {cartModifying && (
+          <motion.div
+            className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 px-5 py-2.5 rounded-2xl text-sm font-bold text-white flex items-center gap-2 pointer-events-none"
+            style={{ background: "linear-gradient(135deg, #06B6D4, #3B82F6)", boxShadow: "0 8px 32px rgba(6,182,212,0.45)" }}
+            initial={{ opacity: 0, y: 16, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.95 }}
+            data-testid="cart-modifying-indicator"
+          >
+            <div className="flex gap-1 items-center">
+              <div className="w-1.5 h-1.5 rounded-full bg-white/80 animate-pulse" />
+              <div className="w-1.5 h-1.5 rounded-full bg-white/80 animate-pulse delay-75" />
+              <div className="w-1.5 h-1.5 rounded-full bg-white/80 animate-pulse delay-150" />
+            </div>
+            Zappy is updating your cart…
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* Cart action feedback toast */}

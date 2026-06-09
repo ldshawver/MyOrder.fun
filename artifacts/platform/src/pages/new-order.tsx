@@ -314,7 +314,6 @@ export default function NewOrder() {
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
   const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
-  const canCurateSuggestions = user?.role === "customer_service_rep" || user?.role === "admin" || user?.role === "global_admin";
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -788,18 +787,13 @@ export default function NewOrder() {
               <div className="space-y-4">
                 <div className="text-xs text-primary/80 leading-relaxed mb-4">
                   {upsellMutation.data.reasoning || "Based on the current cart, these additions are recommended:"}
-                  {!canCurateSuggestions && (
-                    <span className="block mt-2 text-muted-foreground">
-                      A Customer Service Specialist or supervisor can pick suggested add-ons for this checkout.
-                    </span>
-                  )}
                 </div>
                 {upsellMutation.data.suggestions.map(item => (
                   <div key={item.id} className="bg-background border border-primary/20 p-3 rounded-sm shadow-sm" data-testid={`upsell-item-${item.id}`}>
                     <div className="font-medium text-sm mb-1">{item.name}</div>
                     <div className="flex items-center justify-between mt-2">
                       <div className="text-xs font-mono text-muted-foreground">${item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
-                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 hover:bg-primary/10 hover:text-primary rounded-sm uppercase tracking-wider" onClick={() => addToCart(item)} disabled={!canCurateSuggestions} data-testid={`button-upsell-add-${item.id}`}>
+                      <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 hover:bg-primary/10 hover:text-primary rounded-sm uppercase tracking-wider" onClick={() => addToCart(item)} data-testid={`button-upsell-add-${item.id}`}>
                         Add
                       </Button>
                     </div>
