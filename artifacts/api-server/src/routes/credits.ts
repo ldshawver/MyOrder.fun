@@ -34,9 +34,16 @@ function balanceFor(entries: Array<typeof userCreditsTable.$inferSelect>): numbe
   return entries.reduce((sum, entry) => sum + money(entry.amount), 0);
 }
 
-const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved] as const;
+// Auth chain for admin routes (requireApproved is redundant for staff roles
+// but kept for belt-and-suspenders; requireRole enforces the real gate).
+const adminAuthChain = [requireAuth, loadDbUser, requireDbUser, requireApproved] as const;
 
-router.get("/credits/me", ...authChain, async (req, res): Promise<void> => {
+// Self-view only requires an authenticated DB user — no approval status check.
+// Customers who receive credit before their account is explicitly "approved"
+// must still be able to see their own balance.
+const selfAuthChain = [requireAuth, loadDbUser, requireDbUser] as const;
+
+router.get("/credits/me", ...selfAuthChain, async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const user = req.dbUser!;
   const entries = await db
@@ -57,7 +64,7 @@ router.get("/credits/me", ...authChain, async (req, res): Promise<void> => {
   });
 });
 
-router.get("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/credits", ...adminAuthChain, requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
   await ensureCreditSchema();
   const [users, credits] = await Promise.all([
     db.select().from(usersTable).orderBy(usersTable.createdAt),
@@ -84,7 +91,39 @@ router.get("/admin/credits", ...authChain, requireRole("global_admin", "admin"),
   });
 });
 
-router.post("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+// GET /api/admin/credits/:userId — admin/global_admin view of a single user's credit
+router.get("/admin/credits/:userId", ...adminAuthChain, requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  await ensureCreditSchema();
+  const targetId = Number(req.params.userId);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    res.status(400).json({ error: "userId must be a positive integer" });
+    return;
+  }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, targetId)).limit(1);
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  const entries = await db
+    .select()
+    .from(userCreditsTable)
+    .where(eq(userCreditsTable.userId, targetId))
+    .orderBy(desc(userCreditsTable.createdAt));
+
+  res.json({
+    userId: targetId,
+    balance: balanceFor(entries),
+    entries: entries.map((entry) => ({
+      id: entry.id,
+      amount: money(entry.amount),
+      reason: entry.reason,
+      source: entry.source,
+      createdAt: entry.createdAt,
+    })),
+  });
+});
+
+router.post("/admin/credits", ...adminAuthChain, requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const actor = req.dbUser!;
   const userId = Number(req.body?.userId);
