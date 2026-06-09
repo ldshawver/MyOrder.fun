@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
 import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 import { Link } from "wouter";
 import {
-  ChevronRight, ChevronDown, Package, Clock, RefreshCw, LogIn, LogOut,
+  ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
   Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
   CreditCard, Banknote, ExternalLink,
@@ -25,19 +25,11 @@ function formatCourierEta(value?: string | null) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function orderAge(createdAt: string | null | undefined): string {
-  if (!createdAt) return "—";
-  const t = new Date(createdAt).getTime();
-  if (isNaN(t)) return "—";
-  const diffMs = Date.now() - t;
-  if (diffMs < 0) return "0m";
-  const totalMins = Math.floor(diffMs / 60_000);
-  if (totalMins < 60) return `${totalMins}m`;
-  const h = Math.floor(totalMins / 60);
-  const m = totalMins % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
+const STATUS_TABS = [
+  { value: "pending", label: "Incoming" },
+  { value: "processing", label: "In Progress" },
+  { value: "ready", label: "Ready" },
+];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1354,17 +1346,6 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
               <Clock size={10} />
               {new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
-            <span
-              className={`font-semibold ${
-                (() => {
-                  const mins = Math.floor((Date.now() - new Date(order.createdAt).getTime()) / 60_000);
-                  return mins >= 30 ? "text-red-400" : mins >= 15 ? "text-amber-400" : "text-muted-foreground";
-                })()
-              }`}
-              title="Order age"
-            >
-              {orderAge(order.createdAt)}
-            </span>
             <span>{order.items.length} item{order.items.length !== 1 ? "s" : ""}</span>
             <span className="font-mono font-bold text-foreground">
               ${order.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
@@ -1487,58 +1468,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         </div>
       )}
 
-      {/* ── Primary action bar: Mark Ready → Mark Done ─────────── */}
-      <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2 flex-wrap">
-        {/* Mark Ready — shown while the order is still being prepared (not yet "ready" status, not completed) */}
-        {order.status !== "ready" && fulfillment !== "completed" && (
-          <Button
-            size="sm"
-            className="gap-1.5 text-xs h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-500/50"
-            onClick={async () => {
-              setLoading("mark_ready");
-              try {
-                const token = await getToken();
-                await fetch(`/api/orders/${order.id}/mark-ready`, {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                });
-                onRefresh();
-              } catch { /* non-critical */ } finally { setLoading(null); }
-            }}
-            disabled={loading === "mark_ready"}
-            data-testid={`btn-mark-ready-${order.id}`}
-          >
-            {loading === "mark_ready" ? <RefreshCw size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
-            Mark Ready
-          </Button>
-        )}
-
-        {/* Mark Done — shown when order is ready but not yet completed */}
-        {order.status === "ready" && (
-          <Button
-            size="sm"
-            className="gap-1.5 text-xs h-8 rounded-lg bg-primary/15 border border-primary/30 text-primary hover:bg-primary/25 hover:border-primary/50"
-            onClick={async () => {
-              setLoading("mark_done");
-              try {
-                const token = await getToken();
-                await fetch(`/api/orders/${order.id}/fulfillment`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                  body: JSON.stringify({ fulfillmentStatus: "completed" }),
-                });
-                onRefresh();
-              } catch { /* non-critical */ } finally { setLoading(null); }
-            }}
-            disabled={loading === "mark_done"}
-            data-testid={`btn-mark-done-${order.id}`}
-          >
-            {loading === "mark_done" ? <RefreshCw size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
-            Mark Done
-          </Button>
-        )}
-
-        {/* Print + navigation */}
+      <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
         <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printReceipt} disabled={printingReceipt}>
           {printingReceipt ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
           Receipt
@@ -1552,9 +1482,8 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         </Link>
       </div>
 
-      {/* ── Legacy fine-grained fulfillment steps ────────────────── */}
       <div className="border-t border-border/30 px-4 py-3">
-        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment Steps</div>
+        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
         <div className="flex flex-wrap gap-2">
           {FULFILLMENT_STEPS.map((step, idx) => {
             const isDone = activeStep >= idx;
@@ -1591,98 +1520,12 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   );
 }
 
-// ─── Queue Section ─────────────────────────────────────────────────────────────
-
-function QueueSection({
-  title,
-  badge,
-  badgeColor,
-  loading,
-  orders,
-  onRefresh,
-  getToken,
-  emptyLabel,
-  defaultExpanded = false,
-  collapsed,
-  onToggleCollapse,
-}: {
-  title: string;
-  badge: number;
-  badgeColor: "yellow" | "blue" | "muted";
-  loading: boolean;
-  orders: Order[];
-  onRefresh: () => void;
-  getToken: () => Promise<string | null>;
-  emptyLabel: string;
-  defaultExpanded?: boolean;
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-}) {
-  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
-  const isControlled = collapsed !== undefined;
-  const isOpen = isControlled ? !collapsed : localExpanded;
-  const toggle = isControlled
-    ? (onToggleCollapse ?? (() => {}))
-    : () => setLocalExpanded(v => !v);
-
-  const badgeCls =
-    badgeColor === "yellow"
-      ? "bg-yellow-500/15 text-yellow-300 border-yellow-500/25"
-      : badgeColor === "blue"
-      ? "bg-blue-500/15 text-blue-300 border-blue-500/25"
-      : "bg-muted/20 text-muted-foreground border-border/40";
-
-  return (
-    <div className="glass-card rounded-2xl border border-border/40 overflow-hidden">
-      {/* Section header */}
-      <button
-        onClick={toggle}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.02] transition-colors"
-        aria-expanded={isOpen}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold">{title}</span>
-          {badge > 0 && (
-            <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${badgeCls}`}>
-              {badge}
-            </span>
-          )}
-        </div>
-        {isOpen ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
-      </button>
-
-      {/* Section body */}
-      {isOpen && (
-        <div className="border-t border-border/30 p-3 space-y-3">
-          {loading ? (
-            [1, 2].map(i => <div key={i} className="h-20 animate-pulse bg-muted/20 rounded-xl" />)
-          ) : orders.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
-              <Package size={22} className="text-muted-foreground mb-2" />
-              <p className="text-xs text-muted-foreground">{emptyLabel}</p>
-            </div>
-          ) : (
-            orders.map(order => (
-              <FulfillmentCard
-                key={order.id}
-                order={order as ExtendedOrder}
-                onRefresh={onRefresh}
-                getToken={getToken}
-              />
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function CustomerServiceRepQueue() {
+  const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [showClockOutModal, setShowClockOutModal] = useState(false);
-  const [pastCollapsed, setPastCollapsed] = useState(true);
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -1693,37 +1536,10 @@ export default function CustomerServiceRepQueue() {
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
 
-  const REFETCH_INTERVAL = 20_000;
-
-  const { data: pendingData, isLoading: pendingLoading } = useListOrders(
-    { status: "pending" as ListOrdersStatus, limit: 50 },
-    { query: { queryKey: ["listOrders", "pending"], refetchInterval: REFETCH_INTERVAL } }
+  const { data, isLoading } = useListOrders(
+    { status: activeTab as ListOrdersStatus, limit: 50 },
+    { query: { queryKey: ["listOrders", activeTab] } }
   );
-  const { data: currentData, isLoading: currentLoading } = useListOrders(
-    { status: "processing" as ListOrdersStatus, limit: 50 },
-    { query: { queryKey: ["listOrders", "processing"], refetchInterval: REFETCH_INTERVAL } }
-  );
-  const { data: readyData } = useListOrders(
-    { status: "ready" as ListOrdersStatus, limit: 50 },
-    { query: { queryKey: ["listOrders", "ready"], refetchInterval: 30_000 } }
-  );
-  const { data: completedData } = useListOrders(
-    { status: "completed" as ListOrdersStatus, limit: 50 },
-    { query: { queryKey: ["listOrders", "completed"], refetchInterval: 30_000 } }
-  );
-
-  // Past orders: ready + completed orders since this shift started (client-side filter)
-  const pastOrders = useMemo(() => {
-    const shiftStart = shift?.clockedInAt ? new Date(shift.clockedInAt) : null;
-    const all = [
-      ...(readyData?.orders ?? []),
-      ...(completedData?.orders ?? []),
-    ];
-    if (!shiftStart) return all.slice(0, 20);
-    return all
-      .filter(o => new Date(o.createdAt) >= shiftStart)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [readyData, completedData, shift?.clockedInAt]);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["listOrders"] });
@@ -1854,48 +1670,50 @@ export default function CustomerServiceRepQueue() {
         <DebugPanel entries={debugEntries} onClear={() => setDebugEntries([])} />
       )}
 
-      {/* ── Order queue: three-panel layout ─────────────────────────── */}
+      {/* Order queue */}
       <div className="space-y-4">
+        <div className="flex gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
+          {STATUS_TABS.map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setActiveTab(tab.value)}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold tracking-wider uppercase transition-all ${
+                activeTab === tab.value
+                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
-        {/* ── Pending ──────────────────────────────────────── */}
-        <QueueSection
-          title="Pending"
-          badge={pendingData?.orders?.length ?? 0}
-          badgeColor="yellow"
-          loading={pendingLoading}
-          orders={pendingData?.orders ?? []}
-          onRefresh={refresh}
-          getToken={getToken}
-          emptyLabel="No incoming orders right now."
-          defaultExpanded
-        />
-
-        {/* ── In Progress ──────────────────────────────────── */}
-        <QueueSection
-          title="In Progress"
-          badge={currentData?.orders?.length ?? 0}
-          badgeColor="blue"
-          loading={currentLoading}
-          orders={currentData?.orders ?? []}
-          onRefresh={refresh}
-          getToken={getToken}
-          emptyLabel="No orders currently being prepared."
-          defaultExpanded
-        />
-
-        {/* ── Past (this shift) ─────────────────────────────── */}
-        <QueueSection
-          title="Past This Shift"
-          badge={pastOrders.length}
-          badgeColor="muted"
-          loading={false}
-          orders={pastOrders}
-          onRefresh={refresh}
-          getToken={getToken}
-          emptyLabel={shift ? "No completed orders since clock-in." : "Clock in to track this shift's orders."}
-          collapsed={pastCollapsed}
-          onToggleCollapse={() => setPastCollapsed(v => !v)}
-        />
+        {isLoading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
+            ))}
+          </div>
+        ) : data?.orders?.length === 0 ? (
+          <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-muted/20 flex items-center justify-center mb-4">
+              <Package size={24} className="text-muted-foreground" />
+            </div>
+            <h3 className="font-semibold text-sm mb-1">Queue is clear</h3>
+            <p className="text-xs text-muted-foreground">No {activeTab} orders right now.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {data?.orders?.map((order) => (
+              <FulfillmentCard
+                key={order.id}
+                order={order as ExtendedOrder}
+                onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
+                getToken={getToken}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Clock-out modal — collects ending inventory + cash */}

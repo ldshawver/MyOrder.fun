@@ -18,7 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, AlertTriangle, Info } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -63,10 +63,11 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
 
   const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
   const isCompleted = order.fulfillmentStatus === "completed" || order.status === "delivered";
+  const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
+  const timerExpired = etaForCheck !== null && now >= etaForCheck;
+  const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
 
-  // Only show the "order ready" panel when the order has actually been marked ready or completed —
-  // not merely because the ETA timer expired (overdue orders are still being prepared).
-  if (isReady || isCompleted) {
+  if (isReady || isCompleted || (timerExpired && !isCancelled)) {
     return (
       <div
         className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
@@ -82,7 +83,9 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
           {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
         </div>
         <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
-          {stageMessageFor(order)}
+          {isReady || isCompleted
+            ? stageMessageFor(order)
+            : "Your order should be ready right about now — please head to the counter for pickup."}
         </p>
       </div>
     );
@@ -98,6 +101,9 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   const secs = Math.floor((absMs % 60000) / 1000);
   const pct = eta ? Math.max(0, Math.min(100, ((total - Math.max(0, remaining)) / total) * 100)) : 0;
 
+  // Spec: the hourglass itself is time-driven (sand empties as the
+  // promised window elapses). Stage messaging also progresses:
+  // queued → preparing → almost-ready (>85% of window) → finishing-up.
   const progress = eta ? Math.max(0, Math.min(1, (now - routedAt) / total)) : 0;
   const almostReady = !overdue && progress >= 0.85;
   let message: string;
@@ -118,25 +124,14 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
       className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
       data-testid="customer-hourglass-panel"
     >
-      <AnimatedHourglass size={200} message={message} progress={eta ? Math.min(1, progress) : undefined} />
+      <AnimatedHourglass size={200} message={message} progress={eta ? progress : undefined} />
       {eta && (
         <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
-          {overdue ? (
-            <>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold mb-2" data-testid="overdue-badge">
-                <AlertTriangle size={12} /> Overdue — finishing up now
-              </div>
-              <div className="font-mono text-2xl font-bold text-amber-400">
-                +{String(Math.floor(absMs / 60000)).padStart(2, "0")}:{String(Math.floor((absMs % 60000) / 1000)).padStart(2, "0")} past ETA
-              </div>
-            </>
-          ) : (
-            <div className="font-mono text-3xl font-bold text-primary">
-              {String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}
-            </div>
-          )}
+          <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
+            {overdue ? "almost ready" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+          </div>
           <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
-            {overdue ? "we'll notify you the moment it's ready" : "estimated time remaining"}
+            {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
           </div>
           <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
             <div
@@ -386,8 +381,6 @@ export default function OrderDetail() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
-  const [pickupInstructions, setPickupInstructions] = useState<Array<{ id?: string; label?: string; instructions?: string; text?: string }>>([]);
-  const [pickupInstructionsLoaded, setPickupInstructionsLoaded] = useState(false);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -469,31 +462,6 @@ export default function OrderDetail() {
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [getToken]);
-
-  // Fetch pickup instructions when the order is in ready state so the
-  // customer knows exactly where / how to collect their order.
-  useEffect(() => {
-    if (order?.status !== "ready") { setPickupInstructionsLoaded(false); return; }
-    let cancelled = false;
-    getToken().then(async token => {
-      try {
-        const res = await fetch("/api/orders/pickup-instructions", {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (cancelled) return;
-        if (!res.ok) { setPickupInstructionsLoaded(true); return; }
-        const data = await res.json() as { pickupInstructions?: unknown };
-        const raw = data.pickupInstructions;
-        const instructions = Array.isArray(raw)
-          ? (raw as Array<{ id?: string; label?: string; instructions?: string; text?: string }>)
-          : [];
-        if (!cancelled) { setPickupInstructions(instructions); setPickupInstructionsLoaded(true); }
-      } catch {
-        if (!cancelled) setPickupInstructionsLoaded(true);
-      }
-    }).catch(() => { if (!cancelled) setPickupInstructionsLoaded(true); });
-    return () => { cancelled = true; };
-  }, [order?.status, getToken]);
 
   async function applyCredit() {
     if (!order) return;
@@ -630,45 +598,22 @@ export default function OrderDetail() {
         <SupervisorRoutingPanel order={order as OrderWithTracking} getToken={getToken} onMutated={() => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) })} />
       )}
 
-      {/* ── Ready / Delivered banner + pickup instructions ─────────── */}
+      {/* ── Ready / Delivered banner ───────────────────────────────── */}
       {isCustomer && (isReady || isDelivered) && (
-        <div className="space-y-3">
-          <div className={`rounded-2xl p-5 border flex items-center gap-4 ${
-            isReady
-              ? "bg-emerald-500/10 border-emerald-500/25"
-              : "bg-primary/5 border-primary/20"
-          }`}>
-            <CheckCircle2 size={24} className={isReady ? "text-emerald-400 shrink-0" : "text-primary shrink-0"} />
-            <div>
-              <div className={`font-semibold text-sm ${isReady ? "text-emerald-400" : "text-primary"}`}>
-                {isReady ? "Your Order is Ready!" : "Order Delivered"}
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                {stageMessageFor(order)}
-              </div>
+        <div className={`rounded-2xl p-5 border flex items-center gap-4 ${
+          isReady
+            ? "bg-emerald-500/10 border-emerald-500/25"
+            : "bg-primary/5 border-primary/20"
+        }`}>
+          <CheckCircle2 size={24} className={isReady ? "text-emerald-400 shrink-0" : "text-primary shrink-0"} />
+          <div>
+            <div className={`font-semibold text-sm ${isReady ? "text-emerald-400" : "text-primary"}`}>
+              {isReady ? "Your Order is Ready!" : "Order Delivered"}
+            </div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {stageMessageFor(order)}
             </div>
           </div>
-          {isReady && pickupInstructionsLoaded && (
-            pickupInstructions.length > 0 ? (
-              <div className="rounded-2xl p-5 border border-emerald-500/20 bg-emerald-500/5 space-y-2" data-testid="pickup-instructions">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-widest">
-                  <Info size={13} /> Pickup Instructions
-                </div>
-                {pickupInstructions.map((inst, i) => {
-                  const text = inst.instructions ?? inst.text ?? inst.label ?? "";
-                  if (!text) return null;
-                  return (
-                    <p key={i} className="text-sm text-foreground/90 leading-relaxed">{text}</p>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-2xl p-4 border border-border/30 bg-muted/10 flex items-center gap-2 text-xs text-muted-foreground" data-testid="pickup-instructions-unavailable">
-                <Info size={13} className="shrink-0" />
-                Pickup instructions are not currently available — please head to the counter and a staff member will assist you.
-              </div>
-            )
-          )}
         </div>
       )}
 

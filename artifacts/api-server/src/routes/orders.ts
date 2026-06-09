@@ -1064,46 +1064,13 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
   res.json(await buildOrderResponse(updated));
 });
 
-// GET /api/orders/pickup-instructions — returns configured pickup instruction options for authenticated users.
-// Customers call this when their order transitions to "ready" so they know where/how to pick up.
-router.get("/orders/pickup-instructions", async (_req, res): Promise<void> => {
-  const [settings] = await db
-    .select({ pickupInstructionOptions: adminSettingsTable.pickupInstructionOptions })
-    .from(adminSettingsTable)
-    .limit(1);
-  let options: unknown[] = [];
-  if (settings?.pickupInstructionOptions) {
-    try {
-      const parsed: unknown = JSON.parse(settings.pickupInstructionOptions);
-      // Only accept an actual array — if the admin setting contains valid JSON that
-      // isn't an array (e.g. a bare string), treat it as unconfigured.
-      if (Array.isArray(parsed)) options = parsed;
-    } catch { /* malformed JSON — return empty array */ }
-  }
-  res.json({ pickupInstructions: options });
-});
-
-// POST /api/orders/:id/mark-ready — marks order ready. Accessible to CSRs as well as admins.
-// CSR permission boundary: CSRs can only mark orders that are unassigned or assigned to them.
-router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+// POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
+router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
-
-  // CSRs can only touch orders that are unassigned or explicitly theirs.
-  // Admins and global_admins bypass this check.
-  if (actor.role === "customer_service_rep") {
-    const assignedToActor = order.assignedCsrUserId === actor.id;
-    const unassigned = order.assignedCsrUserId === null;
-    if (!assignedToActor && !unassigned) {
-      res.status(403).json({ error: "You can only mark orders that are assigned to you or unassigned." });
-      return;
-    }
-  }
-
-  const previousStatus = order.status;
   const now = new Date();
   const [updated] = await db.update(ordersTable)
     .set({ readyAt: now, status: "ready", fulfillmentStatus: "ready" })
@@ -1119,8 +1086,7 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin", "cust
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "ORDER_MARKED_READY",
     resourceType: "order", resourceId: String(orderId),
-    metadata: { previousStatus, newStatus: "ready", actorRole: actor.role, actorId: actor.id },
-    ipAddress: req.ip,
+    metadata: {}, ipAddress: req.ip,
   });
   res.json(await buildOrderResponse(updated));
 });
@@ -1498,19 +1464,6 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "cus
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
-  // CSR permission boundary: same rule as mark-ready.
-  // CSRs can only update orders that are unassigned or assigned to them.
-  if (actor.role === "customer_service_rep") {
-    const assignedToActor = order.assignedCsrUserId === actor.id;
-    const unassigned = order.assignedCsrUserId === null;
-    if (!assignedToActor && !unassigned) {
-      res.status(403).json({ error: "You can only update orders that are assigned to you or unassigned." });
-      return;
-    }
-  }
-
-  const previousStatus = order.status;
-  const previousFulfillment = order.fulfillmentStatus;
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
   if (fulfillmentStatus === "preparing") update.status = "processing";
   if (fulfillmentStatus === "ready") update.status = "ready";
@@ -1523,12 +1476,7 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "cus
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "UPDATE_FULFILLMENT_STATUS",
     resourceType: "order", resourceId: String(orderId),
-    metadata: {
-      previousStatus, previousFulfillment,
-      newStatus: updated.status, newFulfillment: fulfillmentStatus,
-      actorRole: actor.role, actorId: actor.id,
-    },
-    ipAddress: req.ip,
+    metadata: { fulfillmentStatus }, ipAddress: req.ip,
   });
 
   // Emit realtime so customer hourglass / CSR queue / supervisor views
