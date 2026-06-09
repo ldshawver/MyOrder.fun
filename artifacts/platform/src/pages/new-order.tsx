@@ -127,6 +127,8 @@ export default function NewOrder() {
   const upsellMutation = useAiUpsellSuggestions();
   const upsellMutateRef = useRef(upsellMutation.mutate);
   upsellMutateRef.current = upsellMutation.mutate;
+  const upsellResetRef = useRef(upsellMutation.reset);
+  upsellResetRef.current = upsellMutation.reset;
 
   useEffect(() => {
     setConversionPreview(null);
@@ -160,7 +162,7 @@ export default function NewOrder() {
     if (cartKey === prevCartRef.current) return;
     prevCartRef.current = cartKey;
     if (upsellTimerRef.current) clearTimeout(upsellTimerRef.current);
-    if (cart.length === 0) return;
+    if (cart.length === 0) { upsellResetRef.current(); return; }
     upsellTimerRef.current = setTimeout(() => {
       upsellMutateRef.current({ data: { cartItemIds: cart.map(c => c.id) } });
     }, 500);
