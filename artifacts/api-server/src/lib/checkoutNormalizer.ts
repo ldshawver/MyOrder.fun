@@ -1,12 +1,7 @@
 import { z } from "zod";
-import { db, catalogItemsTable, productBundlesTable } from "@workspace/db";
+import { db, catalogItemsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger";
-
-// Bundle IDs in the catalog are offset by this constant to avoid collision
-// with real catalogItemsTable IDs. When a line's catalogItemId falls in this
-// range the checkout normalizer resolves it from product_bundles instead.
-export const BUNDLE_ID_OFFSET = 10_000_000;
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
 // Lines coming in over the wire MUST contain only catalogItemId + quantity.
@@ -111,59 +106,6 @@ export async function normalizeCheckoutCart(
   const normalized: NormalizedCartLine[] = [];
 
   for (const line of parsed.data) {
-    // ── Bundle short-circuit ─────────────────────────────────────────────────
-    // Bundle IDs in the catalog use the BUNDLE_ID_OFFSET namespace. Resolve
-    // them from product_bundles and emit a single normalized line using the
-    // bundle's own price — no LC mapping required.
-    if (line.catalogItemId >= BUNDLE_ID_OFFSET) {
-      const bundleId = line.catalogItemId - BUNDLE_ID_OFFSET;
-      const [bundle] = await db
-        .select()
-        .from(productBundlesTable)
-        .where(eq(productBundlesTable.id, bundleId))
-        .limit(1);
-      if (!bundle) {
-        throw new CheckoutMappingError(line.catalogItemId, "catalog_item_not_found",
-          `Bundle ${bundleId} not found`);
-      }
-      if (!bundle.isActive) {
-        throw new CheckoutMappingError(line.catalogItemId, "item_unavailable",
-          `Bundle ${bundleId} is not active`);
-      }
-      const unitPrice = parseFloat(bundle.price as string);
-      normalized.push({
-        catalog_item_id: line.catalogItemId,
-        source_type: "local_mapped",
-        merchant_brand: "lucifer_cruz",
-        catalog_display_name: bundle.name,
-        merchant_name: bundle.name,
-        merchant_sku: null,
-        display_name: bundle.name,
-        display_description: bundle.description ?? "A curated bundle from our catalog.",
-        display_category: "Bundles",
-        display_image: null,
-        merchant_brand_name: "Lucifer Cruz",
-        marketing_copy: bundle.description ?? "",
-        customer_safe_name: bundle.name,
-        customer_safe_description: bundle.description ?? "",
-        upsell_copy: null,
-        promo_badges: ["Bundle"],
-        receipt_alavont_name: bundle.name,
-        receipt_lucifer_name: bundle.name,
-        merchant_image_url: null,
-        unit_price: unitPrice,
-        quantity: line.quantity,
-        line_subtotal: unitPrice * line.quantity,
-        alavont_id: null,
-        woo_product_id: null,
-        woo_variation_id: null,
-        lab_name: null,
-        receipt_name: bundle.name,
-        label_name: null,
-      });
-      continue;
-    }
-
     const [ci] = await db
       .select()
       .from(catalogItemsTable)

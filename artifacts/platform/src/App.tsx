@@ -44,14 +44,12 @@ import AdminCatalogDebug from "@/pages/admin/catalog-debug";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
-import FeedbackPage from "@/pages/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
-import AdminSalesPackages from "@/pages/admin/sales-packages";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
@@ -384,7 +382,6 @@ function AuthenticatedApp() {
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
             <Route path="/admin/visual-editor" component={AdminVisualEditor} />
-            <Route path="/admin/sales-packages" component={AdminSalesPackages} />
           </>
         )}
 
@@ -395,9 +392,6 @@ function AuthenticatedApp() {
             <Route path="/csr-settings/:section" component={CsrSettings} />
           </>
         )}
-
-        {/* Feedback — accessible to all authenticated, approved users */}
-        <Route path="/feedback" component={FeedbackPage} />
 
         {/* User specific */}
         <Route path="/notifications" component={Notifications} />

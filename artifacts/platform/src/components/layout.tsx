@@ -7,8 +7,7 @@ import { useBrand } from "@/contexts/BrandContext";
 import { 
   FlaskConical, 
   ShoppingCart, 
-  MessageSquare,
-  MessageSquarePlus,
+  MessageSquare, 
   ShieldAlert, 
   LogOut,
   Bell,
@@ -101,7 +100,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
-        { href: "/feedback", label: "Give Feedback", icon: MessageSquarePlus, roles: ALL_ROLES },
         {
           href: "/profile",
           label: "User Account",
@@ -172,7 +170,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["global_admin", "admin"] },
-            { href: "/admin/sales-packages", label: "Sales & Packages", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },
+            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
           ],
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },

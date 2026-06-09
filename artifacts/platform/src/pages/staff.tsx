@@ -388,25 +388,10 @@ function ClockInPanel({ onClockIn, getToken }: {
             )}
           </div>
 
-          <div className="md:col-span-3 grid gap-3 md:grid-cols-3">
-            <SetupCheck
-              label="Location"
-              description="You're at the assigned pickup spot and ready to serve customers."
-              checked={locationReady}
-              onChange={setLocationReady}
-            />
-            <SetupCheck
-              label="WiFi Ready"
-              description="Device is on the store Wi-Fi — needed for receipt and label printing."
-              checked={wifiReady}
-              onChange={setWifiReady}
-            />
-            <SetupCheck
-              label="Printers"
-              description="Receipt printer is powered on and connected to the same network."
-              checked={printerReady}
-              onChange={setPrinterReady}
-            />
+          <div className="md:col-span-3 grid gap-3 md:grid-cols-3 md:items-center">
+            <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
+            <SetupCheck label="WiFi Ready" checked={wifiReady} onChange={setWifiReady} />
+            <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
           </div>
 
           {/* CSR personal delivery opt-in */}
@@ -541,24 +526,16 @@ function ClockInPanel({ onClockIn, getToken }: {
   );
 }
 
-function SetupCheck({ label, description, checked, onChange }: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
+function SetupCheck({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <label className={`flex items-start gap-2 rounded-xl border px-3 py-2 cursor-pointer transition-colors ${checked ? "border-emerald-500/40 bg-emerald-500/5" : "border-border/40 bg-background/30"}`}>
+    <label className="flex items-center gap-2 rounded-xl border border-border/40 bg-background/30 px-3 py-2 text-xs font-semibold">
       <input
         type="checkbox"
         checked={checked}
         onChange={e => onChange(e.target.checked)}
-        className="h-4 w-4 mt-0.5 accent-primary shrink-0"
+        className="h-4 w-4"
       />
-      <div>
-        <div className="text-xs font-semibold">{label}</div>
-        {description && <div className="text-[10px] text-muted-foreground leading-relaxed mt-0.5">{description}</div>}
-      </div>
+      {label}
     </label>
   );
 }
@@ -1044,46 +1021,8 @@ function PaymentStat({ label, amount }: { label: string; amount: number }) {
 // ─── Active Shift Panel ───────────────────────────────────────────────────────
 
 function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOut: () => void }) {
-  const { getToken } = useAuth();
   const duration = Math.round((Date.now() - new Date(shift.clockedInAt).getTime()) / 60000);
   const [tab, setTab] = useState<"overview" | "customers" | "inventory">("overview");
-  const [printerStatus, setPrinterStatus] = useState<"checking" | "connected" | "idle" | "error">("checking");
-  const [printerLastError, setPrinterLastError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    async function checkPrinter() {
-      try {
-        const token = await getToken();
-        const r = await fetch("/api/print/status", { headers: { Authorization: `Bearer ${token}` } });
-        if (!mounted) return;
-        if (r.ok) {
-          const d = await r.json() as { configured: boolean; state?: string; lastError?: string | null };
-          const state = (d.state ?? (d.configured ? "connected" : "unconfigured")) as string;
-          if (state === "connected") {
-            setPrinterStatus("connected");
-            setPrinterLastError(null);
-          } else if (state === "unconfigured") {
-            setPrinterStatus("idle");
-            setPrinterLastError("No printer configured");
-          } else if (state === "error") {
-            setPrinterStatus("error");
-            setPrinterLastError(d.lastError ?? "Probe failed");
-          } else {
-            setPrinterStatus("idle");
-            setPrinterLastError(d.lastError ?? null);
-          }
-        } else {
-          setPrinterStatus("error");
-        }
-      } catch {
-        if (mounted) setPrinterStatus("error");
-      }
-    }
-    checkPrinter();
-    const t = setInterval(checkPrinter, 30_000);
-    return () => { mounted = false; clearInterval(t); };
-  }, [getToken]);
 
   const sections: { name: string; items: EnrichedItem[] }[] = [];
   let currentSection: { name: string; items: EnrichedItem[] } | null = null;
@@ -1135,14 +1074,6 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
                   <span className="font-mono">{shift.ipAddress}</span>
                 </>
               )}
-              <span className="opacity-40">·</span>
-              <Printer
-                size={10}
-                className={printerStatus === "connected" ? "text-emerald-400" : printerStatus === "idle" ? "text-amber-400" : printerStatus === "error" ? "text-destructive" : "text-muted-foreground"}
-              />
-              <span className={printerStatus === "connected" ? "text-emerald-400" : printerStatus === "idle" ? "text-amber-400" : printerStatus === "error" ? "text-destructive" : ""}>
-                {printerStatus === "checking" ? "…" : printerStatus === "connected" ? "Connected" : printerStatus === "idle" ? "Idle" : printerLastError ?? "Error"}
-              </span>
             </div>
           </div>
         </div>
@@ -1675,18 +1606,6 @@ export default function CustomerServiceRepQueue() {
       setShift(responseData.shift as ActiveShift);
     }
     await refetchShift();
-
-    // Push Wi-Fi SSID to printer routing config (informational — admin sees CSR's network)
-    if (setup.wifiSsid?.trim()) {
-      try {
-        const t2 = await getToken();
-        await fetch("/api/print/routing", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${t2}` },
-          body: JSON.stringify({ wifiSsid: setup.wifiSsid.trim() }),
-        });
-      } catch { /* non-critical */ }
-    }
   };
 
   const handleClockOutConfirm = async (data: {
