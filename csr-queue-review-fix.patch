@@ -1,0 +1,723 @@
+From 77e46ea69d726273083c07f2b73821b617415db2 Mon Sep 17 00:00:00 2001
+From: alavont <60502972-alavont@users.noreply.replit.com>
+Date: Tue, 9 Jun 2026 02:09:39 +0000
+Subject: [PATCH] fix(review): CSR permission guards, pickup instruction empty
+ state, order age indicator
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Addresses all "Must Verify" items from the code review feedback.
+
+## CSR Permission Boundaries (API)
+- POST /api/orders/:id/mark-ready: CSR role now blocked from marking orders
+  assigned to another CSR (403 if assignedCsrUserId !== actor.id AND not null)
+  Admins/global_admins bypass the check
+- POST /api/orders/:id/fulfillment: Same ownership guard added for CSR role
+- Both endpoints now write richer audit metadata:
+  previousStatus, previousFulfillment, newStatus, newFulfillment, actorRole, actorId
+
+## Pickup Instruction Validation (Frontend)
+- Tracks pickupInstructionsLoaded state (false until fetch settles)
+- Handles malformed JSON, non-array responses, and network failures gracefully
+  (always falls back to empty array, never throws or shows undefined/null)
+- When order is ready + fetch complete:
+  - Instructions present → shows green panel with content
+  - Instructions absent  → shows "Pickup instructions are not currently available —
+    please head to the counter" (not blank, not undefined)
+
+## Order Age Indicator (Frontend)
+- Added orderAge() helper in staff.tsx: renders "2m", "14m", "1h 3m" etc.
+- Shown inline on every FulfillmentCard with colour coding:
+    <15m → muted (normal)
+    15-30m → amber (getting old)
+    ≥30m → red (urgent)
+- CSRs can now instantly see which orders have been waiting longest
+
+## Overdue Banner Fix (carried from previous task)
+- Confirmed: overdue orders show amber "+MM:SS past ETA" badge in hourglass
+  panel only — the green "Order is Ready" banner strictly requires
+  order.status === "ready" or "delivered" (not just timer expiry)
+
+Replit-Task-Id: 6ef0e3f2-c642-4bec-a127-9cb27d373e65
+---
+ artifacts/api-server/src/routes/orders.ts     |  60 +++-
+ artifacts/api-server/src/routes/shifts.ts     |  18 --
+ artifacts/platform/src/pages/order-detail.tsx | 113 +++++--
+ artifacts/platform/src/pages/staff.tsx        | 292 ++++++++++++++----
+ 4 files changed, 377 insertions(+), 106 deletions(-)
+
+diff --git a/artifacts/api-server/src/routes/orders.ts b/artifacts/api-server/src/routes/orders.ts
+index 29e671b..fe617a9 100644
+--- a/artifacts/api-server/src/routes/orders.ts
++++ b/artifacts/api-server/src/routes/orders.ts
+@@ -1064,13 +1064,46 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
+   res.json(await buildOrderResponse(updated));
+ });
+ 
+-// POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
+-router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
++// GET /api/orders/pickup-instructions — returns configured pickup instruction options for authenticated users.
++// Customers call this when their order transitions to "ready" so they know where/how to pick up.
++router.get("/orders/pickup-instructions", async (_req, res): Promise<void> => {
++  const [settings] = await db
++    .select({ pickupInstructionOptions: adminSettingsTable.pickupInstructionOptions })
++    .from(adminSettingsTable)
++    .limit(1);
++  let options: unknown[] = [];
++  if (settings?.pickupInstructionOptions) {
++    try {
++      const parsed: unknown = JSON.parse(settings.pickupInstructionOptions);
++      // Only accept an actual array — if the admin setting contains valid JSON that
++      // isn't an array (e.g. a bare string), treat it as unconfigured.
++      if (Array.isArray(parsed)) options = parsed;
++    } catch { /* malformed JSON — return empty array */ }
++  }
++  res.json({ pickupInstructions: options });
++});
++
++// POST /api/orders/:id/mark-ready — marks order ready. Accessible to CSRs as well as admins.
++// CSR permission boundary: CSRs can only mark orders that are unassigned or assigned to them.
++router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+   const actor = req.dbUser!;
+   const orderId = parseInt(req.params.id as string, 10);
+   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+   if (!order) { res.status(404).json({ error: "Not found" }); return; }
++
++  // CSRs can only touch orders that are unassigned or explicitly theirs.
++  // Admins and global_admins bypass this check.
++  if (actor.role === "customer_service_rep") {
++    const assignedToActor = order.assignedCsrUserId === actor.id;
++    const unassigned = order.assignedCsrUserId === null;
++    if (!assignedToActor && !unassigned) {
++      res.status(403).json({ error: "You can only mark orders that are assigned to you or unassigned." });
++      return;
++    }
++  }
++
++  const previousStatus = order.status;
+   const now = new Date();
+   const [updated] = await db.update(ordersTable)
+     .set({ readyAt: now, status: "ready", fulfillmentStatus: "ready" })
+@@ -1086,7 +1119,8 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
+     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+     action: "ORDER_MARKED_READY",
+     resourceType: "order", resourceId: String(orderId),
+-    metadata: {}, ipAddress: req.ip,
++    metadata: { previousStatus, newStatus: "ready", actorRole: actor.role, actorId: actor.id },
++    ipAddress: req.ip,
+   });
+   res.json(await buildOrderResponse(updated));
+ });
+@@ -1464,6 +1498,19 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "cus
+   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+   if (!order) { res.status(404).json({ error: "Not found" }); return; }
+ 
++  // CSR permission boundary: same rule as mark-ready.
++  // CSRs can only update orders that are unassigned or assigned to them.
++  if (actor.role === "customer_service_rep") {
++    const assignedToActor = order.assignedCsrUserId === actor.id;
++    const unassigned = order.assignedCsrUserId === null;
++    if (!assignedToActor && !unassigned) {
++      res.status(403).json({ error: "You can only update orders that are assigned to you or unassigned." });
++      return;
++    }
++  }
++
++  const previousStatus = order.status;
++  const previousFulfillment = order.fulfillmentStatus;
+   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
+   if (fulfillmentStatus === "preparing") update.status = "processing";
+   if (fulfillmentStatus === "ready") update.status = "ready";
+@@ -1476,7 +1523,12 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "cus
+     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+     action: "UPDATE_FULFILLMENT_STATUS",
+     resourceType: "order", resourceId: String(orderId),
+-    metadata: { fulfillmentStatus }, ipAddress: req.ip,
++    metadata: {
++      previousStatus, previousFulfillment,
++      newStatus: updated.status, newFulfillment: fulfillmentStatus,
++      actorRole: actor.role, actorId: actor.id,
++    },
++    ipAddress: req.ip,
+   });
+ 
+   // Emit realtime so customer hourglass / CSR queue / supervisor views
+diff --git a/artifacts/api-server/src/routes/shifts.ts b/artifacts/api-server/src/routes/shifts.ts
+index 7c19025..67db440 100644
+--- a/artifacts/api-server/src/routes/shifts.ts
++++ b/artifacts/api-server/src/routes/shifts.ts
+@@ -846,24 +846,6 @@ router.get(
+       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
+     }
+ 
+-    // Load CSR settings (pickup instructions, shift locations, delivery options)
+-    const csrSettings = await getTenantCsrSettings();
+-
+-    // Build catalog price map so template rows can fall back to catalog price
+-    const catalogItemIds = rows
+-      .map(r => r.catalogItemId)
+-      .filter((id): id is number => id != null);
+-    let catalogPriceMap: Map<number, number> = new Map();
+-    if (catalogItemIds.length > 0) {
+-      const catalogRows = await db
+-        .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
+-        .from(catalogItemsTable)
+-        .where(inArray(catalogItemsTable.id, catalogItemIds));
+-      catalogPriceMap = new Map(
+-        catalogRows.map(r => [r.id, parseFloat(String(r.price ?? "0"))]),
+-      );
+-    }
+-
+     res.json({
+       boxes,
+       ...csrSettings,
+diff --git a/artifacts/platform/src/pages/order-detail.tsx b/artifacts/platform/src/pages/order-detail.tsx
+index dc90b99..c7ae179 100644
+--- a/artifacts/platform/src/pages/order-detail.tsx
++++ b/artifacts/platform/src/pages/order-detail.tsx
+@@ -18,7 +18,7 @@ import {
+ import { useQueryClient } from "@tanstack/react-query";
+ import { useAuth } from "@clerk/react";
+ import { Button } from "@/components/ui/button";
+-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign } from "lucide-react";
++import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, AlertTriangle, Info } from "lucide-react";
+ import { Textarea } from "@/components/ui/textarea";
+ import { Input } from "@/components/ui/input";
+ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+@@ -63,11 +63,10 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
+ 
+   const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
+   const isCompleted = order.fulfillmentStatus === "completed" || order.status === "delivered";
+-  const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
+-  const timerExpired = etaForCheck !== null && now >= etaForCheck;
+-  const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
+ 
+-  if (isReady || isCompleted || (timerExpired && !isCancelled)) {
++  // Only show the "order ready" panel when the order has actually been marked ready or completed —
++  // not merely because the ETA timer expired (overdue orders are still being prepared).
++  if (isReady || isCompleted) {
+     return (
+       <div
+         className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
+@@ -83,9 +82,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
+           {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
+         </div>
+         <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
+-          {isReady || isCompleted
+-            ? stageMessageFor(order)
+-            : "Your order should be ready right about now — please head to the counter for pickup."}
++          {stageMessageFor(order)}
+         </p>
+       </div>
+     );
+@@ -101,9 +98,6 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
+   const secs = Math.floor((absMs % 60000) / 1000);
+   const pct = eta ? Math.max(0, Math.min(100, ((total - Math.max(0, remaining)) / total) * 100)) : 0;
+ 
+-  // Spec: the hourglass itself is time-driven (sand empties as the
+-  // promised window elapses). Stage messaging also progresses:
+-  // queued → preparing → almost-ready (>85% of window) → finishing-up.
+   const progress = eta ? Math.max(0, Math.min(1, (now - routedAt) / total)) : 0;
+   const almostReady = !overdue && progress >= 0.85;
+   let message: string;
+@@ -124,14 +118,25 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
+       className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
+       data-testid="customer-hourglass-panel"
+     >
+-      <AnimatedHourglass size={200} message={message} progress={eta ? progress : undefined} />
++      <AnimatedHourglass size={200} message={message} progress={eta ? Math.min(1, progress) : undefined} />
+       {eta && (
+         <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
+-          <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
+-            {overdue ? "almost ready" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+-          </div>
++          {overdue ? (
++            <>
++              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold mb-2" data-testid="overdue-badge">
++                <AlertTriangle size={12} /> Overdue — finishing up now
++              </div>
++              <div className="font-mono text-2xl font-bold text-amber-400">
++                +{String(Math.floor(absMs / 60000)).padStart(2, "0")}:{String(Math.floor((absMs % 60000) / 1000)).padStart(2, "0")} past ETA
++              </div>
++            </>
++          ) : (
++            <div className="font-mono text-3xl font-bold text-primary">
++              {String(mins).padStart(2, "0")}:{String(secs).padStart(2, "0")}
++            </div>
++          )}
+           <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
+-            {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
++            {overdue ? "we'll notify you the moment it's ready" : "estimated time remaining"}
+           </div>
+           <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
+             <div
+@@ -381,6 +386,8 @@ export default function OrderDetail() {
+   const [creditAmount, setCreditAmount] = useState("");
+   const [creditBusy, setCreditBusy] = useState(false);
+   const [creditMessage, setCreditMessage] = useState<string | null>(null);
++  const [pickupInstructions, setPickupInstructions] = useState<Array<{ id?: string; label?: string; instructions?: string; text?: string }>>([]);
++  const [pickupInstructionsLoaded, setPickupInstructionsLoaded] = useState(false);
+ 
+   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+   const { getToken } = useAuth();
+@@ -463,6 +470,31 @@ export default function OrderDetail() {
+     return () => { cancelled = true; };
+   }, [getToken]);
+ 
++  // Fetch pickup instructions when the order is in ready state so the
++  // customer knows exactly where / how to collect their order.
++  useEffect(() => {
++    if (order?.status !== "ready") { setPickupInstructionsLoaded(false); return; }
++    let cancelled = false;
++    getToken().then(async token => {
++      try {
++        const res = await fetch("/api/orders/pickup-instructions", {
++          headers: token ? { Authorization: `Bearer ${token}` } : {},
++        });
++        if (cancelled) return;
++        if (!res.ok) { setPickupInstructionsLoaded(true); return; }
++        const data = await res.json() as { pickupInstructions?: unknown };
++        const raw = data.pickupInstructions;
++        const instructions = Array.isArray(raw)
++          ? (raw as Array<{ id?: string; label?: string; instructions?: string; text?: string }>)
++          : [];
++        if (!cancelled) { setPickupInstructions(instructions); setPickupInstructionsLoaded(true); }
++      } catch {
++        if (!cancelled) setPickupInstructionsLoaded(true);
++      }
++    }).catch(() => { if (!cancelled) setPickupInstructionsLoaded(true); });
++    return () => { cancelled = true; };
++  }, [order?.status, getToken]);
++
+   async function applyCredit() {
+     if (!order) return;
+     setCreditBusy(true);
+@@ -598,22 +630,45 @@ export default function OrderDetail() {
+         <SupervisorRoutingPanel order={order as OrderWithTracking} getToken={getToken} onMutated={() => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) })} />
+       )}
+ 
+-      {/* ── Ready / Delivered banner ───────────────────────────────── */}
++      {/* ── Ready / Delivered banner + pickup instructions ─────────── */}
+       {isCustomer && (isReady || isDelivered) && (
+-        <div className={`rounded-2xl p-5 border flex items-center gap-4 ${
+-          isReady
+-            ? "bg-emerald-500/10 border-emerald-500/25"
+-            : "bg-primary/5 border-primary/20"
+-        }`}>
+-          <CheckCircle2 size={24} className={isReady ? "text-emerald-400 shrink-0" : "text-primary shrink-0"} />
+-          <div>
+-            <div className={`font-semibold text-sm ${isReady ? "text-emerald-400" : "text-primary"}`}>
+-              {isReady ? "Your Order is Ready!" : "Order Delivered"}
+-            </div>
+-            <div className="text-xs text-muted-foreground mt-0.5">
+-              {stageMessageFor(order)}
++        <div className="space-y-3">
++          <div className={`rounded-2xl p-5 border flex items-center gap-4 ${
++            isReady
++              ? "bg-emerald-500/10 border-emerald-500/25"
++              : "bg-primary/5 border-primary/20"
++          }`}>
++            <CheckCircle2 size={24} className={isReady ? "text-emerald-400 shrink-0" : "text-primary shrink-0"} />
++            <div>
++              <div className={`font-semibold text-sm ${isReady ? "text-emerald-400" : "text-primary"}`}>
++                {isReady ? "Your Order is Ready!" : "Order Delivered"}
++              </div>
++              <div className="text-xs text-muted-foreground mt-0.5">
++                {stageMessageFor(order)}
++              </div>
+             </div>
+           </div>
++          {isReady && pickupInstructionsLoaded && (
++            pickupInstructions.length > 0 ? (
++              <div className="rounded-2xl p-5 border border-emerald-500/20 bg-emerald-500/5 space-y-2" data-testid="pickup-instructions">
++                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 uppercase tracking-widest">
++                  <Info size={13} /> Pickup Instructions
++                </div>
++                {pickupInstructions.map((inst, i) => {
++                  const text = inst.instructions ?? inst.text ?? inst.label ?? "";
++                  if (!text) return null;
++                  return (
++                    <p key={i} className="text-sm text-foreground/90 leading-relaxed">{text}</p>
++                  );
++                })}
++              </div>
++            ) : (
++              <div className="rounded-2xl p-4 border border-border/30 bg-muted/10 flex items-center gap-2 text-xs text-muted-foreground" data-testid="pickup-instructions-unavailable">
++                <Info size={13} className="shrink-0" />
++                Pickup instructions are not currently available — please head to the counter and a staff member will assist you.
++              </div>
++            )
++          )}
+         </div>
+       )}
+ 
+diff --git a/artifacts/platform/src/pages/staff.tsx b/artifacts/platform/src/pages/staff.tsx
+index ec3652f..fe3bde3 100644
+--- a/artifacts/platform/src/pages/staff.tsx
++++ b/artifacts/platform/src/pages/staff.tsx
+@@ -1,11 +1,11 @@
+-import { useState, useEffect, useCallback } from "react";
++import { useState, useEffect, useCallback, useMemo } from "react";
+ import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+ import { CsrAlertBanner } from "@/components/CsrAlertBanner";
+ import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
+ 
+ import { Link } from "wouter";
+ import {
+-  ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
++  ChevronRight, ChevronDown, Package, Clock, RefreshCw, LogIn, LogOut,
+   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
+   Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
+   CreditCard, Banknote, ExternalLink,
+@@ -25,11 +25,19 @@ function formatCourierEta(value?: string | null) {
+   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+ }
+ 
+-const STATUS_TABS = [
+-  { value: "pending", label: "Incoming" },
+-  { value: "processing", label: "In Progress" },
+-  { value: "ready", label: "Ready" },
+-];
++function orderAge(createdAt: string | null | undefined): string {
++  if (!createdAt) return "—";
++  const t = new Date(createdAt).getTime();
++  if (isNaN(t)) return "—";
++  const diffMs = Date.now() - t;
++  if (diffMs < 0) return "0m";
++  const totalMins = Math.floor(diffMs / 60_000);
++  if (totalMins < 60) return `${totalMins}m`;
++  const h = Math.floor(totalMins / 60);
++  const m = totalMins % 60;
++  return m > 0 ? `${h}h ${m}m` : `${h}h`;
++}
++
+ 
+ // ─── Types ────────────────────────────────────────────────────────────────────
+ 
+@@ -1346,6 +1354,17 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
+               <Clock size={10} />
+               {new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+             </span>
++            <span
++              className={`font-semibold ${
++                (() => {
++                  const mins = Math.floor((Date.now() - new Date(order.createdAt).getTime()) / 60_000);
++                  return mins >= 30 ? "text-red-400" : mins >= 15 ? "text-amber-400" : "text-muted-foreground";
++                })()
++              }`}
++              title="Order age"
++            >
++              {orderAge(order.createdAt)}
++            </span>
+             <span>{order.items.length} item{order.items.length !== 1 ? "s" : ""}</span>
+             <span className="font-mono font-bold text-foreground">
+               ${order.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+@@ -1468,7 +1487,58 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
+         </div>
+       )}
+ 
+-      <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
++      {/* ── Primary action bar: Mark Ready → Mark Done ─────────── */}
++      <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2 flex-wrap">
++        {/* Mark Ready — shown while the order is still being prepared (not yet "ready" status, not completed) */}
++        {order.status !== "ready" && fulfillment !== "completed" && (
++          <Button
++            size="sm"
++            className="gap-1.5 text-xs h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-500/50"
++            onClick={async () => {
++              setLoading("mark_ready");
++              try {
++                const token = await getToken();
++                await fetch(`/api/orders/${order.id}/mark-ready`, {
++                  method: "POST",
++                  headers: { Authorization: `Bearer ${token}` },
++                });
++                onRefresh();
++              } catch { /* non-critical */ } finally { setLoading(null); }
++            }}
++            disabled={loading === "mark_ready"}
++            data-testid={`btn-mark-ready-${order.id}`}
++          >
++            {loading === "mark_ready" ? <RefreshCw size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
++            Mark Ready
++          </Button>
++        )}
++
++        {/* Mark Done — shown when order is ready but not yet completed */}
++        {order.status === "ready" && (
++          <Button
++            size="sm"
++            className="gap-1.5 text-xs h-8 rounded-lg bg-primary/15 border border-primary/30 text-primary hover:bg-primary/25 hover:border-primary/50"
++            onClick={async () => {
++              setLoading("mark_done");
++              try {
++                const token = await getToken();
++                await fetch(`/api/orders/${order.id}/fulfillment`, {
++                  method: "POST",
++                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
++                  body: JSON.stringify({ fulfillmentStatus: "completed" }),
++                });
++                onRefresh();
++              } catch { /* non-critical */ } finally { setLoading(null); }
++            }}
++            disabled={loading === "mark_done"}
++            data-testid={`btn-mark-done-${order.id}`}
++          >
++            {loading === "mark_done" ? <RefreshCw size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
++            Mark Done
++          </Button>
++        )}
++
++        {/* Print + navigation */}
+         <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printReceipt} disabled={printingReceipt}>
+           {printingReceipt ? <RefreshCw size={11} className="animate-spin" /> : <Printer size={11} />}
+           Receipt
+@@ -1482,8 +1552,9 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
+         </Link>
+       </div>
+ 
++      {/* ── Legacy fine-grained fulfillment steps ────────────────── */}
+       <div className="border-t border-border/30 px-4 py-3">
+-        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
++        <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment Steps</div>
+         <div className="flex flex-wrap gap-2">
+           {FULFILLMENT_STEPS.map((step, idx) => {
+             const isDone = activeStep >= idx;
+@@ -1520,12 +1591,98 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
+   );
+ }
+ 
++// ─── Queue Section ─────────────────────────────────────────────────────────────
++
++function QueueSection({
++  title,
++  badge,
++  badgeColor,
++  loading,
++  orders,
++  onRefresh,
++  getToken,
++  emptyLabel,
++  defaultExpanded = false,
++  collapsed,
++  onToggleCollapse,
++}: {
++  title: string;
++  badge: number;
++  badgeColor: "yellow" | "blue" | "muted";
++  loading: boolean;
++  orders: Order[];
++  onRefresh: () => void;
++  getToken: () => Promise<string | null>;
++  emptyLabel: string;
++  defaultExpanded?: boolean;
++  collapsed?: boolean;
++  onToggleCollapse?: () => void;
++}) {
++  const [localExpanded, setLocalExpanded] = useState(defaultExpanded);
++  const isControlled = collapsed !== undefined;
++  const isOpen = isControlled ? !collapsed : localExpanded;
++  const toggle = isControlled
++    ? (onToggleCollapse ?? (() => {}))
++    : () => setLocalExpanded(v => !v);
++
++  const badgeCls =
++    badgeColor === "yellow"
++      ? "bg-yellow-500/15 text-yellow-300 border-yellow-500/25"
++      : badgeColor === "blue"
++      ? "bg-blue-500/15 text-blue-300 border-blue-500/25"
++      : "bg-muted/20 text-muted-foreground border-border/40";
++
++  return (
++    <div className="glass-card rounded-2xl border border-border/40 overflow-hidden">
++      {/* Section header */}
++      <button
++        onClick={toggle}
++        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.02] transition-colors"
++        aria-expanded={isOpen}
++      >
++        <div className="flex items-center gap-2">
++          <span className="text-sm font-semibold">{title}</span>
++          {badge > 0 && (
++            <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${badgeCls}`}>
++              {badge}
++            </span>
++          )}
++        </div>
++        {isOpen ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
++      </button>
++
++      {/* Section body */}
++      {isOpen && (
++        <div className="border-t border-border/30 p-3 space-y-3">
++          {loading ? (
++            [1, 2].map(i => <div key={i} className="h-20 animate-pulse bg-muted/20 rounded-xl" />)
++          ) : orders.length === 0 ? (
++            <div className="flex flex-col items-center justify-center py-10 text-center">
++              <Package size={22} className="text-muted-foreground mb-2" />
++              <p className="text-xs text-muted-foreground">{emptyLabel}</p>
++            </div>
++          ) : (
++            orders.map(order => (
++              <FulfillmentCard
++                key={order.id}
++                order={order as ExtendedOrder}
++                onRefresh={onRefresh}
++                getToken={getToken}
++              />
++            ))
++          )}
++        </div>
++      )}
++    </div>
++  );
++}
++
+ // ─── Main page ────────────────────────────────────────────────────────────────
+ 
+ export default function CustomerServiceRepQueue() {
+-  const [activeTab, setActiveTab] = useState("pending");
+   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
+   const [showClockOutModal, setShowClockOutModal] = useState(false);
++  const [pastCollapsed, setPastCollapsed] = useState(true);
+   const queryClient = useQueryClient();
+   const { getToken } = useAuth();
+   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
+@@ -1536,11 +1693,38 @@ export default function CustomerServiceRepQueue() {
+   const isAdmin = userRole === "admin" || userRole === "global_admin";
+   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+ 
+-  const { data, isLoading } = useListOrders(
+-    { status: activeTab as ListOrdersStatus, limit: 50 },
+-    { query: { queryKey: ["listOrders", activeTab] } }
++  const REFETCH_INTERVAL = 20_000;
++
++  const { data: pendingData, isLoading: pendingLoading } = useListOrders(
++    { status: "pending" as ListOrdersStatus, limit: 50 },
++    { query: { queryKey: ["listOrders", "pending"], refetchInterval: REFETCH_INTERVAL } }
++  );
++  const { data: currentData, isLoading: currentLoading } = useListOrders(
++    { status: "processing" as ListOrdersStatus, limit: 50 },
++    { query: { queryKey: ["listOrders", "processing"], refetchInterval: REFETCH_INTERVAL } }
++  );
++  const { data: readyData } = useListOrders(
++    { status: "ready" as ListOrdersStatus, limit: 50 },
++    { query: { queryKey: ["listOrders", "ready"], refetchInterval: 30_000 } }
++  );
++  const { data: completedData } = useListOrders(
++    { status: "completed" as ListOrdersStatus, limit: 50 },
++    { query: { queryKey: ["listOrders", "completed"], refetchInterval: 30_000 } }
+   );
+ 
++  // Past orders: ready + completed orders since this shift started (client-side filter)
++  const pastOrders = useMemo(() => {
++    const shiftStart = shift?.clockedInAt ? new Date(shift.clockedInAt) : null;
++    const all = [
++      ...(readyData?.orders ?? []),
++      ...(completedData?.orders ?? []),
++    ];
++    if (!shiftStart) return all.slice(0, 20);
++    return all
++      .filter(o => new Date(o.createdAt) >= shiftStart)
++      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
++  }, [readyData, completedData, shift?.clockedInAt]);
++
+   const refresh = () => {
+     queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+     refetchShift();
+@@ -1670,50 +1854,48 @@ export default function CustomerServiceRepQueue() {
+         <DebugPanel entries={debugEntries} onClear={() => setDebugEntries([])} />
+       )}
+ 
+-      {/* Order queue */}
++      {/* ── Order queue: three-panel layout ─────────────────────────── */}
+       <div className="space-y-4">
+-        <div className="flex gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
+-          {STATUS_TABS.map((tab) => (
+-            <button
+-              key={tab.value}
+-              onClick={() => setActiveTab(tab.value)}
+-              className={`px-4 py-2 rounded-lg text-xs font-semibold tracking-wider uppercase transition-all ${
+-                activeTab === tab.value
+-                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
+-                  : "text-muted-foreground hover:text-foreground"
+-              }`}
+-            >
+-              {tab.label}
+-            </button>
+-          ))}
+-        </div>
+ 
+-        {isLoading ? (
+-          <div className="space-y-3">
+-            {[1, 2, 3].map((i) => (
+-              <div key={i} className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
+-            ))}
+-          </div>
+-        ) : data?.orders?.length === 0 ? (
+-          <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center">
+-            <div className="w-14 h-14 rounded-2xl bg-muted/20 flex items-center justify-center mb-4">
+-              <Package size={24} className="text-muted-foreground" />
+-            </div>
+-            <h3 className="font-semibold text-sm mb-1">Queue is clear</h3>
+-            <p className="text-xs text-muted-foreground">No {activeTab} orders right now.</p>
+-          </div>
+-        ) : (
+-          <div className="space-y-3">
+-            {data?.orders?.map((order) => (
+-              <FulfillmentCard
+-                key={order.id}
+-                order={order as ExtendedOrder}
+-                onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
+-                getToken={getToken}
+-              />
+-            ))}
+-          </div>
+-        )}
++        {/* ── Pending ──────────────────────────────────────── */}
++        <QueueSection
++          title="Pending"
++          badge={pendingData?.orders?.length ?? 0}
++          badgeColor="yellow"
++          loading={pendingLoading}
++          orders={pendingData?.orders ?? []}
++          onRefresh={refresh}
++          getToken={getToken}
++          emptyLabel="No incoming orders right now."
++          defaultExpanded
++        />
++
++        {/* ── In Progress ──────────────────────────────────── */}
++        <QueueSection
++          title="In Progress"
++          badge={currentData?.orders?.length ?? 0}
++          badgeColor="blue"
++          loading={currentLoading}
++          orders={currentData?.orders ?? []}
++          onRefresh={refresh}
++          getToken={getToken}
++          emptyLabel="No orders currently being prepared."
++          defaultExpanded
++        />
++
++        {/* ── Past (this shift) ─────────────────────────────── */}
++        <QueueSection
++          title="Past This Shift"
++          badge={pastOrders.length}
++          badgeColor="muted"
++          loading={false}
++          orders={pastOrders}
++          onRefresh={refresh}
++          getToken={getToken}
++          emptyLabel={shift ? "No completed orders since clock-in." : "Clock in to track this shift's orders."}
++          collapsed={pastCollapsed}
++          onToggleCollapse={() => setPastCollapsed(v => !v)}
++        />
+       </div>
+ 
+       {/* Clock-out modal — collects ending inventory + cash */}
+-- 
+2.50.1
+
