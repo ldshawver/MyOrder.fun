@@ -72,6 +72,18 @@ jobs:
           git log --oneline -n 1
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      # If VPS_HOST is a Tailscale address (100.x or *.ts.net), the runner must
+      # join your tailnet first. Uncomment this step and add a TS_OAUTH_CLIENT_ID /
+      # TS_OAUTH_SECRET (or TS_AUTHKEY) secret. If VPS_HOST is a public IP/DNS name,
+      # leave it commented out.
+      #
+      # - name: Connect to Tailscale
+      #   uses: tailscale/github-action@v3
+      #   with:
+      #     oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      #     oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+      #     tags: tag:ci
+
       - name: Install SSH key
         run: |
           set -euo pipefail
@@ -177,6 +189,8 @@ jobs:
             ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
 
       - name: Build and deploy on VPS
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -186,12 +200,13 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -p "$VPS_PORT" \
-            "$VPS_USER@$VPS_HOST" << 'ENDSSH'
+            "$VPS_USER@$VPS_HOST" \
+            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
               cd /opt/alavont
 
-              echo "SHA=${GITHUB_SHA:-unknown}" > .deployed-sha
+              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
 
               chmod +x deploy/*.sh 2>/dev/null || true
@@ -202,7 +217,7 @@ jobs:
               docker compose down || true
 
               echo "Building containers..."
-              DEPLOY_SHA="${GITHUB_SHA:-unknown}" docker compose build --pull
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
 
               echo "Starting database..."
               docker compose up -d db
