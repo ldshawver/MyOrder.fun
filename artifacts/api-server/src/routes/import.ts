@@ -100,6 +100,16 @@ const HEADER_ALIASES: Record<string, ExpectedHeader | (typeof OPTIONAL_HEADERS)[
   "Merchant Description": "lucifer_cruz_desc",
   "Merchant Category": "lucifer_cruz_category",
   "Merchant Sku": "lucifer_cruz_Inventory",
+  "safe_regular_price": "regular_price",
+  "safe_sale_price": "Sale_price",
+  "safe_image": "lucifer_cruz_image",
+  "safe_name": "lucifer_cruz_name",
+  "safe_desc": "lucifer_cruz_desc",
+  "safe_category": "lucifer_cruz_category",
+  "safe_Inventory": "lucifer_cruz_Inventory",
+  "safe_inventory": "lucifer_cruz_Inventory",
+  "alavont_quantity": "Quantity",
+  "alavont_unit": "Unit",
 };
 
 const DEFAULT_IMPORT_COLUMNS: ImportTemplateColumn[] = [
@@ -670,6 +680,7 @@ router.post(
 // ─── Row → record mapping ─────────────────────────────────────────────────────
 type RowRecord = {
   regularPrice: string;
+  salePrice: string;
   alavontImage: string;
   alavontName: string;
   alavontDesc: string;
@@ -686,13 +697,14 @@ type RowRecord = {
 };
 
 function buildRecord(row: string[], headerIndex: Record<string, number>): RowRecord {
-  const get = (h: ExpectedHeader): string => {
+  const get = (h: ImportCanonical): string => {
     const idx = headerIndex[h];
     if (idx === undefined) return "";
     return (row[idx] ?? "").trim();
   };
   return {
     regularPrice:        get("regular_price"),
+    salePrice:           get("Sale_price"),
     alavontImage:        get("alavont_image"),
     alavontName:         get("alavont_name"),
     alavontDesc:         get("alavont_desc"),
@@ -786,6 +798,11 @@ router.post(
         errors.push({ row: rowNum, message: `Menu Regular Price must be numeric (got "${rec.regularPrice}")` });
         continue;
       }
+      const salePrice = rec.salePrice ? parsePrice(rec.salePrice) : null;
+      if (rec.salePrice && salePrice === null) {
+        errors.push({ row: rowNum, message: `Sale Price must be numeric when provided (got "${rec.salePrice}")` });
+        continue;
+      }
       if (!rec.luciferCruzInventory && !rec.alavontId) {
         errors.push({ row: rowNum, message: "Either Merchant Sku or Menu ID is required" });
         continue;
@@ -793,6 +810,7 @@ router.post(
 
       // ── Optional/coerced values ──
       const inStock = rec.alavontInStock ? parseTruthy(rec.alavontInStock) : true;
+      const activePrice = salePrice ?? regularPrice;
       const amount = parseAmount(rec.quantity);
       const alavontImageUrl = rec.alavontImage && isValidUrl(rec.alavontImage) ? rec.alavontImage : null;
       const lcImageUrl = rec.luciferCruzImage && isValidUrl(rec.luciferCruzImage) ? rec.luciferCruzImage : null;
@@ -808,8 +826,10 @@ router.post(
         description: rec.alavontDesc || null,
         category: rec.alavontCategory,
         sku: rec.luciferCruzInventory || null,
-        price: regularPrice.toFixed(2),
+        price: activePrice.toFixed(2),
         regularPrice: regularPrice.toFixed(2),
+        compareAtPrice: salePrice !== null && salePrice < regularPrice ? regularPrice.toFixed(2) : null,
+        isSaleFeatured: salePrice !== null && salePrice < regularPrice,
         isAvailable: inStock,
         imageUrl: alavontImageUrl,
         // Alavont-facing fields
