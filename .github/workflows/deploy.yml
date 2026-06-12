@@ -69,6 +69,18 @@ jobs:
           git log --oneline -n 1
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
+      # If VPS_HOST is a Tailscale address (100.x or *.ts.net), the runner must
+      # join your tailnet first. Uncomment this step and add a TS_OAUTH_CLIENT_ID /
+      # TS_OAUTH_SECRET (or TS_AUTHKEY) secret. If VPS_HOST is a public IP/DNS name,
+      # leave it commented out.
+      #
+      # - name: Connect to Tailscale
+      #   uses: tailscale/github-action@v3
+      #   with:
+      #     oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      #     oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+      #     tags: tag:ci
+
       - name: Install SSH key
         run: |
           set -euo pipefail
@@ -91,7 +103,39 @@ jobs:
       - name: Add VPS to known hosts
         run: |
           set -euo pipefail
-          ssh-keyscan -T 15 -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Fail loudly if the host secret is empty (set -u does NOT catch empty values).
+          : "${VPS_HOST:?VPS_HOST secret is empty or not set}"
+          : "${VPS_PORT:?VPS_PORT is empty}"
+
+          echo "Scanning ${VPS_HOST}:${VPS_PORT} for host keys..."
+
+          # ssh-keyscan exits non-zero (and collects nothing) when the host is
+          # unreachable. Retry a few times for transient network blips, then
+          # verify we actually got keys before continuing.
+          collected=0
+          for attempt in 1 2 3; do
+            ssh-keyscan -T 15 -p "$VPS_PORT" "$VPS_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err || true
+            if [ -s ~/.ssh/known_hosts ]; then
+              collected=1
+              echo "Collected host keys on attempt ${attempt}."
+              break
+            fi
+            echo "Attempt ${attempt}: no keys yet. ssh-keyscan said:"
+            cat /tmp/keyscan.err || true
+            sleep 3
+          done
+
+          if [ "$collected" -ne 1 ]; then
+            echo "::error::No host keys collected from ${VPS_HOST}:${VPS_PORT}."
+            echo "::error::The runner cannot reach the host. Common causes:"
+            echo "::error::  1) VPS_HOST is a Tailscale-only address (100.x / *.ts.net) and the runner is not on the tailnet — add the Tailscale step above."
+            echo "::error::  2) VPS_HOST or VPS_PORT secret is wrong."
+            exit 1
+          fi
 
       - name: Verify SSH access
         run: |
@@ -130,6 +174,8 @@ jobs:
             ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
 
       - name: Build and deploy on VPS
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -139,12 +185,13 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -p "$VPS_PORT" \
-            "$VPS_USER@$VPS_HOST" << 'ENDSSH'
+            "$VPS_USER@$VPS_HOST" \
+            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
               cd /opt/alavont
 
-              echo "SHA=${GITHUB_SHA:-unknown}" > .deployed-sha
+              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
 
               chmod +x deploy/*.sh 2>/dev/null || true
@@ -155,7 +202,7 @@ jobs:
               docker compose down || true
 
               echo "Building containers..."
-              DEPLOY_SHA="${GITHUB_SHA:-unknown}" docker compose build --pull
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
 
               echo "Starting database..."
               docker compose up -d db
