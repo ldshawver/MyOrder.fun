@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { readClerkPublicMetadata } from "./clerkSync";
+import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
 export type CanonicalRole =
   | "global_admin"
@@ -272,9 +272,23 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
   const user = await getOrCreateDbUser(req);
   if (user) {
     const auth = getAuth(req);
-    const meta = readClerkPublicMetadata(
+    let meta = readClerkPublicMetadata(
       auth?.sessionClaims as Record<string, unknown> | undefined,
     );
+    if ((!meta.role || !meta.status) && auth?.userId) {
+      try {
+        const clerkUser = await clerkClient.users.getUser(auth.userId);
+        const apiMeta = normalizeClerkPublicMetadata(
+          clerkUser.publicMetadata as Record<string, unknown> | undefined,
+        );
+        meta = {
+          status: meta.status ?? apiMeta.status,
+          role: meta.role ?? apiMeta.role,
+        };
+      } catch (err) {
+        logger.warn({ err, clerkId: auth.userId }, "Could not fetch Clerk public metadata for DB user sync");
+      }
+    }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
     if (meta.status && meta.status !== user.status) {
       // Never let stale Clerk metadata downgrade an approved user back to
