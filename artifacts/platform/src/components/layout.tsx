@@ -32,7 +32,8 @@ import {
   PackageOpen,
   Store,
   Wifi,
-  Zap
+  Zap,
+  Phone
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -117,6 +118,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       defaultOpen: true,
       items: [
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
+        { href: "/communications", label: "Phone & SMS", icon: Phone, roles: SHIFT_ROLES, mobileShow: true },
         {
           href: "/csr-settings",
           label: "CSR Settings",

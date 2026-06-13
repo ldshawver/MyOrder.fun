@@ -20,6 +20,20 @@ const DEFAULT_ALLOWED_SMS_LINK_DOMAINS = [
 
 let client: twilio.Twilio | null = null;
 
+export type SmsDispatchResult = {
+  success: boolean;
+  skipped?: boolean;
+  sid?: string;
+  from?: string;
+  to?: string;
+  body?: string;
+  error?: string;
+};
+
+export function getBusinessSmsNumber(): string | null {
+  return fromNumber ?? null;
+}
+
 function getClient(): twilio.Twilio | null {
   if (!accountSid || !authToken || !fromNumber) {
     logger.warn("Twilio not configured — SMS skipped (missing TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, or TWILIO_PHONE_NUMBER)");
@@ -59,6 +73,17 @@ function isAllowedSmsUrl(rawUrl: string): boolean {
   }
 }
 
+export function normalizePhoneNumber(to: string | null | undefined): string | null {
+  const raw = (to ?? "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("+")) return `+${raw.replace(/\D/g, "")}`;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length > 11) return `+${digits}`;
+  return null;
+}
+
 export function sanitizeSmsBody(body: string): string {
   const withoutHtml = decodeBasicEntities(body)
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -72,31 +97,40 @@ export function sanitizeSmsBody(body: string): string {
     .slice(0, 1500);
 }
 
-export async function sendSms(to: string | null | undefined, body: string): Promise<void> {
-  if (!to) return;
-
-  // Normalize: ensure it starts with +
-  const normalized = to.startsWith("+") ? to : `+1${to.replace(/\D/g, "")}`;
-  if (normalized.replace(/\D/g, "").length < 10) {
+export async function sendSmsDetailed(to: string | null | undefined, body: string, statusCallback?: string): Promise<SmsDispatchResult> {
+  const normalized = normalizePhoneNumber(to);
+  if (!normalized) {
     logger.warn({ to }, "SMS skipped — invalid phone number");
-    return;
+    return { success: false, skipped: true, error: "Invalid phone number" };
   }
 
   const c = getClient();
-  if (!c) return;
+  if (!c) return { success: false, skipped: true, to: normalized, error: "Twilio is not configured" };
 
   const safeBody = sanitizeSmsBody(body);
   if (!safeBody) {
     logger.warn({ to: normalized }, "SMS skipped — body was empty after sanitization");
-    return;
+    return { success: false, skipped: true, to: normalized, error: "Message body is empty" };
   }
 
   try {
-    await c.messages.create({ from: fromNumber!, to: normalized, body: safeBody });
-    logger.info({ to: normalized }, "SMS sent");
+    const message = await c.messages.create({
+      from: fromNumber!,
+      to: normalized,
+      body: safeBody,
+      ...(statusCallback ? { statusCallback } : {}),
+    });
+    logger.info({ to: normalized, messageSid: message.sid }, "SMS sent");
+    return { success: true, sid: message.sid, from: fromNumber!, to: normalized, body: safeBody };
   } catch (err) {
+    const error = err instanceof Error ? err.message : "SMS send failed";
     logger.error({ err, to: normalized }, "SMS send failed");
+    return { success: false, to: normalized, body: safeBody, error };
   }
+}
+
+export async function sendSms(to: string | null | undefined, body: string): Promise<void> {
+  await sendSmsDetailed(to, body);
 }
 
 /* ── Message templates ──────────────────────────────── */
