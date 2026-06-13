@@ -34,6 +34,7 @@ import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
+import Communications from "@/pages/communications";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -390,6 +391,7 @@ function AuthenticatedApp() {
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
             <Route path="/csr-settings/:section" component={CsrSettings} />
+            <Route path="/communications" component={Communications} />
           </>
         )}
 

@@ -23,6 +23,7 @@ import integrationsRouter from "./integrations";
 import creditsRouter from "./credits";
 import reportsRouter from "./reports";
 import proposalsRouter from "./proposals";
+import communicationsRouter from "./communications";
 import visualEditorRouter from "./visual-editor";
 
 const router: IRouter = Router();
@@ -51,6 +52,7 @@ router.use(integrationsRouter);
 router.use(creditsRouter);
 router.use(reportsRouter);
 router.use(proposalsRouter);
+router.use(communicationsRouter);
 router.use(visualEditorRouter);
 
 export default router;
