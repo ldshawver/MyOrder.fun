@@ -35,7 +35,7 @@ import {
   Zap,
   Phone,
   Palette,
-  PanelsTopLeft
+  PanelsTopLeft,
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
