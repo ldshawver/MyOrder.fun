@@ -35,6 +35,10 @@ import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
 import Communications from "@/pages/communications";
+import ContractorHubPage from "@/pages/contractor-hub";
+import ContractSignPage from "@/pages/contractor-hub/contract-sign";
+import DocumentHubPage from "@/pages/document-hub";
+import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -400,6 +404,9 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
+        <Route path="/contractor-hub" component={ContractorHubPage} />
+        <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
+        <Route path="/document-hub" component={DocumentHubPage} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -416,6 +423,7 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

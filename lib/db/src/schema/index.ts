@@ -11,3 +11,6 @@ export * from "./settings";
 export * from "./feedback";
 export * from "./credits";
 export * from "./visual-editor";
+
+export * from "./document-hub";
+export * from "./contractor-hub";
