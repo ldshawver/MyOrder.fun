@@ -168,6 +168,12 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
     logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
     res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
     return;
+  }
+
+  logCsrShiftAuth(req, "approval", "pass", "approved_user");
+  logMarekCsrAuthDebug(req, null);
+  next();
+}
 
 function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;

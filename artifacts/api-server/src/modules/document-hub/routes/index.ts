@@ -1,0 +1,13 @@
+import { Router } from "express";
+import { addDocumentVersion, archiveDocument, createDocumentAsset, getDocumentAsset, getDocumentMetadata, listDocumentAssets, listDocumentAudit, upsertMetadata } from "../services/store";
+const router = Router();
+router.get("/document-hub/assets", async (req, res): Promise<void> => { res.json({ assets: await listDocumentAssets(String(req.query.q ?? "")) }); });
+router.post("/document-hub/assets", async (req, res): Promise<void> => { res.status(201).json({ asset: await createDocumentAsset(req.body) }); });
+router.get("/document-hub/assets/:id", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.json({ asset, metadata: await getDocumentMetadata(asset.id) }); });
+router.get("/document-hub/assets/:id/download", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.json({ downloadUrl: `/api/document-hub/assets/${asset.id}/download/file`, asset }); });
+router.get("/document-hub/assets/:id/print", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.json({ printUrl: `/api/document-hub/assets/${asset.id}/print/file`, asset }); });
+router.patch("/document-hub/assets/:id/metadata", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.json({ metadata: await upsertMetadata(asset.id, req.body) }); });
+router.post("/document-hub/assets/:id/versions", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.status(201).json({ version: await addDocumentVersion(asset, req.body) }); });
+router.post("/document-hub/assets/:id/archive", async (req, res): Promise<void> => { const asset = await getDocumentAsset(req.params.id); if (!asset) { res.status(404).json({ error: "Document not found" }); return; } res.json({ asset: await archiveDocument(asset) }); });
+router.get("/document-hub/assets/:id/audit", async (req, res): Promise<void> => { res.json({ auditLogs: await listDocumentAudit(req.params.id) }); });
+export default router;
