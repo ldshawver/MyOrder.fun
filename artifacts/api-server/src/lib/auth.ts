@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { readClerkPublicMetadata } from "./clerkSync";
+import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
 export type CanonicalRole =
   | "global_admin"
@@ -27,16 +27,20 @@ export type LegacyRole =
 export type Role = CanonicalRole | LegacyRole;
 
 export function normalizeRole(role: unknown): CanonicalRole {
-  const normalized = typeof role === "string" ? role.trim().toLowerCase() : "";
+  const normalized = typeof role === "string"
+    ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
+    : "";
   if (normalized === "global_admin") return "global_admin";
   if (normalized === "admin" || normalized === "supervisor") return "admin";
   if (
     normalized === "customer_service_rep" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
+    normalized === "customer_service_representative" ||
     normalized === "customer_service" ||
     normalized === "customer_service_specialist" ||
     normalized === "customer_success" ||
+    normalized === "service_rep" ||
+    normalized === "csr" ||
+    normalized === "qsr" ||
     normalized === "business_sitter" ||
     normalized === "sales_rep" ||
     normalized === "lab_tech" ||
@@ -237,6 +241,14 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+  if (user.isActive === false || user.status === "deactivated") {
+    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    return;
+  }
+  if (user.status === "rejected") {
+    res.status(403).json({ error: "Account rejected", status: user.status });
+    return;
+  }
   // Elevated/staff roles are implicitly approved — having been assigned a
   // staff role by an admin is itself the approval gate. Only end-customer
   // "user" accounts require an explicit status check.
@@ -260,9 +272,23 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
   const user = await getOrCreateDbUser(req);
   if (user) {
     const auth = getAuth(req);
-    const meta = readClerkPublicMetadata(
+    let meta = readClerkPublicMetadata(
       auth?.sessionClaims as Record<string, unknown> | undefined,
     );
+    if ((!meta.role || !meta.status) && auth?.userId) {
+      try {
+        const clerkUser = await clerkClient.users.getUser(auth.userId);
+        const apiMeta = normalizeClerkPublicMetadata(
+          clerkUser.publicMetadata as Record<string, unknown> | undefined,
+        );
+        meta = {
+          status: meta.status ?? apiMeta.status,
+          role: meta.role ?? apiMeta.role,
+        };
+      } catch (err) {
+        logger.warn({ err, clerkId: auth.userId }, "Could not fetch Clerk public metadata for DB user sync");
+      }
+    }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
     if (meta.status && meta.status !== user.status) {
       // Never let stale Clerk metadata downgrade an approved user back to

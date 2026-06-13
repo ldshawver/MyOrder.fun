@@ -357,6 +357,36 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     expect(dbRow.role).toBe("customer_service_rep");
   });
 
+  it("falls back to Clerk API publicMetadata when session claims omit metadata", async () => {
+    seedPending(17, "api-metadata-clerk-id");
+    mockUserId = "api-metadata-clerk-id";
+    mockSessionClaims = {};
+    vi.mocked(clerkClient.users.getUser).mockResolvedValueOnce({
+      publicMetadata: { status: "approved", role: "Customer Service Rep" },
+    } as never);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = {
+        info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      };
+      next();
+    });
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => {
+      res.json({ status: req.dbUser?.status, role: req.dbUser?.role });
+    });
+
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("approved");
+    expect(res.body.role).toBe("customer_service_rep");
+
+    const dbRow = dbState.users.find((u) => u.id === 17)!;
+    expect(dbRow.status).toBe("approved");
+    expect(dbRow.role).toBe("customer_service_rep");
+  });
+
   it("does nothing when Clerk metadata matches the DB", async () => {
     seedPending(8, "matching-clerk-id");
     dbState.users.find((u) => u.id === 8)!.status = "approved";
