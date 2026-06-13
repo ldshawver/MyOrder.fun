@@ -52,11 +52,11 @@ const hoistedDb = vi.hoisted(() => {
   interface URow { id: number; clerkId: string; email: string | null; firstName: string | null;
     lastName: string | null; role: string; status: string; isActive: boolean;
     contactPhone: string | null; mfaEnabled: boolean; createdAt: Date; updatedAt: Date; }
-  interface TRow { id: number; tenantId: number | null; submitterId: number;
+  interface TRow { id: number; tenantId: number | null; submitterId: number; submitterRole?: string;
     type: string; severity: string; status: string; priority: boolean;
     title: string; description: string;
     pageUrl: string | null; userAgent: string | null; screenshotData: string | null;
-    assigneeId: number | null; createdAt: Date; updatedAt: Date; }
+    assigneeId: number | null; reviewedAt?: Date | null; reviewedByUserId?: number | null; archivedAt?: Date | null; archivedByUserId?: number | null; ticketId?: string | null; contextJson?: unknown; createdAt: Date; updatedAt: Date; }
   interface CRow { id: number; ticketId: number; authorId: number;
     body: string; isInternal: boolean; createdAt: Date; }
   interface NRow { id: number; userId: number; type: string;
@@ -68,6 +68,7 @@ const hoistedDb = vi.hoisted(() => {
     tickets: [] as TRow[],
     comments: [] as CRow[],
     notifications: [] as NRow[],
+    settings: [] as { id: number; tenantId: number; feedbackArchiveReviewedAfterDays: number | null; feedbackArchiveUnreadAfterDays: number | null; feedbackArchiveUnreadEnabled: boolean }[],
     audits: [] as { id: number; actorId: number; action: string }[],
     nextTicketId: 1,
     nextCommentId: 1,
@@ -80,10 +81,11 @@ const hoistedDb = vi.hoisted(() => {
     role: makeCol("role"), status: makeCol("status") };
   const feedbackTicketsTable = { id: makeCol("id"), tenantId: makeCol("tenantId"),
     submitterId: makeCol("submitterId"), type: makeCol("type"), status: makeCol("status"),
-    priority: makeCol("priority"), assigneeId: makeCol("assigneeId"), createdAt: makeCol("createdAt") };
+    priority: makeCol("priority"), assigneeId: makeCol("assigneeId"), createdAt: makeCol("createdAt"), updatedAt: makeCol("updatedAt") };
   const feedbackTicketCommentsTable = { id: makeCol("id"), ticketId: makeCol("ticketId"),
     createdAt: makeCol("createdAt") };
   const notificationsTable = { id: makeCol("id") };
+  const adminSettingsTable = { id: makeCol("id") };
   const auditLogsTable = { id: makeCol("id") };
 
   type Pred = Record<string, unknown> & { op?: string };
@@ -98,9 +100,11 @@ const hoistedDb = vi.hoisted(() => {
       const colName = (pred.col as { _name?: string })._name as string;
       return new Date(row[colName] as Date | string).getTime() >= new Date(pred.val as Date | string).getTime();
     }
-    if (pred.op === "lte") {
+    if (pred.op === "lte" || pred.op === "lt") {
       const colName = (pred.col as { _name?: string })._name as string;
-      return new Date(row[colName] as Date | string).getTime() <= new Date(pred.val as Date | string).getTime();
+      const left = new Date(row[colName] as Date | string).getTime();
+      const right = new Date(pred.val as Date | string).getTime();
+      return pred.op === "lt" ? left < right : left <= right;
     }
     if (pred.op === "eq") {
       const colName = (pred.col as { _name?: string })._name as string;
@@ -114,6 +118,7 @@ const hoistedDb = vi.hoisted(() => {
     if (t === feedbackTicketsTable) return "tickets";
     if (t === feedbackTicketCommentsTable) return "comments";
     if (t === notificationsTable) return "notifications";
+    if (t === adminSettingsTable) return "settings";
     if (t === auditLogsTable) return "audits";
     return null;
   }
@@ -191,7 +196,7 @@ const hoistedDb = vi.hoisted(() => {
   };
 
   return { state, db, usersTable, feedbackTicketsTable, feedbackTicketCommentsTable,
-    notificationsTable, auditLogsTable };
+    notificationsTable, adminSettingsTable, auditLogsTable };
 });
 
 const dbState = hoistedDb.state;
@@ -202,6 +207,7 @@ vi.mock("@workspace/db", () => ({
   feedbackTicketsTable: hoistedDb.feedbackTicketsTable,
   feedbackTicketCommentsTable: hoistedDb.feedbackTicketCommentsTable,
   notificationsTable: hoistedDb.notificationsTable,
+  adminSettingsTable: hoistedDb.adminSettingsTable,
   auditLogsTable: hoistedDb.auditLogsTable,
 }));
 
@@ -212,6 +218,7 @@ vi.mock("drizzle-orm", () => ({
   asc:  (col: unknown) => col,
   gte: (col: unknown, val: unknown) => ({ op: "gte", col, val }),
   lte: (col: unknown, val: unknown) => ({ op: "lte", col, val }),
+  lt: (col: unknown, val: unknown) => ({ op: "lt", col, val }),
   inArray: (col: unknown, values: unknown[]) => ({ op: "in", col, values }),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
@@ -228,6 +235,7 @@ function buildApp() {
     next();
   });
   app.use("/api", feedbackRouter);
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(500).json({ error: (err as Error).message }); });
   return app;
 }
 
@@ -247,6 +255,7 @@ beforeEach(() => {
   dbState.tickets = [];
   dbState.comments = [];
   dbState.notifications = [];
+  dbState.settings = [];
   dbState.audits = [];
   dbState.nextTicketId = 1;
   dbState.nextCommentId = 1;
@@ -291,10 +300,48 @@ describe("POST /api/feedback", () => {
       .send({ type: "bogus", title: "x", description: "y" });
     expect(res.status).toBe(400);
   });
+  it.each(["user", "customer_service_rep", "supervisor", "admin"])("allows approved %s to submit feedback", async (role) => {
+    seedUser(1, "actor-clerk-id", role);
+    setMockUserId("actor-clerk-id");
+    const res = await supertest(buildApp()).post("/api/feedback").send({
+      type: "general",
+      severity: "medium",
+      title: "Helpful feedback",
+      description: "This is useful feedback.",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.submitterId).toBe(1);
+  });
+
+  it.each(["tenantId", "userId", "role", "status", "reviewedBy", "archivedBy", "ticketId"])("rejects client supplied protected field %s", async (field) => {
+    seedUser(20 + String(field).length, `actor-${field}`, "user");
+    setMockUserId(`actor-${field}`);
+    const res = await supertest(buildApp()).post("/api/feedback").send({
+      type: "bug",
+      severity: "low",
+      title: "Protected field",
+      description: "Must be rejected.",
+      [field]: "attacker-controlled",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rate limits repeated submissions per authenticated user", async () => {
+    seedUser(99, "rate-clerk-id", "user");
+    setMockUserId("rate-clerk-id");
+    const app = buildApp();
+    for (let i = 0; i < 10; i++) {
+      const res = await supertest(app).post("/api/feedback").send({ type: "general", severity: "low", title: `Rate ${i}`, description: "Allowed submission." });
+      expect(res.status).toBe(201);
+    }
+    const limited = await supertest(app).post("/api/feedback").send({ type: "general", severity: "low", title: "Rate limited", description: "Blocked submission." });
+    expect(limited.status).toBe(429);
+  });
+
 });
 
 describe("GET /api/feedback (RBAC)", () => {
-  it("regular user only sees their own tickets", async () => {
+  it("regular user cannot list the admin feedback inbox", async () => {
     seedUser(1, "actor-clerk-id", "user");
     seedUser(2, "other-user", "user");
     seedUser(99, "admin1", "admin");
@@ -310,9 +357,8 @@ describe("GET /api/feedback (RBAC)", () => {
     dbState.nextTicketId = 12;
     setMockUserId("actor-clerk-id");
 
-    const res = await supertest(buildApp()).get("/api/feedback");
-    expect(res.status).toBe(200);
-    expect(res.body.tickets.map((t: { id: number }) => t.id)).toEqual([11]);
+    const res = await supertest(buildApp()).get("/api/admin/feedback");
+    expect(res.status).toBe(403);
   });
 
   it("admin sees every ticket", async () => {
@@ -328,7 +374,7 @@ describe("GET /api/feedback (RBAC)", () => {
     );
     setMockUserId("actor-clerk-id");
 
-    const res = await supertest(buildApp()).get("/api/feedback");
+    const res = await supertest(buildApp()).get("/api/admin/feedback");
     expect(res.status).toBe(200);
     expect(res.body.tickets.map((t: { id: number }) => t.id).sort()).toEqual([10, 11]);
   });
@@ -345,7 +391,7 @@ describe("GET /api/feedback/:id (RBAC)", () => {
     });
     setMockUserId("actor-clerk-id");
 
-    const res = await supertest(buildApp()).get("/api/feedback/7");
+    const res = await supertest(buildApp()).get("/api/admin/feedback/7");
     expect(res.status).toBe(403);
   });
 });
@@ -362,7 +408,7 @@ describe("PATCH /api/feedback/:id", () => {
     setMockUserId("actor-clerk-id");
 
     const res = await supertest(buildApp())
-      .patch("/api/feedback/5")
+      .patch("/api/admin/feedback/5")
       .send({ status: "in_progress", priority: true, assigneeId: 1 });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("in_progress");
@@ -384,8 +430,60 @@ describe("PATCH /api/feedback/:id", () => {
     });
     setMockUserId("actor-clerk-id");
     const res = await supertest(buildApp())
-      .patch("/api/feedback/5")
+      .patch("/api/admin/feedback/5")
       .send({ status: "closed" });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("admin feedback tenant isolation and management actions", () => {
+  it("tenant admin cannot read or update another tenant feedback item", async () => {
+    const admin = seedUser(1, "actor-clerk-id", "tenant_admin") as UserRow & { tenantId: number };
+    admin.tenantId = 10;
+    dbState.tickets.push({ id: 9, tenantId: 20, submitterId: 2, type: "bug", severity: "high", status: "new", priority: false, title: "other tenant", description: "x", pageUrl: null, userAgent: null, screenshotData: null, assigneeId: null, createdAt: new Date(), updatedAt: new Date() });
+    setMockUserId("actor-clerk-id");
+
+    expect((await supertest(buildApp()).get("/api/admin/feedback/9")).status).toBe(404);
+    expect((await supertest(buildApp()).patch("/api/admin/feedback/9").send({ status: "reviewed" })).status).toBe(404);
+  });
+
+  it.each(["user", "customer_service_rep", "supervisor"])("blocks %s from admin feedback inbox", async (role) => {
+    seedUser(1, "actor-clerk-id", role);
+    setMockUserId("actor-clerk-id");
+    const res = await supertest(buildApp()).get("/api/admin/feedback");
+    expect(res.status).toBe(403);
+  });
+
+  it("admin can mark reviewed, unread, archive, restore, and create ticket", async () => {
+    seedUser(1, "actor-clerk-id", "admin");
+    dbState.tickets.push({ id: 5, tenantId: 1, submitterId: 2, type: "bug", severity: "high", status: "new", priority: false, title: "broken", description: "x", pageUrl: null, userAgent: null, screenshotData: null, assigneeId: null, createdAt: new Date(), updatedAt: new Date() });
+    setMockUserId("actor-clerk-id");
+    const app = buildApp();
+
+    expect((await supertest(app).patch("/api/admin/feedback/5/reviewed")).body.status).toBe("reviewed");
+    expect((await supertest(app).patch("/api/admin/feedback/5/unread")).body.status).toBe("new");
+    expect((await supertest(app).patch("/api/admin/feedback/5/archive")).body.status).toBe("archived");
+    expect((await supertest(app).patch("/api/admin/feedback/5/restore")).body.status).toBe("new");
+    const ticket = await supertest(app).post("/api/admin/feedback/5/create-ticket");
+    expect(ticket.status).toBe(200);
+    expect(ticket.body.ticket.priority).toBe(true);
+    expect(dbState.audits.map((a) => a.action)).toEqual(expect.arrayContaining(["feedback.reviewed", "feedback.new", "feedback.archived", "feedback.create_ticket"]));
+  });
+
+  it("auto-archives reviewed feedback while keeping unread feedback by default", async () => {
+    seedUser(1, "actor-clerk-id", "admin");
+    dbState.settings.push({ id: 1, tenantId: 1, feedbackArchiveReviewedAfterDays: 30, feedbackArchiveUnreadAfterDays: 30, feedbackArchiveUnreadEnabled: false });
+    const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    dbState.tickets.push(
+      { id: 1, tenantId: 1, submitterId: 2, type: "bug", severity: "low", status: "reviewed", priority: false, title: "reviewed", description: "x", pageUrl: null, userAgent: null, screenshotData: null, assigneeId: null, createdAt: old, updatedAt: old },
+      { id: 2, tenantId: 1, submitterId: 2, type: "bug", severity: "low", status: "new", priority: false, title: "unread", description: "x", pageUrl: null, userAgent: null, screenshotData: null, assigneeId: null, createdAt: old, updatedAt: old },
+    );
+    setMockUserId("actor-clerk-id");
+    const res = await supertest(buildApp()).post("/api/admin/feedback/archive-policy/run");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ archivedReviewed: 1, archivedUnread: 0 });
+    expect(dbState.tickets.find((t) => t.id === 1)?.status).toBe("archived");
+    expect(dbState.tickets.find((t) => t.id === 2)?.status).toBe("new");
+    expect(dbState.audits.some((a) => a.action === "feedback.auto_archive.reviewed")).toBe(true);
   });
 });

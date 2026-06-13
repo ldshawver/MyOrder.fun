@@ -129,7 +129,7 @@ export default function AdminFeedback() {
       if (filterAssignee !== "all" && filterAssignee !== "unassigned") params.set("assigneeId", filterAssignee);
       if (filterDateFrom) params.set("dateFrom", new Date(filterDateFrom).toISOString());
       if (filterDateTo)   params.set("dateTo",   new Date(filterDateTo).toISOString());
-      const res = await fetch(`/api/feedback?${params.toString()}`, {
+      const res = await fetch(`/api/admin/feedback?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error("Failed to load feedback");
@@ -156,7 +156,7 @@ export default function AdminFeedback() {
   const updateMut = useMutation({
     mutationFn: async ({ id, patch }: { id: number; patch: Partial<{ status: Status; priority: boolean; assigneeId: number | null }> }) => {
       const token = await getToken();
-      const res = await fetch(`/api/feedback/${id}`, {
+      const res = await fetch(`/api/admin/feedback/${id}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -338,7 +338,7 @@ function TicketDetailDialog({
     queryKey: ["adminFeedbackDetail", ticketId],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`/api/feedback/${ticketId}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/admin/feedback/${ticketId}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error("Failed to load ticket");
       return res.json() as Promise<Ticket>;
     },
@@ -348,7 +348,7 @@ function TicketDetailDialog({
     queryKey: ["adminFeedbackComments", ticketId],
     queryFn: async () => {
       const token = await getToken();
-      const res = await fetch(`/api/feedback/${ticketId}/comments`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`/api/admin/feedback/${ticketId}/comments`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error("Failed to load comments");
       return res.json() as Promise<{ comments: Comment[] }>;
     },
@@ -357,7 +357,7 @@ function TicketDetailDialog({
   const updateMut = useMutation({
     mutationFn: async (patch: Partial<{ status: Status; priority: boolean; assigneeId: number | null }>) => {
       const token = await getToken();
-      const res = await fetch(`/api/feedback/${ticketId}`, {
+      const res = await fetch(`/api/admin/feedback/${ticketId}`, {
         method: "PATCH",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -374,7 +374,7 @@ function TicketDetailDialog({
   const commentMut = useMutation({
     mutationFn: async () => {
       const token = await getToken();
-      const res = await fetch(`/api/feedback/${ticketId}/comments`, {
+      const res = await fetch(`/api/admin/feedback/${ticketId}/comments`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ body: comment.trim(), isInternal }),

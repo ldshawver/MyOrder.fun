@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startFeedbackArchiveScheduler } from "./lib/feedbackArchiveScheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -21,5 +22,6 @@ app.listen(port, (err) => {
     process.exit(1);
   }
 
+  startFeedbackArchiveScheduler();
   logger.info({ port }, "Server listening");
 });

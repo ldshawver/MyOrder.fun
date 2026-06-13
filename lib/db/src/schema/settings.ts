@@ -54,6 +54,9 @@ export const adminSettingsTable = pgTable("admin_settings", {
   shiftLocationOptions: text("shift_location_options"),
   deliveryOptions: text("delivery_options"),
   printerNetworkConfig: text("printer_network_config"),
+  feedbackArchiveReviewedAfterDays: integer("feedback_archive_reviewed_after_days"),
+  feedbackArchiveUnreadAfterDays: integer("feedback_archive_unread_after_days"),
+  feedbackArchiveUnreadEnabled: boolean("feedback_archive_unread_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
