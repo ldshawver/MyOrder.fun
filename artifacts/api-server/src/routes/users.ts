@@ -230,6 +230,9 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   if ("notificationPreferences" in body.data && body.data.notificationPreferences) {
     updates.notificationPreferences = body.data.notificationPreferences;
   }
+  if ("smsOptIn" in body.data && body.data.smsOptIn != null) {
+    updates.smsOptIn = body.data.smsOptIn === true;
+  }
 
   if (Object.keys(updates).length === 0) {
     res.json(serializeUser(user));

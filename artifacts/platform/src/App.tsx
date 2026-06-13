@@ -47,6 +47,9 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminWebEditor from "@/pages/admin/web-editor";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminVisualEditor from "@/pages/admin/visual-editor";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
@@ -376,6 +379,9 @@ function AuthenticatedApp() {
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
+            <Route path="/admin/web-editor" component={AdminWebEditor} />
+            <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
+            <Route path="/admin/visual-editor" component={AdminVisualEditor} />
           </>
         )}
 
