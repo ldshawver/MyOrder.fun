@@ -170,7 +170,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
     return;
   }
 
-  logCsrShiftAuth(req, "approval", "pass", "approved_status");
+  logCsrShiftAuth(req, "approval", "pass", "approved_user");
   logMarekCsrAuthDebug(req, null);
   next();
 }

@@ -108,6 +108,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+        { href: "/contractor-hub", label: "Contractor Hub", icon: ClipboardList, roles: ALL_ROLES },
+        { href: "/document-hub", label: "Document Hub", icon: PanelsTopLeft, roles: ALL_ROLES },
         {
           href: "/profile",
           label: "User Account",
