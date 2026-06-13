@@ -5,15 +5,14 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      reason:
-        description: "Reason for manual deploy (optional)"
-        required: false
-        default: "Manual re-deploy"
+
+concurrency:
+  group: deploy-myorderfun
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Type Check & Tests
+    name: Typecheck, Lint & Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -29,411 +28,258 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build library declarations
-        run: pnpm typecheck:libs
-
-      - name: Full TypeScript check
+      - name: Typecheck
         run: pnpm typecheck
 
       - name: Lint
         run: pnpm lint
 
-      - name: Lint warning ratchet
+      - name: Lint ratchet
         run: pnpm lint:ratchet
 
       - name: Run tests
         run: pnpm test
 
   deploy:
-    name: Build → Cert → Sync → Restart
+    name: Deploy to VPS
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [test]
+    needs: test
+
     env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      DEPLOY_PATH: /opt/alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TS_AUTHKEY }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Show commit being deployed
+      - name: Confirm deploy commit
         run: |
-          echo "GITHUB_SHA=${GITHUB_SHA}"
-          git rev-parse HEAD
+          echo "Deploying SHA: $GITHUB_SHA"
           git log --oneline -n 1
-          git status --short
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Pre-deploy integrity guard
-        run: |
-          echo "════════════════════════════════════════════════════════"
-          echo "  PRE-DEPLOY INTEGRITY CHECK"
-          echo "════════════════════════════════════════════════════════"
+      # If VPS_HOST is a Tailscale address (100.x or *.ts.net), the runner must
+      # join your tailnet first. Uncomment this step and add a TS_OAUTH_CLIENT_ID /
+      # TS_OAUTH_SECRET (or TS_AUTHKEY) secret. If VPS_HOST is a public IP/DNS name,
+      # leave it commented out.
+      #
+      # - name: Connect to Tailscale
+      #   uses: tailscale/github-action@v3
+      #   with:
+      #     oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      #     oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+      #     tags: tag:ci
 
-          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
-          EXPECTED_SHA="${{ github.sha }}"
-
-          echo "  Expected SHA : $EXPECTED_SHA"
-          echo "  Checked-out  : $CHECKED_OUT_SHA"
-
-          if [ "$CHECKED_OUT_SHA" != "$EXPECTED_SHA" ]; then
-            echo ""
-            echo "  ✗ SHA MISMATCH — aborting."
-            exit 1
-          fi
-
-          echo "  ✓ SHA match confirmed"
-
-          DIRTY="$(git status --porcelain)"
-          if [ -n "$DIRTY" ]; then
-            echo ""
-            echo "  ✗ DIRTY WORKING TREE — aborting."
-            echo "$DIRTY" | sed 's/^/    /'
-            exit 1
-          fi
-
-          echo "  ✓ Working tree clean"
-          echo "  SHA:     $EXPECTED_SHA"
-          echo "  Branch:  ${{ github.ref_name }}"
-          echo "  Message: $(git log -1 --pretty=%s)"
-          echo "════════════════════════════════════════════════════════"
-
-      - name: Install SSH deploy key
+      - name: Install SSH key
         run: |
           set -euo pipefail
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
           if [ -z "${VPS_PRIVATE_KEY}" ]; then
-            echo "::error::No VPS private key found. Set VPS_SSH_KEY or VPS_SECRET_KEY to the PRIVATE key that matches the public key in the VPS user's authorized_keys."
+            echo "::error::Missing VPS SSH private key. Add VPS_SSH_KEY in GitHub Secrets."
             exit 1
           fi
 
           printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
           chmod 600 ~/.ssh/vps_deploy_key
 
-          if ! ssh-keygen -y -f ~/.ssh/vps_deploy_key > ~/.ssh/vps_deploy_key.pub 2>/dev/null; then
-            echo "::error::The configured VPS private key is invalid. VPS_SSH_KEY/VPS_SECRET_KEY must contain a PRIVATE key, not the public key."
-            exit 1
-          fi
+          ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
 
-          echo "VPS_SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "${GITHUB_ENV}"
-        env:
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
-      - name: Add VPS to known_hosts
+      - name: Connect to Tailscale with auth key
+        if: env.TAILSCALE_AUTHKEY != ''
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ env.TAILSCALE_AUTHKEY }}
+
+      - name: Connect to Tailscale with OAuth
+        if: env.TAILSCALE_AUTHKEY == '' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != ''
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Note when Tailscale is not configured
+        if: env.TAILSCALE_AUTHKEY == '' && (env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '')
+        run: |
+          echo "No Tailscale credentials configured; SSH must be reachable from a public GitHub-hosted runner."
+
+      - name: Add VPS to known hosts
         run: |
           set -euo pipefail
+
           mkdir -p ~/.ssh
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-          for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 15 -p "${VPS_PORT:-22}" -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts; then
+          tmp_keys="$(mktemp)"
+          trap 'rm -f "$tmp_keys"' EXIT
+
+          echo "Scanning ${VPS_HOST}:${VPS_PORT} for host keys..."
+          for attempt in 1 2 3; do
+            if ssh-keyscan -T 15 -p "$VPS_PORT" -H "$VPS_HOST" > "$tmp_keys" 2>ssh-keyscan.err && [ -s "$tmp_keys" ]; then
+              cat "$tmp_keys" >> ~/.ssh/known_hosts
+              echo "Collected SSH host key(s) for ${VPS_HOST}:${VPS_PORT}."
               exit 0
             fi
-            echo "ssh-keyscan failed on attempt ${attempt}; retrying..."
+
+            echo "Attempt ${attempt}: no keys yet. ssh-keyscan said:"
+            cat ssh-keyscan.err || true
             sleep 5
           done
 
-          echo "::warning::Unable to pre-scan VPS SSH host key. Falling back to StrictHostKeyChecking=accept-new for this ephemeral runner."
+          echo "::error::No host keys collected from ${VPS_HOST}:${VPS_PORT}."
+          echo "::error::The runner cannot reach the host. Common causes:"
+          echo "::error::  1) VPS_HOST is a Tailscale-only address (100.x / *.ts.net) and the runner is not on the tailnet — configure TAILSCALE_AUTHKEY/TS_AUTHKEY or TS_OAUTH_CLIENT_ID + TS_OAUTH_SECRET secrets."
+          echo "::error::  2) VPS_HOST or VPS_PORT secret is wrong."
+          exit 1
 
-      - name: Verify SSH access to VPS
+      - name: Verify SSH access
         run: |
           set -euo pipefail
 
-          SSH_OPTS=(
-            -i "${VPS_SSH_KEY_PATH}"
-            -o BatchMode=yes
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=accept-new
-            -o ConnectTimeout=20
-            -p "${VPS_PORT:-22}"
-          )
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            'echo "SSH OK:" $(whoami)@$(hostname)'
 
-          if ! ssh "${SSH_OPTS[@]}" \
-                   ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-                   'printf "ssh-ok user=%s host=%s\n" "$(whoami)" "$(hostname)"'; then
-            {
-              echo "::error::GitHub Actions could not authenticate to the VPS before rsync."
-              echo
-              echo "Fix the VPS deploy credentials, then re-run this workflow:"
-              echo "  1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh"
-              echo "     The setup script creates /root/.ssh/github_deploy if needed and"
-              echo "     installs its public key into /root/.ssh/authorized_keys."
-              echo "  2. Put the matching PRIVATE key in VPS_SSH_KEY or VPS_SECRET_KEY."
-              echo "     On the VPS, print it with: cat /root/.ssh/github_deploy"
-              echo "  3. The PUBLIC key belongs on the VPS in ~/.ssh/authorized_keys;"
-              echo "     GitHub repository Deploy Keys are only for GitHub-to-repo access."
-              echo "  4. Ensure VPS_USER matches the account that has that public key"
-              echo "     installed (normally root for this deploy path)."
-              echo "  5. Ensure VPS_HOST points to the new VPS public IP/DNS and VPS_PORT matches the SSH port."
-            } >&2
-            cat <<'EOF'
-          ::error::GitHub Actions could not authenticate to the VPS before rsync.
-
-          Fix the VPS deploy credentials, then re-run this workflow:
-            1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
-               The setup script creates /root/.ssh/github_deploy if needed and
-               installs its public key into /root/.ssh/authorized_keys.
-            2. Put the matching PRIVATE key in VPS_SSH_KEY or VPS_SECRET_KEY.
-               On the VPS, print it with: cat /root/.ssh/github_deploy
-            3. The PUBLIC key belongs on the VPS in ~/.ssh/authorized_keys;
-               GitHub repository Deploy Keys are only for GitHub-to-repo access.
-            4. Ensure VPS_USER matches the account that has that public key
-               installed (normally root for this deploy path).
-            5. Ensure VPS_HOST points to the new VPS public IP/DNS and VPS_PORT matches the SSH port.
-            2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
-               On the VPS, print it with: cat /root/.ssh/github_deploy
-            3. Ensure VPS_USER matches the account that has that public key
-               installed (normally root for this deploy path).
-            4. Ensure VPS_HOST points to the new VPS public IP/DNS.
-          EOF
-            exit 1
-          fi
-
-      - name: Verify SSH access to VPS
+      - name: Sync repository to VPS
         run: |
           set -euo pipefail
 
-          SSH_OPTS=(
-            -i "${VPS_SSH_KEY_PATH}"
-            -o BatchMode=yes
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=yes
-            -o ConnectTimeout=20
-          )
-
-          if ! ssh "${SSH_OPTS[@]}" \
-                   ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-                   'printf "ssh-ok user=%s host=%s\n" "$(whoami)" "$(hostname)"'; then
-            cat <<'EOF'
-          ::error::GitHub Actions could not authenticate to the VPS before rsync.
-
-          Fix the VPS deploy credentials, then re-run this workflow:
-            1. On the target VPS, run: cd /opt/alavont && bash deploy/setup.sh
-               The setup script creates /root/.ssh/github_deploy if needed and
-               installs its public key into /root/.ssh/authorized_keys.
-            2. Put the matching PRIVATE key in the GitHub Actions secret VPS_SSH_KEY.
-               On the VPS, print it with: cat /root/.ssh/github_deploy
-            3. Ensure VPS_USER matches the account that has that public key
-               installed (normally root for this deploy path).
-            4. Ensure VPS_HOST points to the new VPS public IP/DNS.
-          EOF
-            exit 1
-          fi
-
-      - name: Sync code to VPS
-        run: |
-          set -euo pipefail
-          RSYNC_RSH="ssh -i ${VPS_SSH_KEY_PATH} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p ${VPS_PORT:-22}"
-          SSH_OPTS=(
-            -i "${VPS_SSH_KEY_PATH}"
-            -o BatchMode=yes
-            -o IdentitiesOnly=yes
-            -o StrictHostKeyChecking=accept-new
-            -o ConnectTimeout=20
-            -p "${VPS_PORT:-22}"
-          )
-
-          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "mkdir -p /opt/alavont"
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "mkdir -p $DEPLOY_PATH"
 
           rsync -az --delete \
-            -e "${RSYNC_RSH}" \
+            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
             --exclude='.git' \
-            --exclude='deploy/.env' \
-            --exclude='deploy/nginx/ssl' \
             --exclude='node_modules' \
             --exclude='**/node_modules' \
-            ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/alavont/
+            --exclude='deploy/.env' \
+            --exclude='deploy/nginx/ssl' \
+            ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
 
-          ssh "${SSH_OPTS[@]}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "chmod +x /opt/alavont/deploy/renew-cert.sh /opt/alavont/deploy/release-web-ports.sh || true"
-
-      - name: Clean stale node_modules on VPS
+      - name: Build and deploy on VPS
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          ssh -i "${VPS_SSH_KEY_PATH}" \
+          set -euo pipefail
+
+          ssh \
+            -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=20 \
-            -p "${VPS_PORT:-22}" \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "find /opt/alavont -name node_modules -type d -not -path '*/\.*' | xargs rm -rf 2>/dev/null || true"
+            -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
+              set -euo pipefail
 
-      - name: Build images
-        run: |
-          ssh -i "${VPS_SSH_KEY_PATH}" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=20 \
-            -p "${VPS_PORT:-22}" \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            set -e
+              cd /opt/alavont
 
-            echo "Building from source synced at: $(date -u)"
-            echo "Baking SHA into Docker image: ${{ github.sha }}"
+              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
+              date -u >> .deployed-sha
 
-            echo "${{ github.sha }}" > /opt/alavont/.deployed-sha
-            echo "${{ github.ref_name }}" >> /opt/alavont/.deployed-sha
-            echo "$(date -u)" >> /opt/alavont/.deployed-sha
+              chmod +x deploy/*.sh 2>/dev/null || true
 
-            docker builder prune -af
+              cd /opt/alavont/deploy
 
-            cd /opt/alavont/deploy
-            DEPLOY_SHA="${{ github.sha }}" docker compose build --pull
+              echo "Stopping current containers..."
+              docker compose down || true
 
-            echo "BUILD SUCCESS — SHA ${{ github.sha }}"
+              echo "Building containers..."
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
+
+              echo "Starting database..."
+              docker compose up -d db
+
+              echo "Waiting for database..."
+              for i in $(seq 1 30); do
+                if docker compose exec -T db pg_isready -q; then
+                  echo "Database ready"
+                  break
+                fi
+
+                if [ "$i" = "30" ]; then
+                  echo "Database failed to become ready"
+                  docker compose logs db --tail=80
+                  exit 1
+                fi
+
+                sleep 2
+              done
+
+              echo "Running migrations..."
+              docker compose run --rm migrate
+
+              echo "Starting app stack..."
+              docker compose up -d db api platform nginx
+
+              echo "Waiting for API health..."
+              for i in $(seq 1 30); do
+                if curl -fsS http://127.0.0.1/api/healthz; then
+                  echo "API healthy"
+                  break
+                fi
+
+                if [ "$i" = "30" ]; then
+                  echo "API failed health check"
+                  docker compose ps
+                  docker compose logs api --tail=100
+                  exit 1
+                fi
+
+                sleep 2
+              done
+
+              docker compose ps
+              docker image prune -f
+
+              echo "Deploy complete"
           ENDSSH
 
-      - name: Deploy with cert renewal
+      - name: Verify public site
         run: |
-          ssh -i "${VPS_SSH_KEY_PATH}" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=accept-new \
-            -o ConnectTimeout=20 \
-            -p "${VPS_PORT:-22}" \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
-            set -e
+          set -euo pipefail
 
-            cd /opt/alavont/deploy
-            DOMAIN="myorder.fun"
-
-            echo "▶ Releasing public web ports from old VPS proxies if present..."
-            bash /opt/alavont/deploy/release-web-ports.sh
-
-            echo "▶ Stopping all services..."
-            docker compose down 2>&1 || true
-            sleep 3
-
-            echo "▶ Checking / renewing SSL cert..."
-            if certbot renew --standalone --quiet --cert-name "${DOMAIN}" 2>/dev/null || \
-               certbot certonly --standalone \
-                 -d "${DOMAIN}" -d "www.${DOMAIN}" \
-                 --non-interactive --agree-tos \
-                 --register-unsafely-without-email \
-                 --quiet 2>/dev/null; then
-              echo "  ✓ Cert OK — copying to nginx/ssl/..."
-              mkdir -p nginx/ssl
-              cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem nginx/ssl/fullchain.pem
-              cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem nginx/ssl/privkey.pem
-              chmod 644 nginx/ssl/fullchain.pem
-              chmod 600 nginx/ssl/privkey.pem
-            else
-              echo "  ⚠ certbot failed — using existing certs"
-            fi
-
-            echo "▶ Starting database..."
-            docker compose up -d db < /dev/null
-
-            echo "▶ Waiting for Postgres healthcheck (up to 60s)..."
-            WAIT=0
-            until docker compose exec -T db pg_isready -q < /dev/null 2>/dev/null; do
-              WAIT=$((WAIT + 2))
-              if [ "$WAIT" -ge 60 ]; then
-                echo "  ERROR: Postgres did not become healthy within 60s" >&2
-                docker compose logs db | tail -30
-                exit 1
-              fi
-              echo "  not ready — ${WAIT}s elapsed..."
-              sleep 2
-            done
-            echo "  ✓ Postgres healthy"
-
-            echo "▶ Running migrations (drizzle-kit migrate via migrate.sh)..."
-            MIGRATE_OUTPUT=$(docker compose run --rm migrate < /dev/null 2>&1) || {
-              MIGRATE_EXIT=$?
-              echo ""
-              echo "  ✗ Migration container exited with code ${MIGRATE_EXIT}" >&2
-              echo "════════ migrate output ════════"
-              echo "${MIGRATE_OUTPUT}"
-              echo "════════════════════════════════"
-              echo "  Recent DB container logs:"
-              docker compose logs db | tail -30
-              exit "${MIGRATE_EXIT}"
-            }
-            echo "${MIGRATE_OUTPUT}"
-            echo "MIGRATE SUCCESS"
-
-            echo "▶ Opening host firewall ports (idempotent)..."
-            bash /opt/alavont/deploy/release-web-ports.sh
-
-            echo "▶ Starting all services..."
-            bash /opt/alavont/deploy/release-web-ports.sh
-            docker compose up -d < /dev/null
-
-            echo "▶ Refreshing public web edge..."
-            bash /opt/alavont/deploy/release-web-ports.sh
-
-            docker compose up -d db api platform nginx < /dev/null
-            docker compose restart nginx < /dev/null
-            docker compose ps
-            ss -ltnp | grep -E '(:80|:443|:8080|:3000)' || ss -ltnp || true
-
-            echo "▶ Verifying local edge health..."
-            curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/health
-            for attempt in $(seq 1 30); do
-              if curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz; then
-                break
-              fi
-              if [ "${attempt}" -eq 30 ]; then
-                echo "API health check failed after 30 attempts" >&2
-                docker compose logs --tail=80 api || true
-                exit 1
-              fi
-              echo "  API not ready yet — retry ${attempt}/30"
-              sleep 2
-            done
-
-            echo "▶ Restarting nginx to pick up new certs and config..."
-            sleep 5
-            docker compose restart nginx
-            sleep 3
-
-            echo "▶ Verifying app health (up to 60s)..."
-            HWAIT=0
-            until curl -sf --connect-timeout 3 --max-time 5 http://127.0.0.1/api/healthz > /dev/null 2>&1; do
-              HWAIT=$((HWAIT + 5))
-              if [ "$HWAIT" -ge 60 ]; then
-                echo "  ✗ App did not become healthy within 60s — dumping diagnostics" >&2
-                docker compose ps
-                docker compose logs --tail=40
-                exit 1
-              fi
-              echo "  not ready — ${HWAIT}s elapsed..."
-              sleep 5
-            done
-            HEALTH_BODY=$(curl -fsS --connect-timeout 5 --max-time 15 http://127.0.0.1/api/healthz)
-            echo "  ✓ API healthy: ${HEALTH_BODY}"
-
-            docker compose ps
-            docker image prune -f
-
-            echo ""
-            echo "════════════════════════════════════════════════════════"
-            echo "  DEPLOY SUCCESS — $(date -u)"
-            echo "  SHA: ${{ github.sha }}"
-            echo "════════════════════════════════════════════════════════"
-          ENDSSH
-
-      - name: Verify public site from GitHub runner
-        run: |
-          sleep 8
-          curl -Iv --connect-timeout 10 --max-time 20 https://myorder.fun
-          for attempt in $(seq 1 30); do
+          for i in $(seq 1 30); do
             if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
+              echo "Public health check passed"
               exit 0
             fi
-            echo "API not reachable publicly yet — retry ${attempt}/30"
+
+            echo "Public health not ready yet: $i/30"
             sleep 2
           done
+
+          echo "::error::Public health check failed"
           exit 1

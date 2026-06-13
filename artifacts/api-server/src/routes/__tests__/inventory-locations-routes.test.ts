@@ -96,7 +96,8 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args) => args),
   asc: vi.fn(c => c),
   desc: vi.fn(c => c),
-  sql: vi.fn(),
+  sql: Object.assign(vi.fn(), { raw: vi.fn((value: string) => value) }),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({

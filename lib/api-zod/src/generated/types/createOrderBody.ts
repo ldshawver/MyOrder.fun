@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CreateOrderBodyCheckoutConfirmation } from './createOrderBodyCheckoutConfirmation';
+import type { CreateOrderBodyDeliveryMethod } from './createOrderBodyDeliveryMethod';
 import type { CreateOrderBodyItemsItem } from './createOrderBodyItemsItem';
 import type { DeliveryQuoteSelection } from './deliveryQuoteSelection';
 
@@ -16,4 +17,6 @@ export interface CreateOrderBody {
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
+  deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  smsOptIn?: boolean | null;
 }

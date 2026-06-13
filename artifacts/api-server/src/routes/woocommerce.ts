@@ -230,14 +230,20 @@ async function syncHandler(_req: import("express").Request, res: import("express
 
         // Dedup by alavont_id = "wc_{product_id}"
         const [existing] = await db
-          .select({ id: catalogItemsTable.id })
+          .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont })
           .from(catalogItemsTable)
           .where(eq(catalogItemsTable.alavontId, `wc_${wcId}`))
           .limit(1);
 
         if (existing) {
-          await db.update(catalogItemsTable).set(values).where(eq(catalogItemsTable.id, existing.id));
-          updated++;
+          // Never overwrite a row that has been reclassified as a local Alavont product.
+          // The CSV import is the authority for local items; WooCommerce sync must not win.
+          if (existing.isLocalAlavont) {
+            skipped++;
+          } else {
+            await db.update(catalogItemsTable).set(values).where(eq(catalogItemsTable.id, existing.id));
+            updated++;
+          }
         } else {
           await db.insert(catalogItemsTable).values(values);
           inserted++;

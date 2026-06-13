@@ -161,19 +161,41 @@ beforeEach(() => {
 });
 
 describe("GET /api/admin/inventory — JSON contract", () => {
-  it("returns application/json with { items, pettyCash } on success", async () => {
+  it("returns application/json with { items, locations, pettyCash } on success", async () => {
+    // The route now calls ensureStandardLocations before the main queries.
+    // Queue order (after loadDbUser at n=1):
+    //   n=2  ensureStandardBoxes → one existing box (skip insertion)
+    //   n=3  csrBoxes list for ensureStandardLocations
+    //   n=4–7 four location-exists checks (return existing to skip insert)
+    //   n=8  products (catalogItemsTable)
+    //   n=9  locations (inventoryLocationsTable)
+    //   n=10 balances (inventoryBalancesTable)
+    //   n=11 admin settings
     configureDb([
-      // catalog items query
-      [
+      /* n=2 */ [{ id: 1, slug: "sales-box-1" }],
+      /* n=3 */ [{ id: 1, slug: "sales-box-1" }, { id: 2, slug: "sales-box-2" }],
+      /* n=4 */ [{ id: 1 }],
+      /* n=5 */ [{ id: 2 }],
+      /* n=6 */ [{ id: 3 }],
+      /* n=7 */ [{ id: 4 }],
+      /* n=8 products */ [
         {
           id: 1, name: "Item A", alavontName: null, luciferCruzName: null,
           category: "Stimulants", alavontCategory: null,
           price: "10.00", regularPrice: "12.00",
           stockQuantity: "5", stockUnit: "#", parLevel: "2", isAvailable: true,
+          isWooManaged: false, isLocalAlavont: true,
         },
       ],
-      // admin settings query
-      [{ pettyCash: "100.00" }],
+      /* n=9 locations */ [
+        { id: 1, name: "Backstock", type: "backstock", csrBoxId: null, isActive: true, displayOrder: 1 },
+        { id: 2, name: "Storefront", type: "storefront", csrBoxId: null, isActive: true, displayOrder: 2 },
+      ],
+      /* n=10 balances */ [
+        { id: 1, productId: 1, locationId: 1, quantityOnHand: "5", parLevel: "2" },
+        { id: 2, productId: 1, locationId: 2, quantityOnHand: "3", parLevel: "1" },
+      ],
+      /* n=11 settings */ [{ pettyCash: "100.00" }],
     ]);
 
     const res = await supertest(buildApp(inventoryRouter)).get("/api/admin/inventory");
@@ -181,8 +203,14 @@ describe("GET /api/admin/inventory — JSON contract", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(Array.isArray(res.body.items)).toBe(true);
+    expect(Array.isArray(res.body.locations)).toBe(true);
+    // Item has per-location breakdown + totalStock (sum of all location qtys)
     expect(res.body.items[0]).toMatchObject({
-      id: 1, name: "Item A", stockQuantity: 5, stockUnit: "#", parLevel: 2,
+      id: 1,
+      name: "Item A",
+      stockUnit: "#",
+      parLevel: 2,
+      totalStock: 8, // 5 (Backstock) + 3 (Storefront)
     });
     expect(typeof res.body.pettyCash).toBe("number");
   });
@@ -237,10 +265,20 @@ describe("POST /api/admin/inventory-template/seed — JSON contract", () => {
 });
 
 describe("Frontend fetch shape — what admin/inventory.tsx expects", () => {
-  it("GET /api/admin/inventory body has { items: InvItem[], pettyCash: number }", async () => {
-    configureDb([[], [{ pettyCash: "0" }]]);
+  it("GET /api/admin/inventory body has { items: InvItem[], locations: [], pettyCash: number }", async () => {
+    // Minimal queue: ensureStandardLocations + 4 parallel data queries
+    configureDb([
+      /* n=2 ensureStandardBoxes   */ [{ id: 1 }],
+      /* n=3 boxes list            */ [{ id: 1, slug: "sales-box-1" }, { id: 2, slug: "sales-box-2" }],
+      /* n=4-7 loc-exists checks   */ [{ id: 1 }], [{ id: 2 }], [{ id: 3 }], [{ id: 4 }],
+      /* n=8  products             */ [],
+      /* n=9  locations            */ [],
+      /* n=10 balances             */ [],
+      /* n=11 settings             */ [{ pettyCash: "0" }],
+    ]);
     const res = await supertest(buildApp(inventoryRouter)).get("/api/admin/inventory");
     expect(res.body).toHaveProperty("items");
+    expect(res.body).toHaveProperty("locations");
     expect(res.body).toHaveProperty("pettyCash");
   });
 
