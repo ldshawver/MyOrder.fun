@@ -32,7 +32,9 @@ import {
   PackageOpen,
   Store,
   Wifi,
-  Zap
+  Zap,
+  Phone,
+  PlugZap
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -172,28 +174,33 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
         { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["global_admin", "admin"] },
+        { href: "/admin/communications", label: "SMS & Calls", icon: Phone, roles: ["global_admin", "admin"] },
       ],
     },
     {
       title: "Platform Admin",
-      roles: ["global_admin", "admin"],
+      roles: ["global_admin"],
       items: [
-        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
-        { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
-        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin"] },
+        { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
+        { href: "/global-admin/tenants", label: "Tenants & Billing", icon: Store, roles: ["global_admin"] },
+        { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin"] },
+        { href: "/global-admin/onboarding", label: "Onboarding", icon: ClipboardCheck, roles: ["global_admin"] },
+        { href: "/global-admin/audit", label: "Audit Log", icon: ClipboardList, roles: ["global_admin"] },
+        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin"] },
         {
           href: "/admin/settings",
           label: "Admin Settings",
           icon: ShieldAlert,
-          roles: ["global_admin", "admin"],
+          roles: ["global_admin"],
           children: [
-            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin", "admin"] },
-            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin", "admin"] },
-            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
-            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
-            { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin", "admin"] },
-            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin", "admin"] },
-            { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },
+            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin"] },
+            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin"] },
+            { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin"] },
+            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin"] },
+            { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin"] },
+            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin"] },
+            { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["global_admin"] },
           ],
         },
       ],

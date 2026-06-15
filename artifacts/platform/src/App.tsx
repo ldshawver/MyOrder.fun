@@ -28,6 +28,7 @@ import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
 import GlobalAdminTenants from "@/pages/global-admin/tenants";
 import GlobalAdminAudit from "@/pages/global-admin/audit";
+import GlobalAdminIntegrations from "@/pages/global-admin/integrations";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
@@ -47,6 +48,7 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
@@ -356,6 +358,7 @@ function AuthenticatedApp() {
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
             <Route path="/global-admin/tenants" component={GlobalAdminTenants} />
             <Route path="/global-admin/audit" component={GlobalAdminAudit} />
+            <Route path="/global-admin/integrations" component={GlobalAdminIntegrations} />
           </>
         )}
 
@@ -376,6 +379,7 @@ function AuthenticatedApp() {
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
+            <Route path="/admin/communications" component={AdminCommunications} />
           </>
         )}
 
