@@ -98,7 +98,7 @@ describe("requireApproved middleware", () => {
   });
 
   it("blocks a rejected staff user", () => {
-    const req = { dbUser: makeUser({ role: "customer_service_rep", status: "rejected" }) } as unknown as Request;
+    const req = { dbUser: makeUser({ role: "csr", status: "rejected" }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
@@ -107,7 +107,7 @@ describe("requireApproved middleware", () => {
   });
 
   it("blocks an inactive approved staff user", () => {
-    const req = { dbUser: makeUser({ role: "customer_service_rep", status: "approved", isActive: false }) } as unknown as Request;
+    const req = { dbUser: makeUser({ role: "csr", status: "approved", isActive: false }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
@@ -195,13 +195,13 @@ describe("requireRole middleware", () => {
 
 describe("normalizeRole", () => {
   it.each([
-    ["customer_service_rep"],
+    ["csr"],
     ["Customer Service Rep"],
     ["CSR"],
     ["csr"],
     ["service_rep"],
     ["Customer-Service-Representative"],
-  ])("normalizes %s to customer_service_rep", (role) => {
-    expect(normalizeRole(role)).toBe("customer_service_rep");
+  ])("normalizes %s to csr", (role) => {
+    expect(normalizeRole(role)).toBe("csr");
   });
 });

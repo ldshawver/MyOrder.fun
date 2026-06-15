@@ -37,7 +37,7 @@ import {
   Palette,
   PanelsTopLeft,
 } from "lucide-react";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 import { useListNotifications, getListNotificationsQueryKey } from "@workspace/api-client-react";
 
@@ -58,11 +58,13 @@ type NavSection = {
   items: NavItem[];
 };
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "supervisor" | "customer_service_rep" | "user" {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
+  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (normalized === "customer_service_rep" ||
+    normalized === "staff" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
     return "customer_service_rep";
   }
   return "user";
@@ -87,7 +89,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
 
   const userRole = normalizeUiRole(user.role);
 
-  usePushNotifications({ role: userRole });
+  usePushNotifications({ role: normalizeNotificationRole(user.role) });
 
   const { data: notifData } = useListNotifications(
     {},
@@ -96,7 +98,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const unreadCount = notifData?.unreadCount ?? 0;
 
   // Staff roles that can run a shift / see the CSR queue + clock-in
-  const SHIFT_ROLES = ["global_admin", "admin", "customer_service_rep"];
+  const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "customer_service_rep"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
 
@@ -149,7 +151,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     },
     {
       title: "Supervisor",
-      roles: ["global_admin", "admin"],
+      roles: ["global_admin", "admin", "supervisor"],
       items: [
         { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
         {
@@ -195,6 +197,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: ["global_admin", "admin"],
       items: [
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: ShieldAlert, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "tenant_admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
@@ -212,6 +215,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin", "admin"] },
             { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin", "admin"] },
             { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },
+            { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: ShieldAlert, roles: ["global_admin", "admin"] },
           ],
         },
       ],

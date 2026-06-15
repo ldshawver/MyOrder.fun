@@ -109,7 +109,7 @@ export function shouldDeliver(client: SseClient, ev: OrderEvent): boolean {
   }
   // CSR pool (and business_sitter helper) — only their own assigned orders
   // OR the unassigned general queue
-  if (role === "customer_service_rep") {
+  if (role === "csr") {
     return ev.assignedCsrUserId === null || ev.assignedCsrUserId === client.userId;
   }
   // Customers — only their own orders

@@ -55,6 +55,7 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
@@ -387,6 +388,7 @@ function AuthenticatedApp() {
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
             <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
 

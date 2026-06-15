@@ -103,7 +103,7 @@ vi.mock("../../lib/logger", () => ({
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => {
-    req.dbUser = { id: 1, role: "admin", status: "approved" };
+    req.dbUser = { id: 1, role: "admin", status: "approved", tenantId: 1 };
     next();
   },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
