@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/react";
 import {
-  Save, ClipboardList, DollarSign, RefreshCw, ChevronRight, Calendar,
+  Save, ClipboardList, DollarSign, RefreshCw, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
   Package, MapPin, BarChart3,
 } from "lucide-react";
@@ -10,6 +10,14 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 
 // ─── Stock Levels Types ───────────────────────────────────────────────────────
+
+type InvLocEntry = {
+  locationId: number;
+  name: string;
+  type: string;
+  qty: number;
+  par: number;
+};
 
 type InvItem = {
   id: number;
@@ -20,13 +28,14 @@ type InvItem = {
   price: string;
   stockQuantity: number | null;
   stockUnit: string;
+  totalStock: number;
   isAvailable: boolean;
+  locations: InvLocEntry[];
 };
 
-type RowState = {
-  starting: string;
-  ending: string;
-  unit: string;
+type LocCellState = {
+  qty: string;
+  par: string;
   dirty: boolean;
   saving: boolean;
 };
@@ -70,7 +79,6 @@ type TemplateRowEdit = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PHARMACY_CATEGORIES = ["Pharmacy"];
 const EXCLUDE_CATEGORIES = ["Membership", "Self Care & Ambiance", "Lubricants & Enhancers", "Kink & Fetish"];
 
 function categoryOrder(cat: string): number {
@@ -86,13 +94,6 @@ function categoryOrder(cat: string): number {
   return order[cat] ?? 99;
 }
 
-function diff(starting: string, ending: string): string {
-  const s = parseFloat(starting);
-  const e = parseFloat(ending);
-  if (isNaN(s) || isNaN(e)) return "";
-  const d = s - e;
-  return d % 1 === 0 ? String(d) : d.toFixed(2);
-}
 
 // ─── Shift Template Tab ───────────────────────────────────────────────────────
 
@@ -783,11 +784,15 @@ function CsrBoxesTab({ getToken }: { getToken: () => Promise<string | null> }) {
 
 function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }) {
   const [items, setItems] = useState<InvItem[]>([]);
-  const [rows, setRows] = useState<Record<number, RowState>>({});
+  const [locations, setLocations] = useState<{ id: number; name: string; type: string }[]>([]);
+  // Key: `${productId}:${locationId}`
+  const [cells, setCells] = useState<Record<string, LocCellState>>({});
   const [pettyCash, setPettyCash] = useState<string>("0.00");
   const [pettyCashDirty, setPettyCashDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [ensuring, setEnsuring] = useState(false);
+  const [ensureMsg, setEnsureMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [date] = useState(() => new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }));
 
@@ -801,19 +806,24 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
       });
       if (!res.ok) throw new Error("Failed to load inventory");
       const data = await res.json();
-      setItems(data.items);
-      setPettyCash(parseFloat(data.pettyCash ?? 0).toFixed(2));
-      const initial: Record<number, RowState> = {};
-      for (const item of data.items) {
-        initial[item.id] = {
-          starting: item.stockQuantity != null ? String(item.stockQuantity) : "",
-          ending: "",
-          unit: item.stockUnit ?? "#",
-          dirty: false,
-          saving: false,
-        };
+      const itemsData: InvItem[] = data.items ?? [];
+      const locData: { id: number; name: string; type: string }[] = data.locations ?? [];
+      setItems(itemsData);
+      setLocations(locData);
+      setPettyCash(parseFloat(String(data.pettyCash ?? 0)).toFixed(2));
+
+      const init: Record<string, LocCellState> = {};
+      for (const item of itemsData) {
+        for (const loc of (item.locations ?? [])) {
+          init[`${item.id}:${loc.locationId}`] = {
+            qty: String(loc.qty),
+            par: String(loc.par),
+            dirty: false,
+            saving: false,
+          };
+        }
       }
-      setRows(initial);
+      setCells(init);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Network error");
     } finally {
@@ -823,43 +833,42 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
 
   useEffect(() => { fetchInventory(); }, [fetchInventory]);
 
-  function updateRow(id: number, field: keyof Omit<RowState, "dirty" | "saving">, val: string) {
-    setRows(prev => ({ ...prev, [id]: { ...prev[id], [field]: val, dirty: true } }));
+  function updateCell(productId: number, locationId: number, field: "qty" | "par", val: string) {
+    const key = `${productId}:${locationId}`;
+    setCells(prev => ({
+      ...prev,
+      [key]: { ...(prev[key] ?? { qty: "0", par: "0", dirty: false, saving: false }), [field]: val, dirty: true },
+    }));
   }
 
-  async function saveRow(id: number) {
-    const row = rows[id];
-    if (!row?.dirty) return;
-    setRows(prev => ({ ...prev, [id]: { ...prev[id], saving: true } }));
+  async function saveCell(productId: number, locationId: number) {
+    const key = `${productId}:${locationId}`;
+    const cell = cells[key];
+    if (!cell?.dirty) return;
+    setCells(prev => ({ ...prev, [key]: { ...prev[key], saving: true } }));
     try {
       const token = await getToken();
-      await fetch(`/api/admin/inventory/${id}`, {
+      await fetch(`/api/admin/inventory/balance/${productId}/${locationId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          stockQuantity: row.starting.trim() === "" ? null : parseFloat(row.starting),
-          stockUnit: row.unit,
-        }),
+        body: JSON.stringify({ qty: parseFloat(cell.qty) || 0, par: parseFloat(cell.par) || 0 }),
       });
-      setRows(prev => ({ ...prev, [id]: { ...prev[id], dirty: false, saving: false } }));
+      setCells(prev => ({ ...prev, [key]: { ...prev[key], dirty: false, saving: false } }));
     } catch {
-      setRows(prev => ({ ...prev, [id]: { ...prev[id], saving: false } }));
+      setCells(prev => ({ ...prev, [key]: { ...prev[key], saving: false } }));
     }
   }
 
   async function saveAll() {
     setSaving(true);
     const token = await getToken();
-    const dirtyIds = Object.entries(rows).filter(([, r]) => r.dirty).map(([id]) => parseInt(id));
-    await Promise.all(dirtyIds.map(id => {
-      const row = rows[id];
-      return fetch(`/api/admin/inventory/${id}`, {
+    const dirtyEntries = Object.entries(cells).filter(([, c]) => c.dirty);
+    await Promise.all(dirtyEntries.map(([key, cell]) => {
+      const [pidStr, lidStr] = key.split(":");
+      return fetch(`/api/admin/inventory/balance/${pidStr}/${lidStr}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          stockQuantity: row.starting.trim() === "" ? null : parseFloat(row.starting),
-          stockUnit: row.unit,
-        }),
+        body: JSON.stringify({ qty: parseFloat(cell.qty) || 0, par: parseFloat(cell.par) || 0 }),
       });
     }));
     if (pettyCashDirty) {
@@ -870,12 +879,31 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
       });
       setPettyCashDirty(false);
     }
-    setRows(prev => {
+    setCells(prev => {
       const next = { ...prev };
-      for (const id of dirtyIds) next[id] = { ...next[id], dirty: false };
+      for (const [key] of dirtyEntries) next[key] = { ...next[key], dirty: false };
       return next;
     });
     setSaving(false);
+  }
+
+  async function ensureAllBalances() {
+    setEnsuring(true);
+    setEnsureMsg(null);
+    try {
+      const token = await getToken();
+      const r = await fetch("/api/admin/inventory/ensure-balances", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      setEnsureMsg(`✓ Created ${data.created ?? 0} new balance row${data.created !== 1 ? "s" : ""}`);
+      await fetchInventory();
+    } catch {
+      setEnsureMsg("Failed to ensure balances");
+    } finally {
+      setEnsuring(false);
+    }
   }
 
   const visibleItems = items.filter(it => !EXCLUDE_CATEGORIES.includes(it.category));
@@ -885,17 +913,7 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
     byCategory[item.category].push(item);
   }
   const sortedCats = Object.keys(byCategory).sort((a, b) => categoryOrder(a) - categoryOrder(b));
-
-  function byName(items: InvItem[]): Record<string, InvItem[]> {
-    const g: Record<string, InvItem[]> = {};
-    for (const item of items) {
-      if (!g[item.name]) g[item.name] = [];
-      g[item.name].push(item);
-    }
-    return g;
-  }
-
-  const dirtyCount = Object.values(rows).filter(r => r.dirty).length;
+  const dirtyCellCount = Object.values(cells).filter(c => c.dirty).length;
 
   if (loading) {
     return (
@@ -913,117 +931,137 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header toolbar */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Calendar size={11} />
           {date}
         </div>
-        <Button
-          onClick={saveAll}
-          disabled={saving || (dirtyCount === 0 && !pettyCashDirty)}
-          className="gap-2 rounded-xl"
-          size="sm"
-        >
-          {saving ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
-          {saving ? "Saving..." : dirtyCount > 0 || pettyCashDirty ? `Save Changes (${dirtyCount + (pettyCashDirty ? 1 : 0)})` : "All Saved"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {ensureMsg && (
+            <span className="text-xs text-emerald-400">{ensureMsg}</span>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={ensureAllBalances}
+            disabled={ensuring}
+            className="gap-1.5 h-7 text-xs rounded-xl"
+          >
+            {ensuring ? <RefreshCw size={11} className="animate-spin" /> : <Database size={11} />}
+            Ensure All Balances
+          </Button>
+          <Button
+            onClick={saveAll}
+            disabled={saving || (dirtyCellCount === 0 && !pettyCashDirty)}
+            className="gap-2 rounded-xl h-7"
+            size="sm"
+          >
+            {saving ? <RefreshCw size={11} className="animate-spin" /> : <Save size={11} />}
+            {saving ? "Saving…" : dirtyCellCount > 0 || pettyCashDirty
+              ? `Save (${dirtyCellCount + (pettyCashDirty ? 1 : 0)})`
+              : "All Saved"}
+          </Button>
+        </div>
       </div>
 
-      {/* Column header */}
-      <div className="grid grid-cols-[1fr_80px_100px_100px_100px_90px] gap-2 px-3 text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
-        <div>Item</div>
-        <div className="text-center">Unit</div>
-        <div className="text-center">Starting</div>
-        <div className="text-center">Ending</div>
-        <div className="text-center">Difference</div>
-        <div className="text-center">Discrepancy</div>
-      </div>
-
-      {sortedCats.map(cat => {
-        const catItems = byCategory[cat];
-        const nameGroups = byName(catItems);
-        const names = Object.keys(nameGroups);
-        const isPharm = PHARMACY_CATEGORIES.includes(cat);
-
-        return (
-          <div key={cat} className="space-y-1">
-            {isPharm && (
-              <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-center font-bold text-sm tracking-wider text-primary mb-3">
-                Pharmacy
-              </div>
-            )}
-            {names.map(name => {
-              const groupItems = nameGroups[name];
-              const isGroup = groupItems.length > 1;
+      {/* Per-location grid */}
+      <div className="overflow-x-auto rounded-2xl border border-border/30">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border/30 bg-muted/20">
+              <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Item</th>
+              {locations.map(loc => (
+                <th key={loc.id} className="px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-widest text-muted-foreground min-w-[90px]">
+                  <div>{loc.name.replace("CSR Sales ", "")}</div>
+                  <div className="text-[9px] font-normal opacity-60 normal-case">{loc.type === "csr_box" ? "CSR Box" : loc.type}</div>
+                </th>
+              ))}
+              <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-widest text-primary min-w-[60px]">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedCats.map(cat => {
+              const catItems = byCategory[cat];
               return (
-                <div key={name} className="rounded-xl border border-border/40 bg-card/30 overflow-hidden">
-                  <div className="px-3 py-2 bg-muted/20 border-b border-border/30 flex items-center gap-2">
-                    {isGroup && <ChevronRight size={12} className="text-muted-foreground/50" />}
-                    <span className="text-sm font-semibold">{name}</span>
-                    <Badge variant="outline" className="text-[10px] ml-auto">
+                <>
+                  <tr key={`cat-${cat}`} className="bg-muted/10">
+                    <td
+                      colSpan={locations.length + 2}
+                      className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-b border-t border-border/20"
+                    >
                       {cat.replace("Psychedelics & Hallucinogens", "Psychedelics").replace("Depressants & Precursors", "Depressants").replace("Dissociative's", "Dissociatives")}
-                    </Badge>
-                  </div>
-                  {groupItems.map((item, idx) => {
-                    const row = rows[item.id];
-                    if (!row) return null;
-                    const diffVal = diff(row.starting, row.ending);
-                    const subLabel = isGroup ? (item.price ? `$${parseFloat(item.price).toFixed(0)}` : `#${idx + 1}`) : null;
+                    </td>
+                  </tr>
+                  {catItems.map(item => {
+                    const liveTotal = (item.locations ?? []).reduce((s, l) => {
+                      const cell = cells[`${item.id}:${l.locationId}`];
+                      return s + (cell ? (parseFloat(cell.qty) || 0) : l.qty);
+                    }, 0);
+                    const rowDirty = locations.some(l => cells[`${item.id}:${l.id}`]?.dirty);
                     return (
-                      <div
+                      <tr
                         key={item.id}
-                        className={`grid grid-cols-[1fr_80px_100px_100px_100px_90px] gap-2 px-3 py-2 items-center border-b border-border/20 last:border-0 transition-colors ${row.dirty ? "bg-primary/[0.03]" : "hover:bg-muted/10"}`}
+                        className={`border-b border-border/10 transition-colors ${rowDirty ? "bg-primary/[0.03]" : "hover:bg-muted/5"}`}
                       >
-                        <div className="text-xs text-muted-foreground truncate">
-                          {subLabel && <span className="font-mono text-[11px] bg-muted/40 rounded px-1.5 py-0.5 mr-2">{subLabel}</span>}
-                          {isGroup ? "" : <span className="text-foreground/70">{item.luciferCruzName || item.name}</span>}
-                          {row.dirty && <span className="ml-1.5 text-[10px] text-primary font-medium">•</span>}
-                        </div>
-                        <div className="flex justify-center">
-                          <button
-                            onClick={() => updateRow(item.id, "unit", row.unit === "G" ? "#" : "G")}
-                            className={`text-[11px] font-bold px-2 py-0.5 rounded-full border transition-all ${row.unit === "G" ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : "border-border/50 bg-muted/30 text-muted-foreground"}`}
-                          >
-                            {row.unit}
-                          </button>
-                        </div>
-                        <div>
-                          <Input
-                            value={row.starting}
-                            onChange={e => updateRow(item.id, "starting", e.target.value)}
-                            onBlur={() => saveRow(item.id)}
-                            placeholder="—"
-                            className="h-7 text-xs text-center rounded-lg bg-background/60 border-border/40 font-mono"
-                          />
-                        </div>
-                        <div>
-                          <Input
-                            value={row.ending}
-                            onChange={e => updateRow(item.id, "ending", e.target.value)}
-                            placeholder="—"
-                            className="h-7 text-xs text-center rounded-lg bg-background/60 border-border/40 font-mono"
-                          />
-                        </div>
-                        <div className="text-center">
-                          {diffVal !== "" ? (
-                            <span className={`text-xs font-mono font-semibold ${parseFloat(diffVal) < 0 ? "text-red-400" : parseFloat(diffVal) > 0 ? "text-emerald-400" : "text-muted-foreground"}`}>
-                              {diffVal}
-                            </span>
-                          ) : <span className="text-muted-foreground/30 text-xs">—</span>}
-                        </div>
-                        <div className="text-center">
-                          <span className="text-muted-foreground/30 text-xs">0</span>
-                        </div>
-                      </div>
+                        <td className="px-3 py-2">
+                          <div className="font-medium text-sm leading-tight">{item.alavontName ?? item.name}</div>
+                          {item.luciferCruzName && (
+                            <div className="text-[10px] text-muted-foreground">{item.luciferCruzName}</div>
+                          )}
+                          {!item.isAvailable && (
+                            <span className="text-[9px] text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">Hidden</span>
+                          )}
+                        </td>
+                        {locations.map(loc => {
+                          const key = `${item.id}:${loc.id}`;
+                          const cell = cells[key] ?? { qty: "0", par: "0", dirty: false, saving: false };
+                          const belowPar = parseFloat(cell.qty) < parseFloat(cell.par) && parseFloat(cell.par) > 0;
+                          return (
+                            <td key={loc.id} className={`px-2 py-1.5 ${cell.dirty ? "bg-primary/[0.05]" : ""}`}>
+                              <div className="flex flex-col gap-0.5 items-center">
+                                <Input
+                                  value={cell.qty}
+                                  onChange={e => updateCell(item.id, loc.id, "qty", e.target.value)}
+                                  onBlur={() => saveCell(item.id, loc.id)}
+                                  title="Quantity on hand"
+                                  className={`h-6 w-16 text-center text-xs font-mono rounded px-1 ${belowPar ? "border-amber-500/50 text-amber-300" : ""} ${cell.saving ? "opacity-50" : ""}`}
+                                />
+                                <Input
+                                  value={cell.par}
+                                  onChange={e => updateCell(item.id, loc.id, "par", e.target.value)}
+                                  onBlur={() => saveCell(item.id, loc.id)}
+                                  title="Par level"
+                                  className="h-5 w-16 text-center text-[10px] font-mono rounded px-1 opacity-50 border-dashed"
+                                />
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className={`px-3 py-2 text-center font-mono font-bold text-sm ${liveTotal === 0 ? "text-muted-foreground/40" : "text-primary"}`}>
+                          {liveTotal % 1 === 0 ? liveTotal : liveTotal.toFixed(2)}
+                        </td>
+                      </tr>
                     );
                   })}
-                </div>
+                </>
               );
             })}
+          </tbody>
+        </table>
+        {visibleItems.length === 0 && (
+          <div className="py-16 text-center text-sm text-muted-foreground">
+            <Package size={32} className="mx-auto mb-3 opacity-20" />
+            No inventory items found. Click <strong>Ensure All Balances</strong> to seed from catalog.
           </div>
-        );
-      })}
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 px-1 text-[10px] text-muted-foreground">
+        <span>Top cell = qty on hand · Bottom cell (dashed) = par level</span>
+        <span className="text-amber-400">Amber = below par</span>
+      </div>
 
       {/* Petty Cash */}
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 overflow-hidden">
@@ -1047,10 +1085,10 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
         </div>
       </div>
 
-      {(dirtyCount > 0 || pettyCashDirty) && (
+      {(dirtyCellCount > 0 || pettyCashDirty) && (
         <div className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
           <span className="text-xs text-muted-foreground">
-            {dirtyCount} item{dirtyCount !== 1 ? "s" : ""} with unsaved changes
+            {dirtyCellCount} cell{dirtyCellCount !== 1 ? "s" : ""} with unsaved changes
           </span>
           <Button onClick={saveAll} disabled={saving} size="sm" className="gap-2 rounded-xl h-7">
             {saving ? <RefreshCw size={12} className="animate-spin" /> : <Save size={12} />}
@@ -1237,6 +1275,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<number, string>>({});
+  const [parEdits, setParEdits] = useState<Record<number, string>>({});
   const [saving, setSaving] = useState<Record<number, boolean>>({});
   const [filterLoc, setFilterLoc] = useState<number | "all">("all");
 
@@ -1252,6 +1291,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
       setBalances(data.balances ?? []);
       setLocations(data.locations ?? []);
       setEdits({});
+      setParEdits({});
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Network error"); }
     setLoading(false);
   }, [getToken, filterLoc]);
@@ -1259,22 +1299,33 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   useEffect(() => { fetchBalances(); }, [fetchBalances]);
 
   const saveBalance = async (balance: InventoryBalance) => {
-    const raw = edits[balance.id];
-    if (raw === undefined) return;
-    const qty = parseFloat(raw);
-    if (isNaN(qty)) return;
+    const rawQty = edits[balance.id];
+    const rawPar = parEdits[balance.id];
+    if (rawQty === undefined && rawPar === undefined) return;
+    const payload: { quantityOnHand?: number; parLevel?: number } = {};
+    if (rawQty !== undefined) {
+      const qty = parseFloat(rawQty);
+      if (isNaN(qty)) return;
+      payload.quantityOnHand = qty;
+    }
+    if (rawPar !== undefined) {
+      const par = parseFloat(rawPar);
+      if (isNaN(par)) return;
+      payload.parLevel = par;
+    }
     setSaving(s => ({ ...s, [balance.id]: true }));
     try {
       const token = await getToken();
       const res = await fetch(`/api/admin/inventory-balances/${balance.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ quantityOnHand: qty }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error("Save failed");
       const data = await res.json();
-      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand } : b));
+      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand, parLevel: data.balance.parLevel } : b));
       setEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
+      setParEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
     } catch { setError("Failed to save."); }
     setSaving(s => ({ ...s, [balance.id]: false }));
   };
@@ -1305,7 +1356,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <p className="text-xs text-muted-foreground flex-1">
-          Per-product, per-location quantities. WooCommerce items excluded. Inline edit → blur to save.
+          One imported row is one inventory product. Only Alavont/master inventory rows appear here; safe/cart-conversion columns stay hidden. Edit quantity and location par inline; row totals show on-hand stock available to sell.
         </p>
         <div className="flex items-center gap-2">
           <select
@@ -1330,37 +1381,53 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
         <div className="rounded-xl border border-border/40 overflow-hidden">
           {/* Header */}
           <div className="grid gap-2 px-4 py-2 bg-muted/20 border-b border-border/30 text-[10px] font-bold text-muted-foreground uppercase tracking-widest"
-            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
             <div>Product</div>
-            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}</div>)}
+            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}<span className="block text-[9px] font-medium normal-case tracking-normal">Qty / Par</span></div>)}
+            <div className="text-center">Total</div>
           </div>
 
           {/* Rows */}
           {products.map(([productId, { name, balances: pBalances }]) => (
             <div key={productId}
               className="grid gap-2 px-4 py-2 border-b border-border/20 last:border-0 hover:bg-muted/10 transition-colors items-center"
-              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 90px)` }}>
+              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
               <div className="text-xs font-medium truncate">{name}</div>
               {activeLocations.map(loc => {
                 const b = pBalances.find(pb => pb.locationId === loc.id);
                 if (!b) return <div key={loc.id} className="text-center text-muted-foreground/30 text-xs">—</div>;
                 const editVal = edits[b.id];
+                const parEditVal = parEdits[b.id];
                 const isDirty = editVal !== undefined;
+                const isParDirty = parEditVal !== undefined;
                 return (
-                  <div key={loc.id} className="flex items-center justify-center">
+                  <div key={loc.id} className="flex items-center justify-center gap-1">
                     {saving[b.id] ? (
                       <Loader2 size={11} className="animate-spin text-muted-foreground" />
                     ) : (
-                      <Input
-                        value={isDirty ? editVal : String(b.quantityOnHand)}
-                        onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
-                        onBlur={() => saveBalance(b)}
-                        className={`h-6 w-16 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
-                      />
+                      <>
+                        <Input
+                          value={isDirty ? editVal : String(b.quantityOnHand)}
+                          onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
+                          onBlur={() => saveBalance(b)}
+                          title={`${loc.name} on-hand quantity`}
+                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
+                        />
+                        <Input
+                          value={isParDirty ? parEditVal : String(b.parLevel)}
+                          onChange={e => setParEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
+                          onBlur={() => saveBalance(b)}
+                          title={`${loc.name} par level`}
+                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isParDirty ? "border-amber-400/50 bg-amber-400/5" : "bg-transparent border-transparent hover:border-border/50"}`}
+                        />
+                      </>
                     )}
                   </div>
                 );
               })}
+              <div className="text-center text-xs font-mono font-semibold text-emerald-400">
+                {pBalances.reduce((sum, balance) => sum + balance.quantityOnHand, 0)}
+              </div>
             </div>
           ))}
         </div>

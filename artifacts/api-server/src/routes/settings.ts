@@ -2,11 +2,19 @@ import { Router, type IRouter } from "express";
 import { eq, sql } from "drizzle-orm";
 import { db, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
+  const actor = req.dbUser!;
+  if (isGlobalAdmin(actor) || actor.tenantId != null) return next();
+  res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
+}
+
 
 const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
 type RoutingRule = typeof ROUTING_RULES[number];
@@ -29,6 +37,7 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['stripe']::text[]`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "checkout_conversion_preview" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_image_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_processor_config" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "auto_print_on_payment" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "receipt_template_style" text NOT NULL DEFAULT 'standard'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "label_template_style" text NOT NULL DEFAULT 'standard'`,
@@ -74,6 +83,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     enabledProcessors: s.enabledProcessors,
     checkoutConversionPreview: s.checkoutConversionPreview,
     merchantImageEnabled: s.merchantImageEnabled,
+    merchantProcessorConfig: parseMerchantProcessorConfig(s.merchantProcessorConfig),
     autoPrintOnPayment: s.autoPrintOnPayment,
     receiptTemplateStyle: s.receiptTemplateStyle,
     labelTemplateStyle: s.labelTemplateStyle,
@@ -128,11 +138,24 @@ const DEFAULT_PICKUP_INSTRUCTIONS = [
 
 const DEFAULT_SHIFT_LOCATIONS = [
   { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "sales-box-2", label: "CSR Sales Box 2", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "storefront", label: "Storefront", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
+];
+
+const DEFAULT_UBER_STEPS = [
+  "Select 'Uber Courier Delivery' for your order.",
+  "Place your order to get it paid and receive a confirmation number.",
+  "Wait until your order is marked Ready — the countdown is on your Orders screen.",
+  "Once Ready, open the Uber app and request a Courier pickup to the order location.",
+  "Ensure the car and arrival time are confirmed. When the car arrives, hand off to the driver.",
+  "Promptly receive your package. DO NOT HAVE THE DRIVER WAIT!",
 ];
 
 const DEFAULT_DELIVERY_OPTIONS = [
-  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
-  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
+  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false, uberSteps: [] as string[] },
+  { id: "uber_courier", label: "Uber Courier Delivery", instructions: "Delivery is ONLY available when arranged with Uber Courier. You will place your own Uber Courier request after the order is ready.", separatePaymentRequired: false, uberSteps: DEFAULT_UBER_STEPS },
+  { id: "csr_delivery", label: "CSR Personal Delivery", instructions: "The CSR on duty will personally deliver your order. Only available within 2 miles. Delivery fee: $5 + 3% of order total — goes entirely to your CSR as a gratuity.", separatePaymentRequired: false, uberSteps: [] as string[] },
 ];
 
 function parsePickupInstructions(raw: string | null | undefined) {
@@ -159,24 +182,79 @@ function parseDeliveryOptions(raw: string | null | undefined) {
   if (!raw) return DEFAULT_DELIVERY_OPTIONS;
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : DEFAULT_DELIVERY_OPTIONS;
+    if (!Array.isArray(parsed)) return DEFAULT_DELIVERY_OPTIONS;
+    return parsed.map((o: Record<string, unknown>) => ({
+      id: String(o.id ?? ""),
+      label: String(o.label ?? ""),
+      instructions: String(o.instructions ?? ""),
+      separatePaymentRequired: o.separatePaymentRequired === true,
+      uberSteps: Array.isArray(o.uberSteps)
+        ? (o.uberSteps as unknown[]).filter((s): s is string => typeof s === "string")
+        : [],
+    }));
   } catch {
     return DEFAULT_DELIVERY_OPTIONS;
   }
 }
 
+const DEFAULT_MERCHANT_PROCESSOR_CONFIG: Record<string, Record<string, unknown>> = {
+  stripe: { displayName: "Stripe", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  apple_pay: { displayName: "Apple Pay", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  cashapp: { displayName: "Cash App", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  venmo: { displayName: "Venmo", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  paypal: { displayName: "PayPal", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
+  cash: { displayName: "Cash", accountId: "", publicKey: "", webhookConfigured: false, notes: "Cash is collected by the active CSR and reconciled at shift close." },
+};
+
+function parseMerchantProcessorConfig(raw: string | null | undefined) {
+  if (!raw) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+    return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...parsed };
+  } catch {
+    return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  }
+}
+
+function cleanMerchantProcessorConfig(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[a-z0-9_]+$/.test(key) || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    out[key] = {
+      displayName: String(row.displayName ?? key).slice(0, 80),
+      accountId: String(row.accountId ?? "").slice(0, 200),
+      publicKey: String(row.publicKey ?? "").slice(0, 500),
+      webhookConfigured: row.webhookConfigured === true,
+      notes: String(row.notes ?? "").slice(0, 1000),
+    };
+  }
+  return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...out };
+}
+
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
-  if (!raw) return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+  const empty = { onsiteMode: "auto", ssid: "", approvedSsids: [] as string[], passwordSet: false, raspberryPiBluetooth: true };
+  if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const primarySsid = typeof parsed.ssid === "string" ? parsed.ssid : "";
+    const savedList: string[] = Array.isArray(parsed.approvedSsids)
+      ? (parsed.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+    const approvedSsids = primarySsid && !savedList.includes(primarySsid)
+      ? [primarySsid, ...savedList]
+      : savedList;
     return {
       onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
-      ssid: typeof parsed.ssid === "string" ? parsed.ssid : "",
+      ssid: primarySsid,
+      approvedSsids,
       passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
       raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
     };
   } catch {
-    return { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+    return empty;
   }
 }
 
@@ -221,13 +299,13 @@ async function getDecryptedWooCreds(): Promise<{
 }
 
 // GET /api/admin/settings
-router.get("/admin/settings", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json(mapSettings(s));
 });
 
 // PUT /api/admin/settings
-router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.put("/admin/settings", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   const allowed = [
     "menuImportEnabled", "showOutOfStock", "enabledProcessors",
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
@@ -251,6 +329,10 @@ router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, 
       .slice(0, 6);
     update.catalogBannerImages = JSON.stringify(banners.length ? banners : DEFAULT_CATALOG_BANNERS);
   }
+  if (body.merchantProcessorConfig !== undefined) {
+    update.merchantProcessorConfig = JSON.stringify(cleanMerchantProcessorConfig(body.merchantProcessorConfig));
+  }
+
   if (body.orderRoutingRule !== undefined) {
     if (typeof body.orderRoutingRule !== "string" || !(ROUTING_RULES as readonly string[]).includes(body.orderRoutingRule)) {
       res.status(400).json({ error: `orderRoutingRule must be one of ${ROUTING_RULES.join(", ")}` });
@@ -305,7 +387,7 @@ router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, 
  * Returns the WC config in masked form. Secrets are NEVER returned in plaintext —
  * only boolean flags indicating whether they have been saved.
  */
-router.get("/admin/settings/woocommerce", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -324,7 +406,7 @@ router.get("/admin/settings/woocommerce", requireRole("global_admin", "admin"), 
  * Secrets are encrypted at rest using AES-256-GCM keyed off SETTINGS_ENC_KEY.
  * They are never echoed back to the client.
  */
-router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res): Promise<void> => {
+router.put("/admin/settings/woocommerce", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   try {
     const body = (req.body ?? {}) as {
       wcStoreUrl?: string; wc_store_url?: string;
@@ -383,7 +465,7 @@ router.get("/admin/csr-settings", requireRole("global_admin", "admin", "customer
   });
 });
 
-router.put("/admin/csr-settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.put("/admin/csr-settings", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
   const shiftLocationOptions = req.body?.shiftLocationOptions;
   const deliveryOptions = req.body?.deliveryOptions;
@@ -427,15 +509,22 @@ router.put("/admin/csr-settings", requireRole("global_admin", "admin"), async (r
       label: String(option.label || "Delivery option"),
       instructions: String(option.instructions || ""),
       separatePaymentRequired: option.separatePaymentRequired === true,
+      uberSteps: Array.isArray(option.uberSteps)
+        ? (option.uberSteps as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 20)
+        : [],
     })));
   }
 
   if (printerNetworkConfig !== undefined) {
     const cfg = printerNetworkConfig as Record<string, unknown>;
     const storedCfg = parseStoredPrinterNetworkConfig(existing.printerNetworkConfig);
+    const approvedSsids = Array.isArray(cfg.approvedSsids)
+      ? (cfg.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0).slice(0, 10)
+      : (typeof cfg.ssid === "string" && cfg.ssid.trim() ? [cfg.ssid.trim()] : []);
     update.printerNetworkConfig = JSON.stringify({
       onsiteMode: String(cfg.onsiteMode || "auto"),
       ssid: String(cfg.ssid || ""),
+      approvedSsids,
       password: typeof cfg.password === "string" ? cfg.password : String(storedCfg.password || ""),
       raspberryPiBluetooth: cfg.raspberryPiBluetooth !== false,
     });

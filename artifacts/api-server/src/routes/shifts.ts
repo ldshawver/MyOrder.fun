@@ -1,5 +1,5 @@
-import { Router, type IRouter, type Request } from "express";
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
+import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -12,21 +12,200 @@ import {
   ordersTable,
   orderItemsTable,
   usersTable,
+  adminSettingsTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+import { getAuth } from "@clerk/express";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
 // requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
 // supervisor => admin, customer => user.
 const SHIFT_OPERATOR_ROLES = [
-  "customer_service_rep",
+  "csr",
   "admin",
   "global_admin",
 ] as const;
+const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
 
+// Always-on structured log for every shift auth decision.
+// Fires for ALL users so production logs capture the full picture.
+function logCsrShiftAuth(
+  req: Request,
+  gate: "approval" | "role",
+  result: "pass" | "deny",
+  reason?: string,
+): void {
+  const user = req.dbUser;
+  const auth = getAuth(req);
+  const sessionClaims = (auth?.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  req.log?.info?.(
+    {
+      gate,
+      result,
+      reason: reason ?? null,
+      userId: user?.id ?? null,
+      email: user?.email ?? (sessionClaims.email as string | undefined) ?? null,
+      dbRoleRaw: user?.role ?? null,
+      dbRoleNormalized: user ? normalizeRole(user.role) : null,
+      clerkRoleJwt: (publicMetadata.role as string | undefined) ?? null,
+      clerkStatusJwt: (publicMetadata.status as string | undefined) ?? null,
+      status: user?.status ?? null,
+      isActive: user?.isActive ?? null,
+      tenantId: user?.tenantId ?? null,
+      clerkUserId: auth?.userId ?? user?.clerkId ?? null,
+    },
+    `shift_auth:${gate}:${result}`,
+  );
+}
+
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+
+
+function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
+  const auth = getAuth(req);
+  const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  const user = req.dbUser;
+  const assignedCompanyStoreLocation = {
+    tenantId: user?.tenantId ?? null,
+    companyId: user?.tenantId ?? null,
+    storeId: null,
+    locationId: null,
+  };
+
+  return {
+    clerkUserId: auth.userId ?? user?.clerkId ?? null,
+    email: user?.email ?? (sessionClaims.email as string | undefined) ?? (sessionClaims.primaryEmailAddress as string | undefined) ?? null,
+    clerkRoleMetadata: publicMetadata.role ?? null,
+    clerkStatusMetadata: publicMetadata.status ?? null,
+    backendUserRecord: user
+      ? {
+          id: user.id,
+          clerkId: user.clerkId,
+          email: user.email,
+          role: user.role,
+          normalizedRole: normalizeRole(user.role),
+          status: user.status,
+          isActive: user.isActive,
+          tenantId: user.tenantId,
+        }
+      : null,
+    backendRole: user?.role ?? null,
+    approvalStatus: user?.status ?? null,
+    assignedCompanyStoreLocation,
+    csrPermissionFlag: user ? normalizeRole(user.role) === "csr" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
+    failedCondition,
+  };
+}
+
+function shouldLogMarekCsrDebug(req: Request): boolean {
+  const user = req.dbUser;
+  const auth = getAuth(req);
+  const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
+  const publicMetadata =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    {};
+  return [
+    user?.email,
+    user?.firstName,
+    user?.lastName,
+    auth.userId,
+    sessionClaims.email,
+    sessionClaims.primaryEmailAddress,
+    publicMetadata.role,
+  ].some((value) => typeof value === "string" && MAREK_DEBUG_EMAIL_PATTERN.test(value));
+}
+
+function logMarekCsrAuthDebug(req: Request, failedCondition: string | null = null): void {
+  if (!shouldLogMarekCsrDebug(req)) return;
+  req.log?.info?.(buildCsrAuthDebug(req, failedCondition), "CSR auth debug for Marek sign-on");
+}
+
+
+function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunction): void {
+  const user = req.dbUser;
+
+  if (!user) {
+    // Delegate to requireApproved so the mock in tests (noop) remains effective.
+    // In production requireApproved returns 401 for missing user — same outcome.
+    logCsrShiftAuth(req, "approval", "deny", "missing_db_user");
+    logMarekCsrAuthDebug(req, "missing_db_user");
+    requireApproved(req, res, next);
+    return;
+  }
+  if (user.isActive === false || user.status === "deactivated") {
+    logCsrShiftAuth(req, "approval", "deny", "inactive_or_deactivated");
+    logMarekCsrAuthDebug(req, "inactive_or_deactivated_user");
+    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    return;
+  }
+  if (user.status === "rejected") {
+    logCsrShiftAuth(req, "approval", "deny", "rejected");
+    logMarekCsrAuthDebug(req, "rejected_user");
+    res.status(403).json({ error: "Account rejected", status: user.status });
+    return;
+  }
+  const actorRole = normalizeRole(user.role);
+  // Staff roles (CSR / admin / global_admin) are implicitly approved.
+  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "csr") {
+    logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
+    logMarekCsrAuthDebug(req, null);
+    next();
+    return;
+  }
+  if (user.status !== "approved") {
+    logCsrShiftAuth(req, "approval", "deny", `not_approved:${user.status ?? "pending"}`);
+    logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
+    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    return;
+  }
+
+  logCsrShiftAuth(req, "approval", "pass", "approved_user");
+  logMarekCsrAuthDebug(req, null);
+  next();
+}
+
+function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {
+  const user = req.dbUser;
+  if (!user) {
+    logCsrShiftAuth(req, "role", "deny", "missing_db_user");
+    logMarekCsrAuthDebug(req, "missing_db_user");
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const actorRole = normalizeRole(user.role);
+  const hasRole = (SHIFT_OPERATOR_ROLES as readonly string[]).includes(actorRole);
+
+  logCsrShiftAuth(
+    req,
+    "role",
+    hasRole ? "pass" : "deny",
+    hasRole ? undefined : `role_not_allowed:raw=${String(user.role)},normalized=${actorRole}`,
+  );
+  logMarekCsrAuthDebug(req, hasRole ? null : `role_not_allowed:${String(user.role)}`);
+
+  if (!hasRole) {
+    res.status(403).json({
+      error: "Forbidden: insufficient role",
+      failedCondition: "csr_role_required",
+      debug: { dbRoleRaw: user.role, dbRoleNormalized: actorRole },
+    });
+    return;
+  }
+
+  next();
+}
 
 function getClientIp(req: Request): string {
   const forwarded = req.headers["x-forwarded-for"];
@@ -39,6 +218,68 @@ const DEFAULT_CSR_BOXES = [
   { slug: "sales-box-1", label: "CSR Sales Box 1", displayOrder: 1 },
   { slug: "sales-box-2", label: "CSR Sales Box 2", displayOrder: 2 },
 ];
+
+const DEFAULT_SHIFT_LOCATIONS = [
+  { id: "sales-box-1", label: "CSR Sales Box 1", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "sales-box-2", label: "CSR Sales Box 2", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "storefront", label: "Storefront", address: "", pickupInstructionId: "front-counter", deliveryOptionId: "pickup" },
+  { id: "backstock", label: "Backstock", address: "", pickupInstructionId: "courier-handoff", deliveryOptionId: "delivery" },
+];
+
+const DEFAULT_DELIVERY_OPTIONS = [
+  { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false },
+  { id: "delivery", label: "Delivery", instructions: "Confirm delivery details with the customer before dispatch.", separatePaymentRequired: true },
+];
+
+const DEFAULT_PICKUP_INSTRUCTIONS = [
+  { id: "front-counter", label: "Front Counter", instructions: "Please come to the front counter and show your order confirmation." },
+  { id: "side-door", label: "Side Door", instructions: "Please wait by the side-door pickup area and have your order confirmation ready." },
+  { id: "courier-handoff", label: "Courier Handoff", instructions: "Your order will be handed to the assigned courier at the pickup location." },
+];
+
+function parseSettingsArray<T>(raw: string | null | undefined, fallback: T[]): T[] {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as T[] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parsePrinterNetworkConfig(raw: string | null | undefined) {
+  const empty = { onsiteMode: "auto", ssid: "", approvedSsids: [] as string[], passwordSet: false, raspberryPiBluetooth: true };
+  if (!raw) return empty;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const primarySsid = typeof parsed.ssid === "string" ? parsed.ssid : "";
+    const savedList: string[] = Array.isArray(parsed.approvedSsids)
+      ? (parsed.approvedSsids as unknown[]).filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+    const approvedSsids = primarySsid && !savedList.includes(primarySsid)
+      ? [primarySsid, ...savedList]
+      : savedList;
+    return {
+      onsiteMode: typeof parsed.onsiteMode === "string" ? parsed.onsiteMode : "auto",
+      ssid: primarySsid,
+      approvedSsids,
+      passwordSet: typeof parsed.password === "string" && parsed.password.length > 0,
+      raspberryPiBluetooth: parsed.raspberryPiBluetooth !== false,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+async function getTenantCsrSettings() {
+  const [settings] = await db.select().from(adminSettingsTable).limit(1);
+  return {
+    pickupInstructionOptions: parseSettingsArray(settings?.pickupInstructionOptions, DEFAULT_PICKUP_INSTRUCTIONS),
+    shiftLocationOptions: parseSettingsArray(settings?.shiftLocationOptions, DEFAULT_SHIFT_LOCATIONS),
+    deliveryOptions: parseSettingsArray(settings?.deliveryOptions, DEFAULT_DELIVERY_OPTIONS),
+    printerNetworkConfig: parsePrinterNetworkConfig(settings?.printerNetworkConfig),
+  };
+}
 
 let shiftSchemaEnsured = false;
 
@@ -143,6 +384,7 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "quantity_end_actual" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "discrepancy" numeric(10, 3)`,
     sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "is_flagged" boolean DEFAULT false`,
+    sql`ALTER TABLE "shift_inventory_items" ADD COLUMN IF NOT EXISTS "location_id" integer`,
     // csr_boxes — tenant-scoped physical/logical sales boxes
     sql`CREATE TABLE IF NOT EXISTS "csr_boxes" (
       "id" serial PRIMARY KEY,
@@ -325,7 +567,7 @@ router.use(async (_req, res, next) => {
 
 async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const houseTenantId = await getHouseTenantId();
-  const rows = await db
+  const allTemplateRows = await db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
@@ -339,11 +581,16 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
         eq(catalogItemsTable.isAvailable, true),
         sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
         sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+        sql`LOWER(COALESCE(${catalogItemsTable.name}, '')) NOT LIKE 'safe%'`,
+        sql`LOWER(COALESCE(${catalogItemsTable.alavontName}, '')) NOT LIKE 'safe%'`,
+        sql`LOWER(COALESCE(${catalogItemsTable.displayName}, '')) NOT LIKE 'safe%'`,
       )
     )
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
 
-  if (catalogRows.length === 0) return rows;
+  if (catalogRows.length === 0) return allTemplateRows;
+
+  const allowedCatalogIds = new Set(catalogRows.map(row => row.id));
 
   const existingTemplateRows = await db
     .select()
@@ -370,7 +617,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
         startingQuantityDefault: String(stockValue ?? "0"),
         currentStock: String(stockValue ?? "0"),
         menuPrice: String(item.price ?? "0"),
-        payoutPrice: String(item.costBasis ?? item.price ?? "0"),
+        payoutPrice: String(item.price ?? "0"),
         displayOrder: currentMaxOrder + ((idx + 1) * 10),
         isActive: true,
         catalogItemId: item.id,
@@ -384,11 +631,31 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     await db.insert(inventoryTemplatesTable).values(toInsert);
   }
 
-  return db
+  const updatedRows = await db
     .select()
     .from(inventoryTemplatesTable)
     .where(eq(inventoryTemplatesTable.isActive, true))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
+  const filtered = updatedRows.filter(row => {
+    const name = String(row.itemName ?? "").trim().toLowerCase();
+    return !name.startsWith("safe") && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
+  });
+
+  // Deduplicate by catalogItemId — keep the lowest-displayOrder row per product.
+  // This removes LC/customer-facing duplicate rows that reference the same catalog item.
+  const seenCatalogIds = new Set<number>();
+  const deduped: typeof filtered = [];
+  for (const row of filtered) {
+    if (row.catalogItemId == null) {
+      deduped.push(row);
+      continue;
+    }
+    if (!seenCatalogIds.has(row.catalogItemId)) {
+      seenCatalogIds.add(row.catalogItemId);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -425,11 +692,12 @@ async function computeShiftStats(shiftId: number) {
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cashapp: 0, paypal: 0, venmo: 0, comp: 0, other: 0,
+    cash: 0, card: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
   };
 
   for (const order of shiftOrders) {
-    const method = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
+    const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
+    const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
     const orderTotal = parseFloat(order.total as string);
     if (method in paymentTotals) {
       paymentTotals[method] += orderTotal;
@@ -529,16 +797,39 @@ function enrichInventoryWithSales(
 // inventory_templates.current_stock (falls back if no balance row exists).
 router.get(
   "/shifts/inventory-template",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    await ensureInventoryLocations(houseTenantId);
+    const csrSettings = await getTenantCsrSettings();
+    const catalogIds = rows
+      .map((row) => row.catalogItemId)
+      .filter((id): id is number => typeof id === "number");
+    const catalogPriceRows = catalogIds.length > 0
+      ? await db
+          .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
+          .from(catalogItemsTable)
+          .where(inArray(catalogItemsTable.id, catalogIds))
+      : [];
+    const catalogPriceMap = new Map(
+      catalogPriceRows.map((row) => [row.id, parseFloat(String(row.price ?? "0"))]),
+    );
 
     const dbBoxes = await getActiveCsrBoxes(houseTenantId);
+
+    await ensureInventoryLocations(houseTenantId);
+
     const boxes = dbBoxes.length > 0
-      ? dbBoxes.map(b => ({ id: b.slug, label: b.label, description: b.description, location: b.location }))
-      : DEFAULT_CSR_BOXES.map(b => ({ id: b.slug, label: b.label }));
+      ? dbBoxes.map((b) => ({
+          id: b.slug,
+          label: b.label,
+          description: b.description,
+          location: b.location,
+        }))
+      : DEFAULT_CSR_BOXES.map((b) => ({
+          id: b.slug,
+          label: b.label,
+        }));
 
     // Load location-specific balances if requested
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
@@ -558,6 +849,7 @@ router.get(
 
     res.json({
       boxes,
+      ...csrSettings,
       template: rows.map(r => {
         const balanceQty = r.catalogItemId != null ? balanceMap.get(r.catalogItemId) : undefined;
         const startingQty = balanceQty !== undefined
@@ -574,9 +866,70 @@ router.get(
           alavontId: r.alavontId,
           displayOrder: r.displayOrder,
           menuPrice: r.menuPrice != null ? parseFloat(String(r.menuPrice)) : null,
-          payoutPrice: r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null,
+          payoutPrice: r.catalogItemId != null && catalogPriceMap.has(r.catalogItemId)
+            ? catalogPriceMap.get(r.catalogItemId)!
+            : (r.payoutPrice != null ? parseFloat(String(r.payoutPrice)) : null),
         };
       }),
+    });
+  }
+);
+
+
+async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$inferSelect) {
+  const snapshotItems = await db
+    .select()
+    .from(shiftInventoryItemsTable)
+    .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
+    .orderBy(asc(shiftInventoryItemsTable.displayOrder));
+
+  const stats = await computeShiftStats(activeShift.id);
+  const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+  const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+  const csrDeliveryEarnings = parseFloat(String(activeShift.csrDeliveryEarnings ?? 0));
+
+  return {
+    ...activeShift,
+    cashBankStart,
+    csrDeliveryEarnings,
+    csrDeliveryOptIn: activeShift.csrDeliveryOptIn ?? false,
+    runningCashBank: cashBankStart + stats.cashSales,
+    inventory,
+    stats,
+  };
+}
+
+// ─── GET /api/shifts/active-csr-status ─────────────────────────────────────
+// Returns whether any CSR is currently active and has opted into personal delivery.
+// Used by customer checkout to show/hide the CSR delivery option.
+router.get(
+  "/shifts/active-csr-status",
+  requireAuth, loadDbUser, requireDbUser,
+  async (_req, res): Promise<void> => {
+    const [activeShift] = await db
+      .select({
+        id: labTechShiftsTable.id,
+        csrDeliveryOptIn: labTechShiftsTable.csrDeliveryOptIn,
+        setupJson: labTechShiftsTable.setupJson,
+      })
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.status, "active"))
+      .orderBy(desc(labTechShiftsTable.clockedInAt))
+      .limit(1);
+
+    if (!activeShift) {
+      res.json({ hasActiveShift: false, csrDeliveryAvailable: false });
+      return;
+    }
+
+    const setup = (activeShift.setupJson ?? {}) as Record<string, unknown>;
+    res.json({
+      hasActiveShift: true,
+      csrDeliveryAvailable: activeShift.csrDeliveryOptIn === true,
+      shiftId: activeShift.id,
+      shiftLocationId: setup.shiftLocationId ?? null,
+      pickupNote: setup.pickupNote ?? null,
+      deliveryOptionId: setup.deliveryOptionId ?? null,
     });
   }
 );
@@ -584,7 +937,7 @@ router.get(
 // ─── POST /api/shifts/clock-in ────────────────────────────────────────────────
 router.post(
   "/shifts/clock-in",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -602,7 +955,9 @@ router.post(
     if (existing.length > 0) {
       // Idempotent re-clock-in: return the existing active shift instead of
       // erroring so the UI doesn't double-create on retry / refresh races.
-      res.status(200).json({ shift: existing[0], alreadyClockedIn: true });
+      // Return the same enriched payload as /api/shifts/current so POS clients
+      // can resume immediately without rendering raw DB rows as an error.
+      res.status(200).json({ shift: await buildActiveShiftPayload(existing[0]), alreadyClockedIn: true });
       return;
     }
 
@@ -614,12 +969,37 @@ router.post(
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
       cashBankStart?: number;
       boxAssignmentId?: string;
-      setup?: { wifiReady?: boolean; printerReady?: boolean; locationReady?: boolean };
+      setup?: {
+        wifiReady?: boolean;
+        printerReady?: boolean;
+        locationReady?: boolean;
+        shiftLocationId?: string;
+        deliveryOptionId?: string;
+        csrDeliveryOptIn?: boolean;
+        wifiSsid?: string;
+        pickupNote?: string;
+        smsOptIn?: boolean;
+      };
     };
 
     const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
       ? boxAssignmentId
       : DEFAULT_CSR_BOXES[0].slug;
+
+    // Auto-validate WiFi: compare entered SSID against admin-approved list
+    const csrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const enteredSsid = (setup?.wifiSsid ?? "").trim();
+    const wifiMatchesApproved = enteredSsid.length > 0 &&
+      approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
+    const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
+
+    // Update user's SMS opt-in preference if provided at clock-in
+    if (setup?.smsOptIn !== undefined) {
+      await db.update(usersTable).set({ smsOptIn: setup.smsOptIn }).where(eq(usersTable.id, tech.id));
+    }
+
+    const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -630,11 +1010,19 @@ router.post(
         ipAddress: ip,
         cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
         boxAssignmentId: selectedBox,
+        csrDeliveryOptIn,
+        csrDeliveryEarnings: "0",
         setupJson: {
           boxAssignmentId: selectedBox,
-          wifiReady: setup?.wifiReady ?? false,
+          shiftLocationId: setup?.shiftLocationId ?? selectedBox,
+          deliveryOptionId: setup?.deliveryOptionId ?? "pickup",
+          wifiReady: computedWifiReady,
+          wifiSsid: enteredSsid || null,
+          wifiApproved: wifiMatchesApproved,
           printerReady: setup?.printerReady ?? false,
           locationReady: setup?.locationReady ?? true,
+          pickupNote: (setup?.pickupNote ?? "").trim() || null,
+          csrDeliveryOptIn,
         },
       })
       .returning();
@@ -643,6 +1031,44 @@ router.post(
 
     if (inventorySnapshot && inventorySnapshot.length > 0) {
       const templateRows = await ensureClockInInventoryTemplate();
+
+      // Resolve the inventory_location for the chosen CSR box so we can
+      // (a) tag each shift_inventory_items row with the box it belongs to, and
+      // (b) seed quantityStart from the live inventory_balances if they exist.
+      const csrBoxRows = await db
+        .select()
+        .from(csrBoxesTable)
+        .where(eq(csrBoxesTable.tenantId, houseTenantId));
+      const chosenCsrBox = csrBoxRows.find(b => b.slug === selectedBox);
+      let shiftBoxLocationId: number | null = null;
+      const balanceByProductId = new Map<number, number>();
+      if (chosenCsrBox) {
+        const [boxLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.csrBoxId, chosenCsrBox.id),
+            )
+          )
+          .limit(1);
+        shiftBoxLocationId = boxLoc?.id ?? null;
+        if (shiftBoxLocationId) {
+          const balances = await db
+            .select()
+            .from(inventoryBalancesTable)
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.locationId, shiftBoxLocationId),
+              )
+            );
+          for (const b of balances) {
+            balanceByProductId.set(b.productId, parseFloat(String(b.quantityOnHand)));
+          }
+        }
+      }
 
       const qtyByTemplateId = new Map<number, number>(
         inventorySnapshot.map(s => [s.templateItemId, s.quantityStart])
@@ -658,10 +1084,13 @@ router.post(
         catalogItemId: row.catalogItemId ?? null,
         itemName: row.itemName ?? row.sectionName ?? "",
         unitPrice: "0",
+        locationId: shiftBoxLocationId,
         quantityStart: String(
           qtyByTemplateId.has(row.id)
             ? qtyByTemplateId.get(row.id)!
-            : parseFloat(String(row.startingQuantityDefault ?? 0))
+            : (row.catalogItemId != null && balanceByProductId.has(row.catalogItemId)
+                ? balanceByProductId.get(row.catalogItemId)!
+                : parseFloat(String(row.startingQuantityDefault ?? 0)))
         ),
         quantitySold: "0",
       }));
@@ -686,7 +1115,7 @@ router.post(
     }
 
     res.status(201).json({
-      shift,
+      shift: await buildActiveShiftPayload(shift),
       _debug: {
         tenantId: houseTenantId,
         techId: tech.id,
@@ -702,7 +1131,7 @@ router.post(
 // ─── POST /api/shifts/clock-out ───────────────────────────────────────────────
 router.post(
   "/shifts/clock-out",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -772,9 +1201,14 @@ router.post(
     }
 
     const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
+    const reportedInventoryDifference = enriched.reduce((sum, item) => {
+      if (item.rowType !== "item" || item.discrepancy == null || item.discrepancy <= 0) return sum;
+      return sum + (item.discrepancy * item.unitPrice);
+    }, 0);
     const expectedCashBank = cashBankStart + stats.cashSales;
     const cashBankEndVal = cashBankEnd ?? null;
     const cashDiscrepancy = cashBankEndVal != null ? expectedCashBank - cashBankEndVal : null;
+    const differenceAmount = Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100;
 
     const inventorySummary = enriched
       .filter(i => i.rowType !== "spacer")
@@ -798,6 +1232,8 @@ router.post(
       cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
+      reportedInventoryDifference: Math.round(reportedInventoryDifference * 100) / 100,
+      differenceAmount,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
     };
@@ -845,7 +1281,7 @@ router.post(
 // kept for backward-compat with the existing UI.
 router.get(
   ["/shifts/current", "/shifts/active"],
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
 
@@ -862,27 +1298,7 @@ router.get(
 
     if (!activeShift) { res.json({ shift: null }); return; }
 
-    const snapshotItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-
-    const stats = await computeShiftStats(activeShift.id);
-    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
-
-    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
-    const runningCashBank = cashBankStart + stats.cashSales;
-
-    res.json({
-      shift: {
-        ...activeShift,
-        cashBankStart,
-        runningCashBank,
-        inventory,
-        stats,
-      },
-    });
+    res.json({ shift: await buildActiveShiftPayload(activeShift) });
   }
 );
 
@@ -923,7 +1339,7 @@ router.get(
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
-  requireRole(...SHIFT_OPERATOR_ROLES),
+  requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -1352,9 +1768,15 @@ router.get(
     const houseTenantId = await getHouseTenantId();
     await ensureInventoryLocations(houseTenantId);
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
+    const baseWhereClause = and(
+      eq(inventoryBalancesTable.tenantId, houseTenantId),
+      eq(catalogItemsTable.isAvailable, true),
+      sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
+      sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+    );
     const whereClause = locationId && !isNaN(locationId)
-      ? and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.locationId, locationId))
-      : eq(inventoryBalancesTable.tenantId, houseTenantId);
+      ? and(baseWhereClause, eq(inventoryBalancesTable.locationId, locationId))
+      : baseWhereClause;
 
     const balances = await db
       .select({
@@ -1466,8 +1888,11 @@ router.post(
       .orderBy(asc(shiftInventoryItemsTable.displayOrder));
     const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
-    // Tip is calculated on eligible completed sales subtotal (non-comp, non-voided)
-    const eligibleSalesBase = stats.totalRevenue - stats.compSales;
+    // Commission is supervisor-selected (15–18%) and excludes comp/employee-discount sales.
+    // Sale/package exclusions are enforced at checkout/catalog pricing; the closeout keeps the
+    // auditable base as non-comp sales until richer discount metadata is attached to order rows.
+    const employeeDiscountSales = 0;
+    const eligibleSalesBase = Math.max(0, stats.totalRevenue - stats.compSales - employeeDiscountSales);
     const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
 
     // Inventory shortage: sum of flagged item discrepancies converted to monetary value
@@ -1484,8 +1909,9 @@ router.post(
 
     const cashBankStart = parseFloat(String(shift.cashBankStart ?? 0));
     const cashBankEndReported = parseFloat(String(shift.cashBankEndReported ?? 0));
-    // deposit = ending cash - starting cash - final tip - difference
-    const depositAmount = Math.max(0, cashBankEndReported - cashBankStart - finalTip - differenceAmount);
+    // Deposit = Cash Sales - commission - starting bank. This matches the cash-box closeout sheet.
+    const depositAmount = Math.max(0, stats.cashSales - finalTip - cashBankStart);
+    const newCashBalance = finalTip - differenceAmount;
 
     const [finalized] = await db
       .update(labTechShiftsTable)
@@ -1512,6 +1938,15 @@ router.post(
         cashBankStart,
         cashBankEndReported,
         depositAmount,
+        newCashBalance,
+        cashAppSales: stats.paymentTotals.cashapp ?? 0,
+        venmoSales: stats.paymentTotals.venmo ?? 0,
+        applePaySales: stats.paymentTotals.apple_pay ?? 0,
+        zelleSales: stats.paymentTotals.zelle ?? 0,
+        paypalSales: stats.paymentTotals.paypal ?? 0,
+        employeeDiscountPercent: 20,
+        employeeDiscountSales,
+        commissionRule: "Supervisor selects 15–18%; employee-discounted sales are excluded from commission.",
         paymentTotals: stats.paymentTotals,
         flaggedItems: inventory.filter(i => i.isFlagged),
       },

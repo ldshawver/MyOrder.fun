@@ -58,6 +58,7 @@ vi.mock("@workspace/db", () => {
   const ordersTable = cols(["assignedShiftId", "id", "customerId"]);
   const orderItemsTable = cols(["orderId"]);
   const auditLogsTable = {};
+  const adminSettingsTable = cols(["pickupInstructionOptions", "shiftLocationOptions", "deliveryOptions", "printerNetworkConfig"]);
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -86,6 +87,7 @@ vi.mock("@workspace/db", () => {
     ordersTable,
     orderItemsTable,
     auditLogsTable,
+    adminSettingsTable,
   };
 });
 
@@ -94,7 +96,8 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args) => args),
   asc: vi.fn(c => c),
   desc: vi.fn(c => c),
-  sql: vi.fn(),
+  sql: Object.assign(vi.fn(), { raw: vi.fn((value: string) => value) }),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({

@@ -10,6 +10,9 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
+  inventoryBalancesTable,
+  inventoryLocationsTable,
+  csrBoxesTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -508,7 +511,7 @@ router.get("/orders", async (req, res): Promise<void> => {
   // audience scoping so the listing UI cannot drift from realtime
   // alerts. Admin/supervisor still see everything.
   if (
-    actorRole === "customer_service_rep"
+    actorRole === "csr"
   ) {
     rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
@@ -584,7 +587,14 @@ router.post("/orders", async (req, res): Promise<void> => {
   const merchandiseTotal = totals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const deliveryQuote = body.data.deliveryQuote ?? null;
-  const deliveryFee = deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
+  const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
+  const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
+
+  // CSR personal delivery fee: $5 flat + 3% of subtotal → goes to CSR as gratuity
+  const csrDeliveryFee = isCsrDelivery ? Math.round((5 + 0.03 * subtotal) * 100) / 100 : 0;
+  const deliveryFee = isCsrDelivery
+    ? csrDeliveryFee
+    : deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
   let tipAmount: number;
   try {
     tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
@@ -635,11 +645,13 @@ router.post("/orders", async (req, res): Promise<void> => {
     tax: String(tax.toFixed(2)),
     total: String(finalTotal.toFixed(2)),
     shippingAddress: body.data.shippingAddress ?? null,
-    deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+    deliveryMethod: isCsrDelivery
+      ? "csr_delivery"
+      : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
     deliveryQuoteId: deliveryQuote?.quoteId ?? null,
     deliveryQuoteSnapshot: deliveryQuote ?? null,
-    deliveryFee: deliveryQuote?.fee != null ? String(deliveryFee.toFixed(2)) : null,
-    deliveryCurrency: deliveryQuote?.currency ?? null,
+    deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
+    deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
     notes: body.data.notes ?? null,
     assignedTechId,
     assignedShiftId,
@@ -720,6 +732,84 @@ router.post("/orders", async (req, res): Promise<void> => {
     });
   }
 
+  // Decrement inventory_balances for the CSR's assigned box location (fire-and-forget).
+  // If no active shift with a box assignment, decrement the Storefront balance instead.
+  // Errors are logged and never surface to the customer.
+  (async () => {
+    try {
+      let targetLocationId: number | null = null;
+
+      if (assignedShiftId) {
+        const [activeShift] = await db
+          .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+          .from(labTechShiftsTable)
+          .where(eq(labTechShiftsTable.id, assignedShiftId))
+          .limit(1);
+
+        if (activeShift?.boxAssignmentId) {
+          const [box] = await db
+            .select({ id: csrBoxesTable.id })
+            .from(csrBoxesTable)
+            .where(
+              and(
+                eq(csrBoxesTable.tenantId, houseTenantId),
+                eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+              )
+            )
+            .limit(1);
+          if (box) {
+            const [loc] = await db
+              .select({ id: inventoryLocationsTable.id })
+              .from(inventoryLocationsTable)
+              .where(
+                and(
+                  eq(inventoryLocationsTable.tenantId, houseTenantId),
+                  eq(inventoryLocationsTable.csrBoxId, box.id),
+                )
+              )
+              .limit(1);
+            targetLocationId = loc?.id ?? null;
+          }
+        }
+      }
+
+      // Fallback: storefront balance when no active CSR box
+      if (!targetLocationId) {
+        const [storefrontLoc] = await db
+          .select({ id: inventoryLocationsTable.id })
+          .from(inventoryLocationsTable)
+          .where(
+            and(
+              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.type, "storefront"),
+            )
+          )
+          .limit(1);
+        targetLocationId = storefrontLoc?.id ?? null;
+      }
+
+      if (targetLocationId) {
+        for (const line of normalizedLines) {
+          if (!line.catalog_item_id) continue;
+          await db
+            .update(inventoryBalancesTable)
+            .set({
+              quantityOnHand: sql`GREATEST(0, ${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)})`,
+            })
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.productId, line.catalog_item_id),
+                eq(inventoryBalancesTable.locationId, targetLocationId),
+              )
+            );
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, orderId: order.id }, "inventory_balances decrement failed — order unaffected");
+    }
+  })();
+
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {
     const merchantLines = buildMerchantPayloadLines(normalizedLines);
@@ -744,7 +834,9 @@ router.post("/orders", async (req, res): Promise<void> => {
       finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
       legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
       selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      deliveryMethod: deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup"),
+      deliveryMethod: isCsrDelivery
+        ? "csr_delivery"
+        : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
       deliveryQuoteId: deliveryQuote?.quoteId ?? null,
       deliveryFee,
       tipAmount,
@@ -762,6 +854,14 @@ router.post("/orders", async (req, res): Promise<void> => {
     metadata: { routeSource: routing.routeSource, assignedCsrUserId: routing.assignedCsrUserId, promisedMinutes: routing.promisedMinutes },
     ipAddress: req.ip,
   });
+
+  // CSR delivery earnings: atomically increment shift csrDeliveryEarnings (fire-and-forget)
+  if (isCsrDelivery && assignedShiftId && csrDeliveryFee > 0) {
+    db.update(labTechShiftsTable)
+      .set({ csrDeliveryEarnings: sql`coalesce(${labTechShiftsTable.csrDeliveryEarnings}, 0) + ${String(csrDeliveryFee.toFixed(2))}` })
+      .where(eq(labTechShiftsTable.id, assignedShiftId))
+      .catch(err => logger.warn({ err, shiftId: assignedShiftId, csrDeliveryFee }, "Failed to update csrDeliveryEarnings"));
+  }
 
   // SMS: confirm to customer + alert assigned tech (fire-and-forget)
   let customerName = "";
@@ -846,7 +946,7 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
 }
 
 // POST /api/orders/:id/accept — CSR accepts a routed order
-router.post("/orders/:id/accept", requireRole("customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -855,7 +955,7 @@ router.post("/orders/:id/accept", requireRole("customer_service_rep"), async (re
 
   // CSRs may only accept orders assigned to them or sitting in the General
   // Account fallback queue (assignedCsrUserId === null).
-  if (normalizeRole(actor.role) === "customer_service_rep") {
+  if (normalizeRole(actor.role) === "csr") {
     if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
       res.status(403).json({ error: "Order is assigned to another rep" });
       return;
@@ -1158,7 +1258,7 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id
-router.patch("/orders/:id", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateOrderStatusParams.safeParse({ id: parseInt(raw, 10) });
@@ -1300,12 +1400,19 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id/tracking — staff/admin only
-router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const orderId = parseInt(raw, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { trackingUrl } = req.body as { trackingUrl?: string };
+  if (trackingUrl) {
+    const parsedTracking = SubmitTrackingLinkBody.safeParse({ trackingUrl });
+    if (!parsedTracking.success) {
+      res.status(400).json({ error: parsedTracking.error.issues[0]?.message ?? "Invalid tracking link" });
+      return;
+    }
+  }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const [updated] = await db.update(ordersTable)
@@ -1332,7 +1439,7 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "custo
 });
 
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
-router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1515,7 +1622,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  const isStaff = ["global_admin", "admin", "customer_service_rep"].includes(actor.role ?? "");
+  const isStaff = ["global_admin", "admin", "csr"].includes(actor.role ?? "");
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
   if (!order.deliveryMethod || order.deliveryMethod === "pickup") {
     res.status(422).json({ error: "Order is not a delivery order" }); return;
@@ -1534,7 +1641,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
 });
 
 // PATCH /api/orders/:id/delivery/handoff-checklist — CSR updates courier handoff checklist
-router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1558,7 +1665,7 @@ router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin
 });
 
 // POST /api/orders/:id/delivery/handoff-complete — CSR marks courier handoff complete
-router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }

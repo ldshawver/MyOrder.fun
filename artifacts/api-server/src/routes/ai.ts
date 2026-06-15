@@ -15,7 +15,7 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need and BUILD their order using cart actions.
+export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need.
 
 CURRENT CATALOG ({{itemCount}} items available):
 {{catalog}}
@@ -25,13 +25,14 @@ CURRENT CATALOG ({{itemCount}} items available):
 CORE RULES:
 - Always be warm, direct, and helpful. Skip filler phrases like "Great question!" or "Certainly!".
 - Reference real product names and prices from the catalog above. Never invent products.
-- When a customer wants to add something to their cart, use the add_to_cart function — do NOT just tell them to go somewhere.
-- When a customer asks to remove something, use the remove_from_cart function.
-- If someone asks to build an order or says what they want, name 1-3 specific matching products with prices AND call add_to_cart for them.
-- If they ask what's popular, pick 3 items from different categories and describe them briefly with prices.
+- When a customer describes what they want or asks about a product, identify the best 1-2 matching items and reply: "I found [Name] for $[Price]. Want me to add that to your cart?" — do NOT call add_to_cart yet.
+- Only call add_to_cart AFTER the customer explicitly confirms (yes, sure, add it, go ahead, sounds good, etc.).
+- When a customer asks to remove something from their cart, use remove_from_cart.
+- If they ask what's popular, recommend 2-3 items from different categories with prices and ask if they'd like any added.
 - Keep replies to 2-4 sentences. Be conversational, not corporate.
 - If the catalog is empty, apologize and suggest they check back soon.
-- Always confirm what you added: "Done! I added X to your cart."`;
+- After calling add_to_cart, confirm: "Done! I added [Name] to your cart. Anything else?"`;
+
 
 export function renderConciergePrompt(
   template: string,
@@ -44,9 +45,23 @@ export function renderConciergePrompt(
 }
 
 async function loadConciergePromptTemplate(): Promise<string> {
-  const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
-  const stored = row?.p?.trim();
-  return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
+  try {
+    const [row] = await db.select({ p: adminSettingsTable.aiConciergePrompt }).from(adminSettingsTable).limit(1);
+    const stored = row?.p?.trim();
+    return stored && stored.length > 0 ? stored : DEFAULT_AI_CONCIERGE_PROMPT;
+  } catch (err) {
+    logger.warn({ err }, "AI concierge prompt unavailable; using built-in default");
+    return DEFAULT_AI_CONCIERGE_PROMPT;
+  }
+}
+
+async function loadAvailableCatalog(): Promise<Array<typeof catalogItemsTable.$inferSelect>> {
+  try {
+    return await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  } catch (err) {
+    logger.error({ err }, "AI catalog load failed");
+    return [];
+  }
 }
 
 function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
@@ -178,7 +193,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  const catalog = await loadAvailableCatalog();
   const availableItems = catalog.filter(i => i.isAvailable === true && i.alavontInStock !== false);
 
   // Build catalog context with IDs so function calling can reference them
@@ -301,19 +316,24 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
   const { query, limit = 10 } = body.data;
   const q = query.trim().toLowerCase();
 
-  const catalog = await db.select().from(catalogItemsTable)
-    .where(
-      or(
-        like(catalogItemsTable.name, `%${q}%`),
-        like(catalogItemsTable.category, `%${q}%`),
-        like(catalogItemsTable.description, `%${q}%`),
+  try {
+    const catalog = await db.select().from(catalogItemsTable)
+      .where(
+        or(
+          like(catalogItemsTable.name, `%${q}%`),
+          like(catalogItemsTable.category, `%${q}%`),
+          like(catalogItemsTable.description, `%${q}%`),
+        )
       )
-    )
-    .orderBy(asc(catalogItemsTable.name))
-    .limit(limit);
+      .orderBy(asc(catalogItemsTable.name))
+      .limit(limit);
 
-  const available = catalog.filter(i => i.isAvailable === true);
-  res.json(AiCatalogSearchResponse.parse({ items: available.map(mapCatalogItem), query }));
+    const available = catalog.filter(i => i.isAvailable === true);
+    res.json(AiCatalogSearchResponse.parse({ items: available.map(mapCatalogItem), query }));
+  } catch (err) {
+    logger.error({ err, query }, "AI catalog search failed");
+    res.json(AiCatalogSearchResponse.parse({ items: [], query }));
+  }
 });
 
 // POST /api/ai/upsell
@@ -324,7 +344,7 @@ router.post("/ai/upsell", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+  const catalog = await loadAvailableCatalog();
   const cartItems = catalog.filter(i => body.data.cartItemIds.includes(i.id));
   const otherItems = catalog.filter(i => !body.data.cartItemIds.includes(i.id) && i.isAvailable);
 

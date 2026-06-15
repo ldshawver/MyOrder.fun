@@ -3,46 +3,12 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { readClerkPublicMetadata } from "./clerkSync";
+import { normalizeRole, hasRole as userHasRole, type Role } from "./roles";
+export { normalizeRole } from "./roles";
+import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-export type CanonicalRole =
-  | "global_admin"
-  | "admin"
-  | "customer_service_rep"
-  | "user";
-
-export type LegacyRole =
-  | "supervisor"
-  | "csr"
-  | "qsr"
-  | "customer_service"
-  | "customer_service_specialist"
-  | "business_sitter"
-  | "sales_rep"
-  | "lab_tech"
-  | "lab_technician"
-  | "customer";
-
-export type Role = CanonicalRole | LegacyRole;
-
-export function normalizeRole(role: unknown): CanonicalRole {
-  if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
-  if (
-    role === "customer_service_rep" ||
-    role === "csr" ||
-    role === "qsr" ||
-    role === "customer_service" ||
-    role === "customer_service_specialist" ||
-    role === "business_sitter" ||
-    role === "sales_rep" ||
-    role === "lab_tech" ||
-    role === "lab_technician"
-  ) {
-    return "customer_service_rep";
-  }
-  return "user";
-}
+export type CanonicalRole = Role;
+export type LegacyRole = string;
 
 // Staff roles are implicitly approved — having been assigned a staff role
 // by an admin is itself the approval gate. Keep this list in sync with
@@ -50,7 +16,8 @@ export function normalizeRole(role: unknown): CanonicalRole {
 export const STAFF_ROLES: readonly CanonicalRole[] = [
   "global_admin",
   "admin",
-  "customer_service_rep",
+  "supervisor",
+  "csr",
 ] as const;
 
 let usersSchemaEnsured = false;
@@ -210,7 +177,7 @@ export function requireDbUser(req: Request, res: Response, next: NextFunction): 
   next();
 }
 
-export function requireRole(...roles: Role[]) {
+export function requireRole(...roles: (Role | string)[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const user = req.dbUser;
     if (!user) {
@@ -218,8 +185,7 @@ export function requireRole(...roles: Role[]) {
       return;
     }
     const allowed = roles.map(normalizeRole);
-    const actorRole = normalizeRole(user.role);
-    const hasRole = allowed.includes(actorRole) || (actorRole === "global_admin" && allowed.includes("admin"));
+    const hasRole = userHasRole(user, allowed);
     if (!hasRole) {
       res.status(403).json({ error: "Forbidden: insufficient role" });
       return;
@@ -232,6 +198,14 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
   const user = req.dbUser;
   if (!user) {
     res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (user.isActive === false || user.status === "deactivated") {
+    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    return;
+  }
+  if (user.status === "rejected") {
+    res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
   // Elevated/staff roles are implicitly approved — having been assigned a
@@ -257,9 +231,23 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
   const user = await getOrCreateDbUser(req);
   if (user) {
     const auth = getAuth(req);
-    const meta = readClerkPublicMetadata(
+    let meta = readClerkPublicMetadata(
       auth?.sessionClaims as Record<string, unknown> | undefined,
     );
+    if ((!meta.role || !meta.status) && auth?.userId) {
+      try {
+        const clerkUser = await clerkClient.users.getUser(auth.userId);
+        const apiMeta = normalizeClerkPublicMetadata(
+          clerkUser.publicMetadata as Record<string, unknown> | undefined,
+        );
+        meta = {
+          status: meta.status ?? apiMeta.status,
+          role: meta.role ?? apiMeta.role,
+        };
+      } catch (err) {
+        logger.warn({ err, clerkId: auth.userId }, "Could not fetch Clerk public metadata for DB user sync");
+      }
+    }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
     if (meta.status && meta.status !== user.status) {
       // Never let stale Clerk metadata downgrade an approved user back to
@@ -276,24 +264,19 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         );
       }
     }
-    if (meta.role && meta.role !== user.role) {
-      // Never let stale Clerk metadata demote a staff member back to 'user'.
-      // Role elevations come through the admin UI which syncs both DB + Clerk
-      // together. If they're out of sync here it means Clerk has a stale value
-      // (e.g. user was promoted via direct DB change) — the DB staff role wins.
-      const dbRole = normalizeRole(user.role);
-      const clerkRole = normalizeRole(meta.role);
-      const isRoleDowngrade =
-        (STAFF_ROLES as readonly string[]).includes(dbRole) &&
-        !(STAFF_ROLES as readonly string[]).includes(clerkRole);
-      if (!isRoleDowngrade) {
-        updates.role = clerkRole;
-      } else {
-        logger.warn(
-          { userId: user.id, dbRole: user.role, clerkRole: meta.role },
-          "Ignoring Clerk metadata role downgrade (staff → user) — DB is authoritative",
-        );
-      }
+    if (meta.role && normalizeRole(meta.role) !== normalizeRole(user.role)) {
+      logger.warn(
+        {
+          userId: user.id,
+          email: user.email,
+          dbRoleRaw: user.role,
+          dbRoleNormalized: normalizeRole(user.role),
+          clerkRoleRaw: meta.role,
+          clerkRoleNormalized: normalizeRole(meta.role),
+          willWriteToDb: false,
+        },
+        "loadDbUser: ignoring Clerk role metadata — DB role is authoritative",
+      );
     }
     if (Object.keys(updates).length > 0) {
       try {
@@ -302,12 +285,35 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
           .set(updates)
           .where(eq(usersTable.id, user.id))
           .returning();
+        logger.info(
+          {
+            userId: user.id,
+            email: user.email,
+            updates,
+            finalRole: reconciled?.role ?? user.role,
+            finalStatus: reconciled?.status ?? user.status,
+          },
+          "loadDbUser: DB user reconciled from Clerk metadata",
+        );
         req.dbUser = reconciled ?? user;
       } catch (err) {
         logger.error({ err, userId: user.id, updates }, "Failed to reconcile DB user from Clerk metadata");
         req.dbUser = user;
       }
     } else {
+      logger.info(
+        {
+          userId: user.id,
+          email: user.email,
+          dbRoleRaw: user.role,
+          dbRoleNormalized: normalizeRole(user.role),
+          status: user.status,
+          isActive: user.isActive,
+          clerkRoleJwt: meta.role ?? null,
+          clerkStatusJwt: meta.status ?? null,
+        },
+        "loadDbUser: no sync needed — DB user loaded as-is",
+      );
       req.dbUser = user;
     }
   }

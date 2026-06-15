@@ -35,6 +35,11 @@ import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
+import Communications from "@/pages/communications";
+import ContractorHubPage from "@/pages/contractor-hub";
+import ContractSignPage from "@/pages/contractor-hub/contract-sign";
+import DocumentHubPage from "@/pages/document-hub";
+import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -48,10 +53,6 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
-import AdminCommunications from "@/pages/admin/communications";
-import Layout from "@/components/layout";
-import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
-
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -380,6 +381,10 @@ function AuthenticatedApp() {
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
             <Route path="/admin/communications" component={AdminCommunications} />
+            <Route path="/admin/web-editor" component={AdminWebEditor} />
+            <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
+            <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
 
@@ -388,6 +393,7 @@ function AuthenticatedApp() {
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
             <Route path="/csr-settings/:section" component={CsrSettings} />
+            <Route path="/communications" component={Communications} />
           </>
         )}
 
@@ -396,6 +402,9 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
+        <Route path="/contractor-hub" component={ContractorHubPage} />
+        <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
+        <Route path="/document-hub" component={DocumentHubPage} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -412,6 +421,7 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

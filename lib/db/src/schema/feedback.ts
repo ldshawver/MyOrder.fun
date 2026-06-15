@@ -5,6 +5,7 @@ import {
   timestamp,
   integer,
   boolean,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -31,6 +32,7 @@ export const feedbackTicketsTable = pgTable("feedback_tickets", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").references(() => tenantsTable.id),
   submitterId: integer("submitter_id").notNull().references(() => usersTable.id),
+  submitterRole: text("submitter_role").notNull().default("user"),
   type: text("type").notNull(),
   severity: text("severity").notNull().default("medium"),
   status: text("status").notNull().default("new"),
@@ -39,8 +41,14 @@ export const feedbackTicketsTable = pgTable("feedback_tickets", {
   description: text("description").notNull(),
   pageUrl: text("page_url"),
   userAgent: text("user_agent"),
+  contextJson: jsonb("context_json"),
   screenshotData: text("screenshot_data"),
   assigneeId: integer("assignee_id").references(() => usersTable.id),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+  reviewedByUserId: integer("reviewed_by_user_id").references(() => usersTable.id),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedByUserId: integer("archived_by_user_id").references(() => usersTable.id),
+  ticketId: text("ticket_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });

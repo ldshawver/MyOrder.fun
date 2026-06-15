@@ -7,12 +7,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+type MerchantProcessorConfig = Record<string, {
+  displayName?: string;
+  accountId?: string;
+  publicKey?: string;
+  webhookConfigured?: boolean;
+  notes?: string;
+}>;
+
 type AdminSettings = {
   menuImportEnabled: boolean;
   showOutOfStock: boolean;
   enabledProcessors: string[];
   checkoutConversionPreview: boolean;
   merchantImageEnabled: boolean;
+  merchantProcessorConfig: MerchantProcessorConfig;
   autoPrintOnPayment: boolean;
   receiptTemplateStyle: string;
   labelTemplateStyle: string;
@@ -32,12 +41,32 @@ type AdminSettings = {
 
 const AI_PROMPT_MAX_CHARS = 8000;
 
+const PAYMENT_PROCESSORS = [
+  { id: "stripe", label: "Stripe" },
+  { id: "apple_pay", label: "Apple Pay" },
+  { id: "cashapp", label: "Cash App" },
+  { id: "venmo", label: "Venmo" },
+  { id: "paypal", label: "PayPal" },
+  { id: "cash", label: "Cash" },
+];
+
+const DEFAULT_MERCHANT_PROCESSOR_CONFIG: MerchantProcessorConfig = Object.fromEntries(
+  PAYMENT_PROCESSORS.map(p => [p.id, {
+    displayName: p.label,
+    accountId: "",
+    publicKey: "",
+    webhookConfigured: false,
+    notes: p.id === "cash" ? "Cash is reconciled against the active CSR shift cash bank." : "",
+  }])
+);
+
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
   showOutOfStock: false,
   enabledProcessors: ["stripe"],
   checkoutConversionPreview: false,
   merchantImageEnabled: true,
+  merchantProcessorConfig: DEFAULT_MERCHANT_PROCESSOR_CONFIG,
   autoPrintOnPayment: false,
   receiptTemplateStyle: "standard",
   labelTemplateStyle: "standard",
@@ -95,7 +124,14 @@ export default function AdminSettingsPage() {
           };
           setWcStoreUrl(merged.wcStoreUrl ?? "https://lucifercruz.com");
         }
-        setSettings(s => ({ ...s, ...merged }));
+        setSettings(s => ({
+          ...s,
+          ...merged,
+          merchantProcessorConfig: {
+            ...DEFAULT_MERCHANT_PROCESSOR_CONFIG,
+            ...(merged.merchantProcessorConfig ?? {}),
+          },
+        }));
       } catch { /* ignore fetch errors */ }
       setLoading(false);
     })();
@@ -193,6 +229,20 @@ export default function AdminSettingsPage() {
     setSettings(s => ({ ...s, [key]: value }));
   }
 
+  function setProcessorConfig(processorId: string, key: "accountId" | "publicKey" | "notes" | "webhookConfigured", value: string | boolean) {
+    setSettings(s => ({
+      ...s,
+      merchantProcessorConfig: {
+        ...s.merchantProcessorConfig,
+        [processorId]: {
+          ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[processorId],
+          ...(s.merchantProcessorConfig?.[processorId] ?? {}),
+          [key]: value,
+        },
+      },
+    }));
+  }
+
   function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
     return (
       <div className="flex items-center justify-between py-4 border-b border-border/30 last:border-0">
@@ -282,7 +332,7 @@ export default function AdminSettingsPage() {
           <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-1">
             <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Checkout Settings</div>
 
-            <SettingRow label="Checkout Conversion Preview" description="Show customers a brief summary before payment that the cart has been converted to merchant naming. Does not reveal internal mapping logic.">
+            <SettingRow label="Checkout Conversion Preview" description="Show customers a brief summary before payment that the cart has been converted to merchant naming. Does not reveal internal naming.">
               <Switch checked={settings.checkoutConversionPreview} onCheckedChange={v => set("checkoutConversionPreview", v)} />
             </SettingRow>
 
@@ -292,17 +342,16 @@ export default function AdminSettingsPage() {
 
             <SettingRow label="Enabled Payment Processors" description="Active payment methods available at checkout.">
               <div className="flex flex-wrap gap-2">
-                {["stripe", "apple_pay", "paypal", "cashapp", "venmo"].map(p => {
-                  const active = settings.enabledProcessors.includes(p);
-                  const label = p === "apple_pay" ? "Apple Pay" : p === "cashapp" ? "Cash App" : p;
+                {PAYMENT_PROCESSORS.map(({ id, label }) => {
+                  const active = settings.enabledProcessors.includes(id);
                   return (
                     <button
-                      key={p}
+                      key={id}
                       onClick={() => set("enabledProcessors", active
-                        ? settings.enabledProcessors.filter(x => x !== p)
-                        : [...settings.enabledProcessors, p]
+                        ? settings.enabledProcessors.filter(x => x !== id)
+                        : [...settings.enabledProcessors, id]
                       )}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all capitalize ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground hover:border-border"}`}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground"}`}
                     >
                       {label}
                     </button>
@@ -310,6 +359,50 @@ export default function AdminSettingsPage() {
                 })}
               </div>
             </SettingRow>
+
+            <div className="mt-5 pt-5 border-t border-border/40 space-y-3">
+              <div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Merchant Services Setup</div>
+                <p className="text-xs text-muted-foreground mt-1">Store public account IDs, checkout keys, webhook status, and admin notes for each accepted payment method.</p>
+              </div>
+              <div className="grid gap-3">
+                {PAYMENT_PROCESSORS.map(({ id, label }) => {
+                  const config = { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[id], ...(settings.merchantProcessorConfig?.[id] ?? {}) };
+                  const active = settings.enabledProcessors.includes(id);
+                  return (
+                    <div key={id} className={`rounded-xl border p-3 space-y-3 ${active ? "border-primary/30 bg-primary/5" : "border-border/30 bg-muted/10 opacity-75"}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-semibold">{label}</div>
+                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <Switch checked={!!config.webhookConfigured} onCheckedChange={v => setProcessorConfig(id, "webhookConfigured", v)} />
+                          Webhook configured
+                        </label>
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <Input
+                          value={config.accountId ?? ""}
+                          onChange={e => setProcessorConfig(id, "accountId", e.target.value)}
+                          placeholder={`${label} account / merchant ID`}
+                          className="h-9 rounded-xl text-xs bg-background/50"
+                        />
+                        <Input
+                          value={config.publicKey ?? ""}
+                          onChange={e => setProcessorConfig(id, "publicKey", e.target.value)}
+                          placeholder={`${label} public checkout key / handle`}
+                          className="h-9 rounded-xl text-xs bg-background/50"
+                        />
+                      </div>
+                      <Input
+                        value={config.notes ?? ""}
+                        onChange={e => setProcessorConfig(id, "notes", e.target.value)}
+                        placeholder="Supervisor/admin notes for this payment method"
+                        className="h-9 rounded-xl text-xs bg-background/50"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </TabsContent>
 
@@ -417,7 +510,7 @@ export default function AdminSettingsPage() {
               ].map(({ mode, title, desc }) => (
                 <div
                   key={mode}
-                  className={`p-4 rounded-xl border text-xs leading-relaxed cursor-pointer transition-all ${settings.purgeMode === mode ? "border-primary/40 bg-primary/[0.06]" : "border-border/30 bg-muted/10"}`}
+                  className={`p-4 rounded-xl border text-xs leading-relaxed cursor-pointer transition-all ${settings.purgeMode === mode ? "border-primary/40 bg-primary/[0.06]" : "border-border/30"}`}
                   onClick={() => set("purgeMode", mode)}
                 >
                   <div className={`font-semibold mb-1 ${settings.purgeMode === mode ? "text-primary" : ""}`}>{title}</div>
@@ -446,16 +539,16 @@ export default function AdminSettingsPage() {
 
               {/* Status badges */}
               <div className="flex flex-wrap gap-2 mb-5">
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerKeySet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerKeySet ? "bg-green-500/10 text-green-400 border border-green-500/30" : "bg-muted/20 text-muted-foreground border border-border/40"}`}>
                   <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerKeySet ? "bg-green-400" : "bg-muted-foreground"}`} />
                   Consumer Key: {settings.wcConsumerKeySet ? "Saved" : "Not set"}
                 </div>
-                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerSecretSet ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-muted/30 text-muted-foreground border border-border/30"}`}>
+                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${settings.wcConsumerSecretSet ? "bg-green-500/10 text-green-400 border border-green-500/30" : "bg-muted/20 text-muted-foreground border border-border/40"}`}>
                   <div className={`w-1.5 h-1.5 rounded-full ${settings.wcConsumerSecretSet ? "bg-green-400" : "bg-muted-foreground"}`} />
                   Consumer Secret: {settings.wcConsumerSecretSet ? "Saved" : "Not set"}
                 </div>
                 {settings.wcConsumerKeySet && settings.wcConsumerSecretSet && (
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/30">
                     <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
                     Store: {settings.wcStoreUrl}
                   </div>

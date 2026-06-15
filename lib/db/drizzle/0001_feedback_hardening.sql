@@ -1,0 +1,10 @@
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user';
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "context_json" jsonb;
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_at" timestamp with time zone;
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_by_user_id" integer REFERENCES "users"("id");
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone;
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer REFERENCES "users"("id");
+ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "ticket_id" text;
+ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "feedback_archive_reviewed_after_days" integer;
+ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "feedback_archive_unread_after_days" integer;
+ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "feedback_archive_unread_enabled" boolean NOT NULL DEFAULT false;

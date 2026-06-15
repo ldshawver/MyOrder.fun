@@ -19,7 +19,7 @@ vi.mock("../logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-import { requireApproved, requireDbUser, requireRole } from "../auth";
+import { normalizeRole, requireApproved, requireDbUser, requireRole } from "../auth";
 
 function makeRes() {
   const res = {
@@ -89,12 +89,30 @@ describe("requireApproved middleware", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("calls next() for an admin user regardless of status", () => {
+  it("calls next() for an admin user with pending status", () => {
     const req = { dbUser: makeUser({ role: "admin", status: "pending" }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
     expect(next).toHaveBeenCalledOnce();
     expect(res.statusCode).toBe(200);
+  });
+
+  it("blocks a rejected staff user", () => {
+    const req = { dbUser: makeUser({ role: "csr", status: "rejected" }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).status).toBe("rejected");
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("blocks an inactive approved staff user", () => {
+    const req = { dbUser: makeUser({ role: "csr", status: "approved", isActive: false }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).error).toMatch(/deactivated/i);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("403 response body includes the user's status field", () => {
@@ -171,5 +189,19 @@ describe("requireRole middleware", () => {
     const res = makeRes();
     requireRole("admin", "supervisor")(req, res, next as NextFunction);
     expect(next).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("normalizeRole", () => {
+  it.each([
+    ["csr"],
+    ["Customer Service Rep"],
+    ["CSR"],
+    ["csr"],
+    ["service_rep"],
+    ["Customer-Service-Representative"],
+  ])("normalizes %s to csr", (role) => {
+    expect(normalizeRole(role)).toBe("csr");
   });
 });

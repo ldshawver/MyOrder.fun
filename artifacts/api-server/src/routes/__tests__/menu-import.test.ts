@@ -248,6 +248,34 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(res.body.inserted).toBe(2);
   });
 
+  it("accepts safe_* aliases and applies safe_sale_price as the active price", async () => {
+    const csv =
+      "safe_regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,alavont_quantity,alavont_unit,safe_sale_price,safe_image,safe_name,safe_desc,safe_category,safe_Inventory\n" +
+      "60.00,https://cdn.example.com/alavont.jpg,Alias Item,Alias Desc,Alias Cat,true,ALV-SAFE-1,2,Gram,55,https://cdn.example.com/safe.jpg,Safe Alias,Safe Desc,Safe Cat,SAFE-SKU-1\n";
+
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "safe-aliases.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(1);
+    expect(state.inserted[0]).toMatchObject({
+      name: "Alias Item",
+      price: "55.00",
+      regularPrice: "60.00",
+      compareAtPrice: "60.00",
+      isSaleFeatured: true,
+      sku: "SAFE-SKU-1",
+      stockQuantity: "2.00",
+      stockUnit: "Gram",
+      luciferCruzName: "Safe Alias",
+      luciferCruzImageUrl: "https://cdn.example.com/safe.jpg",
+      luciferCruzDescription: "Safe Desc",
+      luciferCruzCategory: "Safe Cat",
+    });
+  });
+
   it("rejects a CSV with an unexpected extra column", async () => {
     const csv =
       "Menu Regular Price,Menu Image,Menu Name,Menu Description,Menu Category,Menu In Stock,Menu ID,Amount,Unit Measurement,Merchant Name,Merchant Image,Merchant Description,Merchant Category,Merchant Sku,Bogus\n" +

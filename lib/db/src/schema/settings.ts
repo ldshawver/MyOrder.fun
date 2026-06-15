@@ -19,6 +19,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   enabledProcessors: text("enabled_processors").array().notNull().default(["stripe"]),
   checkoutConversionPreview: boolean("checkout_conversion_preview").notNull().default(false),
   merchantImageEnabled: boolean("merchant_image_enabled").notNull().default(true),
+  merchantProcessorConfig: text("merchant_processor_config"),
   // Printing
   autoPrintOnPayment: boolean("auto_print_on_payment").notNull().default(false),
   receiptTemplateStyle: text("receipt_template_style").notNull().default("standard"),
@@ -53,6 +54,9 @@ export const adminSettingsTable = pgTable("admin_settings", {
   shiftLocationOptions: text("shift_location_options"),
   deliveryOptions: text("delivery_options"),
   printerNetworkConfig: text("printer_network_config"),
+  feedbackArchiveReviewedAfterDays: integer("feedback_archive_reviewed_after_days"),
+  feedbackArchiveUnreadAfterDays: integer("feedback_archive_unread_after_days"),
+  feedbackArchiveUnreadEnabled: boolean("feedback_archive_unread_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

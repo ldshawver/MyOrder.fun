@@ -213,7 +213,8 @@ function mapItem(
 }
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
-  return row.isWooManaged !== true && row.isLocalAlavont !== false;
+  const name = String(row.alavontName ?? row.displayName ?? row.name ?? "").trim().toLowerCase();
+  return row.isWooManaged !== true && row.isLocalAlavont !== false && !name.startsWith("safe");
 }
 
 async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.$inferSelect): Promise<void> {
@@ -229,7 +230,7 @@ async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.
     startingQuantityDefault: String(stockValue ?? "0"),
     currentStock: String(stockValue ?? "0"),
     menuPrice: String(row.price ?? "0"),
-    payoutPrice: String(row.costBasis ?? row.price ?? "0"),
+    payoutPrice: String(row.price ?? "0"),
     isActive: row.isAvailable !== false,
     catalogItemId: row.id,
     alavontId: row.alavontId ?? row.externalMenuId ?? null,
