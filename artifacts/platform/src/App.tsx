@@ -55,6 +55,7 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
@@ -367,12 +368,13 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "csr"].includes(normalizeNotificationRole(user.role))) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
         {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
             <Route path="/admin/mfa" component={MfaSetup} />
             <Route path="/admin/print" component={AdminPrint} />
             <Route path="/admin/import" component={AdminImport} />
@@ -390,7 +392,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "csr"].includes(normalizeNotificationRole(user.role))) && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />

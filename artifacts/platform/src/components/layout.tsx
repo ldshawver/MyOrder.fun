@@ -58,12 +58,12 @@ type NavSection = {
   items: NavItem[];
 };
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "csr" | "user" {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
   if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
-    return "customer_service_rep";
+  if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
+    return "csr";
   }
   return "user";
 }
@@ -96,7 +96,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const unreadCount = notifData?.unreadCount ?? 0;
 
   // Staff roles that can run a shift / see the CSR queue + clock-in
-  const SHIFT_ROLES = ["global_admin", "admin", "customer_service_rep"];
+  const SHIFT_ROLES = ["global_admin", "admin", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
 
@@ -195,6 +195,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: ["global_admin", "admin"],
       items: [
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "tenant_admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },

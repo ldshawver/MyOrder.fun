@@ -25,6 +25,7 @@ import reportsRouter from "./reports";
 import proposalsRouter from "./proposals";
 import communicationsRouter from "./communications";
 import visualEditorRouter from "./visual-editor";
+import permissionsRouter from "./permissions";
 import contractorHubRouter from "../modules/contractor-hub/routes";
 import documentHubRouter from "../modules/document-hub/routes";
 
@@ -56,6 +57,7 @@ router.use(reportsRouter);
 router.use(proposalsRouter);
 router.use(communicationsRouter);
 router.use(visualEditorRouter);
+router.use(permissionsRouter);
 router.use(contractorHubRouter);
 router.use(documentHubRouter);
 

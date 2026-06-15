@@ -52,7 +52,8 @@ let usersListSchemaEnsured = false;
 const VALID_ROLES = [
   "global_admin",
   "admin",
-  "customer_service_rep",
+  "supervisor",
+  "csr",
   "user",
 ] as const;
 type ValidRole = typeof VALID_ROLES[number];
@@ -372,13 +373,13 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
   }
 
   const [updated] = await db.update(usersTable)
-    .set({ role: body.data.role })
+    .set({ role: normalizeRole(body.data.role) })
     .where(eq(usersTable.id, params.data.id))
     .returning();
 
   // Mirror role into Clerk publicMetadata so subsequent sign-ins agree.
   if (hasRealClerkUserId(updated.clerkId)) {
-    await syncUserToClerk(updated.clerkId, { role: body.data.role });
+    await syncUserToClerk(updated.clerkId, { role: normalizeRole(body.data.role) });
   }
 
   await writeAuditLog({
@@ -388,7 +389,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     action: "UPDATE_USER_ROLE",
     resourceType: "user",
     resourceId: String(params.data.id),
-    metadata: { newRole: body.data.role, previousRole: target.role },
+    metadata: { newRole: normalizeRole(body.data.role), previousRole: target.role },
     ipAddress: req.ip,
   });
 
@@ -398,7 +399,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     email: updated.email ?? undefined,
     firstName: updated.firstName ?? undefined,
     lastName: updated.lastName ?? undefined,
-    role: updated.role,
+    role: normalizeRole(updated.role),
     mfaEnabled: updated.mfaEnabled,
     isActive: updated.isActive,
     createdAt: updated.createdAt,
@@ -545,7 +546,7 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
-  const newRole = body.data.approve && body.data.role ? body.data.role : undefined;
+  const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
 
   const updateSet: Partial<typeof usersTable.$inferInsert> = { status: newStatus };
   if (newRole) updateSet.role = newRole;
