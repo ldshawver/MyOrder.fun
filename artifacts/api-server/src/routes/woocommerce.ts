@@ -1,12 +1,20 @@
 import { Router, type IRouter } from "express";
 import { eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
+import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { getOrCreateSettings, getDecryptedWooCreds } from "./settings";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
+  const actor = req.dbUser!;
+  if (isGlobalAdmin(actor) || actor.tenantId != null) return next();
+  res.status(403).json({ error: "Tenant-scoped WooCommerce access requires a tenant assignment" });
+}
+
 
 let wooCatalogSchemaEnsured = false;
 
@@ -267,13 +275,14 @@ async function syncHandler(_req: import("express").Request, res: import("express
 // Both URLs are mounted on the SAME shared handler (no internal req.url
 // rewrites). The newer `/sync-products` name is preferred; `/sync` is kept
 // for back-compat with already-deployed clients.
-router.post("/admin/woocommerce/sync", requireRole("global_admin", "admin"), syncHandler);
-router.post("/admin/woocommerce/sync-products", requireRole("global_admin", "admin"), syncHandler);
+router.post("/admin/woocommerce/sync", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, syncHandler);
+router.post("/admin/woocommerce/sync-products", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, syncHandler);
 
 // GET /api/admin/woocommerce/status — check if WC credentials are configured
 router.get(
   "/admin/woocommerce/status",
-  requireRole("global_admin", "admin"),
+  requirePermission("settings.view"),
+  requireTenantAssignedOrGlobal,
   async (_req, res): Promise<void> => {
     const s = await getOrCreateSettings();
     const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
@@ -297,7 +306,8 @@ router.get(
  */
 router.post(
   "/admin/woocommerce/test",
-  requireRole("global_admin", "admin"),
+  requirePermission("settings.manage_tenant"),
+  requireTenantAssignedOrGlobal,
   async (_req, res): Promise<void> => {
     // Test only the SAVED credentials. We deliberately do not honor
     // request-body overrides (admin-gated SSRF) and we deliberately do

@@ -36,11 +36,12 @@ function normalizeTestRole(role: string | undefined) {
   if (role === "admin" || role === "supervisor") return "admin";
   if (
     role === "customer_service_rep" ||
+    role === "csr" ||
     role === "business_sitter" ||
     role === "sales_rep" ||
     role === "lab_tech" ||
     role === "lab_technician"
-  ) return "customer_service_rep";
+  ) return "csr";
   return "user";
 }
 

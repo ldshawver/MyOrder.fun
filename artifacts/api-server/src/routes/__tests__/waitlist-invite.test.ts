@@ -211,6 +211,7 @@ function seedAdmin() {
     firstName: "Admin",
     lastName: "User",
     role: "admin",
+    tenantId: 1,
     status: "approved",
     isActive: true,
     contactPhone: null,
@@ -238,7 +239,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.userRowCreated).toBe(true);
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
     expect(res.body.email).toBe("newhire@example.com");
 
     expect(clerkClient.waitlistEntries.invite).toHaveBeenCalledWith(
@@ -251,7 +252,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     );
     expect(created).toBeTruthy();
     expect(created?.status).toBe("approved");
-    expect(created?.role).toBe("customer_service_rep");
+    expect(created?.role).toBe("csr");
     expect(created?.email).toBe("newhire@example.com");
     expect(created?.firstName).toBe("Sam");
     expect(created?.lastName).toBe("Hire");
@@ -293,12 +294,12 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       firstName: "Existing",
       lastName: "Person",
       role: "user",
+    tenantId: 1,
       status: "pending",
       isActive: true,
       contactPhone: null,
       avatarUrl: null,
       mfaEnabled: false,
-      tenantId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -339,6 +340,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       firstName: "Care",
       lastName: "Rep",
       role: "customer_service_rep",
+    tenantId: 1,
       status: "approved",
       isActive: true,
       contactPhone: null,

@@ -5,9 +5,10 @@ export type NotificationRole = "user" | "customer_service_rep" | "admin" | "glob
 export function normalizeNotificationRole(role?: string | null): NotificationRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager" || normalized === "supervisor") return "admin";
   if (
     normalized === "customer_service_rep" ||
+    normalized === "staff" ||
     normalized === "customer_service_representative" ||
     normalized === "csr" ||
     normalized === "qsr" ||
