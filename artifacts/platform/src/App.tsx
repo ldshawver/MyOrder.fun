@@ -28,6 +28,7 @@ import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
 import GlobalAdminTenants from "@/pages/global-admin/tenants";
 import GlobalAdminAudit from "@/pages/global-admin/audit";
+import GlobalAdminIntegrations from "@/pages/global-admin/integrations";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
@@ -52,13 +53,6 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
-import AdminWebEditor from "@/pages/admin/web-editor";
-import AdminEditCatalog from "@/pages/admin/edit-catalog";
-import AdminVisualEditor from "@/pages/admin/visual-editor";
-import AdminRolesPermissions from "@/pages/admin/roles-permissions";
-import Layout from "@/components/layout";
-import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
-
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -365,6 +359,7 @@ function AuthenticatedApp() {
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
             <Route path="/global-admin/tenants" component={GlobalAdminTenants} />
             <Route path="/global-admin/audit" component={GlobalAdminAudit} />
+            <Route path="/global-admin/integrations" component={GlobalAdminIntegrations} />
           </>
         )}
 
@@ -385,6 +380,7 @@ function AuthenticatedApp() {
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
+            <Route path="/admin/communications" component={AdminCommunications} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
             <Route path="/admin/visual-editor" component={AdminVisualEditor} />
