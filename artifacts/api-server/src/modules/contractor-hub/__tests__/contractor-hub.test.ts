@@ -1,6 +1,25 @@
 import request from "supertest";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import express from "express";
+
+vi.mock("../../../lib/auth", () => ({
+  requireAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  loadDbUser: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    req.dbUser = { id: 1, role: "admin", status: "approved", isActive: true, tenantId: "co1" } as unknown as NonNullable<typeof req.dbUser>;
+    next();
+  },
+  requireDbUser: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireApproved: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireRole: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  normalizeRole: (role: unknown) => {
+    const normalized = typeof role === "string" ? role.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+    if (normalized === "global_admin") return "global_admin";
+    if (normalized === "admin" || normalized === "tenant_admin" || normalized === "supervisor") return "admin";
+    if (normalized === "customer_service_rep" || normalized === "csr") return "customer_service_rep";
+    return "user";
+  },
+}));
+
 import contractorHubRouter from "../routes";
 import documentHubRouter from "../../document-hub/routes";
 const app = express();

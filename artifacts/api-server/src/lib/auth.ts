@@ -13,6 +13,7 @@ export type CanonicalRole =
 
 export type LegacyRole =
   | "supervisor"
+  | "tenant_admin"
   | "csr"
   | "qsr"
   | "customer_service"
@@ -31,7 +32,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
     ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
     : "";
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "admin" || normalized === "supervisor" || normalized === "tenant_admin") return "admin";
   if (
     normalized === "customer_service_rep" ||
     normalized === "customer_service_representative" ||
