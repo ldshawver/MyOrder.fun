@@ -10,6 +10,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
 import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
+import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -53,6 +55,11 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
+import AdminWebEditor from "@/pages/admin/web-editor";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
