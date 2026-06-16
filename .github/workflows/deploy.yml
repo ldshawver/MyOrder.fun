@@ -54,9 +54,11 @@ jobs:
 
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_HOST_FALLBACK: 100.85.15.43
+      VPS_HOST_FALLBACK: ${{ secrets.VPS_HOST_FALLBACK || '100.85.15.43' }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       DEPLOY_PATH: /opt/alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
       TAILSCALE_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -79,7 +81,7 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+          if [ -z "${VPS_PRIVATE_KEY:-}" ]; then
             echo "::error::Missing VPS SSH private key. Add VPS_SSH_KEY in GitHub Secrets."
             exit 1
           fi
@@ -101,9 +103,9 @@ jobs:
         with:
           oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ env.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          tags: tag:github-actions
 
-      - name: Select reachable VPS host and add known host
+      - name: Select reachable VPS host and configure known_hosts
         run: |
           set -euo pipefail
 
@@ -111,13 +113,18 @@ jobs:
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
+            echo "Using VPS_KNOWN_HOSTS secret."
+            printf '%s\n' "${VPS_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
+          fi
+
           try_host() {
             local host="$1"
             local port="$2"
             local tmp_keys
             tmp_keys="$(mktemp)"
 
-            if [ -z "$host" ]; then
+            if [ -z "${host:-}" ]; then
               return 1
             fi
 
@@ -127,6 +134,7 @@ jobs:
               cat "$tmp_keys" >> ~/.ssh/known_hosts
               rm -f "$tmp_keys"
               echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
+              echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
               echo "Collected SSH host key(s) for ${host}:${port}."
               return 0
             fi
@@ -134,6 +142,23 @@ jobs:
             echo "No keys from ${host}:${port}."
             cat ssh-keyscan.err || true
             rm -f "$tmp_keys"
+
+            echo "Trying SSH preflight with StrictHostKeyChecking=accept-new for ${host}:${port}..."
+
+            if ssh \
+              -i "$SSH_KEY_PATH" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -p "$port" \
+              "$VPS_USER@$host" \
+              'echo "SSH preflight OK:" $(whoami)@$(hostname)' ; then
+                echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
+                echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
+                return 0
+            fi
+
             return 1
           }
 
@@ -142,11 +167,12 @@ jobs:
           fi
 
           echo "Primary VPS_HOST failed. Trying fallback..."
-          if try_host "$VPS_HOST_FALLBACK" "$VPS_PORT"; then
+
+          if try_host "$VPS_HOST_FALLBACK" "$VPS_HOST_FALLBACK_PORT"; then
             exit 0
           fi
 
-          echo "::error::No host keys collected from primary or fallback host."
+          echo "::error::No reachable SSH host found from primary or fallback."
           exit 1
 
       - name: Verify SSH access
@@ -159,7 +185,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
@@ -172,12 +198,12 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             "mkdir -p $DEPLOY_PATH"
 
           rsync -az --delete \
-            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
+            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $SELECTED_VPS_PORT" \
             --exclude='.git' \
             --exclude='node_modules' \
             --exclude='**/node_modules' \
@@ -196,7 +222,7 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
               set -euo pipefail
