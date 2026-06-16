@@ -24,7 +24,7 @@ const integrationsSrc = src("pages/global-admin/integrations.tsx");
 describe("communications admin reconciliation", () => {
   it("registers /admin/communications for admin/global-admin route visibility", () => {
     expect(appSrc).toMatch(/import AdminCommunications from "@\/pages\/admin\/communications"/);
-    expect(appSrc).toMatch(/\["global_admin", "admin", "tenant_admin"\]\.includes\(normalizeRouteRole\(user\.role\)\)[\s\S]*<Route path="\/admin\/communications" component=\{AdminCommunications\} \/>/);
+    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(normalizeNotificationRole\(user\.role\)\)[\s\S]*<Route path="\/admin\/communications" component=\{AdminCommunications\} \/>/);
   });
 
   it("keeps SMS & Calls in supervisor nav for admin-equivalent roles without duplicate nav entries", () => {
@@ -35,7 +35,7 @@ describe("communications admin reconciliation", () => {
   });
 
   it("keeps global integrations route and sidebar item global-admin only", () => {
-    expect(appSrc).toMatch(/normalizeRouteRole\(user\.role\) === "global_admin"[\s\S]*<Route path="\/global-admin\/integrations" component=\{GlobalAdminIntegrations\} \/>/);
+    expect(appSrc).toMatch(/normalizeNotificationRole\(user\.role\) === "global_admin"[\s\S]*<Route path="\/global-admin\/integrations" component=\{GlobalAdminIntegrations\} \/>/);
     expect(layoutSrc).toMatch(/title:\s*"Platform Admin",\s*roles:\s*\["global_admin"\]/);
     expect(layoutSrc).toMatch(/href:\s*"\/global-admin\/integrations",\s*label:\s*"Platform Integrations",\s*icon:\s*PlugZap,\s*roles:\s*\["global_admin"\]/);
     const matches = layoutSrc.match(/href:\s*"\/global-admin\/integrations"/g) ?? [];
