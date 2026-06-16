@@ -236,8 +236,10 @@ jobs:
 
               cd /opt/alavont/deploy
 
-              docker compose down || true
+              echo "Building images without taking the live site down..."
               DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
+
+              echo "Starting database..."
               docker compose up -d db
 
               for i in $(seq 1 30); do
@@ -254,18 +256,23 @@ jobs:
                 sleep 2
               done
 
+              echo "Running migrations..."
               docker compose run --rm migrate
-              docker compose up -d db api platform nginx
 
-              for i in $(seq 1 30); do
+              echo "Starting app services..."
+              docker compose up -d api platform nginx
+
+              for i in $(seq 1 45); do
                 if curl -fsS http://127.0.0.1/api/healthz; then
                   echo "API healthy"
                   break
                 fi
 
-                if [ "$i" = "30" ]; then
+                if [ "$i" = "45" ]; then
                   docker compose ps
                   docker compose logs api --tail=100
+                  docker compose logs platform --tail=100
+                  docker compose logs nginx --tail=100
                   exit 1
                 fi
 
@@ -281,13 +288,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
               echo "Public health check passed"
               exit 0
             fi
 
-            echo "Public health not ready yet: $i/30"
+            echo "Public health not ready yet: $i/45"
             sleep 2
           done
 
