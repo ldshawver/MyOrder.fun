@@ -385,7 +385,7 @@ export default function OrderDetail() {
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
   const userRole = normalizeNotificationRole(user?.role);
-  const canEditStatus = userRole === "global_admin" || userRole === "admin" || userRole === "customer_service_rep";
+  const canEditStatus = userRole === "global_admin" || userRole === "admin" || userRole === "csr";
   const canManageRouting = userRole === "global_admin" || userRole === "admin";
   const isCustomer = userRole === "user";
 

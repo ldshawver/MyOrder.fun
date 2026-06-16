@@ -97,8 +97,16 @@ describe("requireApproved middleware", () => {
     expect(res.statusCode).toBe(200);
   });
 
+  it("treats csr as staff for approval purposes", () => {
+    const req = { dbUser: makeUser({ role: "csr", status: "pending" }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(200);
+  });
+
   it("blocks a rejected staff user", () => {
-    const req = { dbUser: makeUser({ role: "customer_service_rep", status: "rejected" }) } as unknown as Request;
+    const req = { dbUser: makeUser({ role: "csr", status: "rejected" }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
@@ -107,7 +115,7 @@ describe("requireApproved middleware", () => {
   });
 
   it("blocks an inactive approved staff user", () => {
-    const req = { dbUser: makeUser({ role: "customer_service_rep", status: "approved", isActive: false }) } as unknown as Request;
+    const req = { dbUser: makeUser({ role: "csr", status: "approved", isActive: false }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
@@ -190,18 +198,38 @@ describe("requireRole middleware", () => {
     requireRole("admin", "supervisor")(req, res, next as NextFunction);
     expect(next).toHaveBeenCalledOnce();
   });
+
+  it("does not treat supervisor as admin", () => {
+    const req = { dbUser: makeUser({ role: "supervisor" }) } as unknown as Request;
+    const res = makeRes();
+    requireRole("admin")(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("treats legacy customer_service_rep DB value as csr", () => {
+    const req = { dbUser: makeUser({ role: "customer_service_rep" }) } as unknown as Request;
+    const res = makeRes();
+    requireRole("csr")(req, res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+  });
 });
 
 
 describe("normalizeRole", () => {
   it.each([
-    ["customer_service_rep"],
-    ["Customer Service Rep"],
-    ["CSR"],
-    ["csr"],
-    ["service_rep"],
-    ["Customer-Service-Representative"],
-  ])("normalizes %s to customer_service_rep", (role) => {
-    expect(normalizeRole(role)).toBe("customer_service_rep");
+    ["customer_service_rep", "csr"],
+    ["csr", "csr"],
+    ["supervisor", "supervisor"],
+    ["admin", "admin"],
+    ["tenant_admin", "admin"],
+    ["manager", "admin"],
+    ["global-admin", "global_admin"],
+    ["super_admin", "global_admin"],
+    ["unknown", "user"],
+    [null, "user"],
+    ["Customer-Service-Representative", "csr"],
+  ])("normalizes %s to %s", (role, expected) => {
+    expect(normalizeRole(role)).toBe(expected);
   });
 });

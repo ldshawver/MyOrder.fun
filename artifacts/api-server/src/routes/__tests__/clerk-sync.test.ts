@@ -6,7 +6,7 @@
  *  - PATCH /api/users/:id/status updates the DB AND pushes to Clerk.
  *  - PATCH /api/users/:id/role updates the DB AND pushes to Clerk.
  *  - GET /api/admin/users/pending returns only pending DB rows.
- *  - loadDbUser reconciles the DB to Clerk publicMetadata on read.
+ *  - loadDbUser syncs safe status fields from Clerk but never lets Clerk role metadata override the DB role.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -166,6 +166,14 @@ function seedAdmin() {
   });
 }
 
+function seedGlobalAdmin() {
+  dbState.users.push({
+    id: 99, clerkId: "global-admin-clerk-id", email: "global@example.com",
+    firstName: "Global", lastName: "Admin", role: "global_admin", status: "approved",
+    isActive: true, contactPhone: null, mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
+  });
+}
+
 function seedPending(id: number, clerkId: string) {
   dbState.users.push({
     id,
@@ -200,18 +208,18 @@ describe("PATCH /api/admin/users/:id/approval", () => {
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/2/approval")
-      .send({ approve: true, role: "customer_service_rep" });
+      .send({ approve: true, role: "csr" });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
 
     const dbRow = dbState.users.find((u) => u.id === 2)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("csr");
 
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "pending-clerk-id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "customer_service_rep" }) },
+      { publicMetadata: expect.objectContaining({ status: "approved", role: "csr" }) },
     );
   });
 
@@ -279,7 +287,7 @@ describe("Admin route aliases", () => {
     dbState.users.push({
       id: 100, clerkId: "csr-clerk-id",
       email: "csr@example.com", firstName: "Care", lastName: "Rep",
-      role: "customer_service_rep", status: "approved", isActive: true, contactPhone: null,
+      role: "csr", status: "approved", isActive: true, contactPhone: null,
       mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
     });
     seedPending(22, "alias-role-csr-clerk-id");
@@ -292,19 +300,41 @@ describe("Admin route aliases", () => {
     expect(clerkClient.users.updateUserMetadata).not.toHaveBeenCalled();
   });
 
-  it("PATCH /api/admin/users/:id/role updates DB and Clerk", async () => {
+  it("PATCH /api/admin/users/:id/role lets tenant admins assign csr", async () => {
     seedAdmin();
     seedPending(21, "alias-role-clerk-id");
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/21/role")
-      .send({ role: "admin" });
+      .send({ role: "csr" });
     expect(res.status).toBe(200);
-    expect(res.body.role).toBe("admin");
+    expect(res.body.role).toBe("csr");
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "alias-role-clerk-id",
-      { publicMetadata: expect.objectContaining({ role: "admin" }) },
+      { publicMetadata: expect.objectContaining({ role: "csr" }) },
     );
+  });
+
+  it("only global_admin can assign global_admin role", async () => {
+    seedAdmin();
+    seedPending(23, "global-role-clerk-id");
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/23/role")
+      .send({ role: "global_admin" });
+    expect(res.status).toBe(403);
+  });
+
+  it("global_admin can assign global_admin role", async () => {
+    seedGlobalAdmin();
+    seedPending(24, "global-role-clerk-id-2");
+    mockUserId = "global-admin-clerk-id";
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/24/role")
+      .send({ role: "global_admin" });
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("global_admin");
   });
 });
 
@@ -327,7 +357,7 @@ describe("PATCH /api/users/:id/status", () => {
   });
 });
 
-describe("loadDbUser sync-on-read (Clerk wins)", () => {
+describe("loadDbUser sync-on-read (DB role wins)", () => {
   it("updates the DB row when Clerk publicMetadata.status differs", async () => {
     seedPending(7, "round-trip-clerk-id");
     mockUserId = "round-trip-clerk-id";
@@ -349,12 +379,79 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("user");
 
-    // DB row was reconciled
+    // DB status was reconciled; Clerk role metadata did not elevate the user.
     const dbRow = dbState.users.find((u) => u.id === 7)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("user");
+  });
+
+  it("falls back to Clerk API publicMetadata when session claims omit metadata", async () => {
+    seedPending(17, "api-metadata-clerk-id");
+    mockUserId = "api-metadata-clerk-id";
+    mockSessionClaims = {};
+    vi.mocked(clerkClient.users.getUser).mockResolvedValueOnce({
+      publicMetadata: { status: "approved", role: "Customer Service Rep" },
+    } as never);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = {
+        info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      };
+      next();
+    });
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => {
+      res.json({ status: req.dbUser?.status, role: req.dbUser?.role });
+    });
+
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("approved");
+    expect(res.body.role).toBe("user");
+
+    const dbRow = dbState.users.find((u) => u.id === 17)!;
+    expect(dbRow.status).toBe("approved");
+    expect(dbRow.role).toBe("user");
+  });
+
+  it("Clerk metadata cannot downgrade global_admin to user", async () => {
+    seedGlobalAdmin();
+    mockUserId = "global-admin-clerk-id";
+    mockSessionClaims = { publicMetadata: { status: "approved", role: "user" } };
+    const app = express();
+    app.use(express.json());
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => res.json({ role: req.dbUser?.role }));
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("global_admin");
+  });
+
+  it.each(["admin", "supervisor", "csr"])("Clerk metadata cannot downgrade %s to user", async (role) => {
+    dbState.users.push({ id: 30, clerkId: "staff-clerk-id", email: "s@example.com", firstName: "S", lastName: "T", role, status: "approved", isActive: true, contactPhone: null, mfaEnabled: false, createdAt: new Date(), updatedAt: new Date() });
+    mockUserId = "staff-clerk-id";
+    mockSessionClaims = { publicMetadata: { status: "approved", role: "user" } };
+    const app = express();
+    app.use(express.json());
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => res.json({ role: req.dbUser?.role }));
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe(role);
+  });
+
+  it("Clerk metadata cannot elevate user to global_admin", async () => {
+    seedPending(31, "elevate-clerk-id");
+    dbState.users.find((u) => u.id === 31)!.status = "approved";
+    mockUserId = "elevate-clerk-id";
+    mockSessionClaims = { publicMetadata: { status: "approved", role: "global_admin" } };
+    const app = express();
+    app.use(express.json());
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => res.json({ role: req.dbUser?.role }));
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("user");
   });
 
   it("does nothing when Clerk metadata matches the DB", async () => {

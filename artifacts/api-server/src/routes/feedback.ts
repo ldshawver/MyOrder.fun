@@ -18,13 +18,14 @@
  * every admin/global admin is notified on new ticket creation.
  */
 import { Router, type IRouter } from "express";
-import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, desc, gte, lte, inArray, lt } from "drizzle-orm";
 import {
   db,
   feedbackTicketsTable,
   feedbackTicketCommentsTable,
   notificationsTable,
   usersTable,
+  adminSettingsTable,
 } from "@workspace/db";
 import { z } from "zod/v4";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
@@ -47,6 +48,7 @@ const FEEDBACK_STATUSES = [
   "waiting_on_user",
   "closed",
   "rejected",
+  "archived",
 ] as const;
 
 // 2 MB cap on inline base64 screenshots. Anything bigger and the user
@@ -56,11 +58,16 @@ const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 const CreateTicketBody = z.object({
   type: z.enum(FEEDBACK_TYPES),
   severity: z.enum(FEEDBACK_SEVERITIES).default("medium"),
-  title: z.string().min(3).max(200),
-  description: z.string().min(5).max(10_000),
-  pageUrl: z.string().max(2048).nullable().optional(),
-  userAgent: z.string().max(1024).nullable().optional(),
+  title: z.string().trim().min(3).max(160),
+  description: z.string().trim().min(5).max(5000),
+  pageUrl: z.string().trim().max(1000).nullable().optional(),
+  userAgent: z.string().trim().max(1024).nullable().optional(),
   screenshotData: z.string().max(MAX_SCREENSHOT_BYTES * 2).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.metadata !== undefined && Buffer.byteLength(JSON.stringify(value.metadata), "utf8") > 8192) {
+    ctx.addIssue({ code: "custom", message: "metadata exceeds 8KB limit", path: ["metadata"] });
+  }
 });
 
 const UpdateTicketBody = z.object({
@@ -84,22 +91,110 @@ const ListQueryParams = z.object({
   dateFrom: z.string().datetime().optional(),
   dateTo: z.string().datetime().optional(),
   mine: z.union([z.literal("true"), z.literal("false")]).optional(),
-});
+}).strict();
 
 const AddCommentBody = z.object({
   body: z.string().min(1).max(5000),
   isInternal: z.boolean().optional().default(false),
 });
 
+function normalizeFeedbackRole(role: string): string {
+  const raw = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (raw === "admin") return "admin";
+  if (raw === "supervisor") return "supervisor";
+  return normalizeRole(raw);
+}
 function isAdminViewer(role: string): boolean {
-  return (ADMIN_VIEW_ROLES as readonly string[]).includes(normalizeRole(role));
+  return (ADMIN_VIEW_ROLES as readonly string[]).includes(normalizeFeedbackRole(role));
 }
 function isAdminWriter(role: string): boolean {
-  return (ADMIN_WRITE_ROLES as readonly string[]).includes(normalizeRole(role));
+  return (ADMIN_WRITE_ROLES as readonly string[]).includes(normalizeFeedbackRole(role));
+}
+const submitBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimitFeedback(req: Parameters<import("express").RequestHandler>[0], res: Parameters<import("express").RequestHandler>[1], next: Parameters<import("express").RequestHandler>[2]): void {
+  const actor = req.dbUser;
+  const key = actor ? `user:${actor.id}` : `ip:${req.ip}`;
+  const now = Date.now();
+  const bucket = submitBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    submitBuckets.set(key, { count: 1, resetAt: now + 60_000 });
+    next();
+    return;
+  }
+  if (bucket.count >= 10) {
+    res.status(429).json({ error: "Too many feedback submissions. Please try again later." });
+    return;
+  }
+  bucket.count += 1;
+  next();
+}
+function getRouteParam(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+function tenantScopedConditions(actor: NonNullable<import("express").Request["dbUser"]>, id?: number) {
+  const conditions = id == null ? [] : [eq(feedbackTicketsTable.id, id)];
+  if (normalizeFeedbackRole(actor.role) !== "global_admin" && actor.tenantId != null) {
+    conditions.push(eq(feedbackTicketsTable.tenantId, actor.tenantId));
+  }
+  return conditions;
+}
+
+
+type FeedbackArchivePolicy = {
+  archiveReviewedAfterDays: number | null;
+  archiveUnreadAfterDays: number | null;
+  archiveUnreadEnabled: boolean;
+};
+
+function positiveDayOrNull(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) return null;
+  return value;
+}
+
+async function loadFeedbackArchivePolicy(): Promise<FeedbackArchivePolicy> {
+  const [settings] = await db.select().from(adminSettingsTable).limit(1);
+  return {
+    archiveReviewedAfterDays: positiveDayOrNull(settings?.feedbackArchiveReviewedAfterDays),
+    archiveUnreadAfterDays: positiveDayOrNull(settings?.feedbackArchiveUnreadAfterDays),
+    archiveUnreadEnabled: settings?.feedbackArchiveUnreadEnabled === true,
+  };
+}
+
+export async function runFeedbackAutoArchive(actor: { id: number; email: string | null; role: string } | null, ipAddress?: string): Promise<{ archivedReviewed: number; archivedUnread: number }> {
+  const policy = await loadFeedbackArchivePolicy();
+  const now = new Date();
+  let archivedReviewed = 0;
+  let archivedUnread = 0;
+
+  if (policy.archiveReviewedAfterDays !== null) {
+    const cutoff = new Date(now.getTime() - policy.archiveReviewedAfterDays * 24 * 60 * 60 * 1000);
+    const rows = await db.update(feedbackTicketsTable)
+      .set({ status: "archived", archivedAt: now, updatedAt: now })
+      .where(and(eq(feedbackTicketsTable.status, "reviewed"), lt(feedbackTicketsTable.updatedAt, cutoff)))
+      .returning();
+    archivedReviewed = rows.length;
+    if (rows.length > 0) {
+      await writeAuditLog({ actorId: actor?.id ?? 0, actorEmail: actor?.email ?? null, actorRole: actor?.role ?? "system", action: "feedback.auto_archive.reviewed", resourceType: "feedback_ticket", metadata: { count: rows.length, cutoff: cutoff.toISOString() }, ipAddress });
+    }
+  }
+
+  if (policy.archiveUnreadEnabled && policy.archiveUnreadAfterDays !== null) {
+    const cutoff = new Date(now.getTime() - policy.archiveUnreadAfterDays * 24 * 60 * 60 * 1000);
+    const rows = await db.update(feedbackTicketsTable)
+      .set({ status: "archived", archivedAt: now, updatedAt: now })
+      .where(and(eq(feedbackTicketsTable.status, "new"), lt(feedbackTicketsTable.updatedAt, cutoff)))
+      .returning();
+    archivedUnread = rows.length;
+    if (rows.length > 0) {
+      await writeAuditLog({ actorId: actor?.id ?? 0, actorEmail: actor?.email ?? null, actorRole: actor?.role ?? "system", action: "feedback.auto_archive.unread", resourceType: "feedback_ticket", metadata: { count: rows.length, cutoff: cutoff.toISOString() }, ipAddress });
+    }
+  }
+
+  return { archivedReviewed, archivedUnread };
 }
 
 // ─── POST /api/feedback ──────────────────────────────────────────────────────
-router.post("/feedback", async (req, res): Promise<void> => {
+router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const parsed = CreateTicketBody.safeParse(req.body);
   if (!parsed.success) {
@@ -125,11 +220,12 @@ router.post("/feedback", async (req, res): Promise<void> => {
     }
   }
 
-  const tenantId = await getHouseTenantId().catch(() => null);
+  const tenantId = actor.tenantId ?? await getHouseTenantId().catch(() => null);
 
   const [created] = await db.insert(feedbackTicketsTable).values({
     tenantId,
     submitterId: actor.id,
+    submitterRole: normalizeFeedbackRole(actor.role),
     type: parsed.data.type,
     severity: parsed.data.severity,
     status: "new",
@@ -138,6 +234,7 @@ router.post("/feedback", async (req, res): Promise<void> => {
     description: parsed.data.description,
     pageUrl: parsed.data.pageUrl ?? null,
     userAgent: parsed.data.userAgent ?? null,
+    contextJson: parsed.data.metadata ?? null,
     screenshotData: parsed.data.screenshotData ?? null,
   }).returning();
 
@@ -176,8 +273,8 @@ router.post("/feedback", async (req, res): Promise<void> => {
   res.status(201).json(created);
 });
 
-// ─── GET /api/feedback ───────────────────────────────────────────────────────
-router.get("/feedback", async (req, res): Promise<void> => {
+// ─── GET /api/admin/feedback ─────────────────────────────────────────────────
+router.get(["/admin/feedback", "/feedback"], async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const parsed = ListQueryParams.safeParse(req.query);
   if (!parsed.success) {
@@ -186,19 +283,11 @@ router.get("/feedback", async (req, res): Promise<void> => {
   }
   const q = parsed.data;
   const isAdmin = isAdminViewer(actor.role);
+  if (!isAdmin) { res.status(403).json({ error: "Forbidden" }); return; }
 
-  const conditions = [];
-
-  // Hard isolation: non-admins are pinned to their own tickets, no matter
-  // what the query string says. Admins can opt in to "mine" or filter by
-  // any tenant/assignee freely.
-  if (!isAdmin) {
-    conditions.push(eq(feedbackTicketsTable.submitterId, actor.id));
-  } else if (q.mine === "true") {
-    conditions.push(eq(feedbackTicketsTable.submitterId, actor.id));
-  }
-
-  if (q.tenantId !== undefined) conditions.push(eq(feedbackTicketsTable.tenantId, q.tenantId));
+  const conditions = tenantScopedConditions(actor);
+  if (q.mine === "true") conditions.push(eq(feedbackTicketsTable.submitterId, actor.id));
+  if (q.tenantId !== undefined && normalizeFeedbackRole(actor.role) === "global_admin") conditions.push(eq(feedbackTicketsTable.tenantId, q.tenantId));
   if (q.type) conditions.push(eq(feedbackTicketsTable.type, q.type));
   if (q.status) conditions.push(eq(feedbackTicketsTable.status, q.status));
   if (q.priority !== undefined) conditions.push(eq(feedbackTicketsTable.priority, q.priority));
@@ -220,38 +309,35 @@ router.get("/feedback", async (req, res): Promise<void> => {
   });
 });
 
-// ─── GET /api/feedback/:id ───────────────────────────────────────────────────
-router.get("/feedback/:id", async (req, res): Promise<void> => {
+// ─── GET /api/admin/feedback/:id ─────────────────────────────────────────────
+router.get(["/admin/feedback/:id", "/feedback/:id"], async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(getRouteParam(req.params.id), 10);
   if (Number.isNaN(id)) {
     res.status(400).json({ error: "Invalid id" });
     return;
   }
+  if (!isAdminViewer(actor.role)) { res.status(403).json({ error: "Forbidden" }); return; }
   const [row] = await db.select().from(feedbackTicketsTable)
-    .where(eq(feedbackTicketsTable.id, id)).limit(1);
+    .where(and(...tenantScopedConditions(actor, id))).limit(1);
   if (!row) { res.status(404).json({ error: "Not found" }); return; }
-  if (!isAdminViewer(actor.role) && row.submitterId !== actor.id) {
-    res.status(403).json({ error: "Forbidden" });
-    return;
-  }
   res.json(row);
 });
 
-// ─── PATCH /api/feedback/:id ─────────────────────────────────────────────────
-router.patch("/feedback/:id", async (req, res): Promise<void> => {
+// ─── PATCH /api/admin/feedback/:id ───────────────────────────────────────────
+router.patch(["/admin/feedback/:id", "/feedback/:id"], async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   if (!isAdminWriter(actor.role)) {
-    res.status(403).json({ error: "Admin or supervisor required" });
+    res.status(403).json({ error: "Forbidden" });
     return;
   }
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(getRouteParam(req.params.id), 10);
   if (Number.isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const parsed = UpdateTicketBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
 
   const [existing] = await db.select().from(feedbackTicketsTable)
-    .where(eq(feedbackTicketsTable.id, id)).limit(1);
+    .where(and(...tenantScopedConditions(actor, id))).limit(1);
   if (!existing) { res.status(404).json({ error: "Not found" }); return; }
 
   const updates: Partial<typeof feedbackTicketsTable.$inferInsert> = { updatedAt: new Date() };
@@ -261,7 +347,7 @@ router.patch("/feedback/:id", async (req, res): Promise<void> => {
 
   const [updated] = await db.update(feedbackTicketsTable)
     .set(updates)
-    .where(eq(feedbackTicketsTable.id, id))
+    .where(and(...tenantScopedConditions(actor, id)))
     .returning();
 
   // Notify submitter if status changed (and they aren't the actor).
@@ -298,9 +384,9 @@ router.patch("/feedback/:id", async (req, res): Promise<void> => {
 });
 
 // ─── GET /api/feedback/:id/comments ──────────────────────────────────────────
-router.get("/feedback/:id/comments", async (req, res): Promise<void> => {
+router.get(["/admin/feedback/:id/comments", "/feedback/:id/comments"], async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(getRouteParam(req.params.id), 10);
   if (Number.isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
   const [ticket] = await db.select().from(feedbackTicketsTable)
@@ -308,6 +394,7 @@ router.get("/feedback/:id/comments", async (req, res): Promise<void> => {
   if (!ticket) { res.status(404).json({ error: "Not found" }); return; }
 
   const isAdmin = isAdminViewer(actor.role);
+  if (isAdmin && normalizeFeedbackRole(actor.role) !== "global_admin" && actor.tenantId != null && ticket.tenantId !== actor.tenantId) { res.status(404).json({ error: "Not found" }); return; }
   if (!isAdmin && ticket.submitterId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
@@ -322,10 +409,11 @@ router.get("/feedback/:id/comments", async (req, res): Promise<void> => {
   res.json({ comments: visible });
 });
 
+
 // ─── POST /api/feedback/:id/comments ─────────────────────────────────────────
-router.post("/feedback/:id/comments", async (req, res): Promise<void> => {
+router.post(["/admin/feedback/:id/comments", "/feedback/:id/comments"], async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt(getRouteParam(req.params.id), 10);
   if (Number.isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const parsed = AddCommentBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
@@ -335,6 +423,7 @@ router.post("/feedback/:id/comments", async (req, res): Promise<void> => {
   if (!ticket) { res.status(404).json({ error: "Not found" }); return; }
 
   const isAdmin = isAdminViewer(actor.role);
+  if (isAdmin && normalizeFeedbackRole(actor.role) !== "global_admin" && actor.tenantId != null && ticket.tenantId !== actor.tenantId) { res.status(404).json({ error: "Not found" }); return; }
   if (!isAdmin && ticket.submitterId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
@@ -380,6 +469,44 @@ router.post("/feedback/:id/comments", async (req, res): Promise<void> => {
   }
 
   res.status(201).json(created);
+});
+
+async function setFeedbackStatus(req: import("express").Request, res: import("express").Response, status: "new" | "reviewed" | "archived"): Promise<void> {
+  const actor = req.dbUser!;
+  if (!isAdminWriter(actor.role)) { res.status(403).json({ error: "Forbidden" }); return; }
+  const id = parseInt(getRouteParam(req.params.id), 10);
+  if (Number.isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const [existing] = await db.select().from(feedbackTicketsTable).where(and(...tenantScopedConditions(actor, id))).limit(1);
+  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
+  const updates: Partial<typeof feedbackTicketsTable.$inferInsert> = { status, updatedAt: new Date() };
+  if (status === "reviewed") { updates.reviewedAt = new Date(); updates.reviewedByUserId = actor.id; }
+  if (status === "archived") { updates.archivedAt = new Date(); updates.archivedByUserId = actor.id; }
+  const [updated] = await db.update(feedbackTicketsTable).set(updates).where(and(...tenantScopedConditions(actor, id))).returning();
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: `feedback.${status}`, tenantId: existing.tenantId, resourceType: "feedback_ticket", resourceId: String(existing.id), metadata: { from: existing.status, to: status }, ipAddress: req.ip });
+  res.json(updated);
+}
+
+router.patch("/admin/feedback/:id/reviewed", (req, res) => { void setFeedbackStatus(req, res, "reviewed"); });
+router.patch("/admin/feedback/:id/unread", (req, res) => { void setFeedbackStatus(req, res, "new"); });
+router.patch("/admin/feedback/:id/archive", (req, res) => { void setFeedbackStatus(req, res, "archived"); });
+router.patch("/admin/feedback/:id/restore", (req, res) => { void setFeedbackStatus(req, res, "new"); });
+router.post("/admin/feedback/:id/create-ticket", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  if (!isAdminWriter(actor.role)) { res.status(403).json({ error: "Forbidden" }); return; }
+  const id = parseInt(getRouteParam(req.params.id), 10);
+  if (Number.isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const [existing] = await db.select().from(feedbackTicketsTable).where(and(...tenantScopedConditions(actor, id))).limit(1);
+  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
+  const [updated] = await db.update(feedbackTicketsTable).set({ status: "priority_fix", priority: true, ticketId: `feedback-${id}`, updatedAt: new Date() }).where(and(...tenantScopedConditions(actor, id))).returning();
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "feedback.create_ticket", tenantId: existing.tenantId, resourceType: "feedback_ticket", resourceId: String(existing.id), metadata: { integration: "internal_priority_fix" }, ipAddress: req.ip });
+  res.json({ ticket: updated, externalTicket: null });
+});
+
+router.post("/admin/feedback/archive-policy/run", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  if (!isAdminWriter(actor.role)) { res.status(403).json({ error: "Forbidden" }); return; }
+  const result = await runFeedbackAutoArchive(actor, req.ip);
+  res.json(result);
 });
 
 export default router;

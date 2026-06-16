@@ -33,11 +33,14 @@ import {
   Store,
   Wifi,
   Zap,
+  Phone,
   Palette,
-  PanelsTopLeft
+  PanelsTopLeft,
+  PlugZap,
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
+import { useListNotifications, getListNotificationsQueryKey } from "@workspace/api-client-react";
 
 type NavItem = {
   href: string;
@@ -56,12 +59,13 @@ type NavSection = {
   items: NavItem[];
 };
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "supervisor" | "csr" | "user" {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
-    return "customer_service_rep";
+  if (normalized === "admin") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
+    return "csr";
   }
   return "user";
 }
@@ -87,8 +91,14 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
 
   usePushNotifications({ role: userRole });
 
+  const { data: notifData } = useListNotifications(
+    {},
+    { query: { queryKey: getListNotificationsQueryKey({}), refetchInterval: 30000 } }
+  );
+  const unreadCount = notifData?.unreadCount ?? 0;
+
   // Staff roles that can run a shift / see the CSR queue + clock-in
-  const SHIFT_ROLES = ["global_admin", "admin", "customer_service_rep"];
+  const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
 
@@ -100,6 +110,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
+        { href: "/contractor-hub", label: "Contractor Hub", icon: ClipboardList, roles: ALL_ROLES },
+        { href: "/document-hub", label: "Document Hub", icon: PanelsTopLeft, roles: ALL_ROLES },
         {
           href: "/profile",
           label: "User Account",
@@ -109,7 +121,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/profile", label: "Profile", icon: User, roles: ALL_ROLES },
             { href: "/account", label: "Account Settings", icon: Settings, roles: ALL_ROLES },
             { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
-            { href: "/notifications", label: "Notification Settings", icon: Bell, roles: ALL_ROLES },
+            { href: "/notifications", label: "Notifications", icon: Bell, roles: ALL_ROLES },
+            { href: "/notification-settings", label: "Notification Settings", icon: Bell, roles: ALL_ROLES },
           ],
         },
       ],
@@ -120,6 +133,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       defaultOpen: true,
       items: [
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
+        { href: "/communications", label: "Phone & SMS", icon: Phone, roles: SHIFT_ROLES, mobileShow: true },
         {
           href: "/csr-settings",
           label: "CSR Settings",
@@ -140,6 +154,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: ["global_admin", "admin"],
       items: [
         { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
+        { href: "/admin/communications", label: "SMS & Calls", icon: Phone, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Supervisor Settings",
@@ -180,11 +195,13 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     },
     {
       title: "Platform Admin",
-      roles: ["global_admin", "admin"],
+      roles: ["global_admin"],
       items: [
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
-        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin"] },
+        { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
         {
@@ -248,8 +265,16 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           {(active || childActive) && (
             <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-primary rounded-r-full" />
           )}
-          <Icon size={nested ? 13 : 15} className={active || childActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"} />
+          <span className="relative shrink-0">
+            <Icon size={nested ? 13 : 15} className={active || childActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"} />
+            {item.href === "/notifications" && unreadCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-destructive border border-sidebar" data-testid="badge-notif-dot" />
+            )}
+          </span>
           <span className="truncate">{item.label}</span>
+          {item.href === "/notifications" && unreadCount > 0 && !active && (
+            <span className="ml-auto text-[10px] font-bold text-destructive" data-testid="badge-notif-count">{unreadCount}</span>
+          )}
           {active && <ChevronRight size={13} className="ml-auto text-primary/60" />}
         </Link>
         {item.children?.map(child => renderNavItem(child, closeMobile, true))}
@@ -439,8 +464,11 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             )}
             <span className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</span>
           </Link>
-          <Link href="/notifications" className="text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
+          <Link href="/notifications" className="relative text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />
+            {unreadCount > 0 && (
+              <span className="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-destructive border-2 border-sidebar" data-testid="badge-notif-dot-mobile" />
+            )}
           </Link>
         </header>
 

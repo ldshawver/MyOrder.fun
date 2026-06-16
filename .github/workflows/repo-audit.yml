@@ -1,0 +1,29 @@
+name: Repo Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  repo-audit:
+    name: repo-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required files
+        run: |
+          test -f package.json
+          test -f pnpm-lock.yaml
+          test -f .gitignore
+          test -f .env.example
+
+      - name: Check for obvious committed secrets
+        run: |
+          ! grep -R "OPENAI_API_KEY\|DATABASE_URL=\|SESSION_SECRET=\|STRIPE_SECRET_KEY\|TWILIO_AUTH_TOKEN\|CLERK_SECRET_KEY" . \
+            --exclude-dir=.git \
+            --exclude-dir=node_modules \
+            --exclude="*.md" \
+            --exclude="pnpm-lock.yaml"

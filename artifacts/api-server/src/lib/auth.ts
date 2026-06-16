@@ -3,53 +3,13 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { readClerkPublicMetadata } from "./clerkSync";
+import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-export type CanonicalRole =
-  | "global_admin"
-  | "admin"
-  | "customer_service_rep"
-  | "user";
+import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
+export { normalizeRole } from "./roles";
 
-export type LegacyRole =
-  | "supervisor"
-  | "csr"
-  | "qsr"
-  | "customer_service"
-  | "customer_service_specialist"
-  | "customer_success"
-  | "business_sitter"
-  | "sales_rep"
-  | "lab_tech"
-  | "lab_technician"
-  | "customer";
+export type Role = NormalizedRole | string;
 
-export type Role = CanonicalRole | LegacyRole;
-
-export function normalizeRole(role: unknown): CanonicalRole {
-  const normalized = typeof role === "string"
-    ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
-    : "";
-  if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (
-    normalized === "customer_service_rep" ||
-    normalized === "customer_service_representative" ||
-    normalized === "customer_service" ||
-    normalized === "customer_service_specialist" ||
-    normalized === "customer_success" ||
-    normalized === "service_rep" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
-    normalized === "business_sitter" ||
-    normalized === "sales_rep" ||
-    normalized === "lab_tech" ||
-    normalized === "lab_technician"
-  ) {
-    return "customer_service_rep";
-  }
-  return "user";
-}
 
 // Staff roles are implicitly approved — having been assigned a staff role
 // by an admin is itself the approval gate. Keep this list in sync with
@@ -57,7 +17,8 @@ export function normalizeRole(role: unknown): CanonicalRole {
 export const STAFF_ROLES: readonly CanonicalRole[] = [
   "global_admin",
   "admin",
-  "customer_service_rep",
+  "supervisor",
+  "csr",
 ] as const;
 
 let usersSchemaEnsured = false;
@@ -225,14 +186,16 @@ export function requireRole(...roles: Role[]) {
       return;
     }
     const allowed = roles.map(normalizeRole);
-    const actorRole = normalizeRole(user.role);
-    const hasRole = allowed.includes(actorRole) || (actorRole === "global_admin" && allowed.includes("admin"));
-    if (!hasRole) {
+    if (!hasRoleValue(user.role, allowed)) {
       res.status(403).json({ error: "Forbidden: insufficient role" });
       return;
     }
     next();
   };
+}
+
+export function isGlobalAdmin(user: { role?: string | null } | null | undefined): boolean {
+  return normalizeRole(user?.role) === "global_admin";
 }
 
 export function requireApproved(req: Request, res: Response, next: NextFunction): void {
@@ -272,9 +235,23 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
   const user = await getOrCreateDbUser(req);
   if (user) {
     const auth = getAuth(req);
-    const meta = readClerkPublicMetadata(
+    let meta = readClerkPublicMetadata(
       auth?.sessionClaims as Record<string, unknown> | undefined,
     );
+    if ((!meta.role || !meta.status) && auth?.userId) {
+      try {
+        const clerkUser = await clerkClient.users.getUser(auth.userId);
+        const apiMeta = normalizeClerkPublicMetadata(
+          clerkUser.publicMetadata as Record<string, unknown> | undefined,
+        );
+        meta = {
+          status: meta.status ?? apiMeta.status,
+          role: meta.role ?? apiMeta.role,
+        };
+      } catch (err) {
+        logger.warn({ err, clerkId: auth.userId }, "Could not fetch Clerk public metadata for DB user sync");
+      }
+    }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
     if (meta.status && meta.status !== user.status) {
       // Never let stale Clerk metadata downgrade an approved user back to
@@ -291,31 +268,10 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         );
       }
     }
-    if (meta.role && meta.role !== user.role) {
-      // Never let stale Clerk metadata demote a staff member back to 'user'.
-      // Role elevations come through the admin UI which syncs both DB + Clerk
-      // together. If they're out of sync here it means Clerk has a stale value
-      // (e.g. user was promoted via direct DB change) — the DB staff role wins.
+    if (meta.role) {
       const dbRole = normalizeRole(user.role);
       const clerkRole = normalizeRole(meta.role);
-      const isRoleDowngrade =
-        (STAFF_ROLES as readonly string[]).includes(dbRole) &&
-        !(STAFF_ROLES as readonly string[]).includes(clerkRole);
-      if (!isRoleDowngrade) {
-        logger.info(
-          {
-            userId: user.id,
-            email: user.email,
-            dbRoleRaw: user.role,
-            dbRoleNormalized: dbRole,
-            clerkRoleRaw: meta.role,
-            clerkRoleNormalized: clerkRole,
-            willWriteToDb: true,
-          },
-          "loadDbUser: role mismatch — writing Clerk-sourced normalized role to DB",
-        );
-        updates.role = clerkRole;
-      } else {
+      if (clerkRole !== dbRole) {
         logger.warn(
           {
             userId: user.id,
@@ -326,7 +282,7 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
             clerkRoleNormalized: clerkRole,
             willWriteToDb: false,
           },
-          "loadDbUser: ignoring Clerk role (staff→non-staff downgrade) — DB is authoritative",
+          "loadDbUser: ignoring Clerk role mismatch — database role is authoritative",
         );
       }
     }
@@ -400,4 +356,49 @@ export async function writeAuditLog(params: {
   } catch (err) {
     logger.error({ err, action: params.action }, "Failed to write audit log");
   }
+}
+
+export async function hasPermission(user: { role?: string | null; tenantId?: number | null } | null | undefined, permission: string, tenantId?: number | null): Promise<boolean> {
+  if (!user) return false;
+  const { rolePermissionsTable } = await import("@workspace/db");
+  const { defaultHasPermission } = await import("./roles");
+  const actorRole = normalizeRole(user.role);
+  if (actorRole === "global_admin") return true;
+  const effectiveTenantId = tenantId ?? user.tenantId ?? null;
+  try {
+    const [override] = await db.select().from(rolePermissionsTable).where(sql`${rolePermissionsTable.role} = ${actorRole} AND ${rolePermissionsTable.permission} = ${permission} AND (${rolePermissionsTable.tenantId} = ${effectiveTenantId} OR (${effectiveTenantId} IS NULL AND ${rolePermissionsTable.tenantId} IS NULL))`).limit(1);
+    if (override) return override.enabled;
+  } catch (err) {
+    logger.warn({ err, permission }, "Permission override lookup failed; falling back to defaults");
+  }
+  return defaultHasPermission(actorRole, permission);
+}
+
+export function requirePermission(permission: string) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.dbUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (!(await hasPermission(req.dbUser, permission, req.dbUser.tenantId))) {
+      res.status(403).json({ error: "Forbidden: missing permission", permission });
+      return;
+    }
+    next();
+  };
+}
+
+export function requireTenantScope() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = req.dbUser;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (normalizeRole(user.role) !== "global_admin" && !user.tenantId) {
+      res.status(403).json({ error: "Forbidden: tenant scope required" });
+      return;
+    }
+    next();
+  };
 }

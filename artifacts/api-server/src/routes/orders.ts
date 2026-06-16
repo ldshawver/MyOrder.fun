@@ -511,7 +511,7 @@ router.get("/orders", async (req, res): Promise<void> => {
   // audience scoping so the listing UI cannot drift from realtime
   // alerts. Admin/supervisor still see everything.
   if (
-    actorRole === "customer_service_rep"
+    actorRole === "csr"
   ) {
     rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
@@ -693,7 +693,7 @@ router.post("/orders", async (req, res): Promise<void> => {
     tip: {
       amount: tipAmount,
       percent: checkoutConfirmation?.tipPercent ?? null,
-      recipient: "sales_rep",
+      recipient: "csr",
     },
     pricingSnapshot: {
       ...checkoutConversionSnapshot.pricingSnapshot,
@@ -946,7 +946,7 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
 }
 
 // POST /api/orders/:id/accept — CSR accepts a routed order
-router.post("/orders/:id/accept", requireRole("customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -955,7 +955,7 @@ router.post("/orders/:id/accept", requireRole("customer_service_rep"), async (re
 
   // CSRs may only accept orders assigned to them or sitting in the General
   // Account fallback queue (assignedCsrUserId === null).
-  if (normalizeRole(actor.role) === "customer_service_rep") {
+  if (normalizeRole(actor.role) === "csr") {
     if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
       res.status(403).json({ error: "Order is assigned to another rep" });
       return;
@@ -1092,7 +1092,7 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
 });
 
 // POST /api/orders/:id/reassign — supervisor reassigns to a specific user
-router.post("/orders/:id/reassign", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1168,7 +1168,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin"), async 
 });
 
 // GET /api/orders/active-csrs — supervisor reassign dropdown source.
-router.get("/orders/active-csrs", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/orders/active-csrs", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
   const active = await listActiveCsrs();
   if (active.length === 0) { res.json({ csrs: [] }); return; }
   const ids = active.map(a => a.userId);
@@ -1258,7 +1258,7 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id
-router.patch("/orders/:id", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = UpdateOrderStatusParams.safeParse({ id: parseInt(raw, 10) });
@@ -1400,7 +1400,7 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
 });
 
 // PATCH /api/orders/:id/tracking — staff/admin only
-router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const orderId = parseInt(raw, 10);
@@ -1439,7 +1439,7 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "custo
 });
 
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
-router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1622,7 +1622,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  const isStaff = ["global_admin", "admin", "customer_service_rep"].includes(actor.role ?? "");
+  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizeRole(actor.role));
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
   if (!order.deliveryMethod || order.deliveryMethod === "pickup") {
     res.status(422).json({ error: "Order is not a delivery order" }); return;
@@ -1641,7 +1641,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
 });
 
 // PATCH /api/orders/:id/delivery/handoff-checklist — CSR updates courier handoff checklist
-router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1665,7 +1665,7 @@ router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin
 });
 
 // POST /api/orders/:id/delivery/handoff-complete — CSR marks courier handoff complete
-router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "customer_service_rep"), async (req, res): Promise<void> => {
+router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }

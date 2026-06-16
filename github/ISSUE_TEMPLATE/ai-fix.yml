@@ -1,0 +1,45 @@
+name: AI Fix Task
+
+description: Create an AI-repair issue
+
+title: "[AI Fix] "
+
+labels:
+  - ai-task
+
+body:
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken?
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Logs, screenshots, stack traces.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Likely Files
+      description: Suspected files.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      value: |
+        - [ ] repo-audit passes
+        - [ ] typecheck passes
+        - [ ] build passes
+        - [ ] test passes
+        - [ ] no new warnings
+    validations:
+      required: true

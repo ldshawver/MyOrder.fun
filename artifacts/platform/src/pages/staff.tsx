@@ -144,12 +144,13 @@ function fmtMoney(n: number) {
   return `$${n.toFixed(2)}`;
 }
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "customer_service_rep" | "user" {
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "supervisor" | "csr" | "user" {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "csr" || normalized === "qsr" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
-    return "customer_service_rep";
+  if (normalized === "admin") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "csr" || normalized === "qsr" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
+    return "csr";
   }
   return "user";
 }
@@ -1627,10 +1628,10 @@ export default function CustomerServiceRepQueue() {
   };
 
   // All roles that can clock in — must match SHIFT_OPERATOR_ROLES in shifts.ts
-  const isStaff = userRole === "customer_service_rep" || userRole === "admin" || userRole === "global_admin";
+  const isStaff = userRole === "csr" || userRole === "admin" || userRole === "global_admin";
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
-  const isCsrOnly = userRole === "customer_service_rep";
+  const isCsrOnly = userRole === "csr";
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">

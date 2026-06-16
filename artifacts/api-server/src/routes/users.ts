@@ -6,10 +6,10 @@ import {
   ListUsersQueryParams,
   ListUsersResponse,
   UpdateUserRoleParams,
-  UpdateUserRoleBody,
   UpdateUserRoleResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog, normalizeRole as normalizeAuthRole } from "../lib/auth";
+import { isKnownRole, type CanonicalRole } from "../lib/roles";
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
@@ -49,13 +49,7 @@ const UpdateCurrentUserBody = z.object({
 const router: IRouter = Router();
 let usersListSchemaEnsured = false;
 
-const VALID_ROLES = [
-  "global_admin",
-  "admin",
-  "customer_service_rep",
-  "user",
-] as const;
-type ValidRole = typeof VALID_ROLES[number];
+type ValidRole = CanonicalRole;
 type ValidStatus = "pending" | "approved" | "rejected" | "deactivated";
 
 function normalizeRole(role: unknown): ValidRole {
@@ -77,6 +71,15 @@ function normalizeStatus(status: unknown): ValidStatus {
 
 function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is string {
   return !!clerkId && !clerkId.startsWith("pending_invite:") && !clerkId.startsWith("pending_request:");
+}
+
+const RoleValue = z.string().refine((value) => isKnownRole(value), { message: "Invalid role" }).transform((value) => normalizeRole(value));
+const RoleBody = z.object({ role: RoleValue });
+
+function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
+  if (actorRole === "global_admin") return true;
+  if (actorRole !== "admin") return false;
+  return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -359,7 +362,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     return;
   }
 
-  const body = UpdateUserRoleBody.safeParse(req.body);
+  const body = RoleBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -371,14 +374,21 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     return;
   }
 
+  const actorRole = normalizeRole(actor.role);
+  const newRole = body.data.role;
+  if (!canAssignRole(actorRole, newRole)) {
+    res.status(403).json({ error: "Forbidden: cannot assign role" });
+    return;
+  }
+
   const [updated] = await db.update(usersTable)
-    .set({ role: body.data.role })
+    .set({ role: newRole })
     .where(eq(usersTable.id, params.data.id))
     .returning();
 
   // Mirror role into Clerk publicMetadata so subsequent sign-ins agree.
   if (hasRealClerkUserId(updated.clerkId)) {
-    await syncUserToClerk(updated.clerkId, { role: body.data.role });
+    await syncUserToClerk(updated.clerkId, { role: newRole });
   }
 
   await writeAuditLog({
@@ -388,7 +398,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     action: "UPDATE_USER_ROLE",
     resourceType: "user",
     resourceId: String(params.data.id),
-    metadata: { newRole: body.data.role, previousRole: target.role },
+    metadata: { newRole: newRole, previousRole: target.role },
     ipAddress: req.ip,
   });
 
@@ -398,7 +408,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     email: updated.email ?? undefined,
     firstName: updated.firstName ?? undefined,
     lastName: updated.lastName ?? undefined,
-    role: updated.role,
+    role: normalizeRole(updated.role),
     mfaEnabled: updated.mfaEnabled,
     isActive: updated.isActive,
     createdAt: updated.createdAt,
@@ -517,7 +527,7 @@ router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Prom
 
 const ApprovalBody = z.object({
   approve: z.boolean(),
-  role: z.enum([...VALID_ROLES]).optional(),
+  role: RoleValue.optional(),
 });
 
 // ─── PATCH /api/admin/users/:id/approval — single approval flow ─────────────
@@ -545,7 +555,12 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
-  const newRole = body.data.approve && body.data.role ? body.data.role : undefined;
+  const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
+  const actorRole = normalizeRole(actor.role);
+  if (newRole && !canAssignRole(actorRole, newRole)) {
+    res.status(403).json({ error: "Forbidden: cannot assign role" });
+    return;
+  }
 
   const updateSet: Partial<typeof usersTable.$inferInsert> = { status: newStatus };
   if (newRole) updateSet.role = newRole;
@@ -658,7 +673,7 @@ router.get("/admin/users/waitlist", requireRole("admin"), async (req, res): Prom
 });
 
 const WaitlistInviteBody = z.object({
-  role: z.enum([...VALID_ROLES]).default("user"),
+  role: RoleValue.default("user"),
   firstName: z.string().trim().max(100).optional(),
   lastName: z.string().trim().max(100).optional(),
   // Frontend passes the email it already has so we never hard-fail when

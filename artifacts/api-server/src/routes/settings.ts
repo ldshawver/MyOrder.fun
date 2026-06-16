@@ -2,11 +2,19 @@ import { Router, type IRouter } from "express";
 import { eq, sql } from "drizzle-orm";
 import { db, adminSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
+  const actor = req.dbUser!;
+  if (isGlobalAdmin(actor) || actor.tenantId != null) return next();
+  res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
+}
+
 
 const ROUTING_RULES = ["round_robin", "least_recent_order", "supervisor_manual_assignment"] as const;
 type RoutingRule = typeof ROUTING_RULES[number];
@@ -291,13 +299,13 @@ async function getDecryptedWooCreds(): Promise<{
 }
 
 // GET /api/admin/settings
-router.get("/admin/settings", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json(mapSettings(s));
 });
 
 // PUT /api/admin/settings
-router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.put("/admin/settings", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   const allowed = [
     "menuImportEnabled", "showOutOfStock", "enabledProcessors",
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
@@ -379,7 +387,7 @@ router.put("/admin/settings", requireRole("global_admin", "admin"), async (req, 
  * Returns the WC config in masked form. Secrets are NEVER returned in plaintext —
  * only boolean flags indicating whether they have been saved.
  */
-router.get("/admin/settings/woocommerce", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings();
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -398,7 +406,7 @@ router.get("/admin/settings/woocommerce", requireRole("global_admin", "admin"), 
  * Secrets are encrypted at rest using AES-256-GCM keyed off SETTINGS_ENC_KEY.
  * They are never echoed back to the client.
  */
-router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res): Promise<void> => {
+router.put("/admin/settings/woocommerce", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   try {
     const body = (req.body ?? {}) as {
       wcStoreUrl?: string; wc_store_url?: string;
@@ -447,7 +455,7 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
 
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
-router.get("/admin/csr-settings", requireRole("global_admin", "admin", "customer_service_rep"), async (_req, res): Promise<void> => {
+router.get("/admin/csr-settings", requireRole("global_admin", "admin", "csr"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings() as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),

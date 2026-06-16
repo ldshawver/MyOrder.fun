@@ -3,7 +3,7 @@
  *
  * Operator priority:
  *   1. Most-recent active shift from lab_tech_shifts (any role — lab_tech, business_sitter, etc.)
- *   2. Fallback: first active global_admin / tenant_admin / business_sitter
+ *   2. Fallback: first active global_admin / admin / business_sitter
  *
  * Health probes (VPS-side socket/HTTP checks):
  *   - ethernet_direct: TCP connect to directIp:directPort
@@ -35,7 +35,7 @@ export type ActiveOperator = {
 /**
  * Find the active operator:
  * 1. Most-recent active shift (any role — lab_tech, business_sitter, etc.)
- * 2. Fallback: first global_admin / tenant_admin / business_sitter
+ * 2. Fallback: first global_admin / admin / business_sitter
  */
 export async function selectActiveOperator(): Promise<ActiveOperator | null> {
   // 1. Active lab tech shift
@@ -80,7 +80,7 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
 
   const admin = admins.find(u => normalizeRole(u.role) === "global_admin")
     ?? admins.find(u => normalizeRole(u.role) === "admin")
-    ?? admins.find(u => normalizeRole(u.role) === "customer_service_rep");
+    ?? admins.find(u => normalizeRole(u.role) === "csr");
 
   if (!admin) return null;
 
