@@ -5,7 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-import { normalizeRole, hasRoleValue, type NormalizedRole as CanonicalRole, type NormalizedRole } from "./roles";
+import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
 export { normalizeRole } from "./roles";
 
 export type Role = NormalizedRole | string;
@@ -267,31 +267,10 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         );
       }
     }
-    if (meta.role && meta.role !== user.role) {
-      // Never let stale Clerk metadata demote a staff member back to 'user'.
-      // Role elevations come through the admin UI which syncs both DB + Clerk
-      // together. If they're out of sync here it means Clerk has a stale value
-      // (e.g. user was promoted via direct DB change) — the DB staff role wins.
+    if (meta.role) {
       const dbRole = normalizeRole(user.role);
       const clerkRole = normalizeRole(meta.role);
-      const isRoleDowngrade =
-        dbRole === "global_admin" && clerkRole !== "global_admin" ||
-        (dbRole !== "user" && dbRole !== clerkRole);
-      if (!isRoleDowngrade) {
-        logger.info(
-          {
-            userId: user.id,
-            email: user.email,
-            dbRoleRaw: user.role,
-            dbRoleNormalized: dbRole,
-            clerkRoleRaw: meta.role,
-            clerkRoleNormalized: clerkRole,
-            willWriteToDb: true,
-          },
-          "loadDbUser: role mismatch — writing Clerk-sourced normalized role to DB",
-        );
-        updates.role = clerkRole;
-      } else {
+      if (clerkRole !== dbRole) {
         logger.warn(
           {
             userId: user.id,
@@ -302,7 +281,7 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
             clerkRoleNormalized: clerkRole,
             willWriteToDb: false,
           },
-          "loadDbUser: ignoring Clerk role (staff→non-staff downgrade) — DB is authoritative",
+          "loadDbUser: ignoring Clerk role mismatch — database role is authoritative",
         );
       }
     }

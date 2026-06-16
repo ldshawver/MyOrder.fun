@@ -12,6 +12,7 @@ export type SetUserApprovalBodyRole = typeof SetUserApprovalBodyRole[keyof typeo
 export const SetUserApprovalBodyRole = {
   global_admin: 'global_admin',
   admin: 'admin',
-  customer_service_rep: 'customer_service_rep',
+  supervisor: 'supervisor',
+  csr: 'csr',
   user: 'user',
 } as const;

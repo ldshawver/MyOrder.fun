@@ -18,10 +18,9 @@ import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
-// requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
-// supervisor => admin, customer => user.
+// Legacy CSR aliases normalize to csr; supervisor remains supervisor; customer aliases normalize to user.
 const SHIFT_OPERATOR_ROLES = [
-  "customer_service_rep",
+  "csr",
   "admin",
   "global_admin",
 ] as const;
@@ -102,7 +101,7 @@ function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) 
     backendRole: user?.role ?? null,
     approvalStatus: user?.status ?? null,
     assignedCompanyStoreLocation,
-    csrPermissionFlag: user ? normalizeRole(user.role) === "customer_service_rep" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
+    csrPermissionFlag: user ? normalizeRole(user.role) === "csr" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "supervisor" || normalizeRole(user.role) === "global_admin" : false,
     failedCondition,
   };
 }
@@ -157,7 +156,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
   }
   const actorRole = normalizeRole(user.role);
   // Staff roles (CSR / admin / global_admin) are implicitly approved.
-  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "customer_service_rep") {
+  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "supervisor" || actorRole === "csr") {
     logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
     logMarekCsrAuthDebug(req, null);
     next();

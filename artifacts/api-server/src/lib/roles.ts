@@ -4,10 +4,18 @@ export const ROLE_SUPERVISOR = "supervisor" as const;
 export const ROLE_ADMIN = "admin" as const;
 export const ROLE_GLOBAL_ADMIN = "global_admin" as const;
 
-export const ROLES = [ROLE_USER, ROLE_CSR, ROLE_SUPERVISOR, ROLE_ADMIN, ROLE_GLOBAL_ADMIN] as const;
-export type NormalizedRole = typeof ROLES[number];
+export const CANONICAL_ROLES = [
+  "user",
+  "csr",
+  "supervisor",
+  "admin",
+  "global_admin",
+] as const;
+export type CanonicalRole = typeof CANONICAL_ROLES[number];
+export const ROLES = CANONICAL_ROLES;
+export type NormalizedRole = CanonicalRole;
 
-const ROLE_ALIASES: Record<string, NormalizedRole> = {
+const ROLE_ALIASES: Record<string, CanonicalRole> = {
   user: ROLE_USER,
   customer: ROLE_USER,
   normal_user: ROLE_USER,
@@ -33,16 +41,22 @@ const ROLE_ALIASES: Record<string, NormalizedRole> = {
   platform_admin: ROLE_GLOBAL_ADMIN,
 };
 
-export function normalizeRole(role: unknown): NormalizedRole {
+export function normalizeRole(role: unknown): CanonicalRole {
   const key = typeof role === "string" ? role.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
   return ROLE_ALIASES[key] ?? ROLE_USER;
+}
+
+export function isKnownRole(role: unknown): boolean {
+  if (role == null) return false;
+  const key = typeof role === "string" ? role.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  return key in ROLE_ALIASES;
 }
 
 export function isGlobalAdminRole(role: unknown): boolean {
   return normalizeRole(role) === ROLE_GLOBAL_ADMIN;
 }
 
-export function hasRoleValue(role: unknown, roles: readonly NormalizedRole[]): boolean {
+export function hasRoleValue(role: unknown, roles: readonly CanonicalRole[]): boolean {
   const normalized = normalizeRole(role);
   return roles.includes(normalized) || (normalized === ROLE_GLOBAL_ADMIN && roles.includes(ROLE_ADMIN));
 }
@@ -66,7 +80,7 @@ const supervisor = [...csr, "users.view_team", "users.manage_team", "schedules.c
 const admin = PERMISSION_KEYS.filter((p) => !p.startsWith("platform.")) as PermissionKey[];
 const globalAdmin = [...PERMISSION_KEYS] as PermissionKey[];
 
-export const DEFAULT_ROLE_PERMISSIONS: Record<NormalizedRole, readonly PermissionKey[]> = {
+export const DEFAULT_ROLE_PERMISSIONS: Record<CanonicalRole, readonly PermissionKey[]> = {
   [ROLE_USER]: user,
   [ROLE_CSR]: csr,
   [ROLE_SUPERVISOR]: supervisor,

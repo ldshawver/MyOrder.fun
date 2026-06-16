@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { defaultHasPermission, normalizeRole } from "../roles";
+import { defaultHasPermission, normalizeRole, CANONICAL_ROLES } from "../roles";
+
+describe("canonical role definitions", () => {
+  it("contains only the approved canonical roles", () => {
+    expect(CANONICAL_ROLES).toEqual(["user", "csr", "supervisor", "admin", "global_admin"]);
+  });
+});
 
 describe("role normalization", () => {
   it.each([
-    ["customer", "user"],
     ["customer_service_rep", "csr"],
-    ["manager", "admin"],
+    ["csr", "csr"],
+    ["supervisor", "supervisor"],
+    ["admin", "admin"],
     ["tenant_admin", "admin"],
+    ["manager", "admin"],
+    ["global-admin", "global_admin"],
     ["super_admin", "global_admin"],
-    ["platform_admin", "global_admin"],
     ["unknown", "user"],
+    [null, "user"],
   ])("maps %s to %s", (input, expected) => expect(normalizeRole(input)).toBe(expected));
 });
 

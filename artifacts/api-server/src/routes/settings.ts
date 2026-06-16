@@ -447,7 +447,7 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), async (req, res)
 
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
-router.get("/admin/csr-settings", requireRole("global_admin", "admin", "customer_service_rep"), async (_req, res): Promise<void> => {
+router.get("/admin/csr-settings", requireRole("global_admin", "admin", "csr"), async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings() as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),

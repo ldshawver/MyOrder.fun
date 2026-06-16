@@ -8,7 +8,7 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-const STAFF_ROLES = ["global_admin", "admin", "customer_service_rep"] as const;
+const STAFF_ROLES = ["global_admin", "admin", "csr"] as const;
 const GOOGLE_CONTACT_SCOPES = "https://www.googleapis.com/auth/contacts.readonly";
 
 type DbRow = Record<string, unknown>;
@@ -628,7 +628,7 @@ router.post("/communications/twilio/incoming", async (req, res) => {
     return;
   }
   const staff = await pool.query<{ id: number; tenant_id: number | null }>(
-    `SELECT id, tenant_id FROM users WHERE role IN ('global_admin', 'admin', 'customer_service_rep', 'supervisor', 'business_sitter') AND coalesce(is_active, true) = true ORDER BY id ASC LIMIT 1`,
+    `SELECT id, tenant_id FROM users WHERE role IN ('global_admin', 'admin', 'supervisor', 'csr') AND coalesce(is_active, true) = true ORDER BY id ASC LIMIT 1`,
   );
   const owner = staff.rows[0] ?? { id: null, tenant_id: null };
   const name = await lookupContactName(owner.id, from);

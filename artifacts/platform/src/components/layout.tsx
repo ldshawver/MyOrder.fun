@@ -58,10 +58,11 @@ type NavSection = {
   items: NavItem[];
 };
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "csr" | "user" {
+function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "supervisor" | "csr" | "user" {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "admin") return "admin";
+  if (normalized === "supervisor") return "supervisor";
   if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
     return "csr";
   }
@@ -197,7 +198,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
-        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "tenant_admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
         {

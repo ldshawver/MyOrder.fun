@@ -54,7 +54,13 @@ router.put("/admin/roles-permissions/:role", requireRole("admin"), async (req, r
   const actorRole = normalizeRole(actor.role);
   const role = normalizeRole(req.params.role);
   const permissions = Array.isArray(req.body?.permissions) ? req.body.permissions as { permission: string; enabled: boolean }[] : [];
-  const tenantId = scopeFor(actor, role);
+  let tenantId: number | null;
+  try {
+    tenantId = scopeFor(actor, role);
+  } catch (err) {
+    res.status((err as { status?: number }).status ?? 403).json({ error: err instanceof Error ? err.message : "Forbidden" });
+    return;
+  }
   for (const item of permissions) {
     if (!canSet(actorRole, role, item.permission)) {
       res.status(403).json({ error: "Permission change is not allowed" });
@@ -72,7 +78,13 @@ router.post("/admin/roles-permissions/:role/reset", requireRole("admin"), async 
   await ensureSchema();
   const actor = req.dbUser!;
   const role = normalizeRole(req.params.role);
-  const tenantId = scopeFor(actor, role);
+  let tenantId: number | null;
+  try {
+    tenantId = scopeFor(actor, role);
+  } catch (err) {
+    res.status((err as { status?: number }).status ?? 403).json({ error: err instanceof Error ? err.message : "Forbidden" });
+    return;
+  }
   await db.delete(rolePermissionsTable).where(and(tenantId == null ? isNull(rolePermissionsTable.tenantId) : eq(rolePermissionsTable.tenantId, tenantId), eq(rolePermissionsTable.role, role)));
   await db.insert(permissionAuditLogsTable).values({ actorUserId: actor.id, tenantId, action: "RESET_ROLE_PERMISSIONS", targetRole: role, permission: "*", oldValue: null, newValue: null });
   res.json({ ok: true });
