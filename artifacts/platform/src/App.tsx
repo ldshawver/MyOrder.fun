@@ -142,6 +142,12 @@ function ClerkQueryClientCacheInvalidator() {
   return null;
 }
 
+
+function canUseVisualEditor(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return normalized === "global_admin" || normalized === "admin" || normalized === "tenant_admin";
+}
+
 function HomeRedirect() {
   return (
     <>
@@ -390,7 +396,13 @@ function AuthenticatedApp() {
             <Route path="/admin/communications" component={AdminCommunications} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
-            <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+            {canUseVisualEditor(user.role) && (
+              <>
+                <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+              </>
+            )}
             <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
