@@ -150,9 +150,9 @@ export default function AdminReceipts() {
     <div className="max-w-4xl mx-auto p-6 space-y-6" data-testid="page-admin-receipts">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold">Receipt Templates</h1>
+          <h1 className="text-xl font-bold">Receipts & Printers</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Edit the brand name, footer message, paper width, and visibility flags used on every printed receipt.
+            Centralized receipt templates, reprint receipt preview, printer management, routing, and test-print configuration. Printer integration errors are shown clearly when hardware is not configured.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -172,6 +172,16 @@ export default function AdminReceipts() {
           {error}
         </div>
       )}
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs" data-testid="receipts-printers-tabs">
+        {['Reprint Receipts', 'Templates', 'Printers', 'Routing', 'Test Print'].map((label) => (
+          <div key={label} className="rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-center font-semibold">{label}</div>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 p-3 text-sm" data-testid="text-printer-configuration-warning">
+        Printer hardware must be configured before live printing or routing can run. Use Preview/Test Print to verify templates and clear setup errors before enabling auto-print.
+      </div>
 
       <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
         <div>

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, asc, sql } from "drizzle-orm";
+import { eq, and, asc, sql, sum } from "drizzle-orm";
 import {
   db,
   catalogItemsTable,
@@ -8,6 +8,7 @@ import {
   inventoryLocationsTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
   ensureStandardLocations,
@@ -72,6 +73,29 @@ async function ensureInventorySchema(): Promise<void> {
   ];
   for (const stmt of stmts) await db.execute(stmt);
   inventorySchemaEnsured = true;
+}
+
+
+async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
+  const [totals] = await db
+    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
+    .from(inventoryBalancesTable)
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+    ));
+
+  await db
+    .update(catalogItemsTable)
+    .set({
+      stockQuantity: String(totals?.qty ?? "0"),
+      inventoryAmount: String(totals?.qty ?? "0"),
+      parLevel: String(totals?.par ?? "0"),
+    })
+    .where(and(
+      eq(catalogItemsTable.tenantId, tenantId),
+      eq(catalogItemsTable.id, productId),
+    ));
 }
 
 router.use(async (_req, res, next) => {
@@ -230,8 +254,42 @@ router.patch(
       return;
     }
 
-    const { qty, par } = req.body as { qty?: number; par?: number };
+    const parsedBody = z.object({
+      qty: z.number().finite().min(0).max(1_000_000).optional(),
+      par: z.number().finite().min(0).max(1_000_000).optional(),
+    }).strict().safeParse(req.body);
+    if (!parsedBody.success) {
+      res.status(400).json({ error: parsedBody.error.message });
+      return;
+    }
+    const { qty, par } = parsedBody.data;
     const houseTenantId = await getHouseTenantId();
+
+    const [product] = await db
+      .select({ id: catalogItemsTable.id })
+      .from(catalogItemsTable)
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        eq(catalogItemsTable.id, productId),
+      ))
+      .limit(1);
+    if (!product) {
+      res.status(404).json({ error: "Catalog product not found for this tenant" });
+      return;
+    }
+
+    const [location] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(and(
+        eq(inventoryLocationsTable.tenantId, houseTenantId),
+        eq(inventoryLocationsTable.id, locationId),
+      ))
+      .limit(1);
+    if (!location) {
+      res.status(404).json({ error: "Inventory location not found for this tenant" });
+      return;
+    }
 
     const [existing] = await db
       .select({ id: inventoryBalancesTable.id })
@@ -272,6 +330,8 @@ router.patch(
       ))
       .limit(1);
 
+    await recomputeCatalogInventoryTotals(houseTenantId, productId);
+
     res.json({
       productId,
       locationId,
@@ -291,11 +351,13 @@ router.patch(
     const id = parseInt(String(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
-    const { stockQuantity, stockUnit, parLevel } = req.body as {
-      stockQuantity?: number | null;
-      stockUnit?: string;
-      parLevel?: number | null;
-    };
+    const parsedBody = z.object({
+      stockQuantity: z.number().finite().min(0).max(1_000_000).nullable().optional(),
+      stockUnit: z.string().trim().min(1).max(32).optional(),
+      parLevel: z.number().finite().min(0).max(1_000_000).nullable().optional(),
+    }).strict().safeParse(req.body);
+    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
+    const { stockQuantity, stockUnit, parLevel } = parsedBody.data;
 
     const patch: Record<string, unknown> = {};
     if (stockQuantity !== undefined) patch.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
@@ -303,38 +365,55 @@ router.patch(
     if (parLevel !== undefined) patch.parLevel = parLevel != null ? String(parLevel) : "0";
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
 
+    const houseTenantId = await getHouseTenantId();
     const [updated] = await db
       .update(catalogItemsTable)
       .set(patch)
-      .where(eq(catalogItemsTable.id, id))
+      .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, id)))
       .returning({ id: catalogItemsTable.id, stockQuantity: catalogItemsTable.stockQuantity, stockUnit: catalogItemsTable.stockUnit, parLevel: catalogItemsTable.parLevel });
 
     if (!updated) { res.status(404).json({ error: "Item not found" }); return; }
 
-    // Mirror stock_quantity to the Backstock inventory_balance row if it exists
-    if (stockQuantity !== undefined && stockQuantity !== null) {
-      try {
-        const houseTenantId = await getHouseTenantId();
-        const [backstockLoc] = await db
-          .select({ id: inventoryLocationsTable.id })
-          .from(inventoryLocationsTable)
+    // Mirror catalog-level stock/par edits to the canonical Backstock balance.
+    // This preserves backward-compatible edit forms while keeping inventory_balances
+    // as the per-location source used by inventory, par, catalog, and order flows.
+    if ((stockQuantity !== undefined && stockQuantity !== null) || (parLevel !== undefined && parLevel !== null)) {
+      const [backstockLoc] = await db
+        .select({ id: inventoryLocationsTable.id })
+        .from(inventoryLocationsTable)
+        .where(and(
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.type, "backstock"),
+        ))
+        .limit(1);
+      if (backstockLoc) {
+        const [balance] = await db
+          .select({ id: inventoryBalancesTable.id })
+          .from(inventoryBalancesTable)
           .where(and(
-            eq(inventoryLocationsTable.tenantId, houseTenantId),
-            eq(inventoryLocationsTable.type, "backstock"),
+            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            eq(inventoryBalancesTable.productId, id),
+            eq(inventoryBalancesTable.locationId, backstockLoc.id),
           ))
           .limit(1);
-        if (backstockLoc) {
-          await db
-            .update(inventoryBalancesTable)
-            .set({ quantityOnHand: String(stockQuantity) })
-            .where(and(
-              eq(inventoryBalancesTable.tenantId, houseTenantId),
-              eq(inventoryBalancesTable.productId, id),
-              eq(inventoryBalancesTable.locationId, backstockLoc.id),
-            ));
+        const balancePatch: Record<string, unknown> = {};
+        if (stockQuantity !== undefined && stockQuantity !== null) balancePatch.quantityOnHand = String(stockQuantity);
+        if (parLevel !== undefined && parLevel !== null) balancePatch.parLevel = String(parLevel);
+        if (balance) {
+          await db.update(inventoryBalancesTable).set(balancePatch).where(eq(inventoryBalancesTable.id, balance.id));
+        } else {
+          await db.insert(inventoryBalancesTable).values({
+            tenantId: houseTenantId,
+            productId: id,
+            locationId: backstockLoc.id,
+            quantityOnHand: String(stockQuantity ?? 0),
+            parLevel: String(parLevel ?? 0),
+          });
         }
-      } catch { /* non-critical */ }
+      }
     }
+
+    await recomputeCatalogInventoryTotals(houseTenantId, id);
 
     res.json({
       id: updated.id,
