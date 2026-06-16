@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
+import { useCart } from "@/contexts/CartContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
@@ -126,6 +127,9 @@ function CatalogItemCard({
 }) {
   const isLC = menuMode === "lucifer";
   const [imgError, setImgError] = useState(false);
+  const [addedFeedback, setAddedFeedback] = useState(false);
+  const { addItem, cart } = useCart();
+  const isInCart = cart.some(c => c.id === item.id);
   const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
@@ -239,17 +243,27 @@ function CatalogItemCard({
         </div>
 
         <div className="grid grid-cols-2 gap-2 mt-1">
-          <Link
-            href={`/orders/new?item=${item.id}`}
-            className="flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl transition-all"
-            style={isLC
-              ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }
-              : { background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
+          <button
+            type="button"
+            disabled={!item.isAvailable}
+            onClick={() => {
+              const name = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
+              const price = parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price));
+              addItem({ id: item.id, name, price, imageUrl: item.imageUrl ?? null });
+              setAddedFeedback(true);
+              setTimeout(() => setAddedFeedback(false), 1800);
+            }}
+            className="flex items-center justify-center gap-1.5 w-full text-xs font-semibold py-2.5 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            style={addedFeedback
+              ? { background: "linear-gradient(135deg, #16a34a, #15803d)", color: "#fff" }
+              : isLC
+                ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", color: "#fff" }
+                : { background: "hsl(var(--primary))", color: "hsl(var(--primary-foreground))" }}
             data-testid={`link-buy-now-${item.id}`}
           >
             <ShoppingCart size={11} />
-            Add to Cart
-          </Link>
+            {addedFeedback ? "Added ✓" : isInCart ? "In Cart ✓" : "Add to Cart"}
+          </button>
           <Link
             href={`/catalog/${item.id}`}
             className="flex items-center justify-center w-full text-xs font-semibold py-2.5 rounded-xl border transition-all"

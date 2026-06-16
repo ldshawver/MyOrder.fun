@@ -1,25 +1,42 @@
-1. CI workflows:
-   - ci.yml
-   - repo-audit.yml
-   - deploy-app.yml
+name: Copilot Setup Steps
 
-2. AI support:
-   - copilot-instructions.md
-   - ai-fix.yml
-   - PULL_REQUEST_TEMPLATE.md
-   - copilot-setup-steps.yml
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
 
-3. Branch protection:
-   Require only:
-   - repo-audit
-   - typecheck
-   - build
-   - test
+jobs:
+  copilot-setup-steps:
+    name: copilot-setup-steps
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
-4. App Doctor env:
-   - GITHUB_TOKEN
-   - GITHUB_REPO
+    permissions:
+      contents: read
 
-5. AI rule:
-   AI opens PRs only.
-   No AI direct push to main.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify repo health
+        run: |
+          pnpm typecheck
+          pnpm build
+          pnpm test

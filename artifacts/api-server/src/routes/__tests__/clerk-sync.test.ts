@@ -157,6 +157,7 @@ function seedAdmin() {
     firstName: "Admin",
     lastName: "User",
     role: "admin",
+    tenantId: 1,
     status: "approved",
     isActive: true,
     contactPhone: null,
@@ -174,6 +175,7 @@ function seedPending(id: number, clerkId: string) {
     firstName: "Pending",
     lastName: "User",
     role: "user",
+    tenantId: 1,
     status: "pending",
     isActive: true,
     contactPhone: "+15551112222",
@@ -200,18 +202,18 @@ describe("PATCH /api/admin/users/:id/approval", () => {
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/2/approval")
-      .send({ approve: true, role: "customer_service_rep" });
+      .send({ approve: true, role: "csr" });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
 
     const dbRow = dbState.users.find((u) => u.id === 2)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("csr");
 
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "pending-clerk-id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "customer_service_rep" }) },
+      { publicMetadata: expect.objectContaining({ status: "approved", role: "csr" }) },
     );
   });
 
@@ -249,6 +251,7 @@ describe("GET /api/admin/users/pending", () => {
     dbState.users.push({
       id: 4, clerkId: "c4", email: "ok@x.com", firstName: null, lastName: null,
       role: "user", status: "approved", isActive: true, contactPhone: null,
+    tenantId: 1,
       mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
     });
     const app = buildApp(usersRouter);
@@ -279,7 +282,8 @@ describe("Admin route aliases", () => {
     dbState.users.push({
       id: 100, clerkId: "csr-clerk-id",
       email: "csr@example.com", firstName: "Care", lastName: "Rep",
-      role: "customer_service_rep", status: "approved", isActive: true, contactPhone: null,
+      role: "csr", status: "approved", isActive: true, contactPhone: null,
+    tenantId: 1,
       mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
     });
     seedPending(22, "alias-role-csr-clerk-id");
@@ -290,6 +294,45 @@ describe("Admin route aliases", () => {
       .send({ role: "user" });
     expect(res.status).toBe(403);
     expect(clerkClient.users.updateUserMetadata).not.toHaveBeenCalled();
+  });
+
+
+  it("tenant admin cannot assign global_admin", async () => {
+    seedAdmin();
+    seedPending(23, "global-role-target");
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/23/role")
+      .send({ role: "global_admin" });
+    expect(res.status).toBe(403);
+    expect(dbState.users.find((u) => u.id === 23)?.role).toBe("user");
+  });
+
+  it("tenant admin cannot change status for another tenant's user", async () => {
+    seedAdmin();
+    seedPending(24, "other-tenant-user");
+    dbState.users.find((u) => u.id === 24)!.tenantId = 2;
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/24/status")
+      .send({ status: "approved" });
+    expect(res.status).toBe(403);
+    expect(dbState.users.find((u) => u.id === 24)?.status).toBe("pending");
+  });
+
+  it("supervisor cannot access admin user mutation routes", async () => {
+    dbState.users.push({
+      id: 101, clerkId: "supervisor-clerk-id", email: "supervisor@example.com",
+      firstName: "Sue", lastName: "P", role: "supervisor", tenantId: 1,
+      status: "approved", isActive: true, contactPhone: null, mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
+    });
+    seedPending(25, "supervisor-target");
+    mockUserId = "supervisor-clerk-id";
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/25/status")
+      .send({ status: "approved" });
+    expect(res.status).toBe(403);
   });
 
   it("PATCH /api/admin/users/:id/role updates DB and Clerk", async () => {
@@ -327,11 +370,11 @@ describe("PATCH /api/users/:id/status", () => {
   });
 });
 
-describe("loadDbUser sync-on-read (Clerk wins)", () => {
+describe("loadDbUser sync-on-read (DB role wins)", () => {
   it("updates the DB row when Clerk publicMetadata.status differs", async () => {
     seedPending(7, "round-trip-clerk-id");
     mockUserId = "round-trip-clerk-id";
-    // Clerk says approved, DB still says pending — sync-on-read should reconcile
+    // Clerk says approved and carries an elevated role. Status may reconcile, but DB role remains authoritative.
     mockSessionClaims = { publicMetadata: { status: "approved", role: "lab_tech" } };
 
     const app = express();
@@ -349,12 +392,61 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("user");
 
-    // DB row was reconciled
+    // DB status was reconciled, but Clerk role metadata was ignored.
     const dbRow = dbState.users.find((u) => u.id === 7)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("user");
+  });
+
+  it("falls back to Clerk API publicMetadata when session claims omit metadata", async () => {
+    seedPending(17, "api-metadata-clerk-id");
+    mockUserId = "api-metadata-clerk-id";
+    mockSessionClaims = {};
+    vi.mocked(clerkClient.users.getUser).mockResolvedValueOnce({
+      publicMetadata: { status: "approved", role: "Customer Service Rep" },
+    } as never);
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as Record<string, unknown>).log = {
+        info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+      };
+      next();
+    });
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => {
+      res.json({ status: req.dbUser?.status, role: req.dbUser?.role });
+    });
+
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("approved");
+    expect(res.body.role).toBe("user");
+
+    const dbRow = dbState.users.find((u) => u.id === 17)!;
+    expect(dbRow.status).toBe("approved");
+    expect(dbRow.role).toBe("user");
+  });
+
+
+  it("never elevates a DB user from Clerk role metadata", async () => {
+    seedPending(18, "clerk-global-admin-claim");
+    mockUserId = "clerk-global-admin-claim";
+    mockSessionClaims = { publicMetadata: { status: "approved", role: "global_admin" } };
+
+    const app = express();
+    app.use(express.json());
+    app.get("/whoami", requireAuth, loadDbUser, (req, res) => {
+      res.json({ status: req.dbUser?.status, role: req.dbUser?.role });
+    });
+
+    const res = await supertest(app).get("/whoami");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("approved");
+    expect(res.body.role).toBe("user");
+    expect(dbState.users.find((u) => u.id === 18)?.role).toBe("user");
   });
 
   it("does nothing when Clerk metadata matches the DB", async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
-let mockActor: { id: number; role: string; email: string } = { id: 1, role: "admin", email: "a@x" };
+let mockActor: { id: number; role: string; email: string; tenantId?: number } = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
 const settingsRow: Record<string, unknown> = {
   id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30,
 };
@@ -58,7 +58,7 @@ async function buildApp() {
 beforeEach(() => {
   settingsRow.orderRoutingRule = "round_robin";
   settingsRow.defaultEtaMinutes = 30;
-  mockActor = { id: 1, role: "admin", email: "a@x" };
+  mockActor = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
 });
 
 describe("/admin/settings — routing rule contract", () => {
@@ -92,8 +92,14 @@ describe("/admin/settings — routing rule contract", () => {
     expect(res.status).toBe(400);
   });
 
+  it("tenant admin without tenant assignment cannot edit settings", async () => {
+    mockActor = { id: 3, role: "admin", email: "orphan@x" };
+    const res = await supertest(await buildApp()).put("/api/admin/settings").send({ defaultEtaMinutes: 45 });
+    expect(res.status).toBe(403);
+  });
+
   it("non-supervisors cannot read or write", async () => {
-    mockActor = { id: 2, role: "customer_service_rep", email: "c@x" };
+    mockActor = { id: 2, role: "customer_service_rep", email: "c@x", tenantId: 1 };
     const r1 = await supertest(await buildApp()).get("/api/admin/settings");
     const r2 = await supertest(await buildApp()).put("/api/admin/settings").send({ orderRoutingRule: "round_robin" });
     expect(r1.status).toBe(403);

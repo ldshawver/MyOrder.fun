@@ -220,14 +220,9 @@ export async function syncAvatarToClerk(
   }
 }
 
-export function readClerkPublicMetadata(
-  sessionClaims: Record<string, unknown> | null | undefined,
+export function normalizeClerkPublicMetadata(
+  meta: Record<string, unknown> | null | undefined,
 ): { status?: ClerkSyncStatus; role?: string } {
-  if (!sessionClaims) return {};
-  const meta =
-    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
-    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
-    undefined;
   if (!meta) return {};
   const rawStatus = typeof meta.status === "string" ? meta.status : undefined;
   const status =
@@ -240,4 +235,17 @@ export function readClerkPublicMetadata(
   const rawRole = typeof meta.role === "string" ? meta.role : undefined;
   const role = normalizeClerkRole(rawRole);
   return { status, role };
+}
+
+export function readClerkPublicMetadata(
+  sessionClaims: Record<string, unknown> | null | undefined,
+): { status?: ClerkSyncStatus; role?: string } {
+  if (!sessionClaims) return {};
+  const meta =
+    (sessionClaims.publicMetadata as Record<string, unknown> | undefined) ??
+    (sessionClaims.public_metadata as Record<string, unknown> | undefined) ??
+    // Some Clerk JWT templates expose custom claims at top-level instead of
+    // nesting them under publicMetadata/public_metadata. Accept that shape too.
+    sessionClaims;
+  return normalizeClerkPublicMetadata(meta);
 }

@@ -10,6 +10,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
 import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
+import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -28,12 +30,18 @@ import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
 import GlobalAdminTenants from "@/pages/global-admin/tenants";
 import GlobalAdminAudit from "@/pages/global-admin/audit";
+import GlobalAdminIntegrations from "@/pages/global-admin/integrations";
 import StaffQueue from "@/pages/staff";
 import Notifications from "@/pages/notifications";
 import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
+import Communications from "@/pages/communications";
+import ContractorHubPage from "@/pages/contractor-hub";
+import ContractSignPage from "@/pages/contractor-hub/contract-sign";
+import DocumentHubPage from "@/pages/document-hub";
+import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -47,9 +55,13 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
+import AdminWebEditor from "@/pages/admin/web-editor";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
-
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -130,6 +142,12 @@ function ClerkQueryClientCacheInvalidator() {
   }, [addListener, queryClient]);
 
   return null;
+}
+
+
+function canUseVisualEditor(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return normalized === "global_admin" || normalized === "admin" || normalized === "tenant_admin";
 }
 
 function HomeRedirect() {
@@ -356,6 +374,7 @@ function AuthenticatedApp() {
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
             <Route path="/global-admin/tenants" component={GlobalAdminTenants} />
             <Route path="/global-admin/audit" component={GlobalAdminAudit} />
+            <Route path="/global-admin/integrations" component={GlobalAdminIntegrations} />
           </>
         )}
 
@@ -376,6 +395,17 @@ function AuthenticatedApp() {
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
+            <Route path="/admin/communications" component={AdminCommunications} />
+            <Route path="/admin/web-editor" component={AdminWebEditor} />
+            <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
+            {canUseVisualEditor(user.role) && (
+              <>
+                <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+              </>
+            )}
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
 
@@ -384,6 +414,7 @@ function AuthenticatedApp() {
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
             <Route path="/csr-settings/:section" component={CsrSettings} />
+            <Route path="/communications" component={Communications} />
           </>
         )}
 
@@ -392,6 +423,9 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
+        <Route path="/contractor-hub" component={ContractorHubPage} />
+        <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
+        <Route path="/document-hub" component={DocumentHubPage} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -408,6 +442,7 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

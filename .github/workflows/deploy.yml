@@ -54,10 +54,14 @@ jobs:
 
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_HOST_FALLBACK: 100.85.15.43
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
       DEPLOY_PATH: /opt/alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
     steps:
       - name: Checkout code
@@ -72,7 +76,6 @@ jobs:
       - name: Install SSH key
         run: |
           set -euo pipefail
-
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -83,15 +86,68 @@ jobs:
 
           printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
           chmod 600 ~/.ssh/vps_deploy_key
-
           ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
-
           echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
-      - name: Add VPS to known hosts
+      - name: Connect to Tailscale with auth key
+        if: env.TAILSCALE_AUTHKEY != ''
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ env.TAILSCALE_AUTHKEY }}
+
+      - name: Connect to Tailscale with OAuth
+        if: env.TAILSCALE_AUTHKEY == '' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != ''
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Select reachable VPS host and add known host
         run: |
           set -euo pipefail
-          ssh-keyscan -T 15 -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+          mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          try_host() {
+            local host="$1"
+            local port="$2"
+            local tmp_keys
+            tmp_keys="$(mktemp)"
+
+            if [ -z "$host" ]; then
+              return 1
+            fi
+
+            echo "Scanning ${host}:${port} for host keys..."
+
+            if ssh-keyscan -T 15 -p "$port" -H "$host" > "$tmp_keys" 2>ssh-keyscan.err && [ -s "$tmp_keys" ]; then
+              cat "$tmp_keys" >> ~/.ssh/known_hosts
+              rm -f "$tmp_keys"
+              echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
+              echo "Collected SSH host key(s) for ${host}:${port}."
+              return 0
+            fi
+
+            echo "No keys from ${host}:${port}."
+            cat ssh-keyscan.err || true
+            rm -f "$tmp_keys"
+            return 1
+          }
+
+          if try_host "$VPS_HOST" "$VPS_PORT"; then
+            exit 0
+          fi
+
+          echo "Primary VPS_HOST failed. Trying fallback..."
+          if try_host "$VPS_HOST_FALLBACK" "$VPS_PORT"; then
+            exit 0
+          fi
+
+          echo "::error::No host keys collected from primary or fallback host."
+          exit 1
 
       - name: Verify SSH access
         run: |
@@ -104,7 +160,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
             -p "$VPS_PORT" \
-            "$VPS_USER@$VPS_HOST" \
+            "$VPS_USER@$SELECTED_VPS_HOST" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
       - name: Sync repository to VPS
@@ -117,7 +173,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -p "$VPS_PORT" \
-            "$VPS_USER@$VPS_HOST" \
+            "$VPS_USER@$SELECTED_VPS_HOST" \
             "mkdir -p $DEPLOY_PATH"
 
           rsync -az --delete \
@@ -127,9 +183,11 @@ jobs:
             --exclude='**/node_modules' \
             --exclude='deploy/.env' \
             --exclude='deploy/nginx/ssl' \
-            ./ "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
+            ./ "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/"
 
       - name: Build and deploy on VPS
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -139,28 +197,23 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -p "$VPS_PORT" \
-            "$VPS_USER@$VPS_HOST" << 'ENDSSH'
+            "$VPS_USER@$SELECTED_VPS_HOST" \
+            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
               cd /opt/alavont
 
-              echo "SHA=${GITHUB_SHA:-unknown}" > .deployed-sha
+              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
 
               chmod +x deploy/*.sh 2>/dev/null || true
 
               cd /opt/alavont/deploy
 
-              echo "Stopping current containers..."
               docker compose down || true
-
-              echo "Building containers..."
-              DEPLOY_SHA="${GITHUB_SHA:-unknown}" docker compose build --pull
-
-              echo "Starting database..."
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
               docker compose up -d db
 
-              echo "Waiting for database..."
               for i in $(seq 1 30); do
                 if docker compose exec -T db pg_isready -q; then
                   echo "Database ready"
@@ -168,7 +221,6 @@ jobs:
                 fi
 
                 if [ "$i" = "30" ]; then
-                  echo "Database failed to become ready"
                   docker compose logs db --tail=80
                   exit 1
                 fi
@@ -176,13 +228,9 @@ jobs:
                 sleep 2
               done
 
-              echo "Running migrations..."
               docker compose run --rm migrate
-
-              echo "Starting app stack..."
               docker compose up -d db api platform nginx
 
-              echo "Waiting for API health..."
               for i in $(seq 1 30); do
                 if curl -fsS http://127.0.0.1/api/healthz; then
                   echo "API healthy"
@@ -190,7 +238,6 @@ jobs:
                 fi
 
                 if [ "$i" = "30" ]; then
-                  echo "API failed health check"
                   docker compose ps
                   docker compose logs api --tail=100
                   exit 1
@@ -201,7 +248,6 @@ jobs:
 
               docker compose ps
               docker image prune -f
-
               echo "Deploy complete"
           ENDSSH
 

@@ -12,10 +12,10 @@ import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 type SectionKey = "pickup" | "location" | "wifi" | "shift";
 type PickupOption = { id: string; label: string; instructions: string };
 type ShiftLocation = { id: string; label: string; address: string; pickupInstructionId: string; deliveryOptionId: string };
-type DeliveryOption = { id: string; label: string; instructions: string; separatePaymentRequired: boolean };
-type PrinterConfig = { onsiteMode: string; ssid: string; passwordSet: boolean; raspberryPiBluetooth: boolean; password?: string };
+type DeliveryOption = { id: string; label: string; instructions: string; separatePaymentRequired: boolean; uberSteps?: string[] };
+type PrinterConfig = { onsiteMode: string; ssid: string; passwordSet: boolean; raspberryPiBluetooth: boolean; password?: string; approvedSsids?: string[] };
 
-const DEFAULT_PRINTER_CONFIG: PrinterConfig = { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true };
+const DEFAULT_PRINTER_CONFIG: PrinterConfig = { onsiteMode: "auto", ssid: "", passwordSet: false, raspberryPiBluetooth: true, approvedSsids: [] };
 const sections: Array<{ key: SectionKey; label: string; icon: typeof MapPin }> = [
   { key: "pickup", label: "Pickup Instructions", icon: ClipboardList },
   { key: "location", label: "Shift Location", icon: Store },
@@ -244,25 +244,67 @@ export default function CsrSettings() {
             <Wifi size={16} />
             <CardTitle className="text-sm uppercase tracking-wider">Wi-Fi / Raspberry Pi</CardTitle>
           </CardHeader>
-          <CardContent className="pt-5 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-            <div>
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Onsite Mode</Label>
-              <select disabled={!canEdit} className="mt-1 h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={printerConfig.onsiteMode} onChange={(e) => setPrinterConfig(prev => ({ ...prev, onsiteMode: e.target.value }))}>
-                <option value="auto">Auto detect</option>
-                <option value="onsite">Force onsite</option>
-                <option value="remote">Force remote</option>
-              </select>
+          <CardContent className="pt-5 space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Onsite Mode</Label>
+                <select disabled={!canEdit} className="mt-1 h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={printerConfig.onsiteMode} onChange={(e) => setPrinterConfig(prev => ({ ...prev, onsiteMode: e.target.value }))}>
+                  <option value="auto">Auto detect</option>
+                  <option value="onsite">Force onsite</option>
+                  <option value="remote">Force remote</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Primary SSID</Label>
+                <Input disabled={!canEdit} value={printerConfig.ssid} onChange={(e) => setPrinterConfig(prev => ({ ...prev, ssid: e.target.value }))} className="mt-1 rounded-sm" />
+              </div>
+              <div>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Wi-Fi Password</Label>
+                <Input disabled={!canEdit} type="password" placeholder={printerConfig.passwordSet ? "Saved" : ""} onChange={(e) => setPrinterConfig(prev => ({ ...prev, password: e.target.value }))} className="mt-1 rounded-sm" />
+              </div>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Shared SSID</Label>
-              <Input disabled={!canEdit} value={printerConfig.ssid} onChange={(e) => setPrinterConfig(prev => ({ ...prev, ssid: e.target.value }))} className="mt-1 rounded-sm" />
+
+            <div className="border-t border-border/50 pt-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Approved SSIDs for CSR Clock-In</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">CSRs entering any of these SSIDs will be auto-approved for Wi-Fi at clock-in. Case-insensitive match.</div>
+                </div>
+                {canEdit && (
+                  <Button variant="outline" size="sm" className="rounded-sm shrink-0" onClick={() => setPrinterConfig(prev => ({ ...prev, approvedSsids: [...(prev.approvedSsids ?? []), ""] }))}>
+                    + Add SSID
+                  </Button>
+                )}
+              </div>
+              {(printerConfig.approvedSsids ?? []).length === 0 && (
+                <div className="text-xs text-muted-foreground italic">No approved SSIDs configured. CSRs can still manually check Wi-Fi as ready.</div>
+              )}
+              <div className="space-y-2">
+                {(printerConfig.approvedSsids ?? []).map((ssid, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <Input
+                      disabled={!canEdit}
+                      value={ssid}
+                      onChange={(e) => setPrinterConfig(prev => {
+                        const next = [...(prev.approvedSsids ?? [])];
+                        next[idx] = e.target.value;
+                        return { ...prev, approvedSsids: next };
+                      })}
+                      placeholder={`Approved SSID ${idx + 1}`}
+                      className="rounded-sm font-mono text-xs h-9"
+                    />
+                    {canEdit && (
+                      <Button variant="ghost" size="sm" className="rounded-sm px-2 text-destructive hover:text-destructive" onClick={() => setPrinterConfig(prev => ({ ...prev, approvedSsids: (prev.approvedSsids ?? []).filter((_, i) => i !== idx) }))}>
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-            <div>
-              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Wi-Fi Password</Label>
-              <Input disabled={!canEdit} type="password" placeholder={printerConfig.passwordSet ? "Saved" : ""} onChange={(e) => setPrinterConfig(prev => ({ ...prev, password: e.target.value }))} className="mt-1 rounded-sm" />
-            </div>
-            <div className="md:col-span-3 text-xs text-muted-foreground">
-              CSR Wi-Fi is tenant-wide. Auto detect uses this saved SSID plus the Tailscale printer bridge; browsers cannot scan every nearby Wi-Fi network directly, so enter the shared SSID here for CSR clock-in and Raspberry Pi printer routing.
+
+            <div className="text-xs text-muted-foreground border-t border-border/50 pt-3">
+              Auto detect uses the primary SSID plus the Tailscale printer bridge. Browsers cannot scan nearby Wi-Fi directly — CSRs enter their SSID at clock-in and it is validated against the approved list above.
             </div>
             {canEdit && <Button onClick={saveFromClick} className="rounded-sm">Save Wi-Fi Settings</Button>}
           </CardContent>
@@ -298,13 +340,61 @@ export default function CsrSettings() {
                 Requires separate delivery payment
               </label>
               <div className="md:col-span-3">
-                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Delivery Instructions</Label>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Delivery Instructions (general notes)</Label>
                 <textarea
                   disabled={!canEdit || !selectedDelivery}
                   value={selectedDelivery?.instructions ?? ""}
                   onChange={(e) => selectedDelivery && updateDelivery(selectedDelivery.id, { instructions: e.target.value })}
-                  className="mt-1 min-h-24 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm outline-none"
+                  className="mt-1 min-h-20 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm outline-none"
                 />
+              </div>
+
+              {/* Uber Courier step-by-step instructions editor */}
+              <div className="md:col-span-3 space-y-3 border-t border-border/50 pt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Uber Courier Steps</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">Step-by-step instructions shown to customers when Uber Courier is selected at checkout.</div>
+                  </div>
+                  {canEdit && selectedDelivery && (
+                    <Button
+                      variant="outline" size="sm" className="rounded-sm shrink-0"
+                      onClick={() => updateDelivery(selectedDelivery.id, { uberSteps: [...(selectedDelivery.uberSteps ?? []), ""] })}
+                    >
+                      + Add Step
+                    </Button>
+                  )}
+                </div>
+                {selectedDelivery && (selectedDelivery.uberSteps ?? []).length === 0 && (
+                  <div className="text-xs text-muted-foreground italic">No steps configured. Add steps to show Uber Courier instructions at checkout.</div>
+                )}
+                <div className="space-y-2">
+                  {(selectedDelivery?.uberSteps ?? []).map((step, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-muted-foreground w-5 shrink-0">{idx + 1}.</span>
+                      <Input
+                        disabled={!canEdit || !selectedDelivery}
+                        value={step}
+                        onChange={(e) => {
+                          if (!selectedDelivery) return;
+                          const next = [...(selectedDelivery.uberSteps ?? [])];
+                          next[idx] = e.target.value;
+                          updateDelivery(selectedDelivery.id, { uberSteps: next });
+                        }}
+                        placeholder={`Step ${idx + 1}`}
+                        className="rounded-sm text-xs h-9"
+                      />
+                      {canEdit && selectedDelivery && (
+                        <Button
+                          variant="ghost" size="sm" className="rounded-sm px-2 text-destructive hover:text-destructive shrink-0"
+                          onClick={() => updateDelivery(selectedDelivery.id, { uberSteps: (selectedDelivery.uberSteps ?? []).filter((_, i) => i !== idx) })}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
             {canEdit && (

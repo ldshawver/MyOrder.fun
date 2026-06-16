@@ -1,2 +1,3 @@
 - [Platform Dev workflow](platform-dev-workflow.md) — remove waitForPort; proxy owns port, Vite on PORT+1 in same process group.
 - [Operating rules](operating-rules.md) — pre-migration stabilization rules: source of truth, DO NOTs, schema change process, priority order.
+- [Inventory architecture](inventory-architecture.md) — per-location model: 4 standard locations, DB call pattern for GET /api/admin/inventory (10 db.select calls), test mock queue shape.
