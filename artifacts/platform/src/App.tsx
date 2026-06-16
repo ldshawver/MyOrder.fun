@@ -60,6 +60,8 @@ import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
+import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.

@@ -29,7 +29,7 @@ describe("communications admin reconciliation", () => {
 
   it("keeps SMS & Calls in supervisor nav for admin-equivalent roles without duplicate nav entries", () => {
     expect(layoutSrc).toMatch(/href:\s*"\/admin\/communications",\s*label:\s*"SMS & Calls",\s*icon:\s*Phone,\s*roles:\s*\["global_admin", "admin"\]/);
-    expect(layoutSrc).toMatch(/if \(role === "admin" \|\| role === "supervisor"\) return "admin"/);
+    expect(layoutSrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
     const matches = layoutSrc.match(/href:\s*"\/admin\/communications"/g) ?? [];
     expect(matches).toHaveLength(1);
   });
