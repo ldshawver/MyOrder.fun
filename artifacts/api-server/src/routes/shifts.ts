@@ -65,7 +65,6 @@ function logCsrShiftAuth(
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
 
-
 function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
   const auth = getAuth(req);
   const sessionClaims = (auth.sessionClaims ?? {}) as Record<string, unknown>;
@@ -800,7 +799,6 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    const csrSettings = await getTenantCsrSettings();
     const catalogIds = rows
       .map((row) => row.catalogItemId)
       .filter((id): id is number => typeof id === "number");
@@ -845,6 +843,10 @@ router.get(
         );
       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
     }
+
+    // Load CSR settings (pickup instructions, shift locations, delivery options)
+    const csrSettings = await getTenantCsrSettings();
+
 
     res.json({
       boxes,
@@ -986,8 +988,8 @@ router.post(
       : DEFAULT_CSR_BOXES[0].slug;
 
     // Auto-validate WiFi: compare entered SSID against admin-approved list
-    const csrSettings = await getTenantCsrSettings();
-    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const activeCsrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = activeCsrSettings.printerNetworkConfig.approvedSsids;
     const enteredSsid = (setup?.wifiSsid ?? "").trim();
     const wifiMatchesApproved = enteredSsid.length > 0 &&
       approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());

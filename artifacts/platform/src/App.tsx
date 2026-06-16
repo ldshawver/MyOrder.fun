@@ -48,7 +48,7 @@ import AdminPrint from "@/pages/admin/print";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
-import AdminCatalogDebug from "@/pages/admin/catalog-debug";
+import AdminCatalogDebug from "@/pages/admin/edit-catalog";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -392,7 +392,7 @@ function AuthenticatedApp() {
             <Route path="/admin/print" component={AdminPrint} />
             <Route path="/admin/import" component={AdminImport} />
             <Route path="/admin/settings" component={AdminSettingsPage} />
-            <Route path="/admin/catalog-debug" component={AdminCatalogDebug} />
+            <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
             <Route path="/admin/receipts" component={AdminReceipts} />
             <Route path="/admin/closeouts" component={AdminCloseouts} />
             <Route path="/admin/feedback" component={AdminFeedback} />

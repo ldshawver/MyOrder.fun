@@ -1069,7 +1069,7 @@ export default function Catalog() {
               <div className="text-sm font-semibold mb-1">Products exist but have no Lucifer Cruz names</div>
               <div className="text-xs text-muted-foreground max-w-xs">
                 {allItems.length} product{allItems.length !== 1 ? "s" : ""} are in the database but none have a <code className="font-mono bg-muted/30 px-1 rounded">lucifer_cruz_name</code> assigned.
-                {canEdit && " Re-import your CSV with the lucifer_cruz_name column populated, or check Catalog Debug."}
+                {canEdit && " Re-import your CSV with the lucifer_cruz_name column populated, or check Edit Catalog."}
               </div>
             </>
           )}

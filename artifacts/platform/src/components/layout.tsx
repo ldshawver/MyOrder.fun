@@ -167,12 +167,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           ],
         },
         {
-          href: "/admin/catalog-debug",
+          href: "/admin/edit-catalog",
           label: "Products",
           icon: PackageOpen,
           roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/catalog-debug", label: "Edit Catalog", icon: Bug, roles: ["global_admin", "admin"] },
+            { href: "/admin/edit-catalog", label: "Edit Catalog", icon: Bug, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
@@ -185,7 +185,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/concierge-settings", label: "Upsells", icon: PackageOpen, roles: ["global_admin", "admin"] },
-            { href: "/admin/catalog-debug", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
+            { href: "/admin/edit-catalog", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
           ],
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
@@ -211,7 +211,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin", "admin"] },
-            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin", "admin"] },
+            { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
             { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin", "admin"] },

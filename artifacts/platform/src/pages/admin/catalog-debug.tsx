@@ -98,7 +98,7 @@ export default function CatalogDebug() {
   }, [getToken]);
 
   const { data, isLoading, refetch } = useQuery<DebugResponse>({
-    queryKey: ["admin-catalog-debug"],
+    queryKey: ["admin-edit-catalog"],
     queryFn: async () => {
       const resp = await authFetch("/api/admin/catalog/debug");
       if (!resp.ok) throw new Error(await resp.text());
@@ -127,7 +127,7 @@ export default function CatalogDebug() {
     },
     onSuccess: (result) => {
       setWcResult(result);
-      qc.invalidateQueries({ queryKey: ["admin-catalog-debug"] });
+      qc.invalidateQueries({ queryKey: ["admin-edit-catalog"] });
       refetch();
     },
   });
@@ -166,7 +166,7 @@ export default function CatalogDebug() {
     <div className="space-y-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Catalog Debug</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Edit Catalog</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Diagnose why products may not appear in the catalog</p>
         </div>
         <Button
