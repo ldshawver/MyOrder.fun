@@ -36,6 +36,7 @@ import {
   Phone,
   Palette,
   PanelsTopLeft,
+  PlugZap,
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -97,7 +98,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const unreadCount = notifData?.unreadCount ?? 0;
 
   // Staff roles that can run a shift / see the CSR queue + clock-in
-  const SHIFT_ROLES = ["global_admin", "admin", "csr"];
+  const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
 
@@ -153,6 +154,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       roles: ["global_admin", "admin"],
       items: [
         { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
+        { href: "/admin/communications", label: "SMS & Calls", icon: Phone, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Supervisor Settings",
@@ -193,11 +195,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     },
     {
       title: "Platform Admin",
-      roles: ["global_admin", "admin"],
+      roles: ["global_admin"],
       items: [
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
+        { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },

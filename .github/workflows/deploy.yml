@@ -54,7 +54,7 @@ jobs:
 
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_HOST_FALLBACK: 100.117.100.45
+      VPS_HOST_FALLBACK: 100.85.15.43
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
       DEPLOY_PATH: /opt/alavont
