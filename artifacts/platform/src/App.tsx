@@ -40,6 +40,7 @@ import ContractorHubPage from "@/pages/contractor-hub";
 import ContractSignPage from "@/pages/contractor-hub/contract-sign";
 import DocumentHubPage from "@/pages/document-hub";
 import PublicContractSignPage from "@/pages/public-contract-sign";
+import PublicVisualPage from "@/pages/public-visual-page";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminPrint from "@/pages/admin/print";
@@ -53,6 +54,12 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
+import AdminWebEditor from "@/pages/admin/web-editor";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
+import Layout from "@/components/layout";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -60,6 +67,13 @@ const clerkProxyUrl = import.meta.env.PROD
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+function normalizeRouteRole(role?: string | null): "global_admin" | "admin" | "tenant_admin" | "supervisor" | "customer_service_rep" | "user" {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "global_admin" || normalized === "admin" || normalized === "tenant_admin" || normalized === "supervisor") return normalized;
+  if (["customer_service_rep", "staff", "customer_service_representative", "csr", "qsr", "customer_service", "customer_service_specialist", "customer_success", "service_rep", "business_sitter", "sales_rep", "lab_tech", "lab_technician"].includes(normalized ?? "")) return "customer_service_rep";
+  return "user";
+}
 
 function stripBase(path: string): string {
   return basePath && path.startsWith(basePath)
@@ -353,7 +367,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {normalizeNotificationRole(user.role) === "global_admin" && (
+        {normalizeRouteRole(user.role) === "global_admin" && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -363,10 +377,10 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "tenant_admin", "customer_service_rep"].includes(normalizeRouteRole(user.role))) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "tenant_admin"].includes(normalizeRouteRole(user.role))) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/mfa" component={MfaSetup} />
@@ -383,12 +397,14 @@ function AuthenticatedApp() {
             <Route path="/admin/communications" component={AdminCommunications} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
+            <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+            <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
             <Route path="/admin/visual-editor" component={AdminVisualEditor} />
             <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "tenant_admin", "customer_service_rep"].includes(normalizeRouteRole(user.role))) && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
@@ -422,6 +438,7 @@ function Router() {
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
       <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
+      <Route path="/p/:slug" component={PublicVisualPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>
