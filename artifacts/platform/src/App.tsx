@@ -10,6 +10,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
 import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
+import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -140,6 +142,12 @@ function ClerkQueryClientCacheInvalidator() {
   }, [addListener, queryClient]);
 
   return null;
+}
+
+
+function canUseVisualEditor(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return normalized === "global_admin" || normalized === "admin" || normalized === "tenant_admin";
 }
 
 function HomeRedirect() {
@@ -390,7 +398,13 @@ function AuthenticatedApp() {
             <Route path="/admin/communications" component={AdminCommunications} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
-            <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+            {canUseVisualEditor(user.role) && (
+              <>
+                <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+              </>
+            )}
             <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
