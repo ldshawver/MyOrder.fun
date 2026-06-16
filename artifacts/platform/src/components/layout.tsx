@@ -16,7 +16,6 @@ import {
   Menu,
   X,
   ChevronRight,
-  Printer,
   Upload,
   Settings,
   ClipboardList,
@@ -33,10 +32,8 @@ import {
   Store,
   Wifi,
   Zap,
-  Phone,
   Palette,
   PanelsTopLeft,
-  PlugZap,
 } from "lucide-react";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
@@ -110,8 +107,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         { href: "/orders", label: isCustomer ? "Order" : "Orders", mobileLabel: isCustomer ? "Order" : "Orders", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/ai-concierge", label: "Zappy Concierge", mobileLabel: "Zappy", icon: MessageSquare, roles: ALL_ROLES, mobileShow: true },
-        { href: "/contractor-hub", label: "Contractor Hub", icon: ClipboardList, roles: ALL_ROLES },
-        { href: "/document-hub", label: "Document Hub", icon: PanelsTopLeft, roles: ALL_ROLES },
         {
           href: "/profile",
           label: "User Account",
@@ -122,7 +117,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/account", label: "Account Settings", icon: Settings, roles: ALL_ROLES },
             { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
             { href: "/notifications", label: "Notifications", icon: Bell, roles: ALL_ROLES },
-            { href: "/notification-settings", label: "Notification Settings", icon: Bell, roles: ALL_ROLES },
           ],
         },
       ],
@@ -133,7 +127,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       defaultOpen: true,
       items: [
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
-        { href: "/communications", label: "Phone & SMS", icon: Phone, roles: SHIFT_ROLES, mobileShow: true },
         {
           href: "/csr-settings",
           label: "CSR Settings",
@@ -142,7 +135,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           children: [
             { href: "/csr-settings/pickup", label: "Pickup Instructions", icon: ClipboardList, roles: SHIFT_ROLES },
             { href: "/csr-settings/shift", label: "Shift Settings", icon: Settings, roles: SHIFT_ROLES },
-            { href: "/admin/print", label: "Test Print", icon: Printer, roles: ["global_admin", "admin"] },
             { href: "/csr-settings/wifi", label: "WIFI", icon: Wifi, roles: SHIFT_ROLES },
             { href: "/csr-settings/location", label: "Shift Location", icon: Store, roles: SHIFT_ROLES },
           ],
@@ -153,17 +145,13 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Supervisor",
       roles: ["global_admin", "admin"],
       items: [
-        { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
-        { href: "/admin/communications", label: "SMS & Calls", icon: Phone, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
-          label: "Supervisor Settings",
+          label: "Settings",
           icon: Settings,
           roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/print", label: "Printing", icon: Printer, roles: ["global_admin", "admin"] },
-            { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["global_admin", "admin"] },
-            { href: "/admin/receipts", label: "Reprint Receipts", icon: ReceiptText, roles: ["global_admin", "admin"] },
+            { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
           ],
         },
         {
@@ -177,7 +165,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           ],
         },
         { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin"] },
-        { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
         {
           href: "/admin/concierge-settings",
           label: "AI Concierge",
@@ -200,7 +187,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
-        { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
         { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "admin"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
@@ -210,10 +196,9 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           icon: ShieldAlert,
           roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin", "admin"] },
+            { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
             { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
-            { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin", "admin"] },
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin", "admin"] },
             { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin", "admin"] },
             { href: "/admin/credits", label: "Merchant Services", icon: BadgeDollarSign, roles: ["global_admin", "admin"] },

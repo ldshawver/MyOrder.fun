@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql } from "drizzle-orm";
+import { and, eq, asc, sql, sum } from "drizzle-orm";
 import { z } from "zod";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
+import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -229,6 +229,62 @@ function mapItem(
     wooProductId: alavontOnly ? null : (i.wooProductId ?? null),
     wooVariationId: alavontOnly ? null : (i.wooVariationId ?? null),
   };
+}
+
+
+async function mirrorCatalogStockToBackstockAndRecompute(tenantId: number, productId: number, stockQuantity: number | null | undefined): Promise<void> {
+  if (stockQuantity !== undefined && stockQuantity !== null) {
+    const [backstockLoc] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(and(
+        eq(inventoryLocationsTable.tenantId, tenantId),
+        eq(inventoryLocationsTable.type, "backstock"),
+      ))
+      .limit(1);
+
+    if (backstockLoc) {
+      const [balance] = await db
+        .select({ id: inventoryBalancesTable.id })
+        .from(inventoryBalancesTable)
+        .where(and(
+          eq(inventoryBalancesTable.tenantId, tenantId),
+          eq(inventoryBalancesTable.productId, productId),
+          eq(inventoryBalancesTable.locationId, backstockLoc.id),
+        ))
+        .limit(1);
+
+      if (balance) {
+        await db.update(inventoryBalancesTable)
+          .set({ quantityOnHand: String(stockQuantity) })
+          .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, balance.id)));
+      } else {
+        await db.insert(inventoryBalancesTable).values({
+          tenantId,
+          productId,
+          locationId: backstockLoc.id,
+          quantityOnHand: String(stockQuantity),
+          parLevel: "0",
+        });
+      }
+    }
+  }
+
+  const [totals] = await db
+    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
+    .from(inventoryBalancesTable)
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+    ));
+
+  await db.update(catalogItemsTable)
+    .set({
+      stockQuantity: String(totals?.qty ?? "0"),
+      inventoryAmount: String(totals?.qty ?? "0"),
+      parLevel: String(totals?.par ?? "0"),
+    })
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, productId)));
 }
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
@@ -567,7 +623,10 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
+  const houseTenantId = await getHouseTenantId();
+  const [existing] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -618,9 +677,18 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
       return;
     }
   }
-  const [updated] = await db.update(catalogItemsTable).set(updateData).where(eq(catalogItemsTable.id, params.data.id)).returning();
-  await syncCatalogItemToInventoryTemplate(updated);
-  res.json(UpdateCatalogItemResponse.parse(mapItem(updated)));
+  const [updated] = await db.update(catalogItemsTable)
+    .set(updateData)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .returning();
+  if (stockQuantity !== undefined) {
+    await mirrorCatalogStockToBackstockAndRecompute(houseTenantId, params.data.id, stockQuantity);
+  }
+  const [fresh] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
+  await syncCatalogItemToInventoryTemplate(fresh ?? updated);
+  res.json(UpdateCatalogItemResponse.parse(mapItem(fresh ?? updated)));
 });
 
 // DELETE /api/catalog/:id
@@ -631,7 +699,10 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
+  const houseTenantId = await getHouseTenantId();
+  const [existing] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;

@@ -520,7 +520,7 @@ function ClockInPanel({ onClockIn, getToken }: {
           data-testid="button-clock-in"
         >
           <LogIn size={15} className="mr-2" />
-          {clocking ? "Clocking In…" : "Clock In & Start Shift"}
+          {clocking ? "Starting Shift…" : "Start Shift"}
         </Button>
       </div>
     </div>
@@ -733,7 +733,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
             data-testid="button-clock-out"
           >
             <LogOut size={14} className="mr-2" />
-            {submitting ? "Clocking Out…" : "Submit & Clock Out"}
+            {submitting ? "Ending Shift…" : "Submit & End Shift"}
           </Button>
         </div>
       </div>
@@ -1086,7 +1086,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
           data-testid="button-clock-out"
         >
           <LogOut size={12} className="mr-1.5" />
-          Clock Out
+          End Shift
         </Button>
       </div>
 

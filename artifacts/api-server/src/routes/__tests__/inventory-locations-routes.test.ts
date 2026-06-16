@@ -98,6 +98,7 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn(c => c),
   sql: Object.assign(vi.fn(), { raw: vi.fn((value: string) => value) }),
   inArray: vi.fn((col, vals) => ({ col, vals })),
+  sum: vi.fn((c) => c),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({
@@ -354,6 +355,7 @@ describe("PATCH /api/admin/inventory-balances/:id", () => {
     const updated = { ...existing, quantityOnHand: "12.000", parLevel: "2.00", updatedAt: new Date() };
     configureDb(makeAdmin(), [
       [existing], // select current
+      [{ qty: "12.000", par: "2.00" }], // recompute catalog totals
     ]);
     (db.update as ReturnType<typeof vi.fn>).mockImplementation(() => ({
       set: vi.fn(() => ({
