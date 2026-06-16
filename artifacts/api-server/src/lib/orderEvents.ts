@@ -13,7 +13,7 @@ import { normalizeRole } from "./auth";
  * Authorization rules (enforced in `shouldDeliver`):
  *   admin / supervisor — see all events
  *   business_sitter — same scope as a CSR (own assignments + null queue)
- *   customer_service_rep / lab_tech / sales_rep
+ *   csr / lab_tech / sales_rep
  *       — only events where assignedCsrUserId === self OR assignedCsrUserId === null
  *   user (customer)
  *       — only events where customerId === self

@@ -734,7 +734,7 @@ paths:
           name: role
           schema:
             type: string
-            enum: [admin, supervisor, business_sitter, customer_service_rep, sales_rep, lab_tech, user]
+            enum: [global_admin, admin, supervisor, csr, user]
       responses:
         "200":
           description: Users
@@ -2348,7 +2348,7 @@ components:
           type: string
         role:
           type: string
-          enum: [global_admin, admin, customer_service_rep, user]
+          enum: [global_admin, admin, supervisor, csr, user]
         tenantId:
           type: integer
         tenantName:
@@ -2416,7 +2416,7 @@ components:
       properties:
         role:
           type: string
-          enum: [global_admin, admin, customer_service_rep, user]
+          enum: [global_admin, admin, supervisor, csr, user]
       required: [role]
 
     WaitlistEntry:
@@ -2450,7 +2450,7 @@ components:
       properties:
         role:
           type: string
-          enum: [global_admin, admin, customer_service_rep, user]
+          enum: [global_admin, admin, supervisor, csr, user]
         firstName:
           type: string
           maxLength: 100
@@ -2509,7 +2509,7 @@ components:
           type: boolean
         role:
           type: string
-          enum: [global_admin, admin, customer_service_rep, user]
+          enum: [global_admin, admin, supervisor, csr, user]
       required: [approve]
 
     SetUserApprovalResponse:
@@ -2522,7 +2522,7 @@ components:
           enum: [pending, approved, rejected, deactivated]
         role:
           type: string
-          enum: [global_admin, admin, customer_service_rep, user]
+          enum: [global_admin, admin, supervisor, csr, user]
       required: [id, status, role]
 
     UserListResponse:

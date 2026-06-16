@@ -60,8 +60,6 @@ import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
-import Layout from "@/components/layout";
-import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -336,7 +334,12 @@ function AuthenticatedApp() {
 
   if (!user) return <Redirect to="/sign-in" />;
 
-  if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
+  const normalizedRole = normalizeNotificationRole(user.role);
+  const isGlobalAdmin = normalizedRole === "global_admin";
+  const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
+  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+
+  if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
     return (
       <PendingPage
         status={user.status}
@@ -378,12 +381,13 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {isStaff && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
         {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
             <Route path="/admin/mfa" component={MfaSetup} />
             <Route path="/admin/print" component={AdminPrint} />
             <Route path="/admin/import" component={AdminImport} />
@@ -405,11 +409,10 @@ function AuthenticatedApp() {
                 <Route path="/admin/visual-editor" component={AdminVisualEditor} />
               </>
             )}
-            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {isStaff && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />

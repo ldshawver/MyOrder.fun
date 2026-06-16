@@ -110,7 +110,7 @@ router.post("/admin/roles-permissions/:role/reset", requirePermission("users.man
   if ("error" in scope) return void res.status(403).json({ error: scope.error });
   const tenantId = scope.tenantId;
   await db.delete(rolePermissionsTable).where(and(eq(rolePermissionsTable.role, role), tenantId == null ? isNull(rolePermissionsTable.tenantId) : eq(rolePermissionsTable.tenantId, tenantId)));
-  await db.insert(permissionAuditLogsTable).values({ actorUserId: actor.id, tenantId, action: "permission.reset_defaults", targetRole: role });
+  await db.insert(permissionAuditLogsTable).values({ actorUserId: actor.id, tenantId, action: "permission.reset_defaults", targetRole: role, permission: "*" });
   res.json({ ok: true });
 });
 

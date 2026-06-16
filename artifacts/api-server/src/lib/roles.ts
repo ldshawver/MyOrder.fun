@@ -20,31 +20,42 @@ export const ROLE_SUPERVISOR = "supervisor" as const;
 export const ROLE_ADMIN = "admin" as const;
 export const ROLE_GLOBAL_ADMIN = "global_admin" as const;
 
-export const ROLES = [ROLE_USER, ROLE_CSR, ROLE_SUPERVISOR, ROLE_ADMIN, ROLE_GLOBAL_ADMIN] as const;
-export type Role = (typeof ROLES)[number];
+export const CANONICAL_ROLES = [
+  ROLE_USER,
+  ROLE_CSR,
+  ROLE_SUPERVISOR,
+  ROLE_ADMIN,
+  ROLE_GLOBAL_ADMIN,
+] as const;
+export type CanonicalRole = typeof CANONICAL_ROLES[number];
+export type NormalizedRole = CanonicalRole;
+export type Role = CanonicalRole;
+export const ROLES = CANONICAL_ROLES;
 
 export const LEGACY_ROLE_ALIASES: Record<string, Role> = {
+  user: ROLE_USER,
   customer: ROLE_USER,
   normal_user: ROLE_USER,
+  csr: ROLE_CSR,
   customer_service_rep: ROLE_CSR,
   customer_service_representative: ROLE_CSR,
   customer_service: ROLE_CSR,
   customer_service_specialist: ROLE_CSR,
   customer_success: ROLE_CSR,
   service_rep: ROLE_CSR,
-  csr: ROLE_CSR,
   qsr: ROLE_CSR,
+  staff: ROLE_CSR,
   business_sitter: ROLE_CSR,
   sales_rep: ROLE_CSR,
   lab_tech: ROLE_CSR,
   lab_technician: ROLE_CSR,
   supervisor: ROLE_SUPERVISOR,
+  admin: ROLE_ADMIN,
   manager: ROLE_ADMIN,
   tenant_admin: ROLE_ADMIN,
-  admin: ROLE_ADMIN,
+  global_admin: ROLE_GLOBAL_ADMIN,
   super_admin: ROLE_GLOBAL_ADMIN,
   platform_admin: ROLE_GLOBAL_ADMIN,
-  global_admin: ROLE_GLOBAL_ADMIN,
 };
 
 export function normalizeRole(role: unknown): Role {
@@ -52,13 +63,28 @@ export function normalizeRole(role: unknown): Role {
   return LEGACY_ROLE_ALIASES[normalized] ?? ROLE_USER;
 }
 
+export function isKnownRole(role: unknown): boolean {
+  if (role == null) return false;
+  const normalized = typeof role === "string" ? role.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  return normalized in LEGACY_ROLE_ALIASES;
+}
+
 export function isGlobalAdmin(user: Pick<User, "role"> | null | undefined): boolean {
   return normalizeRole(user?.role) === ROLE_GLOBAL_ADMIN;
+}
+
+export function isGlobalAdminRole(role: unknown): boolean {
+  return normalizeRole(role) === ROLE_GLOBAL_ADMIN;
 }
 
 export function hasRole(user: Pick<User, "role"> | null | undefined, roles: readonly Role[]): boolean {
   const role = normalizeRole(user?.role);
   return roles.includes(role) || (role === ROLE_GLOBAL_ADMIN && roles.includes(ROLE_ADMIN));
+}
+
+export function hasRoleValue(role: unknown, roles: readonly Role[]): boolean {
+  const normalized = normalizeRole(role);
+  return roles.includes(normalized) || (normalized === ROLE_GLOBAL_ADMIN && roles.includes(ROLE_ADMIN));
 }
 
 export const PERMISSIONS = [
@@ -72,12 +98,14 @@ export const PERMISSIONS = [
   "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "app_doctor.view", "app_doctor.run",
   "platform.tenants.view", "platform.tenants.manage", "platform.impersonate", "platform.global_settings.manage",
 ] as const;
-export type Permission = (typeof PERMISSIONS)[number];
+export type Permission = typeof PERMISSIONS[number];
+export const PERMISSION_KEYS = PERMISSIONS;
+export type PermissionKey = Permission;
 export const PLATFORM_PERMISSIONS = PERMISSIONS.filter((p) => p.startsWith("platform."));
 
-const userPerms = ["feedback.submit", "users.view_self", "orders.view_self", "schedules.view_self", "timeclock.clock_self", "reports.view_self"] as Permission[];
-const csrExtra = ["customers.view", "customers.create", "customers.update", "orders.create", "orders.update", "schedules.view_team", "reports.view_team"] as Permission[];
-const supervisorExtra = ["users.view_team", "users.manage_team", "schedules.create", "schedules.update", "schedules.approve", "timeclock.view_team", "timeclock.approve_team"] as Permission[];
+const userPerms = ["feedback.submit", "users.view_self", "orders.view_self", "schedules.view_self", "timeclock.clock_self", "reports.view_self"] satisfies Permission[];
+const csrExtra = ["customers.view", "customers.create", "customers.update", "orders.create", "orders.update", "schedules.view_team", "reports.view_team"] satisfies Permission[];
+const supervisorExtra = ["users.view_team", "users.manage_team", "schedules.create", "schedules.update", "schedules.approve", "timeclock.view_team", "timeclock.approve_team"] satisfies Permission[];
 const adminExtra = PERMISSIONS.filter((p) => !p.startsWith("platform.")) as Permission[];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Permission[]> = {
@@ -87,6 +115,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   admin: adminExtra,
   global_admin: [...PERMISSIONS],
 };
+
+export const PERMISSION_GROUPS = PERMISSIONS.reduce<Record<string, Permission[]>>((acc, permission) => {
+  const group = permission.split(".")[0] ?? "other";
+  (acc[group] ??= []).push(permission);
+  return acc;
+}, {});
 
 export function defaultHasPermission(role: unknown, permission: string): boolean {
   const normalized = normalizeRole(role);

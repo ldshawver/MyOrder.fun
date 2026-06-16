@@ -33,9 +33,9 @@ vi.mock("@clerk/express", () => ({
 
 function normalizeTestRole(role: string | undefined) {
   if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
+  if (role === "admin") return "admin";
+  if (role === "supervisor") return "supervisor";
   if (
-    role === "customer_service_rep" ||
     role === "csr" ||
     role === "business_sitter" ||
     role === "sales_rep" ||
@@ -266,7 +266,7 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved" },
-    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "customer_service_rep", status: "approved" },
+    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved" },
     { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
   ];
   dbState.shifts = [];
@@ -386,7 +386,7 @@ describe("SSE event emission via the live route handlers", () => {
     expect(res.status).toBe(403);
   });
 
-  it("admin surfaces are not accessible to customer_service_rep", async () => {
+  it("admin surfaces are not accessible to csr", async () => {
     const sitter = { id: 7, role: "business_sitter", email: "s@x", firstName: "S", lastName: "Sitter" };
     dbState.users.push(sitter);
     mockActor = sitter;
