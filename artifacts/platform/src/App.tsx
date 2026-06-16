@@ -327,7 +327,12 @@ function AuthenticatedApp() {
 
   if (!user) return <Redirect to="/sign-in" />;
 
-  if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
+  const normalizedRole = normalizeNotificationRole(user.role);
+  const isGlobalAdmin = normalizedRole === "global_admin";
+  const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
+  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+
+  if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
     return (
       <PendingPage
         status={user.status}
@@ -359,7 +364,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {normalizeNotificationRole(user.role) === "global_admin" && (
+        {isGlobalAdmin && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -368,10 +373,10 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "csr"].includes(normalizeNotificationRole(user.role))) && (
+        {isStaff && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
+        {isAdmin && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
@@ -392,7 +397,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "csr"].includes(normalizeNotificationRole(user.role))) && (
+        {isStaff && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
