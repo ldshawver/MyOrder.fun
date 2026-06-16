@@ -252,7 +252,7 @@ function AuthenticatedApp() {
     query: {
       queryKey: ["getCurrentUser"],
       enabled: clerkLoaded && isSignedIn === true && authTokenReady,
-      retry: (failureCount, err) => {
+      retry: (failureCount: number, err: unknown) => {
         const e = err as { status?: number };
         if (e?.status === 403) return false;
         return failureCount < 3;
