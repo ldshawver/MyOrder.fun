@@ -10,6 +10,7 @@ export { normalizeRole } from "./roles";
 
 export type Role = NormalizedRole | string;
 
+
 // Staff roles are implicitly approved — having been assigned a staff role
 // by an admin is itself the approval gate. Keep this list in sync with
 // requireApproved below.
