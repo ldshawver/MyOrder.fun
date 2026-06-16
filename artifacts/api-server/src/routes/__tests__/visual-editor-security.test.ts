@@ -10,7 +10,7 @@ function src(relativePath: string): string { return readFileSync(resolve(repoRoo
 const routeSrc = src("artifacts/api-server/src/routes/visual-editor.ts");
 const appSrc = src("artifacts/platform/src/App.tsx");
 const configSrc = src("artifacts/platform/src/visual-editor/puckConfig.tsx");
-const migrationSrc = src("lib/db/drizzle/0024_visual_editor_versions.sql");
+const migrationSrc = src("lib/db/drizzle/0025_visual_editor_versions.sql");
 
 describe("visual editor hardening", () => {
   it("keeps admin API access limited to global/admin roles and excludes supervisor from visual editor UI routes", () => {
