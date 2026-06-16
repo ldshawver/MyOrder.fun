@@ -193,7 +193,7 @@ export async function probeBridge(
         status: res.status,
         latencyMs,
         message:
-          `Bridge at ${bridgeUrl} responded ${res.status}. ` +
+          `Printer bridge unavailable: Bridge at ${bridgeUrl} responded ${res.status}. ` +
           `Use Local VPS CUPS or check that the bridge service is running.`,
       };
     }
@@ -204,9 +204,9 @@ export async function probeBridge(
       ok: false,
       latencyMs: Date.now() - started,
       message: aborted
-        ? `Bridge unreachable at ${bridgeUrl} (timeout after ${timeoutMs}ms). ` +
+        ? `Printer bridge unavailable: Bridge unreachable at ${bridgeUrl} (timeout after ${timeoutMs}ms). ` +
           `Use Local VPS CUPS or check Tailscale / the bridge service.`
-        : `Bridge unreachable at ${bridgeUrl}: ${(err as Error).message}. ` +
+        : `Printer bridge unavailable: Bridge unreachable at ${bridgeUrl}: ${(err as Error).message}. ` +
           `Use Local VPS CUPS or check Tailscale / the bridge service.`,
     };
   } finally {

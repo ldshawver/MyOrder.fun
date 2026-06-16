@@ -220,7 +220,7 @@ describe("/api/admin/printers/test-receipt", () => {
     expect(r.headers["content-type"]).toMatch(/application\/json/);
     expect(r.body.ok).toBe(false);
     expect(r.body.mode).toBe("bridge");
-    expect(r.body.message).toContain("Bridge unreachable");
+    expect(r.body.message).toContain("Printer bridge unavailable");
     expect(r.body.message).toMatch(/Local VPS CUPS|Tailscale/);
   });
 });

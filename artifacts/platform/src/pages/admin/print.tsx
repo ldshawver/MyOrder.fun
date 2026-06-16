@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle2, XCircle, Loader2, Printer, Tag, Server, RefreshCw } from "lucide-react";
+import { extractApiErrorMessage } from "./print-error";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Method = "local_cups" | "bridge";
@@ -74,15 +75,11 @@ function PrintProvider({ children }: { children: ReactNode }) {
       },
     });
     const text = await res.text();
+    const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
     let body: unknown;
     try { body = text ? JSON.parse(text) : null; } catch { body = text; }
     if (!res.ok) {
-      const msg = (body && typeof body === "object" && "message" in (body as object))
-        ? String((body as { message?: unknown }).message)
-        : (body && typeof body === "object" && "error" in (body as object))
-          ? String((body as { error?: unknown }).error)
-          : (typeof body === "string" ? body : `HTTP ${res.status}`);
-      throw new Error(msg);
+      throw new Error(extractApiErrorMessage(body, res.status, contentType));
     }
     return body;
   }, [getToken]);
