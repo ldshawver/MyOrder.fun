@@ -53,7 +53,6 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
-import AdminPuckImport from "@/pages/admin/puck/import";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -64,7 +63,7 @@ const clerkProxyUrl = import.meta.env.PROD
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-type AppRole = "global_admin" | "admin" | "supervisor" | "customer_service_rep" | "user";
+type AppRole = "global_admin" | "admin" | "supervisor" | "csr" | "user";
 
 function normalizeAppRole(role?: string | null): AppRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -88,7 +87,7 @@ function normalizeAppRole(role?: string | null): AppRole {
     normalized === "lab_tech" ||
     normalized === "lab_technician"
   ) {
-    return "customer_service_rep";
+    return "csr";
   }
 
   return "user";
@@ -503,7 +502,6 @@ function AuthenticatedApp() {
 
               {canUseVisualEditor(user.role) && (
                 <>
-                  <Route path="/admin/puck/import" component={AdminPuckImport} />
                   <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
                   <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
                   <Route path="/admin/visual-editor" component={AdminVisualEditor} />
