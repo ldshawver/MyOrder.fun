@@ -21,6 +21,7 @@ function api(path: string): string {
 describe("MyOrder.fun navigation and editor consolidation", () => {
   const layout = platform("components/layout.tsx");
   const app = platform("App.tsx");
+  const routesIndex = api("routes/index.ts");
 
   it("removes unrelated LUXit/MyPayLink navigation and routes", () => {
     for (const forbidden of ["SMS & Calls", "Phone & SMS", "Document Hub", "Contractor Hub"]) {
@@ -34,6 +35,12 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(app).not.toContain('path="/contractor-hub"');
     expect(app).not.toContain('path="/admin/communications"');
     expect(app).not.toContain('path="/communications"');
+    expect(app).not.toContain("public-contract-sign");
+    expect(app).not.toContain("contractor-hub");
+    expect(app).not.toContain("document-hub");
+    expect(routesIndex).not.toContain("contractor-hub");
+    expect(routesIndex).not.toContain("document-hub");
+    expect(routesIndex).not.toContain("proposalsRouter");
   });
 
   it("uses Settings and one Receipts & Printers nav entry", () => {

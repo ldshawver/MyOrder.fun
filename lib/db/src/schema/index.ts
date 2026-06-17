@@ -13,6 +13,3 @@ export * from "./credits";
 export * from "./visual-editor";
 export * from "./permissions";
 
-export * from "./document-hub";
-export * from "./contractor-hub";
-export * from "./permissions";
