@@ -129,7 +129,7 @@ vi.mock("@workspace/db", () => {
   const adminSettingsTable = { __t: "admin_settings" };
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
-  const catalogItemsTable = { __t: "catalog", id: "id" };
+  const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId", stockQuantity: "stockQuantity", inventoryAmount: "inventoryAmount" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
@@ -149,14 +149,27 @@ vi.mock("@workspace/db", () => {
     return [];
   }
 
+  function matchesWhere(row: Record<string, unknown>, clause: unknown): boolean {
+    if (!clause) return true;
+    if (Array.isArray(clause)) return clause.every((part) => matchesWhere(row, part));
+    if (typeof clause === "object" && clause && "and" in clause) {
+      return ((clause as { and: unknown[] }).and).every((part) => matchesWhere(row, part));
+    }
+    if (typeof clause === "object" && clause && "col" in clause) {
+      const { col, val } = clause as { col?: string; val?: unknown };
+      return col ? row[col] === val : true;
+    }
+    return true;
+  }
+
   const select = vi.fn((cols?: Record<string, unknown>) => {
     let pred: Pred = null;
     let target: { __t: string } | null = null;
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: { __t: string }) => { target = t; return chain; });
     chain.innerJoin = vi.fn(() => chain);
-    chain.where = vi.fn((p: { col?: string; val?: unknown }) => {
-      pred = (row) => row[p.col ?? ""] === p.val;
+    chain.where = vi.fn((p: unknown) => {
+      pred = (row) => matchesWhere(row, p);
       return chain;
     });
     const resolveRows = () => target ? tableFor(target).filter(r => pred ? pred(r) : true) : [];
@@ -196,20 +209,30 @@ vi.mock("@workspace/db", () => {
     let pred: Pred = null;
     const chain: Record<string, unknown> = {};
     chain.set = vi.fn((v: Record<string, unknown>) => { setVals = v; return chain; });
-    chain.where = vi.fn((p: { col?: string; val?: unknown }) => {
-      pred = (row) => row[p.col ?? ""] === p.val;
+    chain.where = vi.fn((p: unknown) => {
+      pred = (row) => matchesWhere(row, p);
       return chain;
     });
-    chain.returning = vi.fn(async () => {
+    const applyUpdate = async () => {
       const out: Array<Record<string, unknown>> = [];
       for (const row of tableFor(t)) {
         if (pred && pred(row)) {
-          Object.assign(row, setVals);
+          if (t.__t === "inventory_balances" && typeof setVals.quantityOnHand === "object" && setVals.quantityOnHand && "vals" in setVals.quantityOnHand) {
+            const requested = Number((setVals.quantityOnHand as { vals: unknown[] }).vals[1]);
+            const current = Number(row.quantityOnHand ?? 0);
+            if (current < requested) continue;
+            row.quantityOnHand = String(current - requested);
+          } else {
+            Object.assign(row, setVals);
+          }
           out.push(row);
         }
       }
       return out;
-    });
+    };
+    chain.returning = vi.fn(applyUpdate);
+    (chain as Record<string, unknown>).then = (resolve: (v: unknown) => unknown, reject?: (reason?: unknown) => unknown) =>
+      applyUpdate().then(resolve, reject);
     return chain;
   });
 
@@ -222,10 +245,10 @@ vi.mock("@workspace/db", () => {
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
-  and: vi.fn((...a) => a),
+  and: vi.fn((...a) => ({ and: a })),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn((strings: TemplateStringsArray, ...vals: unknown[]) => ({ strings: Array.from(strings), vals })), { raw: vi.fn() }),
 }));
 
 import ordersRouter from "../orders";
@@ -282,7 +305,7 @@ beforeEach(() => {
     id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30,
   }];
   dbState.tenants = [{ id: 1 }];
-  dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
+  dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1, stockQuantity: "99", inventoryAmount: "99" }];
   dbState.inventoryLocations = [{ id: 1, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 1, tenantId: 1, productId: 1, locationId: 1, quantityOnHand: "99" }];
   dbState.csrBoxes = [];
@@ -303,6 +326,46 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
     const eta = new Date(inserted.estimatedReadyAt as Date).getTime();
     expect(eta).toBeGreaterThanOrEqual(before + 25 * 60_000);
     expect(eta).toBeLessThanOrEqual(before + 35 * 60_000 + 1000);
+  });
+});
+
+describe("POST /api/orders — transactional inventory", () => {
+  it("decrements inventory_balances and mirrors catalog stock in the order transaction", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+
+    expect([200, 201]).toContain(res.status);
+    expect(dbState.inventoryBalances[0]!.quantityOnHand).toBe("98");
+    expect(dbState.catalog[0]!.stockQuantity).toBe("98");
+    expect(dbState.catalog[0]!.inventoryAmount).toBe("98");
+  });
+
+  it("returns 409 and rolls back order persistence when inventory is insufficient", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.inventoryBalances[0]!.quantityOnHand = "0";
+
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+
+    expect(res.status).toBe(409);
+    expect(dbState.orders).toHaveLength(0);
+    expect(dbState.inventoryBalances[0]!.quantityOnHand).toBe("0");
+  });
+
+  it("rejects cross-tenant catalog products before decrementing inventory", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.catalog[0]!.tenantId = 2;
+
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+
+    expect(res.status).toBe(403);
+    expect(dbState.orders).toHaveLength(0);
+    expect(dbState.inventoryBalances[0]!.quantityOnHand).toBe("99");
   });
 });
 

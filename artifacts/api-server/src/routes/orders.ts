@@ -11,6 +11,7 @@ import {
   inventoryTemplatesTable,
   adminSettingsTable,
   inventoryBalancesTable,
+  catalogItemsTable,
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
@@ -692,6 +693,16 @@ router.post("/orders", async (req, res): Promise<void> => {
       if (targetLocationId) {
         for (const line of normalizedLines) {
           if (!line.catalog_item_id) continue;
+
+          const [tenantCatalogItem] = await tx
+            .select({ id: catalogItemsTable.id })
+            .from(catalogItemsTable)
+            .where(and(eq(catalogItemsTable.id, line.catalog_item_id), eq(catalogItemsTable.tenantId, houseTenantId)))
+            .limit(1);
+          if (!tenantCatalogItem) {
+            throw new Error(`CATALOG_ITEM_TENANT_MISMATCH:${line.catalog_item_id}`);
+          }
+
           const [updatedBalance] = await tx
             .update(inventoryBalancesTable)
             .set({
@@ -711,6 +722,19 @@ router.post("/orders", async (req, res): Promise<void> => {
           if (!updatedBalance) {
             throw new Error(`INSUFFICIENT_INVENTORY:${line.catalog_item_id}`);
           }
+
+          const balances = await tx
+            .select({ quantityOnHand: inventoryBalancesTable.quantityOnHand })
+            .from(inventoryBalancesTable)
+            .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.productId, line.catalog_item_id)));
+          const mirroredStock = balances.reduce((sum, row) => sum + parseFloat(String(row.quantityOnHand ?? "0")), 0);
+          await tx
+            .update(catalogItemsTable)
+            .set({
+              stockQuantity: String(mirroredStock),
+              inventoryAmount: String(mirroredStock),
+            })
+            .where(and(eq(catalogItemsTable.id, line.catalog_item_id), eq(catalogItemsTable.tenantId, houseTenantId)));
         }
       }
 
@@ -817,6 +841,11 @@ router.post("/orders", async (req, res): Promise<void> => {
     if (err instanceof Error && err.message.startsWith("INSUFFICIENT_INVENTORY:")) {
       const catalogItemId = Number(err.message.split(":")[1]);
       res.status(409).json({ error: "Insufficient inventory", catalogItemId });
+      return;
+    }
+    if (err instanceof Error && err.message.startsWith("CATALOG_ITEM_TENANT_MISMATCH:")) {
+      const catalogItemId = Number(err.message.split(":")[1]);
+      res.status(403).json({ error: "Catalog item is not available for this tenant", catalogItemId });
       return;
     }
     throw err;

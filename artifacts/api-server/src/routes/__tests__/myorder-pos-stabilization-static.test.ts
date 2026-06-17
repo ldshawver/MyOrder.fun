@@ -27,6 +27,9 @@ describe("MyOrder POS stabilization static checks", () => {
     expect(workflow).toContain("VPS_USER");
     expect(workflow).toContain("serveradmin");
     expect(workflow).toContain("tag:github-actions");
+    expect(workflow).toContain("Connect to Tailscale with OAuth");
+    expect(workflow).not.toContain("TAILSCALE_AUTHKEY");
+    expect(workflow).not.toContain("TS_AUTHKEY");
     expect(workflow).toContain("Selected VPS host:");
     expect(workflow).toContain("Selected VPS port:");
     expect(workflow).toContain("Selected deploy path:");
@@ -52,10 +55,18 @@ describe("MyOrder POS stabilization static checks", () => {
   it("keeps repo audit guardrails for secret scanning", () => {
     const auditScript = read("scripts/audit-secrets.sh");
 
+    expect(auditScript).toContain("git ls-files");
     expect(auditScript).toContain("Secret audit passed");
     expect(auditScript).not.toMatch(/grep\s+-R/);
     expect(auditScript).toContain("PLACEHOLDER_ALLOW_RE");
     expect(auditScript).toContain("REAL_SECRET_PATTERNS");
+    expect(auditScript).toContain("OPENAI_API_KEY");
+    expect(auditScript).toContain("STRIPE_SECRET_KEY");
+    expect(auditScript).toContain("CLERK_SECRET_KEY");
+    expect(auditScript).toContain("TWILIO_AUTH_TOKEN");
+    expect(auditScript).toContain("SESSION_SECRET");
+    expect(auditScript).toContain("DATABASE_URL");
+    expect(auditScript).toContain("values suppressed");
   });
 
   it("guards inventory/order source-of-truth and transaction safety", () => {
@@ -74,6 +85,9 @@ describe("MyOrder POS stabilization static checks", () => {
     expect(orders).toContain("quantity_on_hand >=");
     expect(orders).toContain("INSUFFICIENT_INVENTORY");
     expect(orders).toContain("status(409)");
+    expect(orders).toContain("CATALOG_ITEM_TENANT_MISMATCH");
+    expect(orders).toContain("stockQuantity");
+    expect(orders).toContain("inventoryAmount");
     expect(orders).not.toContain("GREATEST(0");
     expect(combined).toContain("tenantId");
     expect(combined).toContain("locationId");

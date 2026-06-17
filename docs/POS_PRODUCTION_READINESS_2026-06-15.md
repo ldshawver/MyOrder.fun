@@ -9,7 +9,7 @@ Repo-side stabilization review for MyOrder.fun POS / ordering flows: customer or
 - **Auth/session hardening:** the auth layer keeps Clerk metadata sync, approved-user enforcement, pending/rejected/deactivated blocking, tenant/company assignment checks, role normalization including `tenant_admin`, staff-role compatibility, anti-enumeration-safe failures, and safe JSON failures for unauthorized/forbidden users.
 - **Catalog visibility repair:** uploaded/local Alavont rows are visible even when legacy mapping left `isWooManaged=true`; only true WooCommerce storefront rows (`merchantProductSource='woo'` with a Woo product id) are excluded from Alavont catalog and inventory views.
 - **Vendor stock parsing:** import stock labels such as `In Stock`, `Available`, and unknown non-empty labels remain visible by default instead of silently hiding uploaded products. Invalid, unsafe, or negative authoritative quantities should still be rejected server-side.
-- **Inventory source of truth:** `inventory_balances` is the operational quantity source for product/location counts. Catalog fields such as `catalog_items.stock_quantity`, `inventory_amount`, and `par_level` are mirrors recomputed after inventory balance changes.
+- **Inventory source of truth:** `inventory_balances` is the operational quantity source for product/location counts. Catalog fields such as `catalog_items.stock_quantity` / `stockQuantity`, `inventory_amount` / `inventoryAmount`, and `par_level` are mirrors recomputed after inventory balance changes.
 - **Order transaction behavior:** order creation uses transaction-based inventory handling with an atomic `quantity_on_hand >= requested quantity` decrement and returns a 409 response on insufficient inventory so the order and decrement roll back together. Full DB-backed concurrency/load testing is still required.
 - **CSR inventory flow:** Start Shift / End Shift wording remains UI-compatible while backend route names stay stable (`/api/shifts/clock-in`, `/api/shifts/clock-out`). CSR clock-in pulls box/location quantities from tenant-scoped `inventory_balances` when available, and manual ending-count overrides update tenant-scoped balances before catalog mirrors are recomputed.
 - **Receipts & Printers:** receipt/reprint and printer administration are centralized through the admin print/receipt pages and API print job routes; live hardware bridge validation remains required.
@@ -34,7 +34,7 @@ Automated regression coverage now protects the likely missing-product root cause
   2. `docker compose up -d db`
   3. `docker compose run --rm migrate`
   4. `docker compose up -d api platform nginx`
-- Tailscale/GitHub Actions deployment should use `tag:github-actions`, default operator `serveradmin`, and support `VPS_USERNAME || VPS_USER || serveradmin` for VPS user resolution.
+- Tailscale/GitHub Actions deployment should use OAuth with `tag:github-actions`, default operator `serveradmin`, and support `VPS_USERNAME || VPS_USER || serveradmin` for VPS user resolution.
 - Deployment workflow should log the selected VPS host, port, deploy path, and compose project before connecting.
 - Do not claim a live VPS deployment was performed unless workflow logs prove it.
 
