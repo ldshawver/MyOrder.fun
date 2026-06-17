@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { isTrueWooCommerceStorefrontRow, isVisibleAlavontCatalogRow } from "../lib/catalogVisibility";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -214,7 +215,7 @@ function mapItem(
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
   const name = String(row.alavontName ?? row.displayName ?? row.name ?? "").trim().toLowerCase();
-  return row.isWooManaged !== true && row.isLocalAlavont !== false && !name.startsWith("safe");
+  return isVisibleAlavontCatalogRow(row) && !name.startsWith("safe");
 }
 
 async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.$inferSelect): Promise<void> {
@@ -363,7 +364,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   // mapping fields, but those are checkout/payment conversion fields, not
   // storefront membership.
   if (isLuciferMode) {
-    rows = rows.filter(r => r.isWooManaged === true && r.merchantProductSource === "woo" && !!r.wooProductId);
+    rows = rows.filter(isTrueWooCommerceStorefrontRow);
   }
 
   // Alavont Therapeutics mode is the uploaded/imported vendor menu. It shows
@@ -372,11 +373,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   // Admins see all non-WooCommerce rows (including imported items that may have
   // isLocalAlavont=false/null) so the inventory template dropdown is complete.
   if (!isLuciferMode) {
-    if (isAdminActor) {
-      rows = rows.filter(r => r.isWooManaged !== true);
-    } else {
-      rows = rows.filter(r => r.isLocalAlavont !== false && r.isWooManaged !== true);
-    }
+    rows = rows.filter(isVisibleAlavontCatalogRow);
   }
 
   rows = rows.sort((a, b) => {
@@ -459,8 +456,8 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
   const categories: string[] = [];
   for (const r of rows) {
     if (mode === "lucifer") {
-      if (r.isWooManaged !== true || r.merchantProductSource !== "woo" || !r.wooProductId) continue;
-    } else if (r.isLocalAlavont === false || r.isWooManaged === true) {
+      if (!isTrueWooCommerceStorefrontRow(r)) continue;
+    } else if (!isVisibleAlavontCatalogRow(r)) {
       continue;
     }
 

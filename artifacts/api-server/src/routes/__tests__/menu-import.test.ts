@@ -198,6 +198,22 @@ describe("menu import — Alavont canonical import spec", () => {
     expect(state.inserted[0].merchantName).toBe("LC Canonical");
   });
 
+  it("treats vendor stock labels like In Stock as visible instead of silently hiding imported products", async () => {
+    const csv =
+      "regular_price,alavont_image,alavont_name,alavont_desc,alavont_category,alavont_in_stock,alavont_id,Quantity,Unit,Sale_price,lucifer_cruz_name,lucifer_cruz_image,lucifer_cruz_desc,lucifer_cruz_category,lucifer_cruz_Inventory\n" +
+      "29.99,https://example.com/a.jpg,Visible Stock Label,Desc,Category,In Stock,ALV-STOCK-1,5,ml,,LC Visible,https://example.com/lc.jpg,Merchant desc,LC Category,LC-STOCK-1\n" +
+      "19.99,https://example.com/b.jpg,Unknown Stock Label,Desc,Category,Available Now,ALV-STOCK-2,3,ml,,LC Visible 2,https://example.com/lc2.jpg,Merchant desc,LC Category,LC-STOCK-2\n";
+    const res = await supertest(buildApp())
+      .post("/api/admin/products/import")
+      .attach("file", Buffer.from(csv), "stock-labels.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual([]);
+    expect(res.body.inserted).toBe(2);
+    expect(state.inserted.map(row => row.isAvailable)).toEqual([true, true]);
+    expect(state.inserted.map(row => row.alavontInStock)).toEqual([true, true]);
+  });
+
   it("returns JSON 400 with the missing column name", async () => {
     const res = await supertest(buildApp())
       .post("/api/admin/products/import")

@@ -27,6 +27,7 @@ const SHIFT_OPERATOR_ROLES = [
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
+import { visibleAlavontCatalogSql } from "../lib/catalogVisibility";
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -579,8 +580,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .where(
       and(
         eq(catalogItemsTable.isAvailable, true),
-        sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
-        sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+        visibleAlavontCatalogSql(),
         sql`LOWER(COALESCE(${catalogItemsTable.name}, '')) NOT LIKE 'safe%'`,
         sql`LOWER(COALESCE(${catalogItemsTable.alavontName}, '')) NOT LIKE 'safe%'`,
         sql`LOWER(COALESCE(${catalogItemsTable.displayName}, '')) NOT LIKE 'safe%'`,

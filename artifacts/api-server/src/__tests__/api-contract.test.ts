@@ -39,7 +39,7 @@ vi.mock("@workspace/db", () => {
       delete: vi.fn(),
     },
     usersTable: cols(["clerkId", "id", "email", "firstName", "lastName", "role", "status", "isActive"]),
-    catalogItemsTable: cols(["id", "name", "alavontName", "isWooManaged", "isLocalAlavont", "isAvailable", "alavontCategory", "category", "stockUnit", "inventoryAmount", "stockQuantity", "parLevel", "alavontId", "externalMenuId", "costBasis", "price"]),
+    catalogItemsTable: cols(["id", "name", "alavontName", "isWooManaged", "isLocalAlavont", "isAvailable", "alavontCategory", "category", "stockUnit", "inventoryAmount", "stockQuantity", "parLevel", "alavontId", "externalMenuId", "costBasis", "price", "merchantProductSource", "wooProductId"]),
     ordersTable: cols(["id", "customerId", "assignedShiftId"]),
     orderItemsTable: cols(["orderId"]),
     notificationsTable: cols(["id"]),

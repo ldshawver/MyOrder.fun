@@ -12,6 +12,7 @@ import {
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
+import { visibleAlavontCatalogSql } from "./catalogVisibility";
 
 let inventoryTablesEnsured = false;
 
@@ -132,7 +133,7 @@ export async function ensureAllInventoryBalances(tenantId: number): Promise<{ cr
       .from(catalogItemsTable)
       .where(and(
         eq(catalogItemsTable.tenantId, tenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
+        visibleAlavontCatalogSql(),
       )),
     db
       .select()
