@@ -238,7 +238,10 @@ jobs:
 
               chmod +x deploy/*.sh 2>/dev/null || true
 
-              cd "$DEPLOY_PATH/deploy"
+              cd "${DEPLOY_PATH}/deploy"
+
+              echo "Deploy path: ${DEPLOY_PATH}/deploy"
+              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
 
               echo "Building images without taking the live site down..."
               DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
@@ -265,6 +268,8 @@ jobs:
 
               echo "Starting app services..."
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
+
+              docker compose ps
 
               for i in $(seq 1 45); do
                 if curl -fsS http://127.0.0.1/api/healthz; then

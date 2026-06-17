@@ -27,6 +27,9 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
       expect(layout).not.toContain(forbidden);
       expect(app).not.toContain(forbidden.replaceAll(" ", ""));
     }
+    expect(layout).not.toContain("SMS & Calls");
+    expect(layout).not.toContain("Contractor Hub");
+    expect(layout).not.toContain("Document Hub");
     expect(app).not.toContain('path="/document-hub"');
     expect(app).not.toContain('path="/contractor-hub"');
     expect(app).not.toContain('path="/admin/communications"');
@@ -55,9 +58,12 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
 describe("catalog/inventory/par/order source of truth", () => {
   it("inventory balance edits validate schema, check tenant ownership, and recompute catalog totals", () => {
     const inventory = api("routes/inventory.ts");
+    expect(inventory).toContain("inventoryBalancesTable");
     expect(inventory).toContain(".strict().safeParse(req.body)");
     expect(inventory).toContain('Catalog product not found for this tenant');
     expect(inventory).toContain('Inventory location not found for this tenant');
+    expect(inventory).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
+    expect(inventory).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
     expect(inventory).toContain("recomputeCatalogInventoryTotals(houseTenantId, productId)");
     expect(inventory).toContain("stockQuantity: String(totals?.qty");
     expect(inventory).toContain("inventoryAmount: String(totals?.qty");
@@ -77,19 +83,34 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(shifts).toContain(".strict().safeParse(req.body)");
     expect(shifts).toContain("Balance not found for this tenant");
     expect(shifts).toContain("eq(inventoryBalancesTable.tenantId, houseTenantId)");
+    expect(shifts).toContain("innerJoin(catalogItemsTable, eq(inventoryBalancesTable.productId, catalogItemsTable.id))");
+    expect(shifts).toContain("innerJoin(inventoryLocationsTable, eq(inventoryBalancesTable.locationId, inventoryLocationsTable.id))");
+    expect(shifts).toContain("await db.update(inventoryBalancesTable).set(update)");
     expect(shifts).toContain("recomputeCatalogInventoryTotals(houseTenantId, current.productId)");
+    expect(shifts).toContain("await writeAuditLog({");
+    expect(shifts).toContain('action: "INVENTORY_BALANCE_ADJUSTED"');
   });
 
   it("order creation decrements inventory balances and syncs catalog inventory fields", () => {
     const orders = api("routes/orders.ts");
     expect(orders).toContain("db.transaction");
+    expect(orders).toContain("order = await db.transaction(async (tx) => {");
+    expect(orders).toContain("await tx.insert(ordersTable).values");
+    expect(orders).toContain("await tx.insert(orderItemsTable).values");
     expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
     expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
+    expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
+    expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id)");
+    expect(orders).toContain('res.status(409).json({ error: "Insufficient inventory"');
+    expect(orders).toContain("await tx.execute(sql`");
     expect(orders).toContain("UPDATE catalog_items");
     expect(orders).toContain("stock_quantity = COALESCE");
     expect(orders).toContain("inventory_amount = COALESCE");
     expect(orders).toContain("WHERE tenant_id = ${houseTenantId}");
+    expect(orders).toContain('eq(labTechShiftsTable.status, "active")');
+    expect(orders).toContain("eq(csrBoxesTable.tenantId, houseTenantId)");
+    expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
   });
 
   it("order creation denies cross-tenant catalog IDs before inventory decrement", () => {
@@ -116,11 +137,21 @@ describe("receipts and deploy workflow", () => {
     }
     expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
     expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
+    expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
+    expect(deploy).toContain("COMPOSE_PROJECT_NAME: alavont");
+    expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
+    expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
+    expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
     expect(deploy).toContain("docker compose build --pull");
     expect(deploy).toContain("docker compose up -d db");
     expect(deploy).toContain("docker compose run --rm migrate");
     expect(deploy).toContain("docker compose up -d api platform nginx");
+    expect(deploy).toContain("docker compose ps");
+    expect(deploy).toContain("curl -fsS http://127.0.0.1/api/healthz");
+    expect(deploy).toContain("curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz");
     expect(deploy).not.toMatch(/docker compose down/);
+    expect(deploy).not.toContain("/root/lux-email-bot");
+    expect(deploy).not.toContain("luxit.service");
   });
 
   it("repo audit delegates committed secret value detection to the script", () => {
@@ -133,8 +164,25 @@ describe("receipts and deploy workflow", () => {
     expect(auditScript).toContain("deploy/docker-compose.yml");
     expect(auditScript).toContain(".github/workflows/repo-audit.yml");
     expect(auditScript).toContain("process.env");
+    expect(auditScript).toContain("is_placeholder()");
+    expect(auditScript).toContain("looks_real_secret()");
+    expect(auditScript).toContain("Secret audit failed. Real-looking committed secret values were found");
     expect(auditScript).toContain("OPENAI_API_KEY)");
     expect(auditScript).toContain("DATABASE_URL)");
     expect(auditScript).toContain("postgres(ql)?://");
+  });
+});
+
+describe("shift wording compatibility", () => {
+  const staff = platform("pages/staff.tsx");
+  const shifts = api("routes/shifts.ts");
+
+  it("uses commission-safe Start Shift / End Shift UI copy while retaining backend route compatibility", () => {
+    expect(staff).toContain("Start Shift");
+    expect(staff).toContain("End Shift");
+    expect(staff).toContain('"/api/shifts/clock-in"');
+    expect(staff).toContain('"/api/shifts/clock-out"');
+    expect(shifts).toContain('"/shifts/clock-in"');
+    expect(shifts).toContain('"/shifts/clock-out"');
   });
 });
