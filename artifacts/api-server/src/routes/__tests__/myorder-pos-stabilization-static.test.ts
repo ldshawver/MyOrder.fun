@@ -108,6 +108,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("stock_quantity = COALESCE");
     expect(orders).toContain("inventory_amount = COALESCE");
     expect(orders).toContain("WHERE tenant_id = ${houseTenantId}");
+    expect(orders).toContain('eq(labTechShiftsTable.status, "active")');
+    expect(orders).toContain("eq(csrBoxesTable.tenantId, houseTenantId)");
+    expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
   });
 
   it("order creation denies cross-tenant catalog IDs before inventory decrement", () => {
