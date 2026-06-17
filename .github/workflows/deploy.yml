@@ -213,9 +213,6 @@ jobs:
 
               cd /opt/alavont/deploy
 
-              echo "Stopping current containers..."
-              docker compose down || true
-
               echo "Building containers..."
               DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
 

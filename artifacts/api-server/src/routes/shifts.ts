@@ -548,6 +548,28 @@ async function ensureInventoryLocations(houseTenantId: number): Promise<void> {
   }
 }
 
+async function recomputeCatalogInventoryMirror(tenantId: number, productId: number): Promise<void> {
+  const balances = await db
+    .select({
+      quantityOnHand: inventoryBalancesTable.quantityOnHand,
+      parLevel: inventoryBalancesTable.parLevel,
+    })
+    .from(inventoryBalancesTable)
+    .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId)));
+
+  const stockQuantity = balances.reduce((sum, row) => sum + parseFloat(String(row.quantityOnHand ?? "0")), 0);
+  const parLevel = balances.reduce((sum, row) => sum + parseFloat(String(row.parLevel ?? "0")), 0);
+
+  await db
+    .update(catalogItemsTable)
+    .set({
+      stockQuantity: String(stockQuantity),
+      inventoryAmount: String(stockQuantity),
+      parLevel: String(parLevel),
+    })
+    .where(and(eq(catalogItemsTable.id, productId), eq(catalogItemsTable.tenantId, tenantId)));
+}
+
 // ─── Helper: load active boxes for a tenant ───────────────────────────────────
 async function getActiveCsrBoxes(tenantId: number) {
   return db
@@ -743,6 +765,7 @@ type EnrichedItem = {
   unitType: string;
   displayOrder: number;
   catalogItemId: number | null;
+  locationId: number | null;
   itemName: string;
   unitPrice: number;
   quantityStart: number;
@@ -779,6 +802,7 @@ function enrichInventoryWithSales(
       unitType: item.unitType ?? "#",
       displayOrder: item.displayOrder ?? 0,
       catalogItemId: item.catalogItemId ?? null,
+      locationId: item.locationId ?? null,
       itemName: item.itemName,
       unitPrice: parseFloat(String(item.unitPrice ?? 0)),
       quantityStart: qStart,
@@ -1172,6 +1196,7 @@ router.post(
     );
 
     // Persist ending quantities and actual counts
+    const mirrorProductIds = new Set<number>();
     for (const item of enriched) {
       if (item.rowType === "item" || item.rowType === "cash") {
         const actualEnd = actualMap.has(item.id) ? actualMap.get(item.id)! : null;
@@ -1197,6 +1222,34 @@ router.post(
         item.quantityEndActual = actualEnd;
         item.discrepancy = disc;
         item.isFlagged = flagged;
+
+        if (item.rowType === "item" && item.catalogItemId != null && item.locationId != null && actualEnd != null && activeShift.tenantId != null) {
+          const [balance] = await db
+            .select({ id: inventoryBalancesTable.id })
+            .from(inventoryBalancesTable)
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, activeShift.tenantId),
+                eq(inventoryBalancesTable.productId, item.catalogItemId),
+                eq(inventoryBalancesTable.locationId, item.locationId),
+              )
+            )
+            .limit(1);
+
+          if (balance) {
+            await db
+              .update(inventoryBalancesTable)
+              .set({ quantityOnHand: String(actualEnd) })
+              .where(eq(inventoryBalancesTable.id, balance.id));
+            mirrorProductIds.add(item.catalogItemId);
+          }
+        }
+      }
+    }
+
+    if (activeShift.tenantId != null) {
+      for (const productId of mirrorProductIds) {
+        await recomputeCatalogInventoryMirror(activeShift.tenantId, productId);
       }
     }
 
@@ -1834,6 +1887,7 @@ router.patch(
     if (parLevel !== undefined) update.parLevel = String(parLevel);
 
     const [updated] = await db.update(inventoryBalancesTable).set(update).where(eq(inventoryBalancesTable.id, id)).returning();
+    await recomputeCatalogInventoryMirror(current.tenantId, current.productId);
     await writeAuditLog({
       actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
       action: "INVENTORY_BALANCE_ADJUSTED",
