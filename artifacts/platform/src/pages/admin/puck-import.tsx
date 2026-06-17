@@ -13,7 +13,7 @@ type Preview = { source: { pageId: number; path: string; title: string }; saniti
 type CreatedPage = { id: number; title: string; slug: string; status: string };
 async function readError(res: Response) { try { return ((await res.json()) as { error?: string }).error ?? `${res.status} ${res.statusText}`; } catch { return `${res.status} ${res.statusText}`; } }
 
-export default function AdminPuckImport() {
+export default function PuckImportPage() {
   const { getToken } = useAuth();
   const { toast } = useToast();
   const [pages, setPages] = useState<ImportablePage[]>([]);
