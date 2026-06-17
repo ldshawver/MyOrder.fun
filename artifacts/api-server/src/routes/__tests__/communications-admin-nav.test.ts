@@ -42,18 +42,18 @@ describe("MyOrder active navigation reconciliation", () => {
   it("keeps current MyOrder admin routes visible to admin/global-admin without supervisor escalation", () => {
     expect(appSrc).toMatch(/normalized === "tenant_admin"[\s\S]*return "admin"/);
     expect(appSrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
-    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/settings" component=\{AdminSettingsPage\} \/>/);
-    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/receipts" component=\{AdminReceipts\} \/>/);
+    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/settings">\{\(\) => protect\(<AdminSettingsPage \/>\)\}<\/Route>/);
+    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/receipts">\{\(\) => protect\(<AdminReceipts \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/web-editor" component=\{AdminWebEditor\} \/>/);
     expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/visual-editor" component=\{AdminVisualEditor\} \/>/);
-    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/roles-permissions" component=\{AdminRolesPermissions\} \/>/);
+    expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/roles-permissions">\{\(\) => protect\(<AdminRolesPermissions \/>\)\}<\/Route>/);
   });
 
   it("keeps supervisor and CSR workflows available without granting admin-only routes", () => {
     expect(appSrc).toMatch(/const isStaff = \["global_admin", "admin", "supervisor", "csr"\]\.includes\(normalizedRole\)/);
-    expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/staff" component=\{StaffQueue\} \/>/);
+    expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/staff">\{\(\) => protect\(<StaffQueue \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/csr-settings" component=\{CsrSettings\} \/>/);
-    expect(layoutSrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
+    expect(layoutSrc).toContain("normalizeNotificationRole(user.role)");
     expect(layoutSrc).toMatch(/href:\s*"\/admin\/inventory",\s*label:\s*"Inventory & Par"[\s\S]*roles:\s*SHIFT_ROLES/);
   });
 
@@ -99,7 +99,7 @@ describe("MyOrder.fun navigation cleanup", () => {
   });
 
   it("keeps existing PWA/account phone settings separate from removed app communications modules", () => {
-    expect(appSrc).toMatch(/<Route path="\/account" component=\{Account\} \/>/);
+    expect(appSrc).toMatch(/<Route path="\/account">\{\(\) => protect\(<Account \/>\)\}<\/Route>/);
     expect(src("pages/account.tsx")).toMatch(/id="contact-phone"/);
     expect(src("pages/account.tsx")).toMatch(/Mobile Number \(SMS\)/);
   });

@@ -62,6 +62,12 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "shift_location_options" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "delivery_options" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "printer_network_config" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_mode_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "sensitive_screens_protection_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "watermark_sensitive_screens" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_blur_on_background" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_print_blocking_enabled" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_protected_roles" text[] NOT NULL DEFAULT ARRAY['user','csr','supervisor','admin','global_admin']::text[]`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
   ];
 
@@ -105,6 +111,12 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     shiftLocationOptions: parseShiftLocations(csrSettings.shiftLocationOptions),
     deliveryOptions: parseDeliveryOptions(csrSettings.deliveryOptions),
     printerNetworkConfig: parsePrinterNetworkConfig(s.printerNetworkConfig),
+    privacyModeEnabled: s.privacyModeEnabled ?? true,
+    sensitiveScreensProtectionEnabled: s.sensitiveScreensProtectionEnabled ?? true,
+    watermarkSensitiveScreens: s.watermarkSensitiveScreens ?? true,
+    privacyBlurOnBackground: s.privacyBlurOnBackground ?? true,
+    privacyPrintBlockingEnabled: s.privacyPrintBlockingEnabled ?? true,
+    privacyProtectedRoles: s.privacyProtectedRoles ?? ["user", "csr", "supervisor", "admin", "global_admin"],
     updatedAt: s.updatedAt,
   };
 }
@@ -312,6 +324,8 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     "receiptTemplateStyle", "labelTemplateStyle", "purgeMode",
     "purgeDelayHours", "keepAuditToken", "keepFailedPaymentLogs",
     "receiptLineNameMode",
+    "privacyModeEnabled", "sensitiveScreensProtectionEnabled", "watermarkSensitiveScreens",
+    "privacyBlurOnBackground", "privacyPrintBlockingEnabled", "privacyProtectedRoles",
   ];
   const body = (req.body ?? {}) as Record<string, unknown>;
   const update: Record<string, unknown> = {};

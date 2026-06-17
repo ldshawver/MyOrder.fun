@@ -394,3 +394,33 @@
     transition-duration: 0.001ms !important;
   }
 }
+
+.sensitive-screen {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.sensitive-screen input,
+.sensitive-screen textarea,
+.sensitive-screen select,
+.sensitive-screen [contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.sensitive-screen img {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+@media print {
+  .sensitive-screen-content,
+  .sensitive-watermark,
+  .sensitive-cover {
+    display: none !important;
+  }
+
+  .sensitive-print-warning {
+    display: block !important;
+  }
+}
