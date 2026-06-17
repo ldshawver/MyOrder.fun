@@ -53,7 +53,10 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
+<<<<<<< codex/fix-typescript-failures-in-platform-code
 import AdminPuckImport from "@/pages/admin/puck-import";
+=======
+>>>>>>> main
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -503,7 +506,6 @@ function AuthenticatedApp() {
 
               {canUseVisualEditor(user.role) && (
                 <>
-                  <Route path="/admin/puck/import" component={AdminPuckImport} />
                   <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
                   <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
                   <Route path="/admin/visual-editor" component={AdminVisualEditor} />

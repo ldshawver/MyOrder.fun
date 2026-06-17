@@ -22,7 +22,7 @@ function attr(tag: string, name: string): string | undefined {
 
 export function isSafeInternalPath(path: string): boolean {
   const value = path.trim();
-  return value.startsWith("/") && !value.startsWith("//") && !/[\\\u0000-\u001f]/.test(value) && !/^\/(?:api|admin)(?:\/|$)/i.test(value);
+  return value.startsWith("/") && !value.startsWith("//") && !containsControlCharacters(value) && !value.includes("\\") && !/^\/(?:api|admin)(?:\/|$)/i.test(value);
 }
 
 export function sanitizeImportedHtml(input: string): string {
