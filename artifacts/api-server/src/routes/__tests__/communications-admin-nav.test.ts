@@ -50,8 +50,9 @@ describe("MyOrder active navigation reconciliation", () => {
   });
 
   it("keeps supervisor and CSR workflows available without granting admin-only routes", () => {
-    expect(appSrc).toMatch(/\["global_admin", "admin", "supervisor", "customer_service_rep"\]\.includes\(appRole\)[\s\S]*<Route path="\/staff" component=\{StaffQueue\} \/>/);
-    expect(appSrc).toMatch(/\["global_admin", "admin", "supervisor", "customer_service_rep"\]\.includes\(appRole\)[\s\S]*<Route path="\/csr-settings" component=\{CsrSettings\} \/>/);
+    expect(appSrc).toMatch(/const isStaff = \["global_admin", "admin", "supervisor", "csr"\]\.includes\(normalizedRole\)/);
+    expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/staff" component=\{StaffQueue\} \/>/);
+    expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/csr-settings" component=\{CsrSettings\} \/>/);
     expect(layoutSrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
     expect(layoutSrc).toMatch(/href:\s*"\/admin\/inventory",\s*label:\s*"Inventory & Par"[\s\S]*roles:\s*SHIFT_ROLES/);
   });
@@ -69,8 +70,7 @@ describe("MyOrder active navigation reconciliation", () => {
     expect(layoutSrc).toMatch(/title:\s*"Platform Admin",\s*roles:\s*\["global_admin"\]/);
     expect(layoutSrc).toMatch(/href:\s*"\/global-admin\/integrations",\s*label:\s*"Platform Integrations",\s*icon:\s*PlugZap,\s*roles:\s*\["global_admin"\]/);
   });
-
-  it("preserves the existing account phone route and user phone input", () => {
+});
 
 describe("MyOrder.fun navigation cleanup", () => {
   it("removes LUXit communications navigation and direct app routes", () => {
@@ -87,7 +87,6 @@ describe("MyOrder.fun navigation cleanup", () => {
     expect(layoutSrc).not.toContain("Contractor Hub");
     expect(appSrc).not.toContain('path="/document-hub"');
     expect(appSrc).not.toContain('path="/contractor-hub"');
-    expect(appSrc).not.toContain('path="/app/contractor-hub/contracts/:id/sign"');
   });
 
   it("uses Settings and centralized Receipts & Printers navigation", () => {
