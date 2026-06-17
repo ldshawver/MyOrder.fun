@@ -61,7 +61,6 @@ type ShiftSetup = {
   csrDeliveryOptIn?: boolean;
   wifiSsid?: string;
   pickupNote?: string;
-  smsOptIn?: boolean;
 };
 
 type EnrichedItem = {
@@ -180,7 +179,6 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [wifiSsid, setWifiSsid] = useState("");
   const [pickupNote, setPickupNote] = useState("");
   const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
-  const [smsOptIn, setSmsOptIn] = useState(true);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [cashBankStart, setCashBankStart] = useState("100");
   const [loadingTemplate, setLoadingTemplate] = useState(true);
@@ -249,7 +247,6 @@ function ClockInPanel({ onClockIn, getToken }: {
         csrDeliveryOptIn,
         wifiSsid: wifiSsid.trim(),
         pickupNote: pickupNote.trim(),
-        smsOptIn,
       });
     } catch (err) {
       setError((err as Error).message ?? "Clock-in failed. Please try again.");
@@ -425,17 +422,7 @@ function ClockInPanel({ onClockIn, getToken }: {
             />
           </div>
 
-          {/* SMS opt-in */}
-          <label className="md:col-span-3 flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={smsOptIn}
-              onChange={e => setSmsOptIn(e.target.checked)}
-              className="size-4 accent-primary"
-              data-testid="checkbox-sms-opt-in"
-            />
-            <span className="text-xs text-muted-foreground">Receive SMS text alerts for new orders and updates this shift</span>
-          </label>
+
         </div>
       </div>
 
@@ -1573,7 +1560,6 @@ export default function CustomerServiceRepQueue() {
           csrDeliveryOptIn: setup.csrDeliveryOptIn ?? false,
           wifiSsid: setup.wifiSsid ?? "",
           pickupNote: setup.pickupNote ?? "",
-          smsOptIn: setup.smsOptIn,
         },
       }),
     });

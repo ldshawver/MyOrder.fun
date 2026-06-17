@@ -29,7 +29,6 @@ type IntegrationStatus = "connected" | "missing_config" | "error";
 
 interface IntegrationResult {
   stripe: IntegrationStatus;
-  twilio: IntegrationStatus;
   airtable: IntegrationStatus;
   github: IntegrationStatus;
   woocommerce: IntegrationStatus;
@@ -72,15 +71,6 @@ async function checkStripe(): Promise<IntegrationStatus> {
     // Network issue ≠ misconfiguration; treat as "error" so operators can see it.
     return "error";
   }
-}
-
-/**
- * Twilio: check account SID + auth token are present.
- * A live check would require a request to the Twilio API — acceptable but
- * adds latency. Config-presence check is sufficient for v1.
- */
-function checkTwilio(): IntegrationStatus {
-  return hasEnv("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN") ? "connected" : "missing_config";
 }
 
 /**
@@ -146,7 +136,6 @@ router.get(
 
     const result: IntegrationResult = {
       stripe,
-      twilio: checkTwilio(),
       airtable: checkAirtable(),
       github: checkGitHub(),
       woocommerce: checkWooCommerce(),

@@ -3,7 +3,7 @@
  * ethernet direct, and HTTP bridge support, queue + retry.
  *
  * Receipt flow:  ethernet_direct → bridge (resolved by printRouter) → queue
- * Label flow:    bridge (resolved by printRoutingResolver) → queue + SMS alert
+ * Label flow:    bridge (resolved by printRoutingResolver) → queue
  *
  * Bridge selection (which bridge URL/key to use) is determined by:
  *   - Receipts: resolveReceiptPrinters() → picks printer by role + connectionType
@@ -316,7 +316,7 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
 }
 
 /**
- * Dispatch a label job via the resolved bridge printer → queue + SMS alert on failure.
+ * Dispatch a label job via the resolved bridge printer → queue on failure.
  */
 export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
   await db.update(printJobsTable)
@@ -350,7 +350,7 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
     return;
   }
 
-  // Failed — queue + optionally alert
+  // Failed — queue for retry or mark failed.
   const nextStatus = attemptNumber >= maxRetries ? "failed" : "retrying";
   await db.update(printJobsTable).set({
     status: nextStatus,
@@ -358,11 +358,6 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
     errorMessage: result.error ?? "Label print failed — bridge unreachable or rejected job",
   }).where(eq(printJobsTable.id, job.id));
 
-  // Alert admin via SMS if configured
-  const settings = await getSettings();
-  if (settings.alertOnLabelFailure && nextStatus === "failed") {
-    await sendLabelFailureAlert(job.id, result.error ?? "unknown error").catch(() => {});
-  }
 }
 
 /** Generic dispatch — routes by jobType then connectionType. */
@@ -371,30 +366,6 @@ export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise
     return dispatchLabelJob(job, printer);
   }
   return dispatchReceiptJob(job, printer);
-}
-
-// ── Failure Alert ─────────────────────────────────────────────────────────────
-
-async function sendLabelFailureAlert(jobId: number, error: string): Promise<void> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_NUMBER;
-  const adminPhone = process.env.ADMIN_ALERT_PHONE;
-
-  if (!sid || !token || !from || !adminPhone) return;
-
-  await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      From: from,
-      To: adminPhone,
-      Body: `[Alavont] Label print job #${jobId} failed: ${error.slice(0, 120)}. Check Admin → Print.`,
-    }).toString(),
-  });
 }
 
 // ── Order Print Enqueue ───────────────────────────────────────────────────────
