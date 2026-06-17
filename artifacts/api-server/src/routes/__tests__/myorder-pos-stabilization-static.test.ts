@@ -83,6 +83,8 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(shifts).toContain(".strict().safeParse(req.body)");
     expect(shifts).toContain("Balance not found for this tenant");
     expect(shifts).toContain("eq(inventoryBalancesTable.tenantId, houseTenantId)");
+    expect(shifts).toContain("innerJoin(catalogItemsTable, eq(inventoryBalancesTable.productId, catalogItemsTable.id))");
+    expect(shifts).toContain("innerJoin(inventoryLocationsTable, eq(inventoryBalancesTable.locationId, inventoryLocationsTable.id))");
     expect(shifts).toContain("await db.update(inventoryBalancesTable).set(update)");
     expect(shifts).toContain("recomputeCatalogInventoryTotals(houseTenantId, current.productId)");
     expect(shifts).toContain("await writeAuditLog({");
@@ -97,6 +99,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("await tx.insert(orderItemsTable).values");
     expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
     expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
+    expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
     expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id)");
     expect(orders).toContain('res.status(409).json({ error: "Insufficient inventory"');
@@ -158,6 +161,9 @@ describe("receipts and deploy workflow", () => {
     expect(auditScript).toContain("deploy/docker-compose.yml");
     expect(auditScript).toContain(".github/workflows/repo-audit.yml");
     expect(auditScript).toContain("process.env");
+    expect(auditScript).toContain("is_placeholder()");
+    expect(auditScript).toContain("looks_real_secret()");
+    expect(auditScript).toContain("Secret audit failed. Real-looking committed secret values were found");
     expect(auditScript).toContain("OPENAI_API_KEY)");
     expect(auditScript).toContain("DATABASE_URL)");
     expect(auditScript).toContain("postgres(ql)?://");
