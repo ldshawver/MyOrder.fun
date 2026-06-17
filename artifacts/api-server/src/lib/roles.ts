@@ -116,7 +116,7 @@ export const PERMISSIONS = [
   "schedules.view_self", "schedules.view_team", "schedules.view_tenant", "schedules.create", "schedules.update", "schedules.approve", "schedules.publish",
   "timeclock.clock_self", "timeclock.view_team", "timeclock.approve_team", "timeclock.view_tenant",
   "reports.view_self", "reports.view_team", "reports.view_tenant", "reports.export",
-  "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "app_doctor.view", "app_doctor.run",
+  "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "pages.manage", "content.manage", "app_doctor.view", "app_doctor.run",
   "platform.tenants.view", "platform.tenants.manage", "platform.impersonate", "platform.global_settings.manage",
 ] as const;
 export type Permission = typeof PERMISSIONS[number];

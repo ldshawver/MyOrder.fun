@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, visualEditorPageVersionsTable, visualEditorPagesTable } from "@workspace/db";
+import { importPageToPuck, isSafeInternalPath, sanitizeImportedHtml } from "../lib/puck/importPageToPuck";
 import { loadDbUser, normalizeRole, requireApproved, requireAuth, requireDbUser, requireRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
@@ -9,7 +10,7 @@ const router: IRouter = Router();
 
 const ALLOWED_COMPONENTS = new Set([
   "HeroSection", "TextBlock", "ImageBlock", "CTAButton", "ProductPromoGrid", "FAQBlock", "FeatureGrid",
-  "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock", "CatalogSection", "FeaturedProductsBlock",
+  "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock", "CatalogSection", "FeaturedProductsBlock", "SafeHtmlBlock",
 ]);
 const RESERVED_SLUGS = new Set(["admin", "api", "app", "checkout", "cart", "login", "logout", "orders", "settings", "inventory", "shifts", "payments"]);
 const MAX_LAYOUT_BYTES = 250_000;
@@ -21,6 +22,8 @@ const dataSchema = z.object({ root: z.record(z.string(), z.unknown()).optional()
 const createPageSchema = z.object({ slug: z.string().trim().toLowerCase(), title: z.string().trim().min(1).max(140), draftJson: z.unknown().optional() }).strict();
 const draftSchema = z.object({ draftJson: z.unknown() }).strict();
 const restoreSchema = z.object({ versionId: z.number().int().positive() }).strict();
+const importSourceSchema = z.object({ sourceType: z.enum(["internal_path", "page_id"]), path: z.string().trim().max(300).optional(), pageId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/).transform(Number)]).optional() }).strict();
+const importPageSchema = importSourceSchema.extend({ title: z.string().trim().min(1).max(140), slug: z.string().trim().toLowerCase() }).strict();
 
 async function ensureVisualEditorSchema(): Promise<void> {
   if (schemaEnsured) return;
@@ -49,6 +52,8 @@ async function ensureVisualEditorSchema(): Promise<void> {
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "updated_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "published_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`,
+    sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "source_import_path" text`,
+    sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "imported_from_page_id" integer`,
     sql`DO $$
       BEGIN
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='visual_editor_pages' AND column_name='draft_data') THEN
@@ -120,6 +125,39 @@ function validatePuckData(data: unknown): string | null {
 }
 async function actorTenantId(req: Request): Promise<number> { return req.dbUser?.tenantId ?? await getHouseTenantId(); }
 function visibleToTenant(req: Request, tenantId: number) { return normalizeRole(req.dbUser?.role) === "global_admin" || req.dbUser?.tenantId === tenantId; }
+
+function htmlFromPuckData(data: unknown): string {
+  const rec = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  const nodes = Array.isArray(rec.content) ? rec.content : [];
+  return nodes.map((node) => {
+    const block = node && typeof node === "object" ? node as { type?: unknown; props?: Record<string, unknown> } : {};
+    const props = block.props ?? {};
+    if (block.type === "HeroSection") return `<section><h1>${props.title ?? ""}</h1><p>${props.body ?? ""}</p><a href="${props.ctaHref ?? "#"}">${props.ctaLabel ?? ""}</a></section>`;
+    if (block.type === "TextBlock") return `<p>${props.text ?? ""}</p>`;
+    if (block.type === "ImageBlock") return `<img src="${props.src ?? ""}" alt="${props.alt ?? ""}">`;
+    if (block.type === "CTAButton") return `<a href="${props.href ?? "#"}">${props.label ?? ""}</a>`;
+    if (block.type === "SafeHtmlBlock") return String(props.sanitizedHtml ?? "");
+    return `<div>${Object.values(props).filter((v) => typeof v === "string").join(" ")}</div>`;
+  }).join("\n");
+}
+function slugFromPath(path: string): string | null { if (!isSafeInternalPath(path)) return null; const slug = path.replace(/^\/+/, "").split(/[?#]/)[0]?.replace(/\/$/, "") || "home"; return validateSlug(slug); }
+async function loadImportSource(req: Request, input: z.infer<typeof importSourceSchema>) {
+  const tenantId = await actorTenantId(req);
+  if (input.sourceType === "page_id") {
+    if (!input.pageId) throw Object.assign(new Error("pageId is required"), { status: 400 });
+    const [page] = await db.select().from(visualEditorPagesTable).where(and(eq(visualEditorPagesTable.id, input.pageId), eq(visualEditorPagesTable.tenantId, tenantId))).limit(1);
+    if (!page || page.archivedAt) throw Object.assign(new Error("Import source not found"), { status: 404 });
+    return { page, tenantId, path: `/${page.slug}`, html: htmlFromPuckData(page.publishedJson ?? page.draftJson), title: page.title };
+  }
+  if (!input.path || !isSafeInternalPath(input.path)) throw Object.assign(new Error("Only same-origin internal paths are allowed"), { status: 400 });
+  const slug = slugFromPath(input.path);
+  if (!slug) throw Object.assign(new Error("Invalid internal path"), { status: 400 });
+  const [page] = await db.select().from(visualEditorPagesTable).where(and(eq(visualEditorPagesTable.slug, slug), eq(visualEditorPagesTable.tenantId, tenantId))).limit(1);
+  if (!page || page.archivedAt) throw Object.assign(new Error("Import source not found"), { status: 404 });
+  return { page, tenantId, path: input.path, html: htmlFromPuckData(page.publishedJson ?? page.draftJson), title: page.title };
+}
+async function importAudit(req: Request, action: string, tenantId: number, metadata: Record<string, unknown>, id?: number) { if (!req.dbUser) return; await writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action, tenantId, resourceType: "visual_editor_page", resourceId: id ? String(id) : "import", metadata, ipAddress: req.ip }); }
+
 function mapPage(page: typeof visualEditorPagesTable.$inferSelect, includeDraft = true) { return { id: page.id, tenantId: page.tenantId, companyId: page.companyId, slug: page.slug, title: page.title, status: page.status, ...(includeDraft ? { draftJson: page.draftJson ?? emptyPuckData } : {}), publishedJson: page.publishedJson, createdAt: page.createdAt, updatedAt: page.updatedAt, publishedAt: page.publishedAt, archivedAt: page.archivedAt }; }
 async function audit(req: Request, action: string, page: { tenantId: number; id?: number; slug?: string }) { if (!req.dbUser) return; void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action, tenantId: page.tenantId, resourceType: "visual_editor_page", resourceId: String(page.id ?? page.slug ?? "unknown"), ipAddress: req.ip }); }
 
@@ -132,6 +170,61 @@ router.get("/public/pages/:slug", async (req: Request, res: Response): Promise<v
   const [page] = await db.select().from(visualEditorPagesTable).where(and(eq(visualEditorPagesTable.tenantId, tenantId), eq(visualEditorPagesTable.slug, slug))).limit(1);
   if (!page || page.archivedAt || !page.publishedJson || page.status === "archived") { res.status(404).json({ error: "Not found" }); return; }
   res.json({ id: page.id, slug: page.slug, title: page.title, publishedJson: page.publishedJson, publishedAt: page.publishedAt });
+});
+
+
+async function requirePagesManage(req: Request, res: Response, next: import("express").NextFunction): Promise<void> {
+  const { hasPermission } = await import("../lib/auth");
+  if (!(await hasPermission(req.dbUser, "pages.manage", req.dbUser?.tenantId))) { res.status(403).json({ error: "Forbidden: missing permission", permission: "pages.manage" }); return; }
+  next();
+}
+router.use("/admin/pages", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"), requirePagesManage);
+
+router.get("/admin/pages/importable", async (req: Request, res: Response): Promise<void> => {
+  await ensureVisualEditorSchema();
+  const tenantId = await actorTenantId(req);
+  const rows = await db.select().from(visualEditorPagesTable).where(eq(visualEditorPagesTable.tenantId, tenantId)).orderBy(desc(visualEditorPagesTable.updatedAt));
+  res.json({ pages: rows.filter((p) => !p.archivedAt).map((p) => ({ id: p.id, title: p.title, slug: p.slug, path: `/${p.slug}`, status: p.status, updatedAt: p.updatedAt })) });
+});
+
+router.post("/admin/pages/import/preview", async (req: Request, res: Response): Promise<void> => {
+  await ensureVisualEditorSchema();
+  const parsed = importSourceSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  try {
+    const source = await loadImportSource(req, parsed.data);
+    await importAudit(req, "visual_editor.import_started", source.tenantId, { sourceType: parsed.data.sourceType, path: source.path, sourcePageId: source.page.id });
+    const sanitizedHtml = sanitizeImportedHtml(source.html);
+    const puckData = importPageToPuck(sanitizedHtml, source.title);
+    res.json({ source: { pageId: source.page.id, path: source.path, title: source.title }, sanitizedHtml, puckData });
+  } catch (err) {
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 500;
+    await importAudit(req, "visual_editor.import_failed", await actorTenantId(req), { reason: err instanceof Error ? err.message : "Unknown error" });
+    res.status(status).json({ error: err instanceof Error ? err.message : "Import failed" });
+  }
+});
+
+router.post("/admin/pages/import", async (req: Request, res: Response): Promise<void> => {
+  await ensureVisualEditorSchema();
+  const parsed = importPageSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const slug = validateSlug(parsed.data.slug);
+  if (!slug) { res.status(400).json({ error: "Invalid or reserved slug" }); return; }
+  try {
+    const source = await loadImportSource(req, parsed.data);
+    await importAudit(req, "visual_editor.import_started", source.tenantId, { sourceType: parsed.data.sourceType, path: source.path, sourcePageId: source.page.id });
+    const draftJson = importPageToPuck(source.html, parsed.data.title);
+    const err = validatePuckData(draftJson);
+    if (err) throw Object.assign(new Error(err), { status: 400 });
+    const [created] = await db.insert(visualEditorPagesTable).values({ tenantId: source.tenantId, companyId: source.tenantId, slug, title: parsed.data.title, draftJson, status: "draft", sourceImportPath: source.path, importedFromPageId: source.page.id, createdByUserId: req.dbUser?.id, updatedByUserId: req.dbUser?.id }).returning();
+    await db.insert(visualEditorPageVersionsTable).values({ pageId: created.id, tenantId: source.tenantId, companyId: source.tenantId, versionJson: draftJson, title: created.title, slug: created.slug, createdByUserId: req.dbUser?.id });
+    await importAudit(req, "visual_editor.import_saved_as_draft", source.tenantId, { sourcePath: source.path, sourcePageId: source.page.id, draftPageId: created.id }, created.id);
+    res.status(201).json(mapPage(created));
+  } catch (err) {
+    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 500;
+    await importAudit(req, "visual_editor.import_failed", await actorTenantId(req), { reason: err instanceof Error ? err.message : "Unknown error" });
+    res.status(status).json({ error: err instanceof Error ? err.message : "Import failed" });
+  }
 });
 
 router.use("/admin/visual-editor", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"));
@@ -191,6 +284,7 @@ router.post("/admin/visual-editor/pages/:id/publish", async (req: Request, res: 
   await db.insert(visualEditorPageVersionsTable).values({ pageId: page.id, tenantId: page.tenantId, companyId: page.companyId, versionJson: page.draftJson, title: page.title, slug: page.slug, createdByUserId: req.dbUser?.id });
   const [updated] = await db.update(visualEditorPagesTable).set({ publishedJson: page.draftJson, status: "published", updatedByUserId: req.dbUser?.id, publishedByUserId: req.dbUser?.id, updatedAt: now, publishedAt: now }).where(eq(visualEditorPagesTable.id, id)).returning();
   await audit(req, "visual_editor.page_published", page);
+  if (page.sourceImportPath || page.importedFromPageId) await importAudit(req, "visual_editor.imported_page_published", page.tenantId, { pageId: page.id, sourceImportPath: page.sourceImportPath ?? null, importedFromPageId: page.importedFromPageId ?? null }, page.id);
   res.json(mapPage(updated ?? page));
 });
 
