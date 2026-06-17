@@ -10,7 +10,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog, normalizeRole as normalizeAuthRole } from "../lib/auth";
 import { isKnownRole, type CanonicalRole } from "../lib/roles";
-import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
@@ -241,10 +240,6 @@ router.patch("/users/me", async (req, res): Promise<void> => {
   if ("notificationPreferences" in body.data && body.data.notificationPreferences) {
     updates.notificationPreferences = body.data.notificationPreferences;
   }
-  if ("smsOptIn" in body.data && body.data.smsOptIn != null) {
-    updates.smsOptIn = body.data.smsOptIn === true;
-  }
-
   if (Object.keys(updates).length === 0) {
     res.json(serializeUser(user));
     return;
@@ -484,13 +479,6 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
   });
 
   if (newStatus === "approved" && previousStatus !== "approved") {
-    const message = smsAccountApproved(updated.firstName);
-
-    // Fire SMS (graceful no-op if phone missing or Twilio unconfigured)
-    sendSms(updated.contactPhone, message).catch((err) => {
-      logger.error({ err, userId: updated.id }, "Failed to send account approval SMS");
-    });
-
     // Write in-app notification (non-critical — don't fail the response)
     try {
       await db.insert(notificationsTable).values({
@@ -611,9 +599,6 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   });
 
   if (newStatus === "approved" && target.status !== "approved") {
-    sendSms(updated.contactPhone, smsAccountApproved(updated.firstName)).catch((err) => {
-      logger.error({ err, userId: updated.id }, "Failed to send account approval SMS");
-    });
     try {
       await db.insert(notificationsTable).values({
         userId: updated.id,

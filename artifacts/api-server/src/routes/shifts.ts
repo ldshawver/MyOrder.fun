@@ -1061,7 +1061,6 @@ router.post(
         csrDeliveryOptIn?: boolean;
         wifiSsid?: string;
         pickupNote?: string;
-        smsOptIn?: boolean;
       };
     };
 
@@ -1076,11 +1075,6 @@ router.post(
     const wifiMatchesApproved = enteredSsid.length > 0 &&
       approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
     const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
-
-    // Update user's SMS opt-in preference if provided at clock-in
-    if (setup?.smsOptIn !== undefined) {
-      await db.update(usersTable).set({ smsOptIn: setup.smsOptIn }).where(eq(usersTable.id, tech.id));
-    }
 
     const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
 

@@ -16,7 +16,6 @@ const integrations = [
   { key: "revenuecat", name: "RevenueCat", description: "Licenses, entitlements, subscription status, and tenant feature gates.", fields: ["API key", "Webhook secret", "Project ID"] },
   { key: "airtable", name: "Airtable", description: "Ops tables, intake forms, CRM sync, and back-office reporting.", fields: ["API key", "Base ID", "Default table"] },
   { key: "github", name: "GitHub", description: "Issue creation, release tracking, deployment metadata, and support handoffs.", fields: ["Token", "Repository", "Default labels"] },
-  { key: "twilio", name: "Twilio", description: "SMS, phone numbers, voice forwarding, call logs, and voicemail webhooks.", fields: ["Account SID", "Auth token", "Messaging service SID", "Voice webhook URL"] },
   { key: "outlook", name: "Outlook / Microsoft 365", description: "Mailbox, calendar, OAuth redirect, and tenant admin notifications.", fields: ["Client ID", "Tenant ID", "Client secret", "Redirect URI"] },
   { key: "openai", name: "OpenAI", description: "AI concierge, support summaries, and internal drafting tools.", fields: ["API key", "Default model"] },
 ];
@@ -102,7 +101,7 @@ export default function GlobalAdminIntegrations() {
 
         <TabsContent value="oauth">
           <section className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
-            <div><h2 className="text-sm font-semibold uppercase tracking-widest">OAuth & External Integration Settings</h2><p className="text-xs text-muted-foreground mt-1">Editable OAuth app registration settings for Microsoft Outlook, GitHub, Airtable extensions, RevenueCat webhooks, and Twilio callbacks.</p></div>
+            <div><h2 className="text-sm font-semibold uppercase tracking-widest">OAuth & External Integration Settings</h2><p className="text-xs text-muted-foreground mt-1">Editable OAuth app registration settings for Microsoft Outlook, GitHub, Airtable extensions, RevenueCat webhooks.</p></div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3"><Field label="OAuth redirect base URL" placeholder="https://app.myorder.fun/oauth/callback" /><Field label="Allowed callback domains" placeholder="app.myorder.fun, lucifercruz.com" /><Field label="Microsoft scopes" placeholder="offline_access User.Read Mail.Send Calendars.ReadWrite" /><Field label="GitHub scopes" placeholder="repo, workflow, read:org" /></div>
             <Textarea className="rounded-xl min-h-28" placeholder="Paste JSON metadata, webhook signing keys, or integration notes for global admins." />
           </section>

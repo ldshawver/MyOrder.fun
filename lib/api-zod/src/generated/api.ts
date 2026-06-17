@@ -667,8 +667,7 @@ export const CreateOrderBody = zod.object({
   "special_instructions": zod.string().optional()
 })).optional()
 }).optional(),
-  "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
-  "smsOptIn": zod.boolean().nullish()
+  "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish()
 })
 
 
@@ -1547,8 +1546,7 @@ export const UpdateCurrentUserBody = zod.object({
   "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
   "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
 }).nullish(),
-  "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish(),
-  "smsOptIn": zod.boolean().nullish()
+  "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
 })
 
 export const UpdateCurrentUserResponse = zod.object({

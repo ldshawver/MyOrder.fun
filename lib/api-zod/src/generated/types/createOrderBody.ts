@@ -18,5 +18,4 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
-  smsOptIn?: boolean | null;
 }

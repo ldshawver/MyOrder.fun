@@ -92,7 +92,6 @@ export default function NewOrder() {
   const [tipMode, setTipMode] = useState<"none" | "10" | "15" | "20" | "custom">("none");
   const [customTip, setCustomTip] = useState("");
   const [csrStatus, setCsrStatus] = useState<CsrDeliveryStatus | null>(null);
-  const [smsOptIn, setSmsOptIn] = useState(false);
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
   const { getToken } = useAuth();
@@ -234,14 +233,6 @@ export default function NewOrder() {
     if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
     if (requiresDeliveryAddress && !shippingAddress.trim()) return;
 
-    // Save SMS opt-in preference (fire-and-forget)
-    if (smsOptIn) {
-      getToken().then(token => fetch("/api/users/me", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ smsOptIn: true }),
-      })).catch(() => {});
-    }
 
     try {
       const order = await createOrderMutation.mutateAsync({
@@ -538,24 +529,6 @@ export default function NewOrder() {
                   </span>
                 </label>
 
-                <label className="flex items-center gap-3 text-sm leading-relaxed cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={smsOptIn}
-                    onChange={(e) => setSmsOptIn(e.target.checked)}
-                    className="size-4 accent-primary"
-                    data-testid="checkbox-sms-opt-in"
-                  />
-                  <span className="text-muted-foreground text-xs">
-                    Send me text alerts for order status updates. <span className="text-muted-foreground/60">Reply STOP at any time.</span>
-                  </span>
-                </label>
-            </div>
-
-            <div className="rounded-sm border border-border/50 bg-background p-4 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <Wand2 size={14} /> 3. Convert Shopping Cart
-              </div>
               {promotedItems.length > 0 && (
                 <div className="rounded-sm border border-primary/20 bg-primary/5 p-3 space-y-3">
                   <div className="flex items-center justify-between gap-3">

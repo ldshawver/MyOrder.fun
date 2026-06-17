@@ -140,14 +140,6 @@ vi.mock("../../lib/singleTenant", () => ({
   getHouseTenantId: vi.fn().mockResolvedValue(1),
 }));
 
-vi.mock("../../lib/sms", () => ({
-  sendSms: vi.fn(),
-  smsOrderConfirmation: vi.fn(),
-  smsNewOrderAlert: vi.fn(),
-  smsStatusUpdate: vi.fn(),
-  smsTrackingReady: vi.fn(),
-  smsAccountApproved: vi.fn(),
-}));
 
 vi.mock("../../lib/checkoutNormalizer", () => ({
   normalizeCheckoutCart: vi.fn().mockResolvedValue([]),

@@ -2149,9 +2149,6 @@ components:
           type: string
           enum: [pickup, manual_delivery, uber_direct, uber_courier, csr_delivery]
           nullable: true
-        smsOptIn:
-          type: boolean
-          nullable: true
       required: [items]
 
     CreateDeliveryQuoteBody:
@@ -2407,9 +2404,6 @@ components:
           type: string
           nullable: true
           maxLength: 2048
-        smsOptIn:
-          type: boolean
-          nullable: true
 
     UpdateUserRoleBody:
       type: object

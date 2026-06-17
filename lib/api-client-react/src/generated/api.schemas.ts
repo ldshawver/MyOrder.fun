@@ -577,7 +577,6 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
-  smsOptIn?: boolean | null;
 }
 
 export type CreateDeliveryQuoteBodyItemsItem = {
@@ -752,7 +751,6 @@ export interface UpdateCurrentUserBody {
   notificationPreferences?: UpdateCurrentUserBodyNotificationPreferences;
   /** @maxLength 2048 */
   avatarUrl?: string | null;
-  smsOptIn?: boolean | null;
 }
 
 export type UpdateUserRoleBodyRole = typeof UpdateUserRoleBodyRole[keyof typeof UpdateUserRoleBodyRole];

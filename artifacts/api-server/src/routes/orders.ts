@@ -15,7 +15,6 @@ import {
   csrBoxesTable,
   catalogItemsTable,
 } from "@workspace/db";
-import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
   ListOrdersQueryParams,
   ListOrdersResponse,
@@ -58,8 +57,6 @@ import {
 } from "../lib/uberDirect";
 
 const router: IRouter = Router();
-const SUPERVISOR_FALLBACK_PHONE = "19165989519";
-
 class InsufficientInventoryError extends Error {
   constructor(public readonly catalogItemId: number) {
     super(`Insufficient inventory for catalog item ${catalogItemId}`);
@@ -470,10 +467,6 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
   };
-}
-
-function smsSupervisorFallbackOrderAlert(orderId: number, customerName: string, total: number, itemCount: number): string {
-  return `[Alavont] A customer has placed an order online. Order #${orderId} from ${customerName || "a customer"}: ${itemCount} item${itemCount !== 1 ? "s" : ""}, $${total.toFixed(2)}. No CSR accepted ownership yet; check the supervisor queue.`;
 }
 
 async function notifyLowStockIfNeeded(tmpl: typeof inventoryTemplatesTable.$inferSelect, newStock: number): Promise<void> {
@@ -910,23 +903,7 @@ router.post("/orders", async (req, res): Promise<void> => {
       .catch(err => logger.warn({ err, shiftId: assignedShiftId, csrDeliveryFee }, "Failed to update csrDeliveryEarnings"));
   }
 
-  // SMS: confirm to customer + alert assigned tech (fire-and-forget)
-  let customerName = "";
-  try {
-    const [customer] = await db.select({ contactPhone: usersTable.contactPhone, firstName: usersTable.firstName, lastName: usersTable.lastName })
-      .from(usersTable).where(eq(usersTable.id, actor.id)).limit(1);
-    const customerPhone = customer?.contactPhone;
-    const itemCount = normalizedLines.reduce((s, l) => s + l.quantity, 0);
-    customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
-    await sendSms(customerPhone, smsOrderConfirmation(order.id, finalTotal, itemCount));
-
-    if (routing.routeSource === "general_account") {
-      await sendSms(SUPERVISOR_FALLBACK_PHONE, smsSupervisorFallbackOrderAlert(order.id, customerName, finalTotal, itemCount));
-    } else if (assignedTechId) {
-      const [tech] = await db.select({ contactPhone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, assignedTechId)).limit(1);
-      await sendSms(tech?.contactPhone, smsNewOrderAlert(order.id, customerName, finalTotal, itemCount));
-    }
-  } catch { /* non-critical */ }
+  const customerName = `${actor.firstName ?? ""} ${actor.lastName ?? ""}`.trim() || actor.email || "Customer";
 
   // Print: enqueue print jobs (fire-and-forget)
   try {
@@ -1461,7 +1438,7 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
     } catch { /* non-critical */ }
   }
 
-  // In-app notification + SMS to customer
+  // In-app notification to customer
   try {
     await db.insert(notificationsTable).values({
       userId: order.customerId,
@@ -1472,12 +1449,6 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
       resourceId: order.id,
     });
   } catch { /* non-critical */ }
-  try {
-    const [customer] = await db.select({ contactPhone: usersTable.contactPhone })
-      .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
-    await sendSms(customer?.contactPhone, smsStatusUpdate(order.id, body.data.status));
-  } catch { /* non-critical */ }
-
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -1566,15 +1537,6 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
     resourceType: "order", resourceId: String(orderId),
     metadata: { trackingUrl }, ipAddress: req.ip,
   });
-
-  // SMS customer with tracking link
-  if (trackingUrl) {
-    try {
-      const [customer] = await db.select({ contactPhone: usersTable.contactPhone })
-        .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
-      await sendSms(customer?.contactPhone, smsTrackingReady(orderId, trackingUrl));
-    } catch { /* non-critical */ }
-  }
 
   res.json({ trackingUrl: updated.trackingUrl });
 });
