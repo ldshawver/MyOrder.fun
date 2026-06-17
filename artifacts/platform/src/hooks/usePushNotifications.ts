@@ -1,6 +1,11 @@
 import { useEffect, useCallback, useRef } from "react";
 
-export type NotificationRole = "user" | "customer_service_rep" | "supervisor" | "admin" | "global_admin";
+export type NotificationRole =
+  | "global_admin"
+  | "admin"
+  | "supervisor"
+  | "csr"
+  | "user";
 
 export function normalizeNotificationRole(role?: string | null): NotificationRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -8,18 +13,12 @@ export function normalizeNotificationRole(role?: string | null): NotificationRol
   if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
   if (normalized === "supervisor") return "supervisor";
   if (
+    normalized === "csr" ||
     normalized === "customer_service_rep" ||
     normalized === "customer_service_representative" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
-    normalized === "customer_service" ||
-    normalized === "customer_service_specialist" ||
-    normalized === "customer_success" ||
+    normalized === "staff" ||
     normalized === "service_rep" ||
-    normalized === "business_sitter" ||
-    normalized === "sales_rep" ||
-    normalized === "lab_tech" ||
-    normalized === "lab_technician"
+    normalized === "customer_service"
   ) {
     return "csr";
   }
@@ -112,7 +111,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
   }, []);
 
   const notifyOrderPlaced = useCallback((orderId: number, customerName?: string) => {
-    if (role === "customer_service_rep" || role === "supervisor" || role === "admin" || role === "global_admin") {
+    if (role === "csr" || role === "supervisor" || role === "admin" || role === "global_admin") {
       sendNotification(
         "New Order Received",
         `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`,
