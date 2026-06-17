@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql } from "drizzle-orm";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
+import { and, eq, asc, sql, sum } from "drizzle-orm";
+import { z } from "zod";
+import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -13,13 +14,31 @@ import {
   DeleteCatalogItemParams,
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
+const catalogDisplayUpdateSchema = z.object({
+  displayName: z.string().trim().max(160).nullable().optional(),
+  displayDescription: z.string().trim().max(4000).nullable().optional(),
+  displayImage: z.string().trim().url().nullable().optional(),
+  promoBadges: z.array(z.string().trim().min(1).max(40)).max(8).optional(),
+  isFeatured: z.boolean().optional(),
+  displayCategory: z.string().trim().max(120).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(100000).optional(),
+  visibleQuantityLabel: z.string().trim().max(80).nullable().optional(),
+  catalogSectionLayout: z.enum(["grid", "carousel", "stack"]).optional(),
+  isVisible: z.boolean().optional(),
+}).strict();
+
+function safeMetadataPatch(current: unknown, patch: Record<string, unknown>) {
+  const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  return { ...base, presentation: { ...(base.presentation && typeof base.presentation === "object" && !Array.isArray(base.presentation) ? base.presentation as Record<string, unknown> : {}), ...patch } };
+}
+
 let catalogRouteSchemaEnsured = false;
 
 async function ensureCatalogRouteSchema(): Promise<void> {
@@ -210,6 +229,62 @@ function mapItem(
     wooProductId: alavontOnly ? null : (i.wooProductId ?? null),
     wooVariationId: alavontOnly ? null : (i.wooVariationId ?? null),
   };
+}
+
+
+async function mirrorCatalogStockToBackstockAndRecompute(tenantId: number, productId: number, stockQuantity: number | null | undefined): Promise<void> {
+  if (stockQuantity !== undefined && stockQuantity !== null) {
+    const [backstockLoc] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(and(
+        eq(inventoryLocationsTable.tenantId, tenantId),
+        eq(inventoryLocationsTable.type, "backstock"),
+      ))
+      .limit(1);
+
+    if (backstockLoc) {
+      const [balance] = await db
+        .select({ id: inventoryBalancesTable.id })
+        .from(inventoryBalancesTable)
+        .where(and(
+          eq(inventoryBalancesTable.tenantId, tenantId),
+          eq(inventoryBalancesTable.productId, productId),
+          eq(inventoryBalancesTable.locationId, backstockLoc.id),
+        ))
+        .limit(1);
+
+      if (balance) {
+        await db.update(inventoryBalancesTable)
+          .set({ quantityOnHand: String(stockQuantity) })
+          .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, balance.id)));
+      } else {
+        await db.insert(inventoryBalancesTable).values({
+          tenantId,
+          productId,
+          locationId: backstockLoc.id,
+          quantityOnHand: String(stockQuantity),
+          parLevel: "0",
+        });
+      }
+    }
+  }
+
+  const [totals] = await db
+    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
+    .from(inventoryBalancesTable)
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+    ));
+
+  await db.update(catalogItemsTable)
+    .set({
+      stockQuantity: String(totals?.qty ?? "0"),
+      inventoryAmount: String(totals?.qty ?? "0"),
+      parLevel: String(totals?.par ?? "0"),
+    })
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, productId)));
 }
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
@@ -476,6 +551,49 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
   res.json(ListCatalogCategoriesResponse.parse({ categories }));
 });
 
+
+// PATCH /api/catalog/:id/display - presentation-only visual editor fields.
+router.patch("/catalog/:id/display", requireRole("global_admin", "admin", "tenant_admin"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid catalog item id" });
+    return;
+  }
+  const body = catalogDisplayUpdateSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, id)).limit(1);
+  if (!existing) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  if (normalizeRole(req.dbUser?.role) !== "global_admin" && req.dbUser?.tenantId && existing.tenantId !== req.dbUser.tenantId) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const presentationPatch: Record<string, unknown> = {};
+  if (body.data.sortOrder !== undefined) presentationPatch.sortOrder = body.data.sortOrder;
+  if (body.data.visibleQuantityLabel !== undefined) presentationPatch.visibleQuantityLabel = body.data.visibleQuantityLabel;
+  if (body.data.catalogSectionLayout !== undefined) presentationPatch.catalogSectionLayout = body.data.catalogSectionLayout;
+  if (body.data.isVisible !== undefined) presentationPatch.isVisible = body.data.isVisible;
+  const [updated] = await db.update(catalogItemsTable).set({
+    displayName: body.data.displayName,
+    displayDescription: body.data.displayDescription,
+    displayImage: body.data.displayImage,
+    promoBadges: body.data.promoBadges,
+    isFeatured: body.data.isFeatured,
+    displayCategory: body.data.displayCategory,
+    metadata: Object.keys(presentationPatch).length ? safeMetadataPatch(existing.metadata, presentationPatch) : existing.metadata,
+    updatedAt: new Date(),
+  }).where(eq(catalogItemsTable.id, id)).returning();
+  if (req.dbUser) {
+    void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action: "catalog.display_updated", tenantId: existing.tenantId, resourceType: "catalog_item", resourceId: String(id), ipAddress: req.ip });
+  }
+  res.json({ item: mapItem(updated ?? existing) });
+});
+
 // GET /api/catalog/:id
 router.get("/catalog/:id", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
@@ -505,7 +623,10 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
+  const houseTenantId = await getHouseTenantId();
+  const [existing] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -556,9 +677,18 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
       return;
     }
   }
-  const [updated] = await db.update(catalogItemsTable).set(updateData).where(eq(catalogItemsTable.id, params.data.id)).returning();
-  await syncCatalogItemToInventoryTemplate(updated);
-  res.json(UpdateCatalogItemResponse.parse(mapItem(updated)));
+  const [updated] = await db.update(catalogItemsTable)
+    .set(updateData)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .returning();
+  if (stockQuantity !== undefined) {
+    await mirrorCatalogStockToBackstockAndRecompute(houseTenantId, params.data.id, stockQuantity);
+  }
+  const [fresh] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
+  await syncCatalogItemToInventoryTemplate(fresh ?? updated);
+  res.json(UpdateCatalogItemResponse.parse(mapItem(fresh ?? updated)));
 });
 
 // DELETE /api/catalog/:id
@@ -569,7 +699,10 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
+  const houseTenantId = await getHouseTenantId();
+  const [existing] = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
+    .limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;

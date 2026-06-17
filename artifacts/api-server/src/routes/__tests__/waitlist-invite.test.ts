@@ -211,7 +211,6 @@ function seedAdmin() {
     firstName: "Admin",
     lastName: "User",
     role: "admin",
-    tenantId: 1,
     status: "approved",
     isActive: true,
     contactPhone: null,
@@ -235,7 +234,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     const app = buildApp();
     const res = await supertest(app)
       .post("/api/admin/users/waitlist/wlent_abc/invite")
-      .send({ role: "customer_service_rep", firstName: "Sam", lastName: "Hire" });
+      .send({ role: "csr", firstName: "Sam", lastName: "Hire" });
 
     expect(res.status).toBe(200);
     expect(res.body.userRowCreated).toBe(true);
@@ -294,12 +293,12 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       firstName: "Existing",
       lastName: "Person",
       role: "user",
-    tenantId: 1,
       status: "pending",
       isActive: true,
       contactPhone: null,
       avatarUrl: null,
       mfaEnabled: false,
+      tenantId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -339,8 +338,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       email: "csr@example.com",
       firstName: "Care",
       lastName: "Rep",
-      role: "customer_service_rep",
-    tenantId: 1,
+      role: "csr",
       status: "approved",
       isActive: true,
       contactPhone: null,
@@ -352,7 +350,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     const app = buildApp();
     const res = await supertest(app)
       .post("/api/admin/users/waitlist/wlent_blocked/invite")
-      .send({ role: "customer_service_rep" });
+      .send({ role: "csr" });
     expect(res.status).toBe(403);
     expect(clerkClient.waitlistEntries.invite).not.toHaveBeenCalled();
     // No users row should be touched.

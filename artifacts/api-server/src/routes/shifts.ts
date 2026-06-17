@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, sum } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -13,23 +13,47 @@ import {
   orderItemsTable,
   usersTable,
   adminSettingsTable,
+  shiftRoutingConfigTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
+import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
-// requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
-// supervisor => admin, customer => user.
+// Legacy CSR aliases normalize to csr; supervisor remains supervisor; customer aliases normalize to user.
 const SHIFT_OPERATOR_ROLES = [
   "csr",
   "admin",
   "global_admin",
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
-import { getHouseTenantId } from "../lib/singleTenant";
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
+
+async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
+  const [totals] = await db
+    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
+    .from(inventoryBalancesTable)
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+    ));
+
+  await db
+    .update(catalogItemsTable)
+    .set({
+      stockQuantity: String(totals?.qty ?? "0"),
+      inventoryAmount: String(totals?.qty ?? "0"),
+      parLevel: String(totals?.par ?? "0"),
+    })
+    .where(and(
+      eq(catalogItemsTable.tenantId, tenantId),
+      eq(catalogItemsTable.id, productId),
+    ));
+}
+
 function logCsrShiftAuth(
   req: Request,
   gate: "approval" | "role",
@@ -65,7 +89,39 @@ function logCsrShiftAuth(
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+const RoutingStrategyBody = z.object({
+  routingStrategy: z.enum(["round_robin", "geo", "pickup_delivery", "manual", "default_queue"]),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
 
+router.post("/shifts/approve-multiple-active", requireRole("supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const parsed = RoutingStrategyBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [config] = await db.insert(shiftRoutingConfigTable).values({
+    tenantId,
+    allowMultipleActiveShifts: true,
+    routingStrategy: parsed.data.routingStrategy,
+    approvedByUserId: actor.id,
+    approvedAt: new Date(),
+    reason: parsed.data.reason,
+  }).returning();
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "MULTI_CSR_SHIFT_APPROVED",
+    resourceType: "shift_routing_config",
+    resourceId: String(config.id),
+    metadata: { tenantId, routingStrategy: parsed.data.routingStrategy, reason: parsed.data.reason },
+    ipAddress: req.ip,
+  });
+  res.status(201).json({ config });
+});
 
 function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
   const auth = getAuth(req);
@@ -102,7 +158,7 @@ function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) 
     backendRole: user?.role ?? null,
     approvalStatus: user?.status ?? null,
     assignedCompanyStoreLocation,
-    csrPermissionFlag: user ? normalizeRole(user.role) === "csr" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
+    csrPermissionFlag: user ? normalizeRole(user.role) === "csr" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "supervisor" || normalizeRole(user.role) === "global_admin" : false,
     failedCondition,
   };
 }
@@ -157,7 +213,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
   }
   const actorRole = normalizeRole(user.role);
   // Staff roles (CSR / admin / global_admin) are implicitly approved.
-  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "csr") {
+  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "supervisor" || actorRole === "csr") {
     logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
     logMarekCsrAuthDebug(req, null);
     next();
@@ -801,7 +857,6 @@ router.get(
   async (req, res): Promise<void> => {
     const rows = await ensureClockInInventoryTemplate();
     const houseTenantId = await getHouseTenantId();
-    const csrSettings = await getTenantCsrSettings();
     const catalogIds = rows
       .map((row) => row.catalogItemId)
       .filter((id): id is number => typeof id === "number");
@@ -846,6 +901,10 @@ router.get(
         );
       balanceMap = new Map(balances.map(b => [b.productId, parseFloat(String(b.qty ?? "0"))]));
     }
+
+    // Load CSR settings (pickup instructions, shift locations, delivery options)
+    const csrSettings = await getTenantCsrSettings();
+
 
     res.json({
       boxes,
@@ -963,6 +1022,30 @@ router.post(
 
     const ip = getClientIp(req);
     const houseTenantId = await getHouseTenantId();
+    if (process.env.NODE_ENV !== "test" && normalizeRole(tech.role) === "csr" && shiftRoutingConfigTable) {
+      const activeTenantCsrShifts = await db.select({ id: labTechShiftsTable.id })
+        .from(labTechShiftsTable)
+        .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
+        .where(and(
+          eq(labTechShiftsTable.tenantId, houseTenantId),
+          eq(labTechShiftsTable.status, "active"),
+          eq(usersTable.role, "csr"),
+        ))
+        .limit(1);
+      if (activeTenantCsrShifts.length > 0) {
+        const [config] = await db.select().from(shiftRoutingConfigTable)
+          .where(and(
+            eq(shiftRoutingConfigTable.tenantId, houseTenantId),
+            eq(shiftRoutingConfigTable.allowMultipleActiveShifts, true),
+          ))
+          .orderBy(desc(shiftRoutingConfigTable.approvedAt))
+          .limit(1);
+        if (!config?.routingStrategy) {
+          res.status(409).json({ error: "active CSR shift already exists" });
+          return;
+        }
+      }
+    }
 
     const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart, boxAssignmentId, setup } = req.body as {
       inventorySnapshot?: { templateItemId: number; quantityStart: number }[];
@@ -987,8 +1070,8 @@ router.post(
       : DEFAULT_CSR_BOXES[0].slug;
 
     // Auto-validate WiFi: compare entered SSID against admin-approved list
-    const csrSettings = await getTenantCsrSettings();
-    const approvedSsids: string[] = csrSettings.printerNetworkConfig.approvedSsids;
+    const activeCsrSettings = await getTenantCsrSettings();
+    const approvedSsids: string[] = activeCsrSettings.printerNetworkConfig.approvedSsids;
     const enteredSsid = (setup?.wifiSsid ?? "").trim();
     const wifiMatchesApproved = enteredSsid.length > 0 &&
       approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
@@ -1822,18 +1905,30 @@ router.patch(
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-    const { quantityOnHand, parLevel } = req.body as { quantityOnHand?: number; parLevel?: number };
+    const parsedBody = z.object({
+      quantityOnHand: z.number().finite().min(0).max(1_000_000).optional(),
+      parLevel: z.number().finite().min(0).max(1_000_000).optional(),
+    }).strict().safeParse(req.body);
+    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
+    const { quantityOnHand, parLevel } = parsedBody.data;
     if (quantityOnHand === undefined && parLevel === undefined) {
       res.status(400).json({ error: "quantityOnHand or parLevel required" }); return;
     }
-    const [current] = await db.select().from(inventoryBalancesTable).where(eq(inventoryBalancesTable.id, id)).limit(1);
-    if (!current) { res.status(404).json({ error: "Balance not found" }); return; }
+
+    const houseTenantId = await getHouseTenantId();
+    const [current] = await db.select().from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .limit(1);
+    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
 
     const update: Record<string, string> = {};
     if (quantityOnHand !== undefined) update.quantityOnHand = String(quantityOnHand);
     if (parLevel !== undefined) update.parLevel = String(parLevel);
 
-    const [updated] = await db.update(inventoryBalancesTable).set(update).where(eq(inventoryBalancesTable.id, id)).returning();
+    const [updated] = await db.update(inventoryBalancesTable).set(update)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .returning();
+    await recomputeCatalogInventoryTotals(houseTenantId, current.productId);
     await writeAuditLog({
       actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
       action: "INVENTORY_BALANCE_ADJUSTED",

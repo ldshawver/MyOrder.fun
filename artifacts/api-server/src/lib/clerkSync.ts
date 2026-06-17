@@ -1,5 +1,6 @@
 import { clerkClient } from "@clerk/express";
 import { logger } from "./logger";
+import { normalizeRole, type CanonicalRole } from "./roles";
 
 export type ClerkSyncStatus = "pending" | "approved" | "rejected" | "deactivated";
 

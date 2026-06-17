@@ -3,12 +3,13 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
-import { normalizeRole, hasRole as userHasRole, type Role } from "./roles";
-export { normalizeRole } from "./roles";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-export type CanonicalRole = Role;
-export type LegacyRole = string;
+import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
+export { normalizeRole } from "./roles";
+
+export type Role = NormalizedRole | string;
+
 
 // Staff roles are implicitly approved — having been assigned a staff role
 // by an admin is itself the approval gate. Keep this list in sync with
@@ -177,7 +178,7 @@ export function requireDbUser(req: Request, res: Response, next: NextFunction): 
   next();
 }
 
-export function requireRole(...roles: (Role | string)[]) {
+export function requireRole(...roles: Role[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const user = req.dbUser;
     if (!user) {
@@ -185,13 +186,16 @@ export function requireRole(...roles: (Role | string)[]) {
       return;
     }
     const allowed = roles.map(normalizeRole);
-    const hasRole = userHasRole(user, allowed);
-    if (!hasRole) {
+    if (!hasRoleValue(user.role, allowed)) {
       res.status(403).json({ error: "Forbidden: insufficient role" });
       return;
     }
     next();
   };
+}
+
+export function isGlobalAdmin(user: { role?: string | null } | null | undefined): boolean {
+  return normalizeRole(user?.role) === "global_admin";
 }
 
 export function requireApproved(req: Request, res: Response, next: NextFunction): void {
@@ -264,19 +268,23 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         );
       }
     }
-    if (meta.role && normalizeRole(meta.role) !== normalizeRole(user.role)) {
-      logger.warn(
-        {
-          userId: user.id,
-          email: user.email,
-          dbRoleRaw: user.role,
-          dbRoleNormalized: normalizeRole(user.role),
-          clerkRoleRaw: meta.role,
-          clerkRoleNormalized: normalizeRole(meta.role),
-          willWriteToDb: false,
-        },
-        "loadDbUser: ignoring Clerk role metadata — DB role is authoritative",
-      );
+    if (meta.role) {
+      const dbRole = normalizeRole(user.role);
+      const clerkRole = normalizeRole(meta.role);
+      if (clerkRole !== dbRole) {
+        logger.warn(
+          {
+            userId: user.id,
+            email: user.email,
+            dbRoleRaw: user.role,
+            dbRoleNormalized: dbRole,
+            clerkRoleRaw: meta.role,
+            clerkRoleNormalized: clerkRole,
+            willWriteToDb: false,
+          },
+          "loadDbUser: ignoring Clerk role mismatch — database role is authoritative",
+        );
+      }
     }
     if (Object.keys(updates).length > 0) {
       try {
@@ -348,4 +356,49 @@ export async function writeAuditLog(params: {
   } catch (err) {
     logger.error({ err, action: params.action }, "Failed to write audit log");
   }
+}
+
+export async function hasPermission(user: { role?: string | null; tenantId?: number | null } | null | undefined, permission: string, tenantId?: number | null): Promise<boolean> {
+  if (!user) return false;
+  const { rolePermissionsTable } = await import("@workspace/db");
+  const { defaultHasPermission } = await import("./roles");
+  const actorRole = normalizeRole(user.role);
+  if (actorRole === "global_admin") return true;
+  const effectiveTenantId = tenantId ?? user.tenantId ?? null;
+  try {
+    const [override] = await db.select().from(rolePermissionsTable).where(sql`${rolePermissionsTable.role} = ${actorRole} AND ${rolePermissionsTable.permission} = ${permission} AND (${rolePermissionsTable.tenantId} = ${effectiveTenantId} OR (${effectiveTenantId} IS NULL AND ${rolePermissionsTable.tenantId} IS NULL))`).limit(1);
+    if (override) return override.enabled;
+  } catch (err) {
+    logger.warn({ err, permission }, "Permission override lookup failed; falling back to defaults");
+  }
+  return defaultHasPermission(actorRole, permission);
+}
+
+export function requirePermission(permission: string) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.dbUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (!(await hasPermission(req.dbUser, permission, req.dbUser.tenantId))) {
+      res.status(403).json({ error: "Forbidden: missing permission", permission });
+      return;
+    }
+    next();
+  };
+}
+
+export function requireTenantScope() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = req.dbUser;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (normalizeRole(user.role) !== "global_admin" && !user.tenantId) {
+      res.status(403).json({ error: "Forbidden: tenant scope required" });
+      return;
+    }
+    next();
+  };
 }

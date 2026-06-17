@@ -103,7 +103,7 @@ export default function AdminFeedback() {
     return m;
   }, [users]);
   const staff = useMemo(
-    () => users.filter((u) => ["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(u.role))),
+    () => users.filter((u) => ["global_admin", "admin", "csr"].includes(normalizeNotificationRole(u.role))),
     [users],
   );
 

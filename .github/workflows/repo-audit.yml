@@ -1,0 +1,24 @@
+name: Repo Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  repo-audit:
+    name: repo-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required files
+        run: |
+          test -f package.json
+          test -f pnpm-lock.yaml
+          test -f .gitignore
+          test -f .env.example
+
+      - name: Check for committed secret values
+        run: bash scripts/audit-secrets.sh

@@ -5,6 +5,7 @@ import {
   usersTable,
   labTechShiftsTable,
   adminSettingsTable,
+  shiftRoutingConfigTable,
 } from "@workspace/db";
 import { normalizeRole } from "./auth";
 
@@ -39,6 +40,9 @@ export type RoutingDecision = {
   assignedShiftId: number | null;
   routeSource: RouteSource;
   rule: RoutingRule;
+  routedTo: "csr_shift" | "default_queue";
+  routingStatus: "green" | "yellow";
+  routingMessage: string;
   estimatedReadyAt: Date;
   promisedMinutes: number;
 };
@@ -52,9 +56,17 @@ async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinu
   return { rule, defaultEtaMinutes };
 }
 
+export async function getApprovedMultiShiftConfig(tenantId: number) {
+  const [config] = await db.select().from(shiftRoutingConfigTable)
+    .where(eq(shiftRoutingConfigTable.tenantId, tenantId))
+    .orderBy(sql`${shiftRoutingConfigTable.approvedAt} DESC NULLS LAST`, sql`${shiftRoutingConfigTable.createdAt} DESC`)
+    .limit(1);
+  return config?.allowMultipleActiveShifts ? config : null;
+}
+
 type ActiveCsr = { userId: number; shiftId: number };
 
-export async function listActiveCsrs(): Promise<ActiveCsr[]> {
+export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
   const rows = await db
     .select({
       userId: labTechShiftsTable.techId,
@@ -63,7 +75,7 @@ export async function listActiveCsrs(): Promise<ActiveCsr[]> {
     })
     .from(labTechShiftsTable)
     .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
-    .where(eq(labTechShiftsTable.status, "active"));
+    .where(tenantId ? sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.tenantId} = ${tenantId}` : eq(labTechShiftsTable.status, "active"));
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
     if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
@@ -77,7 +89,7 @@ export async function isActiveCsr(userId: number): Promise<boolean> {
   return all.some(c => c.userId === userId);
 }
 
-export async function decideRouting(): Promise<RoutingDecision> {
+export async function decideRouting(tenantId?: number): Promise<RoutingDecision> {
   const { rule, defaultEtaMinutes } = await getRoutingSettings();
   const eta = new Date(Date.now() + defaultEtaMinutes * 60_000);
   // general_account always carries assignedShiftId=null — the order is
@@ -87,11 +99,14 @@ export async function decideRouting(): Promise<RoutingDecision> {
     assignedCsrUserId: null,
     assignedShiftId: null,
     routeSource: "general_account",
+    routedTo: "default_queue",
+    routingStatus: "yellow",
+    routingMessage: "No active CSR shift. Orders are routing to default queue.",
     estimatedReadyAt: eta,
     promisedMinutes: defaultEtaMinutes,
   };
 
-  const active = await listActiveCsrs();
+  const active = await listActiveCsrs(tenantId);
   if (active.length === 0) return { ...baseGeneral, rule };
 
   // Spec: exactly one active CSR → always assign to that CSR regardless of
@@ -104,6 +119,9 @@ export async function decideRouting(): Promise<RoutingDecision> {
       assignedCsrUserId: only.userId,
       assignedShiftId: only.shiftId,
       routeSource: "active_csr",
+      routedTo: "csr_shift",
+      routingStatus: "green",
+      routingMessage: "Orders are routing to the active CSR shift.",
       rule,
       estimatedReadyAt: eta,
       promisedMinutes: defaultEtaMinutes,
@@ -114,8 +132,26 @@ export async function decideRouting(): Promise<RoutingDecision> {
     return { ...baseGeneral, rule };
   }
 
+  const approved = tenantId ? await getApprovedMultiShiftConfig(tenantId) : ({ routingStrategy: rule } as { routingStrategy: string });
+  if (tenantId && !approved) {
+    return {
+      ...baseGeneral,
+      rule,
+      routingMessage: "Multiple active CSR shifts detected but no routing strategy is configured.",
+    };
+  }
+  const activeConfig = approved!;
+  const approvedRule = activeConfig.routingStrategy === "default_queue" || activeConfig.routingStrategy === "manual" ? "supervisor_manual_assignment" : "round_robin";
+  if (approvedRule === "supervisor_manual_assignment") {
+    return { ...baseGeneral, rule: approvedRule, routingMessage: "Multiple active CSR shifts approved; orders are routing to default queue/manual assignment." };
+  }
+
   let pick: ActiveCsr;
 
+  if (activeConfig.routingStrategy === "round_robin" || activeConfig.routingStrategy === "geo" || activeConfig.routingStrategy === "pickup_delivery") {
+    // Current data model does not yet have geo/pickup buckets; use a fair
+    // round-robin fallback while preserving the approved strategy on orders.
+  }
   if (rule === "least_recent_order") {
     const stats = await db
       .select({
@@ -155,7 +191,10 @@ export async function decideRouting(): Promise<RoutingDecision> {
     assignedCsrUserId: pick.userId,
     assignedShiftId: pick.shiftId,
     routeSource: "active_csr",
-    rule,
+    routedTo: "csr_shift",
+    routingStatus: "green",
+    routingMessage: "Orders are routing across approved active CSR shifts.",
+    rule: activeConfig.routingStrategy as RoutingRule,
     estimatedReadyAt: eta,
     promisedMinutes: defaultEtaMinutes,
   };

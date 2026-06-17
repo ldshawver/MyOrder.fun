@@ -9,7 +9,6 @@ export function normalizeNotificationRole(role?: string | null): NotificationRol
   if (normalized === "supervisor") return "supervisor";
   if (
     normalized === "customer_service_rep" ||
-    normalized === "staff" ||
     normalized === "customer_service_representative" ||
     normalized === "csr" ||
     normalized === "qsr" ||
@@ -22,7 +21,7 @@ export function normalizeNotificationRole(role?: string | null): NotificationRol
     normalized === "lab_tech" ||
     normalized === "lab_technician"
   ) {
-    return "customer_service_rep";
+    return "csr";
   }
   return "user";
 }

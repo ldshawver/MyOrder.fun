@@ -65,10 +65,11 @@ router.get("/admin/roles-permissions", requirePermission("users.manage_permissio
     permissions: PERMISSIONS.map((permission) => {
       const override = rows.find((row) => normalizeRole(row.role) === role && row.permission === permission);
       const defaultEnabled = (DEFAULT_ROLE_PERMISSIONS[role] as readonly string[]).includes(permission);
-      return { key: permission, enabled: override?.enabled ?? defaultEnabled, defaultEnabled, overridden: Boolean(override) };
+      return { key: permission, permission, enabled: override?.enabled ?? defaultEnabled, defaultEnabled, overridden: Boolean(override), editable: canEdit(actor, role, permission) == null };
     }),
   }));
-  res.json({ roles, permissions: groupedPermissions(), tenantId, warnings: { admin: "Changing admin permissions can lock tenant managers out. Keep users.manage_roles and users.manage_permissions enabled." } });
+  const groups = groupedPermissions();
+  res.json({ roles, permissions: groups, groups, tenantId, warnings: { admin: "Changing admin permissions can lock tenant managers out. Keep users.manage_roles and users.manage_permissions enabled." } });
 });
 
 router.put("/admin/roles-permissions/:role", requirePermission("users.manage_permissions"), async (req, res): Promise<void> => {
@@ -110,7 +111,7 @@ router.post("/admin/roles-permissions/:role/reset", requirePermission("users.man
   if ("error" in scope) return void res.status(403).json({ error: scope.error });
   const tenantId = scope.tenantId;
   await db.delete(rolePermissionsTable).where(and(eq(rolePermissionsTable.role, role), tenantId == null ? isNull(rolePermissionsTable.tenantId) : eq(rolePermissionsTable.tenantId, tenantId)));
-  await db.insert(permissionAuditLogsTable).values({ actorUserId: actor.id, tenantId, action: "permission.reset_defaults", targetRole: role });
+  await db.insert(permissionAuditLogsTable).values({ actorUserId: actor.id, tenantId, action: "permission.reset_defaults", targetRole: role, permission: "*" });
   res.json({ ok: true });
 });
 

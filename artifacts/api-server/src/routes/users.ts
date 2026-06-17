@@ -6,11 +6,10 @@ import {
   ListUsersQueryParams,
   ListUsersResponse,
   UpdateUserRoleParams,
-  UpdateUserRoleBody,
   UpdateUserRoleResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog, normalizeRole as normalizeAuthRole } from "../lib/auth";
-import { requirePermission, isGlobalAdmin, ROLE_GLOBAL_ADMIN } from "../lib/roles";
+import { requireAuth, loadDbUser, requireRole, requireDbUser, requireApproved, writeAuditLog, normalizeRole as normalizeAuthRole } from "../lib/auth";
+import { isKnownRole, type CanonicalRole } from "../lib/roles";
 import { sendSms, smsAccountApproved } from "../lib/sms";
 import { logger } from "../lib/logger";
 import { z } from "zod/v4";
@@ -50,15 +49,7 @@ const UpdateCurrentUserBody = z.object({
 const router: IRouter = Router();
 let usersListSchemaEnsured = false;
 
-const VALID_ROLES = [
-  "global_admin",
-  "admin",
-  "customer_service_rep",
-  "csr",
-  "supervisor",
-  "user",
-] as const;
-type ValidRole = typeof VALID_ROLES[number];
+type ValidRole = CanonicalRole;
 type ValidStatus = "pending" | "approved" | "rejected" | "deactivated";
 
 function normalizeRole(role: unknown): ValidRole {
@@ -78,19 +69,25 @@ function normalizeStatus(status: unknown): ValidStatus {
   return "pending";
 }
 
-
-function sameTenantOrGlobal(actor: NonNullable<import("express").Request["dbUser"]>, targetTenantId: number | null | undefined): boolean {
-  return isGlobalAdmin(actor) || (actor.tenantId != null && targetTenantId === actor.tenantId);
-}
-
-function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
-  const actor = req.dbUser!;
-  if (isGlobalAdmin(actor) || actor.tenantId != null) return next();
-  res.status(403).json({ error: "Tenant-scoped admin action requires a tenant assignment" });
-}
-
 function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is string {
   return !!clerkId && !clerkId.startsWith("pending_invite:") && !clerkId.startsWith("pending_request:");
+}
+
+const RoleValue = z.string().refine((value) => isKnownRole(value), { message: "Invalid role" }).transform((value) => normalizeRole(value));
+const RoleBody = z.object({ role: RoleValue });
+
+function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
+  if (actorRole === "global_admin") return true;
+  if (actorRole !== "admin") return false;
+  return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
+}
+
+function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
+  const actorRole = normalizeRole(actor.role);
+  if (actorRole === "global_admin") return true;
+  if (actorRole !== "admin") return false;
+  if (actor.tenantId == null || target.tenantId == null) return true;
+  return actor.tenantId === target.tenantId;
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -300,7 +297,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
 });
 
 // GET /api/users — admin and supervisor see all users
-router.get("/users", requirePermission("users.view_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.get("/users", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -310,9 +307,7 @@ router.get("/users", requirePermission("users.view_tenant"), requireTenantAssign
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
-  const actor = req.dbUser!;
   let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
-  if (!isGlobalAdmin(actor)) rows = rows.filter(u => u.tenantId === actor.tenantId);
 
   if (query.data.role) {
     // Compare against the normalized role so legacy values still match
@@ -363,8 +358,8 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
 
 // PATCH /api/users/:id/role — supervisors and admins (legacy path)
 // PATCH /api/admin/users/:id/role — admin-only namespace
-router.patch("/admin/users/:id/role", requirePermission("users.manage_roles"), requireTenantAssignedOrGlobal, updateUserRoleHandler);
-router.patch("/users/:id/role", requirePermission("users.manage_roles"), requireTenantAssignedOrGlobal, updateUserRoleHandler);
+router.patch("/admin/users/:id/role", requireRole("admin"), updateUserRoleHandler);
+router.patch("/users/:id/role", requireRole("global_admin", "admin"), updateUserRoleHandler);
 
 async function updateUserRoleHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
   const actor = req.dbUser!;
@@ -375,7 +370,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     return;
   }
 
-  const body = UpdateUserRoleBody.safeParse(req.body);
+  const body = RoleBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -386,13 +381,15 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     res.status(404).json({ error: "User not found" });
     return;
   }
-  if (!sameTenantOrGlobal(actor, target.tenantId)) {
-    res.status(403).json({ error: "Cannot modify a user outside your tenant" });
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
     return;
   }
-  const newRole = normalizeRole(body.data.role);
-  if (newRole === ROLE_GLOBAL_ADMIN && !isGlobalAdmin(actor)) {
-    res.status(403).json({ error: "Only global_admin can assign global_admin" });
+
+  const actorRole = normalizeRole(actor.role);
+  const newRole = body.data.role;
+  if (!canAssignRole(actorRole, newRole)) {
+    res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
 
@@ -403,7 +400,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
 
   // Mirror role into Clerk publicMetadata so subsequent sign-ins agree.
   if (hasRealClerkUserId(updated.clerkId)) {
-    await syncUserToClerk(updated.clerkId, { role: body.data.role });
+    await syncUserToClerk(updated.clerkId, { role: newRole });
   }
 
   await writeAuditLog({
@@ -413,7 +410,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     action: "UPDATE_USER_ROLE",
     resourceType: "user",
     resourceId: String(params.data.id),
-    metadata: { newRole: body.data.role, previousRole: target.role },
+    metadata: { newRole: newRole, previousRole: target.role },
     ipAddress: req.ip,
   });
 
@@ -423,7 +420,7 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     email: updated.email ?? undefined,
     firstName: updated.firstName ?? undefined,
     lastName: updated.lastName ?? undefined,
-    role: updated.role,
+    role: normalizeRole(updated.role),
     mfaEnabled: updated.mfaEnabled,
     isActive: updated.isActive,
     createdAt: updated.createdAt,
@@ -436,7 +433,7 @@ const UpdateUserStatusBody = z.object({
 });
 
 // PATCH /api/users/:id/status — admin only (alias also exposed at /api/admin/users/:id/status)
-router.patch(["/users/:id/status", "/admin/users/:id/status"], requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -456,9 +453,8 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requirePermission
     res.status(404).json({ error: "User not found" });
     return;
   }
-
-  if (!sameTenantOrGlobal(actor, target.tenantId)) {
-    res.status(403).json({ error: "Cannot modify a user outside your tenant" });
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
     return;
   }
 
@@ -518,17 +514,15 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requirePermission
 });
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
-router.get("/admin/users/pending", requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Promise<void> => {
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
-  const actor = req.dbUser!;
-  let rows = await db
+  const rows = await db
     .select()
     .from(usersTable)
     .where(eq(usersTable.status, "pending"))
     .orderBy(usersTable.createdAt);
-  if (!isGlobalAdmin(actor)) rows = rows.filter(u => u.tenantId === actor.tenantId);
   res.json({
     users: rows.map((u) => ({
       id: u.id,
@@ -549,13 +543,13 @@ router.get("/admin/users/pending", requirePermission("users.manage_tenant"), req
 
 const ApprovalBody = z.object({
   approve: z.boolean(),
-  role: z.enum([...VALID_ROLES]).optional(),
+  role: RoleValue.optional(),
 });
 
 // ─── PATCH /api/admin/users/:id/approval — single approval flow ─────────────
 // approve=true sets status='approved' (+ optional role) and pushes to Clerk.
 // approve=false sets status='rejected' and pushes to Clerk.
-router.patch("/admin/users/:id/approval", requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -575,16 +569,16 @@ router.patch("/admin/users/:id/approval", requirePermission("users.manage_tenant
     res.status(404).json({ error: "User not found" });
     return;
   }
-
-  if (!sameTenantOrGlobal(actor, target.tenantId)) {
-    res.status(403).json({ error: "Cannot modify a user outside your tenant" });
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
     return;
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
   const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
-  if (newRole === ROLE_GLOBAL_ADMIN && !isGlobalAdmin(actor)) {
-    res.status(403).json({ error: "Only global_admin can assign global_admin" });
+  const actorRole = normalizeRole(actor.role);
+  if (newRole && !canAssignRole(actorRole, newRole)) {
+    res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
 
@@ -643,7 +637,7 @@ router.patch("/admin/users/:id/approval", requirePermission("users.manage_tenant
 });
 
 // ─── GET /api/admin/users/waitlist — list Clerk waitlist entries ─────────────
-router.get("/admin/users/waitlist", requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.get("/admin/users/waitlist", requireRole("admin"), async (req, res): Promise<void> => {
   const query = (req.query.q as string | undefined)?.trim() || undefined;
   try {
     await syncOnboardingRequestsToPendingUsers();
@@ -699,7 +693,7 @@ router.get("/admin/users/waitlist", requirePermission("users.manage_tenant"), re
 });
 
 const WaitlistInviteBody = z.object({
-  role: z.enum([...VALID_ROLES]).default("user"),
+  role: RoleValue.default("user"),
   firstName: z.string().trim().max(100).optional(),
   lastName: z.string().trim().max(100).optional(),
   // Frontend passes the email it already has so we never hard-fail when
@@ -722,7 +716,7 @@ function pendingInviteSentinel(waitlistEntryId: string): string {
 //      using a sentinel clerkId tied to the waitlist entry. The webhook for
 //      `user.created` will swap the sentinel for the real Clerk id once the
 //      person actually accepts the invite and signs up.
-router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.post("/admin/users/waitlist/:id/invite", requireRole("admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const id = String(req.params.id ?? "");
   if (!id) { res.status(400).json({ error: "Missing waitlist entry id" }); return; }
@@ -732,13 +726,7 @@ router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const pickedRole = normalizeRole(body.data.role);
-  if (pickedRole === ROLE_GLOBAL_ADMIN && !isGlobalAdmin(actor)) {
-    res.status(403).json({ error: "Only global_admin can assign global_admin" });
-    return;
-  }
-  const { email: bodyEmail } = body.data;
-  const role = pickedRole;
+  const { role, email: bodyEmail } = body.data;
   let { firstName, lastName } = body.data;
 
   // Pre-fetch email from the waitlist list so we have it even if the Clerk
@@ -822,10 +810,6 @@ router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_
         ),
       );
     existingReal = realRows.find((r) => !r.clerkId.startsWith("pending_invite:"));
-    if (existingReal && !sameTenantOrGlobal(actor, existingReal.tenantId)) {
-      res.status(403).json({ error: "Cannot invite or promote a user outside your tenant" });
-      return;
-    }
   }
 
   let userRowCreated = false;
@@ -859,7 +843,6 @@ router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_
           lastName: lastName ?? undefined,
           role,
           status: "approved",
-          tenantId: isGlobalAdmin(actor) ? undefined : actor.tenantId ?? undefined,
         })
         .onConflictDoUpdate({
           target: usersTable.clerkId,
@@ -869,7 +852,6 @@ router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_
             lastName: lastName ?? undefined,
             role,
             status: "approved",
-            tenantId: isGlobalAdmin(actor) ? undefined : actor.tenantId ?? undefined,
             updatedAt: new Date(),
           },
         });
@@ -904,7 +886,7 @@ router.post("/admin/users/waitlist/:id/invite", requirePermission("users.manage_
 });
 
 // ─── POST /api/admin/users/waitlist/:id/reject ────────────────────────────────
-router.post("/admin/users/waitlist/:id/reject", requirePermission("users.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.post("/admin/users/waitlist/:id/reject", requireRole("admin"), async (req, res): Promise<void> => {
   const id = String(req.params.id ?? "");
   if (!id) { res.status(400).json({ error: "Missing waitlist entry id" }); return; }
   try {

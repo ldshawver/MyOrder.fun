@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, and, desc, lt, isNotNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import {
   db,
@@ -13,6 +13,7 @@ import {
   inventoryBalancesTable,
   inventoryLocationsTable,
   csrBoxesTable,
+  catalogItemsTable,
 } from "@workspace/db";
 import { sendSms, smsOrderConfirmation, smsNewOrderAlert, smsStatusUpdate, smsTrackingReady } from "../lib/sms";
 import {
@@ -58,6 +59,14 @@ import {
 
 const router: IRouter = Router();
 const SUPERVISOR_FALLBACK_PHONE = "19165989519";
+
+class InsufficientInventoryError extends Error {
+  constructor(public readonly catalogItemId: number) {
+    super(`Insufficient inventory for catalog item ${catalogItemId}`);
+    this.name = "InsufficientInventoryError";
+  }
+}
+
 
 // ─── SSE: realtime order events ──────────────────────────────────────────────
 // Mounted BEFORE the global router.use() auth chain so we can short-circuit
@@ -498,11 +507,15 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
+  const actorRole = normalizeRole(actor.role);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
   let rows = await db.select().from(ordersTable)
+    .where(actorRole === "user"
+      ? and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id))
+      : eq(ordersTable.tenantId, tenantId))
     .orderBy(desc(ordersTable.createdAt));
 
   // Customers see only their own orders.
-  const actorRole = normalizeRole(actor.role);
   if (actorRole === "user") {
     rows = rows.filter(o => o.customerId === actor.id);
   }
@@ -516,7 +529,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
   if (query.data.status) rows = rows.filter(o => o.status === query.data.status);
-  if (query.data.customerId) rows = rows.filter(o => o.customerId === query.data.customerId);
+  if (query.data.customerId && actorRole !== "user") rows = rows.filter(o => o.customerId === query.data.customerId);
 
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 20;
@@ -609,9 +622,24 @@ router.post("/orders", async (req, res): Promise<void> => {
 
   const houseTenantId = await getHouseTenantId();
 
+  const normalizedCatalogIds = Array.from(new Set(normalizedLines.map(line => line.catalog_item_id)));
+  const tenantCatalogRows = normalizedCatalogIds.length > 0
+    ? await db
+      .select({ id: catalogItemsTable.id })
+      .from(catalogItemsTable)
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        inArray(catalogItemsTable.id, normalizedCatalogIds),
+      ))
+    : [];
+  if (tenantCatalogRows.length !== normalizedCatalogIds.length) {
+    res.status(404).json({ error: "One or more catalog items were not found for this tenant" });
+    return;
+  }
+
   // supervisor_manual_assignment; routes to assigned CSR + their active
   // shift, or to the General Account fallback queue).
-  const routing = await decideRouting();
+  const routing = await decideRouting(houseTenantId);
 
   // Legacy assignedTechId/assignedShiftId mirror the routing decision so
   // the existing FulfillmentCard / shift dashboards / legacy reports
@@ -635,180 +663,199 @@ router.post("/orders", async (req, res): Promise<void> => {
   }
 
   const now = new Date();
-  const [order] = await db.insert(ordersTable).values({
-    tenantId: houseTenantId,
-    customerId: actor.id,
-    status: "pending",
-    paymentStatus: "unpaid",
-    paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-    subtotal: String(subtotal.toFixed(2)),
-    tax: String(tax.toFixed(2)),
-    total: String(finalTotal.toFixed(2)),
-    shippingAddress: body.data.shippingAddress ?? null,
-    deliveryMethod: isCsrDelivery
-      ? "csr_delivery"
-      : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
-    deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-    deliveryQuoteSnapshot: deliveryQuote ?? null,
-    deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
-    deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
-    notes: body.data.notes ?? null,
-    assignedTechId,
-    assignedShiftId,
-    assignedCsrUserId: routing.assignedCsrUserId,
-    routeSource: routing.routeSource,
-    routedAt: now,
-    promisedMinutes: routing.promisedMinutes,
-    estimatedReadyAt: routing.estimatedReadyAt,
-    fulfillmentStatus: "submitted",
-    finalConfirmationAt,
-    legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
-    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
-    selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-  }).returning();
 
-  // Persist dual-brand snapshots on the order for auditability
-  const alavontCartSnapshot = normalizedLines.map(l => ({
-    catalogItemId: l.catalog_item_id,
-    alavontName: l.receipt_alavont_name,
-    quantity: l.quantity,
-    unitPrice: l.unit_price,
-  }));
-  const luciferCheckoutSnapshot = normalizedLines.map(l => ({
-    catalogItemId: l.catalog_item_id,
-    luciferCruzName: l.merchant_name,
-    sourceType: l.source_type,
-    wooProductId: l.woo_product_id,
-    wooVariationId: l.woo_variation_id,
-    quantity: l.quantity,
-    unitPrice: l.unit_price,
-  }));
-  const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
-    acceptedAllSalesFinal: true,
-    confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
-    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
-  });
-  const checkoutSnapshotWithTip = {
-    ...checkoutConversionSnapshot,
-    tip: {
-      amount: tipAmount,
-      percent: checkoutConfirmation?.tipPercent ?? null,
-      recipient: "sales_rep",
-    },
-    pricingSnapshot: {
-      ...checkoutConversionSnapshot.pricingSnapshot,
-      deliveryFee,
-      tipAmount,
-      totalBeforeTip: merchandiseTotal + deliveryFee,
-      total: finalTotal,
-    },
-  };
+  let targetLocationId: number | null = null;
+  if (assignedShiftId) {
+    const [activeShift] = await db
+      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, assignedShiftId))
+      .limit(1);
 
-  await db.update(ordersTable).set({
-    alavontCartSnapshot,
-    luciferCheckoutSnapshot,
-    checkoutConversionSnapshot: checkoutSnapshotWithTip,
-  }).where(eq(ordersTable.id, order.id));
-
-  // Insert order items using normalized line data
-  // catalogItemName = Alavont display name (internal), luciferCruzName = LC merchant name (processor)
-  for (const line of normalizedLines) {
-    await db.insert(orderItemsTable).values({
-      orderId: order.id,
-      catalogItemId: line.catalog_item_id,
-      catalogItemName: line.catalog_display_name,        // Alavont name for internal records
-      quantity: line.quantity,
-      unitPrice: String(line.unit_price.toFixed(2)),
-      totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
-      // Dual-brand snapshot columns
-      alavontName: line.receipt_alavont_name,
-      luciferCruzName: line.merchant_name,               // LC merchant name — never Alavont
-      receiptName: line.receipt_name ?? line.merchant_name,
-      labelName: line.label_name ?? line.merchant_name,
-      labName: line.lab_name ?? line.receipt_alavont_name,
-      // CJ Dropshipping linkage — persisted so post-payment dispatch can use stored values
-      wooProductId: line.woo_product_id ?? null,
-      wooVariationId: line.woo_variation_id ?? null,
-    });
-  }
-
-  // Decrement inventory_balances for the CSR's assigned box location (fire-and-forget).
-  // If no active shift with a box assignment, decrement the Storefront balance instead.
-  // Errors are logged and never surface to the customer.
-  (async () => {
-    try {
-      let targetLocationId: number | null = null;
-
-      if (assignedShiftId) {
-        const [activeShift] = await db
-          .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
-          .from(labTechShiftsTable)
-          .where(eq(labTechShiftsTable.id, assignedShiftId))
-          .limit(1);
-
-        if (activeShift?.boxAssignmentId) {
-          const [box] = await db
-            .select({ id: csrBoxesTable.id })
-            .from(csrBoxesTable)
-            .where(
-              and(
-                eq(csrBoxesTable.tenantId, houseTenantId),
-                eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
-              )
-            )
-            .limit(1);
-          if (box) {
-            const [loc] = await db
-              .select({ id: inventoryLocationsTable.id })
-              .from(inventoryLocationsTable)
-              .where(
-                and(
-                  eq(inventoryLocationsTable.tenantId, houseTenantId),
-                  eq(inventoryLocationsTable.csrBoxId, box.id),
-                )
-              )
-              .limit(1);
-            targetLocationId = loc?.id ?? null;
-          }
-        }
-      }
-
-      // Fallback: storefront balance when no active CSR box
-      if (!targetLocationId) {
-        const [storefrontLoc] = await db
+    if (activeShift?.boxAssignmentId) {
+      const [box] = await db
+        .select({ id: csrBoxesTable.id })
+        .from(csrBoxesTable)
+        .where(and(
+          eq(csrBoxesTable.tenantId, houseTenantId),
+          eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+        ))
+        .limit(1);
+      if (box) {
+        const [loc] = await db
           .select({ id: inventoryLocationsTable.id })
           .from(inventoryLocationsTable)
-          .where(
-            and(
-              eq(inventoryLocationsTable.tenantId, houseTenantId),
-              eq(inventoryLocationsTable.type, "storefront"),
-            )
-          )
+          .where(and(
+            eq(inventoryLocationsTable.tenantId, houseTenantId),
+            eq(inventoryLocationsTable.csrBoxId, box.id),
+          ))
           .limit(1);
-        targetLocationId = storefrontLoc?.id ?? null;
+        targetLocationId = loc?.id ?? null;
+      }
+    }
+  }
+
+  if (!targetLocationId) {
+    const [storefrontLoc] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(and(
+        eq(inventoryLocationsTable.tenantId, houseTenantId),
+        eq(inventoryLocationsTable.type, "storefront"),
+      ))
+      .limit(1);
+    targetLocationId = storefrontLoc?.id ?? null;
+  }
+
+  if (!targetLocationId) {
+    res.status(409).json({ error: "No inventory location available for this order" });
+    return;
+  }
+
+  let order: typeof ordersTable.$inferSelect;
+  try {
+    order = await db.transaction(async (tx) => {
+      const [createdOrder] = await tx.insert(ordersTable).values({
+        tenantId: houseTenantId,
+        customerId: actor.id,
+        status: "pending",
+        paymentStatus: "unpaid",
+        paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+        subtotal: String(subtotal.toFixed(2)),
+        tax: String(tax.toFixed(2)),
+        total: String(finalTotal.toFixed(2)),
+        shippingAddress: body.data.shippingAddress ?? null,
+        deliveryMethod: isCsrDelivery
+          ? "csr_delivery"
+          : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+        deliveryQuoteId: deliveryQuote?.quoteId ?? null,
+        deliveryQuoteSnapshot: deliveryQuote ?? null,
+        deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
+        deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
+        notes: body.data.notes ?? null,
+        assignedTechId,
+        assignedShiftId,
+        assignedCsrUserId: routing.assignedCsrUserId,
+        routeSource: routing.routeSource,
+        routedTo: routing.routedTo,
+        routingStrategy: routing.rule,
+        routingStatus: routing.routingStatus,
+        routingMessage: routing.routingMessage,
+        routedAt: now,
+        promisedMinutes: routing.promisedMinutes,
+        estimatedReadyAt: routing.estimatedReadyAt,
+        fulfillmentStatus: "submitted",
+        finalConfirmationAt,
+        legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
+        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
+        selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+      }).returning();
+
+      const alavontCartSnapshot = normalizedLines.map(l => ({
+        catalogItemId: l.catalog_item_id,
+        alavontName: l.receipt_alavont_name,
+        quantity: l.quantity,
+        unitPrice: l.unit_price,
+      }));
+      const luciferCheckoutSnapshot = normalizedLines.map(l => ({
+        catalogItemId: l.catalog_item_id,
+        luciferCruzName: l.merchant_name,
+        sourceType: l.source_type,
+        wooProductId: l.woo_product_id,
+        wooVariationId: l.woo_variation_id,
+        quantity: l.quantity,
+        unitPrice: l.unit_price,
+      }));
+      const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
+        acceptedAllSalesFinal: true,
+        confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+      });
+      const checkoutSnapshotWithTip = {
+        ...checkoutConversionSnapshot,
+        tip: {
+          amount: tipAmount,
+          percent: checkoutConfirmation?.tipPercent ?? null,
+          recipient: "csr",
+        },
+        pricingSnapshot: {
+          ...checkoutConversionSnapshot.pricingSnapshot,
+          deliveryFee,
+          tipAmount,
+          totalBeforeTip: merchandiseTotal + deliveryFee,
+          total: finalTotal,
+        },
+      };
+
+      await tx.update(ordersTable).set({
+        alavontCartSnapshot,
+        luciferCheckoutSnapshot,
+        checkoutConversionSnapshot: checkoutSnapshotWithTip,
+      }).where(eq(ordersTable.id, createdOrder.id));
+
+      for (const line of normalizedLines) {
+        await tx.insert(orderItemsTable).values({
+          orderId: createdOrder.id,
+          catalogItemId: line.catalog_item_id,
+          catalogItemName: line.catalog_display_name,
+          quantity: line.quantity,
+          unitPrice: String(line.unit_price.toFixed(2)),
+          totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
+          alavontName: line.receipt_alavont_name,
+          luciferCruzName: line.merchant_name,
+          receiptName: line.receipt_name ?? line.merchant_name,
+          labelName: line.label_name ?? line.merchant_name,
+          labName: line.lab_name ?? line.receipt_alavont_name,
+          wooProductId: line.woo_product_id ?? null,
+          wooVariationId: line.woo_variation_id ?? null,
+        });
+
+        const decremented = await tx
+          .update(inventoryBalancesTable)
+          .set({
+            quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
+          })
+          .where(and(
+            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            eq(inventoryBalancesTable.productId, line.catalog_item_id),
+            eq(inventoryBalancesTable.locationId, targetLocationId),
+            sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
+          ))
+          .returning({ id: inventoryBalancesTable.id });
+
+        if (decremented.length !== 1) {
+          throw new InsufficientInventoryError(line.catalog_item_id);
+        }
+
+        await tx.execute(sql`
+            UPDATE catalog_items
+            SET
+              stock_quantity = COALESCE((
+                SELECT SUM(quantity_on_hand)
+                FROM inventory_balances
+                WHERE tenant_id = ${houseTenantId}
+                  AND product_id = ${line.catalog_item_id}
+              ), 0),
+              inventory_amount = COALESCE((
+                SELECT SUM(quantity_on_hand)
+                FROM inventory_balances
+                WHERE tenant_id = ${houseTenantId}
+                  AND product_id = ${line.catalog_item_id}
+              ), 0)
+            WHERE tenant_id = ${houseTenantId}
+              AND id = ${line.catalog_item_id}
+          `);
       }
 
-      if (targetLocationId) {
-        for (const line of normalizedLines) {
-          if (!line.catalog_item_id) continue;
-          await db
-            .update(inventoryBalancesTable)
-            .set({
-              quantityOnHand: sql`GREATEST(0, ${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)})`,
-            })
-            .where(
-              and(
-                eq(inventoryBalancesTable.tenantId, houseTenantId),
-                eq(inventoryBalancesTable.productId, line.catalog_item_id),
-                eq(inventoryBalancesTable.locationId, targetLocationId),
-              )
-            );
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, orderId: order.id }, "inventory_balances decrement failed — order unaffected");
+      return createdOrder;
+    });
+  } catch (err) {
+    if (err instanceof InsufficientInventoryError) {
+      res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
+      return;
     }
-  })();
+    throw err;
+  }
 
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {
@@ -1092,7 +1139,7 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
 });
 
 // POST /api/orders/:id/reassign — supervisor reassigns to a specific user
-router.post("/orders/:id/reassign", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1168,7 +1215,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin"), async 
 });
 
 // GET /api/orders/active-csrs — supervisor reassign dropdown source.
-router.get("/orders/active-csrs", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/orders/active-csrs", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
   const active = await listActiveCsrs();
   if (active.length === 0) { res.json({ csrs: [] }); return; }
   const ids = active.map(a => a.userId);
@@ -1244,18 +1291,112 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, params.data.id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
-    res.status(404).json({ error: "Order not found" });
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
     return;
   }
-  if (actor.role === "user" && order.customerId !== actor.id) {
-    res.status(403).json({ error: "Forbidden" });
+  const role = normalizeRole(actor.role);
+  if (role === "user" && order.customerId !== actor.id) {
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
     return;
   }
   const orderObj = await buildOrderResponse(order);
   res.json(GetOrderResponse.parse(orderObj));
 });
+
+const LifecycleBody = z.object({
+  status: z.enum(["completed", "cancelled", "archived", "voided"]),
+  reason: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+
+type DbActor = NonNullable<Request["dbUser"]>;
+async function actorCanOperateOrder(actor: DbActor, order: typeof ordersTable.$inferSelect, nextStatus: string) {
+  const role = normalizeRole(actor.role);
+  if (role === "user") return false;
+  if (role === "csr") {
+    if (!["completed", "cancelled"].includes(nextStatus)) return false;
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.techId, actor.id),
+      eq(labTechShiftsTable.status, "active"),
+      eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
+    )).limit(1);
+    return !!shift && order.assignedCsrUserId === actor.id;
+  }
+  return ["supervisor", "admin", "global_admin"].includes(role);
+}
+
+async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
+  const actor = req.dbUser!;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid order id" });
+    return;
+  }
+  const parsed = LifecycleBody.safeParse({ ...req.body, status: forcedStatus ?? req.body?.status });
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { status, reason } = parsed.data;
+  if (["cancelled", "archived", "voided"].includes(status) && !reason) {
+    res.status(400).json({ error: "Reason is required" });
+    return;
+  }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order) {
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
+    return;
+  }
+  const role = normalizeRole(actor.role);
+  if (status === "voided" && !["admin", "global_admin"].includes(role)) {
+    res.status(403).json({ error: "Void requires admin permission" });
+    return;
+  }
+  if (!await actorCanOperateOrder(actor, order, status)) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  const prior = order.status;
+  if (prior === "completed" && status !== "archived") {
+    res.status(409).json({ error: "Completed orders cannot be moved back to active states" });
+    return;
+  }
+  if (prior === "voided") {
+    res.status(409).json({ error: "Voided orders cannot be reactivated" });
+    return;
+  }
+  if (prior === "archived" && status !== "voided") {
+    res.status(409).json({ error: "Archived orders require an explicit restore endpoint before active transitions" });
+    return;
+  }
+  const now = new Date();
+  const stamps: Partial<typeof ordersTable.$inferInsert> =
+    status === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
+    status === "cancelled" ? { cancelledAt: now, cancelledByUserId: actor.id, fulfillmentStatus: "cancelled" } :
+    status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
+    { voidedAt: now, voidedByUserId: actor.id };
+  const [updated] = await db.update(ordersTable).set({ status, ...stamps }).where(eq(ordersTable.id, id)).returning();
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "ORDER_STATUS_CHANGED",
+    resourceType: "order",
+    resourceId: String(id),
+    metadata: { priorStatus: prior, newStatus: status, reason: reason ?? null },
+    ipAddress: req.ip,
+  });
+  res.json(await buildOrderResponse(updated));
+}
+
+router.patch("/orders/:id/status", (req, res) => { void transitionOrder(req, res); });
+router.post("/orders/:id/complete", (req, res) => { void transitionOrder(req, res, "completed"); });
+router.post("/orders/:id/cancel", (req, res) => { void transitionOrder(req, res, "cancelled"); });
+router.post("/orders/:id/archive", (req, res) => { void transitionOrder(req, res, "archived"); });
+router.post("/orders/:id/void", (req, res) => { void transitionOrder(req, res, "voided"); });
 
 // PATCH /api/orders/:id
 router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
@@ -1622,7 +1763,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  const isStaff = ["global_admin", "admin", "csr"].includes(actor.role ?? "");
+  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizeRole(actor.role));
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
   if (!order.deliveryMethod || order.deliveryMethod === "pickup") {
     res.status(422).json({ error: "Order is not a delivery order" }); return;

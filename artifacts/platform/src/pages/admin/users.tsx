@@ -12,29 +12,32 @@ import { Search, Mail, CheckCircle2, XCircle, ShieldAlert } from "lucide-react";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
-type RoleFilter = "all" | "global_admin" | "admin" | "customer_service_rep" | "user";
+type RoleFilter = "all" | "global_admin" | "admin" | "supervisor" | "csr" | "user";
 
-const APPROVAL_ROLES: { value: SetUserApprovalBodyRole; label: string }[] = [
-  { value: "user", label: "User" },
-  { value: "customer_service_rep", label: "Customer Service Rep" },
-  { value: "admin", label: "Admin" },
-  { value: "global_admin" as SetUserApprovalBodyRole, label: "Global Admin" },
+const ROLE_OPTIONS: { value: SetUserApprovalBodyRole; label: string; globalOnly?: boolean }[] = [
+  { value: "user", label: "Customer/User" },
+  { value: "csr", label: "Customer Service Rep" },
+  { value: "supervisor", label: "Supervisor" },
+  { value: "admin", label: "Manager/Admin", globalOnly: true },
+  { value: "global_admin" as SetUserApprovalBodyRole, label: "Global Admin", globalOnly: true },
 ];
 
 const ROLE_TABS: { id: RoleFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "global_admin", label: "Global Admin" },
-  { id: "admin", label: "Admin" },
-  { id: "customer_service_rep", label: "CSR" },
+  { id: "admin", label: "Manager/Admin" },
+  { id: "supervisor", label: "Supervisor" },
+  { id: "csr", label: "CSR" },
   { id: "user", label: "User" },
 ];
 
 function normalizeRole(role: string | undefined): RoleFilter {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
-  if (normalized === "customer_service_rep" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
-    return "customer_service_rep";
+  if (normalized === "admin") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
+    return "csr";
   }
   return "user";
 }
@@ -293,7 +296,7 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent className="rounded-sm">
-                          {APPROVAL_ROLES.map((r) => (
+                          {ROLE_OPTIONS.filter((r) => normalizeRole(currentRole) === "global_admin" || !r.globalOnly).map((r) => (
                             <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">
                               {r.label}
                             </SelectItem>
@@ -383,7 +386,7 @@ export default function AdminUsers() {
   const [pendingRoleById, setPendingRoleById] = useState<Record<number, SetUserApprovalBodyRole>>({});
 
   const handleRoleChange = (id: number, newRole: string) => {
-    if (["global_admin", "admin", "customer_service_rep", "user"].includes(newRole)) {
+    if (["global_admin", "admin", "supervisor", "csr", "user"].includes(newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
@@ -422,8 +425,8 @@ export default function AdminUsers() {
   const matchesRoleTab = (userRole: string | undefined, tab: RoleFilter): boolean => {
     if (tab === "all") return true;
     const r = normalizeRole(userRole);
-    if (tab === "customer_service_rep") {
-      return r === "customer_service_rep";
+    if (tab === "csr") {
+      return r === "csr";
     }
     return r === tab;
   };
@@ -445,7 +448,8 @@ export default function AdminUsers() {
     all: allUsers.length,
     global_admin: allUsers.filter((u) => matchesRoleTab(u.role, "global_admin")).length,
     admin: allUsers.filter((u) => matchesRoleTab(u.role, "admin")).length,
-    customer_service_rep: allUsers.filter((u) => matchesRoleTab(u.role, "customer_service_rep")).length,
+    supervisor: allUsers.filter((u) => matchesRoleTab(u.role, "supervisor")).length,
+    csr: allUsers.filter((u) => matchesRoleTab(u.role, "csr")).length,
     user: allUsers.filter((u) => matchesRoleTab(u.role, "user")).length,
   };
 
@@ -599,7 +603,7 @@ export default function AdminUsers() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="rounded-sm">
-                                {APPROVAL_ROLES.map((r) => (
+                                {ROLE_OPTIONS.filter((r) => currentUser?.role === "global_admin" || !r.globalOnly).map((r) => (
                                   <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">
                                     {r.label}
                                   </SelectItem>
@@ -621,10 +625,9 @@ export default function AdminUsers() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="rounded-sm">
-                                <SelectItem value="global_admin" className="text-xs font-mono uppercase tracking-wider">Global Admin</SelectItem>
-                                <SelectItem value="admin" className="text-xs font-mono uppercase tracking-wider">Admin</SelectItem>
-                                <SelectItem value="customer_service_rep" className="text-xs font-mono uppercase tracking-wider">Customer Service Rep</SelectItem>
-                                <SelectItem value="user" className="text-xs font-mono uppercase tracking-wider">User</SelectItem>
+                                {ROLE_OPTIONS.filter((r) => currentUser?.role === "global_admin" || !r.globalOnly).map((r) => (
+                                  <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">{r.label}</SelectItem>
+                                ))}
                               </SelectContent>
                             </Select>
                           )}

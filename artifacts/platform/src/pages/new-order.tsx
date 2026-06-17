@@ -302,7 +302,7 @@ export default function NewOrder() {
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
   const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
-  const canCurateSuggestions = user?.role === "customer_service_rep" || user?.role === "admin" || user?.role === "global_admin";
+  const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">

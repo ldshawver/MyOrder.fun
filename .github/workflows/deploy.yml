@@ -54,12 +54,14 @@ jobs:
 
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_HOST_FALLBACK: 100.117.100.45
-      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_HOST_FALLBACK: ${{ secrets.VPS_HOST_FALLBACK || '100.85.15.43' }}
+      VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       DEPLOY_PATH: /opt/alavont
+      COMPOSE_PROJECT_NAME: alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
-      TAILSCALE_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
@@ -79,7 +81,7 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          if [ -z "${VPS_PRIVATE_KEY}" ]; then
+          if [ -z "${VPS_PRIVATE_KEY:-}" ]; then
             echo "::error::Missing VPS SSH private key. Add VPS_SSH_KEY in GitHub Secrets."
             exit 1
           fi
@@ -89,21 +91,21 @@ jobs:
           ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
           echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
-      - name: Connect to Tailscale with auth key
-        if: env.TAILSCALE_AUTHKEY != ''
-        uses: tailscale/github-action@v3
-        with:
-          authkey: ${{ env.TAILSCALE_AUTHKEY }}
-
-      - name: Connect to Tailscale with OAuth
-        if: env.TAILSCALE_AUTHKEY == '' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != ''
+      - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ env.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          tags: tag:github-actions
 
-      - name: Select reachable VPS host and add known host
+      - name: Document Tailscale SSH policy requirements
+        run: |
+          set -euo pipefail
+          echo "GitHub Actions Tailscale tag: tag:github-actions"
+          echo "Deploy SSH user: ${VPS_USER}"
+          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag, for example tag:server or tag:myorder-vps."
+
+      - name: Select reachable VPS host and configure known_hosts
         run: |
           set -euo pipefail
 
@@ -111,13 +113,18 @@ jobs:
           touch ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
+            echo "Using VPS_KNOWN_HOSTS secret."
+            printf '%s\n' "${VPS_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
+          fi
+
           try_host() {
             local host="$1"
             local port="$2"
             local tmp_keys
             tmp_keys="$(mktemp)"
 
-            if [ -z "$host" ]; then
+            if [ -z "${host:-}" ]; then
               return 1
             fi
 
@@ -127,6 +134,7 @@ jobs:
               cat "$tmp_keys" >> ~/.ssh/known_hosts
               rm -f "$tmp_keys"
               echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
+              echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
               echo "Collected SSH host key(s) for ${host}:${port}."
               return 0
             fi
@@ -134,6 +142,23 @@ jobs:
             echo "No keys from ${host}:${port}."
             cat ssh-keyscan.err || true
             rm -f "$tmp_keys"
+
+            echo "Trying SSH preflight with StrictHostKeyChecking=accept-new for ${host}:${port}..."
+
+            if ssh \
+              -i "$SSH_KEY_PATH" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 \
+              -p "$port" \
+              "$VPS_USER@$host" \
+              'echo "SSH preflight OK:" $(whoami)@$(hostname)' ; then
+                echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
+                echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
+                return 0
+            fi
+
             return 1
           }
 
@@ -142,11 +167,12 @@ jobs:
           fi
 
           echo "Primary VPS_HOST failed. Trying fallback..."
-          if try_host "$VPS_HOST_FALLBACK" "$VPS_PORT"; then
+
+          if try_host "$VPS_HOST_FALLBACK" "$VPS_HOST_FALLBACK_PORT"; then
             exit 0
           fi
 
-          echo "::error::No host keys collected from primary or fallback host."
+          echo "::error::No reachable SSH host found from primary or fallback."
           exit 1
 
       - name: Verify SSH access
@@ -159,7 +185,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=20 \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
@@ -172,12 +198,12 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
-            "mkdir -p $DEPLOY_PATH"
+            "mkdir -p '$DEPLOY_PATH'"
 
           rsync -az --delete \
-            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $VPS_PORT" \
+            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $SELECTED_VPS_PORT" \
             --exclude='.git' \
             --exclude='node_modules' \
             --exclude='**/node_modules' \
@@ -196,57 +222,73 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
-            -p "$VPS_PORT" \
+            -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
-            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
+            "DEPLOY_SHA='${GITHUB_SHA}' DEPLOY_PATH='${DEPLOY_PATH}' COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT_NAME}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
-              cd /opt/alavont
+              echo "Deploy path: ${DEPLOY_PATH}"
+              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
+              echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
+
+              cd "${DEPLOY_PATH}"
 
               echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
 
               chmod +x deploy/*.sh 2>/dev/null || true
 
-              cd /opt/alavont/deploy
+              cd "${DEPLOY_PATH}/deploy"
 
-              docker compose down || true
-              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
-              docker compose up -d db
+              echo "Deploy path: ${DEPLOY_PATH}/deploy"
+              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
+
+              echo "Building images without taking the live site down..."
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
+
+              echo "Starting database..."
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d db
 
               for i in $(seq 1 30); do
-                if docker compose exec -T db pg_isready -q; then
+                if COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db pg_isready -q; then
                   echo "Database ready"
                   break
                 fi
 
                 if [ "$i" = "30" ]; then
-                  docker compose logs db --tail=80
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs db --tail=80
                   exit 1
                 fi
 
                 sleep 2
               done
 
-              docker compose run --rm migrate
-              docker compose up -d db api platform nginx
+              echo "Running migrations..."
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose run --rm migrate
 
-              for i in $(seq 1 30); do
+              echo "Starting app services..."
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
+
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
+
+              for i in $(seq 1 45); do
                 if curl -fsS http://127.0.0.1/api/healthz; then
                   echo "API healthy"
                   break
                 fi
 
-                if [ "$i" = "30" ]; then
-                  docker compose ps
-                  docker compose logs api --tail=100
+                if [ "$i" = "45" ]; then
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs api --tail=100
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs platform --tail=100
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs nginx --tail=100
                   exit 1
                 fi
 
                 sleep 2
               done
 
-              docker compose ps
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
               docker image prune -f
               echo "Deploy complete"
           ENDSSH
@@ -255,13 +297,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
               echo "Public health check passed"
               exit 0
             fi
 
-            echo "Public health not ready yet: $i/30"
+            echo "Public health not ready yet: $i/45"
             sleep 2
           done
 

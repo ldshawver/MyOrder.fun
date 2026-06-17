@@ -10,6 +10,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
 import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
+import Layout from "@/components/layout";
+import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -40,11 +42,10 @@ import ContractSignPage from "@/pages/contractor-hub/contract-sign";
 import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
-import AdminPrint from "@/pages/admin/print";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
-import AdminCatalogDebug from "@/pages/admin/catalog-debug";
+import AdminCatalogDebug from "@/pages/admin/edit-catalog";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -165,6 +166,12 @@ function ClerkQueryClientCacheInvalidator() {
   return null;
 }
 
+
+function canUseVisualEditor(role: string | null | undefined): boolean {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return normalized === "global_admin" || normalized === "admin" || normalized === "tenant_admin";
+}
+
 function HomeRedirect() {
   return (
     <>
@@ -269,7 +276,7 @@ function AuthenticatedApp() {
     query: {
       queryKey: ["getCurrentUser"],
       enabled: clerkLoaded && isSignedIn === true && authTokenReady,
-      retry: (failureCount, err) => {
+      retry: (failureCount: number, err: unknown) => {
         const e = err as { status?: number };
         if (e?.status === 403) return false;
         return failureCount < 3;
@@ -351,7 +358,12 @@ function AuthenticatedApp() {
 
   if (!user) return <Redirect to="/sign-in" />;
 
-  if ((user.status === "pending" || user.status === "rejected") && normalizeAppRole(user.role) !== "admin" && normalizeAppRole(user.role) !== "global_admin") {
+  const normalizedRole = normalizeNotificationRole(user.role);
+  const isGlobalAdmin = normalizedRole === "global_admin";
+  const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
+  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+
+  if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
     return (
       <PendingPage
         status={user.status}
@@ -396,16 +408,17 @@ function AuthenticatedApp() {
         )}
 
         {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
+        {isStaff && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
         {(["global_admin", "admin"].includes(appRole)) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
+            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
             <Route path="/admin/mfa" component={MfaSetup} />
-            <Route path="/admin/print" component={AdminPrint} />
             <Route path="/admin/import" component={AdminImport} />
             <Route path="/admin/settings" component={AdminSettingsPage} />
-            <Route path="/admin/catalog-debug" component={AdminCatalogDebug} />
+            <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
             <Route path="/admin/receipts" component={AdminReceipts} />
             <Route path="/admin/closeouts" component={AdminCloseouts} />
             <Route path="/admin/feedback" component={AdminFeedback} />
@@ -414,8 +427,14 @@ function AuthenticatedApp() {
             <Route path="/admin/reports" component={AdminReports} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
-            <Route path="/admin/visual-editor" component={AdminVisualEditor} />
-            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
+            {canUseVisualEditor(user.role) && (
+              <>
+                <Route path="/admin/puck/import" component={AdminPuckImport} />
+                <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
+                <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+              </>
+            )}
           </>
         )}
 
@@ -424,7 +443,6 @@ function AuthenticatedApp() {
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
             <Route path="/csr-settings/:section" component={CsrSettings} />
-            <Route path="/communications" component={Communications} />
           </>
         )}
 
@@ -450,7 +468,6 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
-      <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

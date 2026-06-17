@@ -35,8 +35,8 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-const ADMIN_VIEW_ROLES = ["global_admin", "admin", "tenant_admin"] as const;
-const ADMIN_WRITE_ROLES = ["global_admin", "admin", "tenant_admin"] as const;
+const ADMIN_VIEW_ROLES = ["global_admin", "admin"] as const;
+const ADMIN_WRITE_ROLES = ["global_admin", "admin"] as const;
 
 const FEEDBACK_TYPES = ["bug", "ux", "feature", "general"] as const;
 const FEEDBACK_SEVERITIES = ["low", "medium", "high", "critical"] as const;
@@ -100,7 +100,7 @@ const AddCommentBody = z.object({
 
 function normalizeFeedbackRole(role: string): string {
   const raw = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  if (raw === "tenant_admin") return "tenant_admin";
+  if (raw === "admin") return "admin";
   if (raw === "supervisor") return "supervisor";
   return normalizeRole(raw);
 }

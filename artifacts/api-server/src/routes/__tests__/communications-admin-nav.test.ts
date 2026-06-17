@@ -3,6 +3,7 @@
  * The platform app does not have a dedicated test runner, so these tests inspect
  * the route/sidebar source directly to guard role visibility, deduped nav items,
  * and removal of unrelated product modules from active MyOrder navigation.
+ * MyOrder.fun navigation cleanup guards.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -70,6 +71,35 @@ describe("MyOrder active navigation reconciliation", () => {
   });
 
   it("preserves the existing account phone route and user phone input", () => {
+
+describe("MyOrder.fun navigation cleanup", () => {
+  it("removes LUXit communications navigation and direct app routes", () => {
+    expect(layoutSrc).not.toContain("SMS & Calls");
+    expect(layoutSrc).not.toContain("Phone & SMS");
+    expect(layoutSrc).not.toContain('href: "/admin/communications"');
+    expect(layoutSrc).not.toContain('href: "/communications"');
+    expect(appSrc).not.toContain('path="/admin/communications"');
+    expect(appSrc).not.toContain('path="/communications"');
+  });
+
+  it("removes MyPayLink document and contractor hub navigation and routes", () => {
+    expect(layoutSrc).not.toContain("Document Hub");
+    expect(layoutSrc).not.toContain("Contractor Hub");
+    expect(appSrc).not.toContain('path="/document-hub"');
+    expect(appSrc).not.toContain('path="/contractor-hub"');
+    expect(appSrc).not.toContain('path="/app/contractor-hub/contracts/:id/sign"');
+  });
+
+  it("uses Settings and centralized Receipts & Printers navigation", () => {
+    expect(layoutSrc).toContain('label: "Settings"');
+    expect(layoutSrc).toContain('label: "Receipts & Printers"');
+    expect(layoutSrc).not.toContain('label: "WooCommerce"');
+    expect(layoutSrc).not.toContain('label: "Integrations"');
+    expect(layoutSrc).not.toContain('label: "Receipt Templates"');
+    expect(layoutSrc).not.toContain('label: "Reprint Receipts"');
+  });
+
+  it("keeps existing PWA/account phone settings separate from removed app communications modules", () => {
     expect(appSrc).toMatch(/<Route path="\/account" component=\{Account\} \/>/);
     expect(src("pages/account.tsx")).toMatch(/id="contact-phone"/);
     expect(src("pages/account.tsx")).toMatch(/Mobile Number \(SMS\)/);

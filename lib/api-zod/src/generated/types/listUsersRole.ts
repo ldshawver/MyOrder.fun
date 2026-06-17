@@ -12,9 +12,6 @@ export type ListUsersRole = typeof ListUsersRole[keyof typeof ListUsersRole];
 export const ListUsersRole = {
   admin: 'admin',
   supervisor: 'supervisor',
-  business_sitter: 'business_sitter',
-  customer_service_rep: 'customer_service_rep',
-  sales_rep: 'sales_rep',
-  lab_tech: 'lab_tech',
+  csr: 'csr',
   user: 'user',
 } as const;

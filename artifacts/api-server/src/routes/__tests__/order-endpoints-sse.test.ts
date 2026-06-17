@@ -21,7 +21,9 @@ const dbState: {
   settings: Array<Record<string, unknown>>;
   tenants: Array<Record<string, unknown>>;
   catalog: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [] };
+  inventoryLocations: Array<Record<string, unknown>>;
+  inventoryBalances: Array<Record<string, unknown>>;
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -33,9 +35,9 @@ vi.mock("@clerk/express", () => ({
 
 function normalizeTestRole(role: string | undefined) {
   if (role === "global_admin") return "global_admin";
-  if (role === "admin" || role === "supervisor") return "admin";
+  if (role === "admin") return "admin";
+  if (role === "supervisor") return "supervisor";
   if (
-    role === "customer_service_rep" ||
     role === "csr" ||
     role === "business_sitter" ||
     role === "sales_rep" ||
@@ -127,7 +129,10 @@ vi.mock("@workspace/db", () => {
   const adminSettingsTable = { __t: "admin_settings" };
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
-  const catalogItemsTable = { __t: "catalog", id: "id" };
+  const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
+  const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
+  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand" };
+  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -138,7 +143,18 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "tenants") return dbState.tenants;
     if (t.__t === "order_items") return orderItems;
     if (t.__t === "catalog") return dbState.catalog;
+    if (t.__t === "inventory_locations") return dbState.inventoryLocations;
+    if (t.__t === "inventory_balances") return dbState.inventoryBalances;
     return [];
+  }
+
+  function matchesPredicate(row: Record<string, unknown>, predicate: unknown): boolean {
+    if (!predicate) return true;
+    if (Array.isArray(predicate)) return predicate.every((p) => matchesPredicate(row, p));
+    const p = predicate as { col?: string; val?: unknown; vals?: unknown[] };
+    if (p.vals) return p.vals.includes(row[p.col ?? ""]);
+    if (p.col) return row[p.col] === p.val;
+    return true;
   }
 
   const select = vi.fn((cols?: Record<string, unknown>) => {
@@ -147,8 +163,8 @@ vi.mock("@workspace/db", () => {
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: { __t: string }) => { target = t; return chain; });
     chain.innerJoin = vi.fn(() => chain);
-    chain.where = vi.fn((p: { col?: string; val?: unknown }) => {
-      pred = (row) => row[p.col ?? ""] === p.val;
+    chain.where = vi.fn((p: unknown) => {
+      pred = (row) => matchesPredicate(row, p);
       return chain;
     });
     const resolveRows = () => target ? tableFor(target).filter(r => pred ? pred(r) : true) : [];
@@ -188,8 +204,8 @@ vi.mock("@workspace/db", () => {
     let pred: Pred = null;
     const chain: Record<string, unknown> = {};
     chain.set = vi.fn((v: Record<string, unknown>) => { setVals = v; return chain; });
-    chain.where = vi.fn((p: { col?: string; val?: unknown }) => {
-      pred = (row) => row[p.col ?? ""] === p.val;
+    chain.where = vi.fn((p: unknown) => {
+      pred = (row) => matchesPredicate(row, p);
       return chain;
     });
     chain.returning = vi.fn(async () => {
@@ -206,8 +222,8 @@ vi.mock("@workspace/db", () => {
   });
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn() },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable,
+    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve()) })) },
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -215,6 +231,7 @@ vi.mock("@workspace/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...a) => a),
+  inArray: vi.fn((col, vals) => ({ col, vals })),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
@@ -266,7 +283,7 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved" },
-    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "customer_service_rep", status: "approved" },
+    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved" },
     { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
   ];
   dbState.shifts = [];
@@ -275,6 +292,8 @@ beforeEach(() => {
   }];
   dbState.tenants = [{ id: 1 }];
   dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
+  dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
+  dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10 }];
   mockActor = {};
   _resetBus();
 });
@@ -386,7 +405,7 @@ describe("SSE event emission via the live route handlers", () => {
     expect(res.status).toBe(403);
   });
 
-  it("admin surfaces are not accessible to customer_service_rep", async () => {
+  it("admin surfaces are not accessible to csr", async () => {
     const sitter = { id: 7, role: "business_sitter", email: "s@x", firstName: "S", lastName: "Sitter" };
     dbState.users.push(sitter);
     mockActor = sitter;
