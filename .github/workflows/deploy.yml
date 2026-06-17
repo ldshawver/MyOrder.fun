@@ -55,7 +55,7 @@ jobs:
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_HOST_FALLBACK: ${{ secrets.VPS_HOST_FALLBACK || '100.85.15.43' }}
-      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
       VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
@@ -104,6 +104,13 @@ jobs:
           oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ env.TS_OAUTH_SECRET }}
           tags: tag:github-actions
+
+      - name: Document Tailscale SSH policy requirements
+        run: |
+          set -euo pipefail
+          echo "GitHub Actions Tailscale tag: tag:github-actions"
+          echo "Deploy SSH user: ${VPS_USER}"
+          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag (for example tag:server)."
 
       - name: Select reachable VPS host and configure known_hosts
         run: |
