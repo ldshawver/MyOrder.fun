@@ -38,7 +38,6 @@ import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
-import ContractSignPage from "@/pages/contractor-hub/contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
@@ -538,7 +537,6 @@ function AuthenticatedApp() {
           <Route path="/account">{() => protect(<Account />)}</Route>
           <Route path="/profile">{() => protect(<Profile />)}</Route>
           <Route path="/credits" component={Credits} />
-          <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
           <Route component={NotFound} />
         </Switch>
       </Layout>

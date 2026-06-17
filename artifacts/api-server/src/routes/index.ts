@@ -23,12 +23,11 @@ import feedbackRouter from "./feedback";
 import integrationsRouter from "./integrations";
 import creditsRouter from "./credits";
 import reportsRouter from "./reports";
+import communicationsRouter from "./communications";
 import proposalsRouter from "./proposals";
 import visualEditorRouter from "./visual-editor";
 import rolePermissionsRouter from "./role-permissions";
 import privacyRouter from "./privacy";
-import contractorHubRouter from "../modules/contractor-hub/routes";
-import documentHubRouter from "../modules/document-hub/routes";
 
 const router: IRouter = Router();
 
@@ -56,11 +55,8 @@ router.use(feedbackRouter);
 router.use(integrationsRouter);
 router.use(creditsRouter);
 router.use(reportsRouter);
-router.use(proposalsRouter);
 router.use(visualEditorRouter);
 router.use(rolePermissionsRouter);
 router.use(privacyRouter);
-router.use(contractorHubRouter);
-router.use(documentHubRouter);
 
 export default router;

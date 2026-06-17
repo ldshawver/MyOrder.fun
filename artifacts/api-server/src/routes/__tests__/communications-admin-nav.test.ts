@@ -20,6 +20,7 @@ function src(relativePath: string): string {
 const appSrc = src("App.tsx");
 const layoutSrc = src("components/layout.tsx");
 const integrationsSrc = src("pages/global-admin/integrations.tsx");
+const routesIndexSrc = readFileSync(resolve(__dirname, "../index.ts"), "utf8");
 
 function countMatches(source: string, pattern: RegExp): number {
   return source.match(pattern)?.length ?? 0;
@@ -87,6 +88,10 @@ describe("MyOrder.fun navigation cleanup", () => {
     expect(layoutSrc).not.toContain("Contractor Hub");
     expect(appSrc).not.toContain('path="/document-hub"');
     expect(appSrc).not.toContain('path="/contractor-hub"');
+    expect(appSrc).not.toContain("public-contract-sign");
+    expect(routesIndexSrc).not.toContain("contractor-hub");
+    expect(routesIndexSrc).not.toContain("document-hub");
+    expect(routesIndexSrc).not.toContain("proposalsRouter");
   });
 
   it("uses Settings and centralized Receipts & Printers navigation", () => {
