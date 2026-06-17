@@ -74,12 +74,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const { brand } = useBrand();
   const isLC = brand === "lucifer_cruz";
 
-<<<<<<< codex/fix-typescript-failures-in-platform-code
   const userRole = normalizeNotificationRole(user.role);
-=======
-  const userRole = normalizeUiRole(user.role);
-  const notificationRole = normalizeNotificationRole(user.role);
->>>>>>> main
+  const notificationRole = userRole;
 
   usePushNotifications({ role: notificationRole });
 
