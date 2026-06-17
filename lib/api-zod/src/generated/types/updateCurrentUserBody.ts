@@ -16,5 +16,4 @@ export interface UpdateCurrentUserBody {
   notificationPreferences?: UpdateCurrentUserBodyNotificationPreferences;
   /** @maxLength 2048 */
   avatarUrl?: string | null;
-  smsOptIn?: boolean | null;
 }

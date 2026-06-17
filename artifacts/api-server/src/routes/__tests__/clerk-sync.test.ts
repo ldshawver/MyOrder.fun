@@ -123,10 +123,6 @@ vi.mock("drizzle-orm", () => ({
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
-vi.mock("../../lib/sms", () => ({
-  sendSms: vi.fn().mockResolvedValue(undefined),
-  smsAccountApproved: vi.fn(() => "Welcome!"),
-}));
 
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
