@@ -3,13 +3,15 @@ import { logger } from "./logger";
 
 export type ClerkSyncStatus = "pending" | "approved" | "rejected" | "deactivated";
 
-type ValidClerkRole = "global_admin" | "admin" | "customer_service_rep" | "user";
+type ValidClerkRole = "global_admin" | "admin" | "tenant_admin" | "supervisor" | "customer_service_rep" | "user";
 
 function normalizeClerkRole(role: string | undefined): ValidClerkRole | undefined {
   if (!role) return undefined;
   const normalized = role.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "admin") return "admin";
+  if (normalized === "tenant_admin") return "tenant_admin";
+  if (normalized === "supervisor") return "supervisor";
   if (
     normalized === "customer_service_rep" ||
     normalized === "customer_service_representative" ||

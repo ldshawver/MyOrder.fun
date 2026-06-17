@@ -53,6 +53,12 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
+import AdminWebEditor from "@/pages/admin/web-editor";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminRolesPermissions from "@/pages/admin/roles-permissions";
+import Layout from "@/components/layout";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -60,6 +66,33 @@ const clerkProxyUrl = import.meta.env.PROD
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+type AppRole = "global_admin" | "admin" | "supervisor" | "customer_service_rep" | "user";
+
+function normalizeAppRole(role?: string | null): AppRole {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "global_admin") return "global_admin";
+  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (
+    normalized === "customer_service_rep" ||
+    normalized === "staff" ||
+    normalized === "customer_service_representative" ||
+    normalized === "customer_service" ||
+    normalized === "customer_service_specialist" ||
+    normalized === "customer_success" ||
+    normalized === "service_rep" ||
+    normalized === "csr" ||
+    normalized === "qsr" ||
+    normalized === "business_sitter" ||
+    normalized === "sales_rep" ||
+    normalized === "lab_tech" ||
+    normalized === "lab_technician"
+  ) {
+    return "customer_service_rep";
+  }
+  return "user";
+}
 
 function stripBase(path: string): string {
   return basePath && path.startsWith(basePath)
@@ -321,7 +354,7 @@ function AuthenticatedApp() {
 
   if (!user) return <Redirect to="/sign-in" />;
 
-  if ((user.status === "pending" || user.status === "rejected") && user.role !== "admin") {
+  if ((user.status === "pending" || user.status === "rejected") && normalizeAppRole(user.role) !== "admin" && normalizeAppRole(user.role) !== "global_admin") {
     return (
       <PendingPage
         status={user.status}
@@ -330,6 +363,8 @@ function AuthenticatedApp() {
       />
     );
   }
+
+  const appRole = normalizeAppRole(user.role);
 
   return (
     <>
@@ -353,7 +388,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {normalizeNotificationRole(user.role) === "global_admin" && (
+        {appRole === "global_admin" && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -363,10 +398,10 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin"].includes(appRole)) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/mfa" component={MfaSetup} />
@@ -388,7 +423,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {(["global_admin", "admin", "customer_service_rep"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
