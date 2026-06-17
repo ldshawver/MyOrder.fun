@@ -36,7 +36,7 @@ import {
   PanelsTopLeft,
   PlugZap,
 } from "lucide-react";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { FloatingFeedbackButton } from "@/components/FloatingFeedbackButton";
 import { useListNotifications, getListNotificationsQueryKey } from "@workspace/api-client-react";
 
@@ -86,8 +86,9 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const isLC = brand === "lucifer_cruz";
 
   const userRole = normalizeUiRole(user.role);
+  const notificationRole = normalizeNotificationRole(user.role);
 
-  usePushNotifications({ role: userRole });
+  usePushNotifications({ role: notificationRole });
 
   const { data: notifData } = useListNotifications(
     {},

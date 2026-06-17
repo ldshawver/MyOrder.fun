@@ -1,6 +1,11 @@
 import { useEffect, useCallback, useRef } from "react";
 
-export type NotificationRole = "global_admin" | "admin" | "supervisor" | "csr" | "user";
+export type NotificationRole =
+  | "global_admin"
+  | "admin"
+  | "supervisor"
+  | "csr"
+  | "user";
 
 export function normalizeNotificationRole(role?: string | null): NotificationRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
