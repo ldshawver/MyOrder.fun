@@ -218,14 +218,20 @@ describe("requireRole middleware", () => {
 
 describe("normalizeRole", () => {
   it.each([
+    ["CSR", "csr"],
     ["customer_service_rep", "csr"],
     ["csr", "csr"],
+    ["Admin", "admin"],
     ["supervisor", "supervisor"],
+    ["Supervisor", "supervisor"],
     ["admin", "admin"],
     ["tenant_admin", "admin"],
     ["manager", "admin"],
     ["global-admin", "global_admin"],
+    ["GlobalAdmin", "global_admin"],
+    ["globalAdmin", "global_admin"],
     ["super_admin", "global_admin"],
+    ["User", "user"],
     ["unknown", "user"],
     [null, "user"],
     ["Customer-Service-Representative", "csr"],

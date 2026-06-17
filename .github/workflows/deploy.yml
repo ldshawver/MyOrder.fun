@@ -231,7 +231,7 @@ jobs:
               echo "Compose project: ${COMPOSE_PROJECT_NAME}"
               echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
 
-              cd "$DEPLOY_PATH"
+              cd "${DEPLOY_PATH}"
 
               echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
@@ -269,7 +269,7 @@ jobs:
               echo "Starting app services..."
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
 
-              docker compose ps
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
 
               for i in $(seq 1 45); do
                 if curl -fsS http://127.0.0.1/api/healthz; then

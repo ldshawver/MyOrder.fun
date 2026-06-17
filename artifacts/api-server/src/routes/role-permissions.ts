@@ -65,10 +65,11 @@ router.get("/admin/roles-permissions", requirePermission("users.manage_permissio
     permissions: PERMISSIONS.map((permission) => {
       const override = rows.find((row) => normalizeRole(row.role) === role && row.permission === permission);
       const defaultEnabled = (DEFAULT_ROLE_PERMISSIONS[role] as readonly string[]).includes(permission);
-      return { key: permission, enabled: override?.enabled ?? defaultEnabled, defaultEnabled, overridden: Boolean(override) };
+      return { key: permission, permission, enabled: override?.enabled ?? defaultEnabled, defaultEnabled, overridden: Boolean(override), editable: canEdit(actor, role, permission) == null };
     }),
   }));
-  res.json({ roles, permissions: groupedPermissions(), tenantId, warnings: { admin: "Changing admin permissions can lock tenant managers out. Keep users.manage_roles and users.manage_permissions enabled." } });
+  const groups = groupedPermissions();
+  res.json({ roles, permissions: groups, groups, tenantId, warnings: { admin: "Changing admin permissions can lock tenant managers out. Keep users.manage_roles and users.manage_permissions enabled." } });
 });
 
 router.put("/admin/roles-permissions/:role", requirePermission("users.manage_permissions"), async (req, res): Promise<void> => {

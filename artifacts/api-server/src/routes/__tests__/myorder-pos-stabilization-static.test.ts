@@ -186,3 +186,25 @@ describe("shift wording compatibility", () => {
     expect(shifts).toContain('"/shifts/clock-out"');
   });
 });
+
+describe("role permission route integration", () => {
+  const routesIndex = api("routes/index.ts");
+  const rolePermissions = api("routes/role-permissions.ts");
+
+  it("mounts the tenant-scoped role permission router without falling back to the legacy duplicate mount", () => {
+    expect(routesIndex).toContain('import rolePermissionsRouter from "./role-permissions"');
+    expect(routesIndex).toContain("router.use(rolePermissionsRouter)");
+    expect(routesIndex).not.toContain('import permissionsRouter from "./permissions"');
+    expect(routesIndex).not.toContain("router.use(permissionsRouter)");
+  });
+
+  it("keeps role permission APIs scoped, strict, permission-gated, and audit logged", () => {
+    expect(rolePermissions).toContain("router.use(requireAuth, loadDbUser, requireDbUser, requireApproved)");
+    expect(rolePermissions).toContain('requirePermission("users.manage_permissions")');
+    expect(rolePermissions).toContain(".strict()");
+    expect(rolePermissions).toContain("Tenant admins cannot modify another tenant's permissions");
+    expect(rolePermissions).toContain("Tenant admins cannot edit global_admin permissions");
+    expect(rolePermissions).toContain("Tenant admins cannot grant platform permissions");
+    expect(rolePermissions).toContain("permissionAuditLogsTable");
+  });
+});

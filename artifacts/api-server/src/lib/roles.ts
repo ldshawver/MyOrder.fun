@@ -30,6 +30,17 @@ export const CANONICAL_ROLES = [
 export type CanonicalRole = typeof CANONICAL_ROLES[number];
 export type NormalizedRole = CanonicalRole;
 export type Role = CanonicalRole;
+export type LegacyRole =
+  | CanonicalRole
+  | "CSR"
+  | "Customer Service Rep"
+  | "customer_service_rep"
+  | "GlobalAdmin"
+  | "globalAdmin"
+  | "Admin"
+  | "Supervisor"
+  | "User"
+  | string;
 export const ROLES = CANONICAL_ROLES;
 
 export const LEGACY_ROLE_ALIASES: Record<string, Role> = {
@@ -53,6 +64,7 @@ export const LEGACY_ROLE_ALIASES: Record<string, Role> = {
   admin: ROLE_ADMIN,
   manager: ROLE_ADMIN,
   tenant_admin: ROLE_ADMIN,
+  globaladmin: ROLE_GLOBAL_ADMIN,
   global_admin: ROLE_GLOBAL_ADMIN,
   super_admin: ROLE_GLOBAL_ADMIN,
   platform_admin: ROLE_GLOBAL_ADMIN,
@@ -67,6 +79,10 @@ export function isKnownRole(role: unknown): boolean {
   if (role == null) return false;
   const normalized = typeof role === "string" ? role.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
   return normalized in LEGACY_ROLE_ALIASES;
+}
+
+export function isCanonicalRole(role: unknown): role is CanonicalRole {
+  return (CANONICAL_ROLES as readonly string[]).includes(String(role));
 }
 
 export function isGlobalAdmin(user: Pick<User, "role"> | null | undefined): boolean {
@@ -85,6 +101,11 @@ export function hasRole(user: Pick<User, "role"> | null | undefined, roles: read
 export function hasRoleValue(role: unknown, roles: readonly Role[]): boolean {
   const normalized = normalizeRole(role);
   return roles.includes(normalized) || (normalized === ROLE_GLOBAL_ADMIN && roles.includes(ROLE_ADMIN));
+}
+
+export function roleIncludes(roles: readonly LegacyRole[], role: unknown): boolean {
+  const allowed = roles.map(normalizeRole);
+  return hasRoleValue(role, allowed);
 }
 
 export const PERMISSIONS = [
