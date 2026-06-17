@@ -20,6 +20,8 @@ export const visualEditorPagesTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
+    sourceImportPath: text("source_import_path"),
+    importedFromPageId: integer("imported_from_page_id"),
   },
   (table) => ({ tenantSlugUnique: uniqueIndex("visual_editor_pages_tenant_slug_unique").on(table.tenantId, table.slug) }),
 );

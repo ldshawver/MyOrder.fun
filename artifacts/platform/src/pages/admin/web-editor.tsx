@@ -1,6 +1,7 @@
 import { Globe, Info } from "lucide-react";
 
 const PUCK_EDITOR_PATH = "/admin/visual-editor";
+const PUCK_IMPORT_PATH = "/admin/puck/import";
 
 export default function AdminWebEditor() {
   const editorUrl = `${window.location.origin}${PUCK_EDITOR_PATH}`;
@@ -33,6 +34,7 @@ export default function AdminWebEditor() {
           >
             Open Puck Editor
           </a>
+          <a href={PUCK_IMPORT_PATH} className="flex items-center gap-1.5 text-xs font-semibold px-4 py-2 rounded-xl border border-blue-500/30 text-blue-100">Import Page</a>
         </div>
 
         <div className="border-t border-border/30 pt-4 space-y-3">
