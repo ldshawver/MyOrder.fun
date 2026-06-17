@@ -37,6 +37,9 @@ import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
+import Communications from "@/pages/communications";
+import ContractSignPage from "@/pages/contractor-hub/contract-sign";
+import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
@@ -52,8 +55,8 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
-import AdminPuckImport from "@/pages/admin/puck-import";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
+import Layout from "@/components/layout";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
 // domain which isn't reachable from Replit, causing Clerk JS to fail to load.
@@ -61,6 +64,33 @@ const clerkProxyUrl = import.meta.env.PROD
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+type AppRole = "global_admin" | "admin" | "supervisor" | "customer_service_rep" | "user";
+
+function normalizeAppRole(role?: string | null): AppRole {
+  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "global_admin") return "global_admin";
+  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
+  if (normalized === "supervisor") return "supervisor";
+  if (
+    normalized === "customer_service_rep" ||
+    normalized === "staff" ||
+    normalized === "customer_service_representative" ||
+    normalized === "customer_service" ||
+    normalized === "customer_service_specialist" ||
+    normalized === "customer_success" ||
+    normalized === "service_rep" ||
+    normalized === "csr" ||
+    normalized === "qsr" ||
+    normalized === "business_sitter" ||
+    normalized === "sales_rep" ||
+    normalized === "lab_tech" ||
+    normalized === "lab_technician"
+  ) {
+    return "customer_service_rep";
+  }
+  return "user";
+}
 
 function stripBase(path: string): string {
   return basePath && path.startsWith(basePath)
@@ -343,6 +373,8 @@ function AuthenticatedApp() {
     );
   }
 
+  const appRole = normalizeAppRole(user.role);
+
   return (
     <>
       {!ndaAccepted && (
@@ -365,7 +397,7 @@ function AuthenticatedApp() {
         <Route path="/ai-concierge" component={AiConcierge} />
         
         {/* Role specific routes */}
-        {normalizeNotificationRole(user.role) === "global_admin" && (
+        {appRole === "global_admin" && (
           <>
             <Route path="/global-admin" component={GlobalAdmin} />
             <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
@@ -375,10 +407,11 @@ function AuthenticatedApp() {
           </>
         )}
 
+        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
         {isStaff && (
           <Route path="/admin/inventory" component={AdminInventory} />
         )}
-        {(["global_admin", "admin"].includes(normalizeNotificationRole(user.role))) && (
+        {(["global_admin", "admin"].includes(appRole)) && (
           <>
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
@@ -405,7 +438,7 @@ function AuthenticatedApp() {
           </>
         )}
 
-        {isStaff && (
+        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
           <>
             <Route path="/staff" component={StaffQueue} />
             <Route path="/csr-settings" component={CsrSettings} />
@@ -418,6 +451,7 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
+        <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
         <Route component={NotFound} />
         </Switch>
       </Layout>
