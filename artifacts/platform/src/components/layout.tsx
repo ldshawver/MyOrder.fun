@@ -57,17 +57,6 @@ type NavSection = {
   items: NavItem[];
 };
 
-function normalizeUiRole(role: string | null | undefined): "global_admin" | "admin" | "supervisor" | "csr" | "user" {
-  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin") return "admin";
-  if (normalized === "supervisor") return "supervisor";
-  if (normalized === "csr" || normalized === "customer_service_representative" || normalized === "customer_service" || normalized === "customer_service_specialist" || normalized === "customer_success" || normalized === "service_rep" || normalized === "csr" || normalized === "qsr" || normalized === "business_sitter" || normalized === "sales_rep" || normalized === "lab_tech" || normalized === "lab_technician") {
-    return "csr";
-  }
-  return "user";
-}
-
 function roleCanSee(roles: string[], userRole: string): boolean {
   return roles.includes(userRole) || (userRole === "global_admin" && roles.includes("admin"));
 }
@@ -85,8 +74,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const { brand } = useBrand();
   const isLC = brand === "lucifer_cruz";
 
+<<<<<<< codex/fix-typescript-failures-in-platform-code
+  const userRole = normalizeNotificationRole(user.role);
+=======
   const userRole = normalizeUiRole(user.role);
   const notificationRole = normalizeNotificationRole(user.role);
+>>>>>>> main
 
   usePushNotifications({ role: notificationRole });
 
