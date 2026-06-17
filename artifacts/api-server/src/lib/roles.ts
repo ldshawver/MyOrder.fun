@@ -30,6 +30,7 @@ export const CANONICAL_ROLES = [
 export type CanonicalRole = typeof CANONICAL_ROLES[number];
 export type NormalizedRole = CanonicalRole;
 export type Role = CanonicalRole;
+<<<<<<< HEAD
 export type LegacyRole =
   | CanonicalRole
   | "CSR"
@@ -41,6 +42,8 @@ export type LegacyRole =
   | "Supervisor"
   | "User"
   | string;
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 export const ROLES = CANONICAL_ROLES;
 
 export const LEGACY_ROLE_ALIASES: Record<string, Role> = {
@@ -64,7 +67,10 @@ export const LEGACY_ROLE_ALIASES: Record<string, Role> = {
   admin: ROLE_ADMIN,
   manager: ROLE_ADMIN,
   tenant_admin: ROLE_ADMIN,
+<<<<<<< HEAD
   globaladmin: ROLE_GLOBAL_ADMIN,
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   global_admin: ROLE_GLOBAL_ADMIN,
   super_admin: ROLE_GLOBAL_ADMIN,
   platform_admin: ROLE_GLOBAL_ADMIN,
@@ -81,10 +87,13 @@ export function isKnownRole(role: unknown): boolean {
   return normalized in LEGACY_ROLE_ALIASES;
 }
 
+<<<<<<< HEAD
 export function isCanonicalRole(role: unknown): role is CanonicalRole {
   return (CANONICAL_ROLES as readonly string[]).includes(String(role));
 }
 
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 export function isGlobalAdmin(user: Pick<User, "role"> | null | undefined): boolean {
   return normalizeRole(user?.role) === ROLE_GLOBAL_ADMIN;
 }
@@ -103,11 +112,14 @@ export function hasRoleValue(role: unknown, roles: readonly Role[]): boolean {
   return roles.includes(normalized) || (normalized === ROLE_GLOBAL_ADMIN && roles.includes(ROLE_ADMIN));
 }
 
+<<<<<<< HEAD
 export function roleIncludes(roles: readonly LegacyRole[], role: unknown): boolean {
   const allowed = roles.map(normalizeRole);
   return hasRoleValue(role, allowed);
 }
 
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 export const PERMISSIONS = [
   "users.view_self", "users.view_team", "users.view_tenant", "users.manage_team", "users.manage_tenant", "users.manage_roles", "users.manage_permissions",
   "orders.view_self", "orders.view_team", "orders.view_tenant", "orders.create", "orders.update", "orders.cancel", "orders.refund",
@@ -116,7 +128,11 @@ export const PERMISSIONS = [
   "schedules.view_self", "schedules.view_team", "schedules.view_tenant", "schedules.create", "schedules.update", "schedules.approve", "schedules.publish",
   "timeclock.clock_self", "timeclock.view_team", "timeclock.approve_team", "timeclock.view_tenant",
   "reports.view_self", "reports.view_team", "reports.view_tenant", "reports.export",
+<<<<<<< HEAD
   "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "pages.manage", "content.manage", "app_doctor.view", "app_doctor.run",
+=======
+  "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "app_doctor.view", "app_doctor.run",
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   "platform.tenants.view", "platform.tenants.manage", "platform.impersonate", "platform.global_settings.manage",
 ] as const;
 export type Permission = typeof PERMISSIONS[number];

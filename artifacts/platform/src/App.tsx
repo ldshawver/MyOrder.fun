@@ -50,6 +50,7 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
+import AdminCommunications from "@/pages/admin/communications";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
@@ -200,6 +201,7 @@ function ClerkQueryClientCacheInvalidator() {
 
   return null;
 }
+
 
 function canUseVisualEditor(role: string | null | undefined): boolean {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -539,6 +541,7 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/sign/contracts/:token" component={PublicContractSignPage} />
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

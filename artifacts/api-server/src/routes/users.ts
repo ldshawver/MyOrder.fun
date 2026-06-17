@@ -82,6 +82,7 @@ function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
   return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
 }
 
+<<<<<<< HEAD
 function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
   const actorRole = normalizeRole(actor.role);
   if (actorRole === "global_admin") return true;
@@ -90,6 +91,8 @@ function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: ty
   return actor.tenantId === target.tenantId;
 }
 
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 async function ensureUsersListSchema(): Promise<void> {
   if (usersListSchemaEnsured) return;
 
@@ -383,6 +386,13 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
   }
   if (!canManageUserInTenant(actor, target)) {
     res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
+    return;
+  }
+
+  const actorRole = normalizeRole(actor.role);
+  const newRole = body.data.role;
+  if (!canAssignRole(actorRole, newRole)) {
+    res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
 

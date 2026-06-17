@@ -1,16 +1,24 @@
 import { useEffect, useCallback, useRef } from "react";
 
+<<<<<<< HEAD
 export type NotificationRole =
   | "global_admin"
   | "admin"
   | "supervisor"
   | "csr"
   | "user";
+=======
+export type NotificationRole = "user" | "csr" | "supervisor" | "admin" | "global_admin";
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 
 export function normalizeNotificationRole(role?: string | null): NotificationRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (normalized === "global_admin") return "global_admin";
+<<<<<<< HEAD
   if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
+=======
+  if (normalized === "admin") return "admin";
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   if (normalized === "supervisor") return "supervisor";
   if (
     normalized === "customer_service_rep" ||

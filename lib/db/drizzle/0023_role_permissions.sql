@@ -20,12 +20,19 @@ CREATE TABLE IF NOT EXISTS "permission_audit_logs" (
   "new_value" boolean,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
+<<<<<<< HEAD
 UPDATE "users" SET "role" = 'csr' WHERE "role" = 'CSR';
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 UPDATE "users" SET "role" = CASE
   WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) IN ('customer','normal_user') THEN 'user'
   WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) IN ('customer_service_rep','customer_service_representative','customer_service','customer_service_specialist','customer_success','service_rep','csr','qsr','staff','business_sitter','sales_rep','lab_tech','lab_technician') THEN 'csr'
   WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) = 'supervisor' THEN 'supervisor'
   WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) IN ('manager','tenant_admin','admin') THEN 'admin'
+<<<<<<< HEAD
   WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) IN ('super_admin','platform_admin','global_admin','globaladmin') THEN 'global_admin'
+=======
+  WHEN lower(replace(replace("role", '-', '_'), ' ', '_')) IN ('super_admin','platform_admin','global_admin') THEN 'global_admin'
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   ELSE 'user'
 END;

@@ -19,7 +19,11 @@ export const defaultVisualEditorData: VisualEditorData = {
 
 export const visualEditorConfig: Config = {
   categories: {
+<<<<<<< HEAD
     content: { title: "Safe content", defaultExpanded: true, components: ["HeroSection", "TextBlock", "ImageBlock", "CTAButton", "FAQBlock", "FeatureGrid", "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock", "SafeHtmlBlock"] },
+=======
+    content: { title: "Safe content", defaultExpanded: true, components: ["HeroSection", "TextBlock", "ImageBlock", "CTAButton", "FAQBlock", "FeatureGrid", "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock"] },
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
     catalog: { title: "Catalog presentation", defaultExpanded: true, components: ["CatalogSection", "FeaturedProductsBlock", "ProductPromoGrid"] },
   },
   components: {
@@ -34,7 +38,10 @@ export const visualEditorConfig: Config = {
     ContactInfoBlock: { label: "Contact info", fields: { title: { type: "text" }, phone: { type: "text" }, email: { type: "text" }, address: { type: "textarea" } }, defaultProps: { title: "Contact us", phone: "", email: "", address: "" }, render: ({ title, phone, email, address }) => <section className="rounded-xl border bg-card p-5"><h2 className="font-bold">{title}</h2><p>{phone}</p><p>{email}</p><p className="whitespace-pre-line text-muted-foreground">{address}</p></section> },
     StoreHoursBlock: { label: "Store hours", fields: { title: { type: "text" }, hours: { type: "textarea" } }, defaultProps: { title: "Hours", hours: "Monday-Friday: 9am-5pm" }, render: ({ title, hours }) => <section className="rounded-xl border bg-card p-5"><h2 className="font-bold">{title}</h2><p className="whitespace-pre-line text-muted-foreground">{hours}</p></section> },
     CatalogSection: { label: "Catalog section", fields: { title: { type: "text" }, description: { type: "textarea" }, layout: { type: "select", options: [...layoutOptions] }, quantityLabel: { type: "text" } }, defaultProps: { title: "Catalog section", description: "Presentation-only catalog copy.", layout: "grid", quantityLabel: "Available" }, render: ({ title, description, layout, quantityLabel }) => <section className="rounded-xl border bg-card p-5"><div className="flex justify-between gap-3"><div><h2 className="text-2xl font-bold">{title}</h2><p className="mt-2 text-muted-foreground">{description}</p></div><span className="text-xs uppercase text-primary">{layout}</span></div><p className="mt-4 text-sm">Quantity label: {quantityLabel}</p></section> },
+<<<<<<< HEAD
     SafeHtmlBlock: { label: "Sanitized HTML fallback", fields: { sanitizedHtml: { type: "textarea" } }, defaultProps: { sanitizedHtml: "" }, render: ({ sanitizedHtml }) => <div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground whitespace-pre-wrap">{String(sanitizedHtml ?? "").replace(/<[^>]+>/g, " ")}</div> },
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
     FeaturedProductsBlock: { label: "Featured products", fields: { title: { type: "text" }, productNames: { type: "textarea" } }, defaultProps: { title: "Featured products", productNames: "Product one\nProduct two" }, render: ({ title, productNames }) => <section><h2 className="text-2xl font-bold">{title}</h2><div className="mt-4 grid gap-3 md:grid-cols-2">{lines(productNames).slice(0, 8).map((name) => <div key={name} className="rounded-lg border p-4">{name}</div>)}</div></section> },
   },
 };

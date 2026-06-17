@@ -26,7 +26,11 @@ import reportsRouter from "./reports";
 import proposalsRouter from "./proposals";
 import communicationsRouter from "./communications";
 import visualEditorRouter from "./visual-editor";
+<<<<<<< HEAD
 import rolePermissionsRouter from "./role-permissions";
+=======
+import permissionsRouter from "./permissions";
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 import contractorHubRouter from "../modules/contractor-hub/routes";
 import documentHubRouter from "../modules/document-hub/routes";
 
@@ -59,7 +63,11 @@ router.use(reportsRouter);
 router.use(proposalsRouter);
 router.use(communicationsRouter);
 router.use(visualEditorRouter);
+<<<<<<< HEAD
 router.use(rolePermissionsRouter);
+=======
+router.use(permissionsRouter);
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 router.use(contractorHubRouter);
 router.use(documentHubRouter);
 

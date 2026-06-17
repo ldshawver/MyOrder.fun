@@ -20,8 +20,11 @@ export const visualEditorPagesTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
+<<<<<<< HEAD
     sourceImportPath: text("source_import_path"),
     importedFromPageId: integer("imported_from_page_id"),
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   },
   (table) => ({ tenantSlugUnique: uniqueIndex("visual_editor_pages_tenant_slug_unique").on(table.tenantId, table.slug) }),
 );

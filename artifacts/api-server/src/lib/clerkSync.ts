@@ -1,11 +1,23 @@
 import { clerkClient } from "@clerk/express";
 import { logger } from "./logger";
+<<<<<<< HEAD
 import { isKnownRole, normalizeRole, type CanonicalRole } from "./roles";
 
 export type ClerkSyncStatus = "pending" | "approved" | "rejected" | "deactivated";
 
 function normalizeClerkRole(role: string | undefined): CanonicalRole | undefined {
   return isKnownRole(role) ? normalizeRole(role) : undefined;
+=======
+import { normalizeRole, type CanonicalRole } from "./roles";
+
+export type ClerkSyncStatus = "pending" | "approved" | "rejected" | "deactivated";
+
+type ValidClerkRole = CanonicalRole;
+
+function normalizeClerkRole(role: string | undefined): ValidClerkRole | undefined {
+  if (!role) return undefined;
+  return normalizeRole(role);
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 }
 
 export interface ClerkSyncPayload {

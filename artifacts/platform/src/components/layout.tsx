@@ -32,6 +32,7 @@ import {
   Store,
   Wifi,
   Zap,
+  Phone,
   Palette,
   PanelsTopLeft,
   PlugZap,
@@ -96,6 +97,12 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   );
   const unreadCount = notifData?.unreadCount ?? 0;
 
+  const { data: notifData } = useListNotifications(
+    {},
+    { query: { queryKey: getListNotificationsQueryKey({}), refetchInterval: 30000 } }
+  );
+  const unreadCount = notifData?.unreadCount ?? 0;
+
   // Staff roles that can run a shift / see the CSR queue + clock-in
   const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
@@ -133,6 +140,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/account", label: "Account Settings", icon: Settings, roles: ALL_ROLES },
             { href: "/credits", label: "Credit", icon: BadgeDollarSign, roles: ALL_ROLES },
             { href: "/notifications", label: "Notifications", icon: Bell, roles: ALL_ROLES },
+
           ],
         },
       ],
@@ -143,6 +151,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       defaultOpen: true,
       items: [
         { href: "/staff", label: "Shift / Queue", icon: ListTodo, roles: SHIFT_ROLES },
+        { href: "/communications", label: "Phone & SMS", icon: Phone, roles: SHIFT_ROLES, mobileShow: true },
         {
           href: "/csr-settings",
           label: "CSR Settings",
@@ -161,6 +170,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Supervisor",
       roles: ["global_admin", "admin"],
       items: [
+
         {
           href: "/admin/settings",
           label: "Settings",

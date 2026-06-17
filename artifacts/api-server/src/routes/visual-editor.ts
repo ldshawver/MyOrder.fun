@@ -2,7 +2,10 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, visualEditorPageVersionsTable, visualEditorPagesTable } from "@workspace/db";
+<<<<<<< HEAD
 import { importPageToPuck, isSafeInternalPath, sanitizeImportedHtml } from "../lib/puck/importPageToPuck";
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 import { loadDbUser, normalizeRole, requireApproved, requireAuth, requireDbUser, requireRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
@@ -10,7 +13,11 @@ const router: IRouter = Router();
 
 const ALLOWED_COMPONENTS = new Set([
   "HeroSection", "TextBlock", "ImageBlock", "CTAButton", "ProductPromoGrid", "FAQBlock", "FeatureGrid",
+<<<<<<< HEAD
   "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock", "CatalogSection", "FeaturedProductsBlock", "SafeHtmlBlock",
+=======
+  "AnnouncementBanner", "ContactInfoBlock", "StoreHoursBlock", "CatalogSection", "FeaturedProductsBlock",
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 ]);
 const RESERVED_SLUGS = new Set(["admin", "api", "app", "checkout", "cart", "login", "logout", "orders", "settings", "inventory", "shifts", "payments"]);
 const MAX_LAYOUT_BYTES = 250_000;
@@ -22,8 +29,11 @@ const dataSchema = z.object({ root: z.record(z.string(), z.unknown()).optional()
 const createPageSchema = z.object({ slug: z.string().trim().toLowerCase(), title: z.string().trim().min(1).max(140), draftJson: z.unknown().optional() }).strict();
 const draftSchema = z.object({ draftJson: z.unknown() }).strict();
 const restoreSchema = z.object({ versionId: z.number().int().positive() }).strict();
+<<<<<<< HEAD
 const importSourceSchema = z.object({ sourceType: z.enum(["internal_path", "page_id"]), path: z.string().trim().max(300).optional(), pageId: z.union([z.number().int().positive(), z.string().regex(/^\d+$/).transform(Number)]).optional() }).strict();
 const importPageSchema = importSourceSchema.extend({ title: z.string().trim().min(1).max(140), slug: z.string().trim().toLowerCase() }).strict();
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 
 async function ensureVisualEditorSchema(): Promise<void> {
   if (schemaEnsured) return;
@@ -52,8 +62,11 @@ async function ensureVisualEditorSchema(): Promise<void> {
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "updated_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "published_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`,
+<<<<<<< HEAD
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "source_import_path" text`,
     sql`ALTER TABLE "visual_editor_pages" ADD COLUMN IF NOT EXISTS "imported_from_page_id" integer`,
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
     sql`DO $$
       BEGIN
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='visual_editor_pages' AND column_name='draft_data') THEN
@@ -125,6 +138,7 @@ function validatePuckData(data: unknown): string | null {
 }
 async function actorTenantId(req: Request): Promise<number> { return req.dbUser?.tenantId ?? await getHouseTenantId(); }
 function visibleToTenant(req: Request, tenantId: number) { return normalizeRole(req.dbUser?.role) === "global_admin" || req.dbUser?.tenantId === tenantId; }
+<<<<<<< HEAD
 
 function htmlFromPuckData(data: unknown): string {
   const rec = data && typeof data === "object" ? data as Record<string, unknown> : {};
@@ -161,6 +175,11 @@ async function importAudit(req: Request, action: string, tenantId: number, metad
 function mapPage(page: typeof visualEditorPagesTable.$inferSelect, includeDraft = true) { return { id: page.id, tenantId: page.tenantId, companyId: page.companyId, slug: page.slug, title: page.title, status: page.status, ...(includeDraft ? { draftJson: page.draftJson ?? emptyPuckData } : {}), publishedJson: page.publishedJson, createdAt: page.createdAt, updatedAt: page.updatedAt, publishedAt: page.publishedAt, archivedAt: page.archivedAt }; }
 async function audit(req: Request, action: string, page: { tenantId: number; id?: number; slug?: string }) { if (!req.dbUser) return; void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action, tenantId: page.tenantId, resourceType: "visual_editor_page", resourceId: String(page.id ?? page.slug ?? "unknown"), ipAddress: req.ip }); }
 
+=======
+function mapPage(page: typeof visualEditorPagesTable.$inferSelect, includeDraft = true) { return { id: page.id, tenantId: page.tenantId, companyId: page.companyId, slug: page.slug, title: page.title, status: page.status, ...(includeDraft ? { draftJson: page.draftJson ?? emptyPuckData } : {}), publishedJson: page.publishedJson, createdAt: page.createdAt, updatedAt: page.updatedAt, publishedAt: page.publishedAt, archivedAt: page.archivedAt }; }
+async function audit(req: Request, action: string, page: { tenantId: number; id?: number; slug?: string }) { if (!req.dbUser) return; void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action, tenantId: page.tenantId, resourceType: "visual_editor_page", resourceId: String(page.id ?? page.slug ?? "unknown"), ipAddress: req.ip }); }
+
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 router.get("/public/pages/:slug", async (req: Request, res: Response): Promise<void> => {
   await ensureVisualEditorSchema();
   const rawSlug = req.params.slug;
@@ -172,6 +191,7 @@ router.get("/public/pages/:slug", async (req: Request, res: Response): Promise<v
   res.json({ id: page.id, slug: page.slug, title: page.title, publishedJson: page.publishedJson, publishedAt: page.publishedAt });
 });
 
+<<<<<<< HEAD
 
 async function requirePagesManage(req: Request, res: Response, next: import("express").NextFunction): Promise<void> {
   const { hasPermission } = await import("../lib/auth");
@@ -229,6 +249,10 @@ router.post("/admin/pages/import", async (req: Request, res: Response): Promise<
 
 router.use("/admin/visual-editor", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"));
 
+=======
+router.use("/admin/visual-editor", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"));
+
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 router.get("/admin/visual-editor/pages", async (req: Request, res: Response): Promise<void> => {
   await ensureVisualEditorSchema();
   const tenantId = await actorTenantId(req);
@@ -284,7 +308,10 @@ router.post("/admin/visual-editor/pages/:id/publish", async (req: Request, res: 
   await db.insert(visualEditorPageVersionsTable).values({ pageId: page.id, tenantId: page.tenantId, companyId: page.companyId, versionJson: page.draftJson, title: page.title, slug: page.slug, createdByUserId: req.dbUser?.id });
   const [updated] = await db.update(visualEditorPagesTable).set({ publishedJson: page.draftJson, status: "published", updatedByUserId: req.dbUser?.id, publishedByUserId: req.dbUser?.id, updatedAt: now, publishedAt: now }).where(eq(visualEditorPagesTable.id, id)).returning();
   await audit(req, "visual_editor.page_published", page);
+<<<<<<< HEAD
   if (page.sourceImportPath || page.importedFromPageId) await importAudit(req, "visual_editor.imported_page_published", page.tenantId, { pageId: page.id, sourceImportPath: page.sourceImportPath ?? null, importedFromPageId: page.importedFromPageId ?? null }, page.id);
+=======
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
   res.json(mapPage(updated ?? page));
 });
 

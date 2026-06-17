@@ -664,6 +664,7 @@ router.post("/orders", async (req, res): Promise<void> => {
 
   const now = new Date();
 
+<<<<<<< HEAD
   let targetLocationId: number | null = null;
   if (assignedShiftId) {
     const [activeShift] = await db
@@ -671,6 +672,44 @@ router.post("/orders", async (req, res): Promise<void> => {
       .from(labTechShiftsTable)
       .where(eq(labTechShiftsTable.id, assignedShiftId))
       .limit(1);
+=======
+  // Persist dual-brand snapshots on the order for auditability
+  const alavontCartSnapshot = normalizedLines.map(l => ({
+    catalogItemId: l.catalog_item_id,
+    alavontName: l.receipt_alavont_name,
+    quantity: l.quantity,
+    unitPrice: l.unit_price,
+  }));
+  const luciferCheckoutSnapshot = normalizedLines.map(l => ({
+    catalogItemId: l.catalog_item_id,
+    luciferCruzName: l.merchant_name,
+    sourceType: l.source_type,
+    wooProductId: l.woo_product_id,
+    wooVariationId: l.woo_variation_id,
+    quantity: l.quantity,
+    unitPrice: l.unit_price,
+  }));
+  const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
+    acceptedAllSalesFinal: true,
+    confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+  });
+  const checkoutSnapshotWithTip = {
+    ...checkoutConversionSnapshot,
+    tip: {
+      amount: tipAmount,
+      percent: checkoutConfirmation?.tipPercent ?? null,
+      recipient: "csr",
+    },
+    pricingSnapshot: {
+      ...checkoutConversionSnapshot.pricingSnapshot,
+      deliveryFee,
+      tipAmount,
+      totalBeforeTip: merchandiseTotal + deliveryFee,
+      total: finalTotal,
+    },
+  };
+>>>>>>> e99c0cb (Checkpoint local branch changes before refresh)
 
     if (activeShift?.boxAssignmentId) {
       const [box] = await db
