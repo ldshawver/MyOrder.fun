@@ -8,6 +8,7 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
+import SensitiveScreen from "@/components/privacy/SensitiveScreen";
 import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
 import Layout from "@/components/layout";
@@ -53,10 +54,6 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
-<<<<<<< codex/fix-typescript-failures-in-platform-code
-import AdminPuckImport from "@/pages/admin/puck-import";
-=======
->>>>>>> main
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -449,6 +446,21 @@ function AuthenticatedApp() {
   const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
   const appRole = normalizeAppRole(user.role);
 
+
+  const privacyUser = user as typeof user & { privacyModeEnabled?: boolean; sensitiveScreensProtectionEnabled?: boolean; watermarkSensitiveScreens?: boolean; privacyBlurOnBackground?: boolean; privacyPrintBlockingEnabled?: boolean; tenantName?: string | null; companyName?: string | null };
+  const privacySettings = {
+    privacyModeEnabled: privacyUser.privacyModeEnabled ?? true,
+    sensitiveScreensProtectionEnabled: privacyUser.sensitiveScreensProtectionEnabled ?? true,
+    watermarkSensitiveScreens: privacyUser.watermarkSensitiveScreens ?? true,
+    blurOnBackground: privacyUser.privacyBlurOnBackground ?? true,
+    printBlockingEnabled: privacyUser.privacyPrintBlockingEnabled ?? true,
+  };
+  const protect = (node: ReactNode) => (
+    <SensitiveScreen userEmail={user.email} userRole={user.role} tenantName={privacyUser.tenantName ?? privacyUser.companyName ?? null} {...privacySettings}>
+      {node}
+    </SensitiveScreen>
+  );
+
   if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
     return (
       <PendingPage
@@ -472,7 +484,7 @@ function AuthenticatedApp() {
 
           <Route path="/orders" component={Orders} />
           <Route path="/orders/new" component={NewOrder} />
-          <Route path="/orders/:id" component={OrderDetail} />
+          <Route path="/orders/:id">{() => protect(<OrderDetail />)}</Route>
 
           <Route path="/ai-concierge" component={AiConcierge} />
 
@@ -486,22 +498,22 @@ function AuthenticatedApp() {
             </>
           )}
 
-          {isStaff && <Route path="/admin/inventory" component={AdminInventory} />}
+          {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
 
           {["global_admin", "admin"].includes(appRole) && (
             <>
-              <Route path="/admin/users" component={AdminUsers} />
-              <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
+              <Route path="/admin/users">{() => protect(<AdminUsers />)}</Route>
+              <Route path="/admin/roles-permissions">{() => protect(<AdminRolesPermissions />)}</Route>
               <Route path="/admin/mfa" component={MfaSetup} />
               <Route path="/admin/import" component={AdminImport} />
-              <Route path="/admin/settings" component={AdminSettingsPage} />
+              <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
               <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
-              <Route path="/admin/receipts" component={AdminReceipts} />
+              <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />
               <Route path="/admin/feedback" component={AdminFeedback} />
               <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
               <Route path="/admin/credits" component={AdminCredits} />
-              <Route path="/admin/reports" component={AdminReports} />
+              <Route path="/admin/reports">{() => protect(<AdminReports />)}</Route>
               <Route path="/admin/web-editor" component={AdminWebEditor} />
 
               {canUseVisualEditor(user.role) && (
@@ -516,15 +528,15 @@ function AuthenticatedApp() {
 
           {isStaff && (
             <>
-              <Route path="/staff" component={StaffQueue} />
+              <Route path="/staff">{() => protect(<StaffQueue />)}</Route>
               <Route path="/csr-settings" component={CsrSettings} />
               <Route path="/csr-settings/:section" component={CsrSettings} />
             </>
           )}
 
           <Route path="/notifications" component={Notifications} />
-          <Route path="/account" component={Account} />
-          <Route path="/profile" component={Profile} />
+          <Route path="/account">{() => protect(<Account />)}</Route>
+          <Route path="/profile">{() => protect(<Profile />)}</Route>
           <Route path="/credits" component={Credits} />
           <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
           <Route component={NotFound} />

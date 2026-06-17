@@ -37,6 +37,12 @@ type AdminSettings = {
   aiConciergePrompt: string | null;
   aiConciergePromptIsDefault: boolean;
   catalogBannerImages: string[];
+  privacyModeEnabled: boolean;
+  sensitiveScreensProtectionEnabled: boolean;
+  watermarkSensitiveScreens: boolean;
+  privacyBlurOnBackground: boolean;
+  privacyPrintBlockingEnabled: boolean;
+  privacyProtectedRoles: string[];
 };
 
 const AI_PROMPT_MAX_CHARS = 8000;
@@ -82,6 +88,12 @@ const DEFAULTS: AdminSettings = {
   aiConciergePrompt: null,
   aiConciergePromptIsDefault: true,
   catalogBannerImages: ["/banners/banner1.png", "/banners/banner2.png", "/banners/banner3.png"],
+  privacyModeEnabled: true,
+  sensitiveScreensProtectionEnabled: true,
+  watermarkSensitiveScreens: true,
+  privacyBlurOnBackground: true,
+  privacyPrintBlockingEnabled: true,
+  privacyProtectedRoles: ["user", "csr", "supervisor", "admin", "global_admin"],
 };
 
 export default function AdminSettingsPage() {
@@ -290,7 +302,40 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
           <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
           <TabsTrigger value="ai" className="rounded-lg text-xs">AI Concierge</TabsTrigger>
+          <TabsTrigger value="privacy" className="rounded-lg text-xs">Privacy</TabsTrigger>
         </TabsList>
+
+
+        <TabsContent value="privacy">
+          <div className="glass-card rounded-2xl p-5 border border-border/40">
+            <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Privacy & Screenshot Deterrence</div>
+            <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">Web/PWA apps cannot fully block screenshots. These controls add best-effort blur, print hiding, visible watermarks, and audit logging.</div>
+            <SettingRow label="Enable privacy mode" description="Apply tenant-scoped protection defaults to sensitive screens.">
+              <Switch checked={settings.privacyModeEnabled} onCheckedChange={v => set("privacyModeEnabled", v)} />
+            </SettingRow>
+            <SettingRow label="Protect sensitive screens" description="Blur content when the app loses focus or enters the background.">
+              <Switch checked={settings.sensitiveScreensProtectionEnabled} onCheckedChange={v => set("sensitiveScreensProtectionEnabled", v)} />
+            </SettingRow>
+            <SettingRow label="Show watermarks" description="Repeat the viewer email, role, company, and timestamp over sensitive content.">
+              <Switch checked={settings.watermarkSensitiveScreens} onCheckedChange={v => set("watermarkSensitiveScreens", v)} />
+            </SettingRow>
+            <SettingRow label="Blur on background" description="Cover sensitive content on tab hidden, app background, blur, and PWA lifecycle events.">
+              <Switch checked={settings.privacyBlurOnBackground} onCheckedChange={v => set("privacyBlurOnBackground", v)} />
+            </SettingRow>
+            <SettingRow label="Block print shortcut" description="Prevent Ctrl/Cmd+P where browsers allow and log attempts.">
+              <Switch checked={settings.privacyPrintBlockingEnabled} onCheckedChange={v => set("privacyPrintBlockingEnabled", v)} />
+            </SettingRow>
+            <div className="pt-4">
+              <div className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-widest">Apply to roles</div>
+              <div className="flex flex-wrap gap-2">
+                {["user", "csr", "supervisor", "admin", "global_admin"].map(role => {
+                  const active = settings.privacyProtectedRoles.includes(role);
+                  return <button key={role} type="button" onClick={() => set("privacyProtectedRoles", active ? settings.privacyProtectedRoles.filter(r => r !== role) : [...settings.privacyProtectedRoles, role])} className={`px-3 py-1.5 text-xs font-semibold rounded-lg border ${active ? "bg-primary/15 border-primary/40 text-primary" : "bg-muted/20 border-border/40 text-muted-foreground"}`}>{role}</button>;
+                })}
+              </div>
+            </div>
+          </div>
+        </TabsContent>
 
         {/* Products */}
         <TabsContent value="products">
