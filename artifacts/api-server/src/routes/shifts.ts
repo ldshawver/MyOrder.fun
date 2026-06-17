@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, sum } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -16,6 +16,8 @@ import {
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
+import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
 // Legacy CSR aliases normalize to csr; supervisor remains supervisor; customer aliases normalize to user.
@@ -25,10 +27,32 @@ const SHIFT_OPERATOR_ROLES = [
   "global_admin",
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
-import { getHouseTenantId } from "../lib/singleTenant";
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
+
+async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
+  const [totals] = await db
+    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
+    .from(inventoryBalancesTable)
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+    ));
+
+  await db
+    .update(catalogItemsTable)
+    .set({
+      stockQuantity: String(totals?.qty ?? "0"),
+      inventoryAmount: String(totals?.qty ?? "0"),
+      parLevel: String(totals?.par ?? "0"),
+    })
+    .where(and(
+      eq(catalogItemsTable.tenantId, tenantId),
+      eq(catalogItemsTable.id, productId),
+    ));
+}
+
 function logCsrShiftAuth(
   req: Request,
   gate: "approval" | "role",
@@ -1823,18 +1847,30 @@ router.patch(
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-    const { quantityOnHand, parLevel } = req.body as { quantityOnHand?: number; parLevel?: number };
+    const parsedBody = z.object({
+      quantityOnHand: z.number().finite().min(0).max(1_000_000).optional(),
+      parLevel: z.number().finite().min(0).max(1_000_000).optional(),
+    }).strict().safeParse(req.body);
+    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
+    const { quantityOnHand, parLevel } = parsedBody.data;
     if (quantityOnHand === undefined && parLevel === undefined) {
       res.status(400).json({ error: "quantityOnHand or parLevel required" }); return;
     }
-    const [current] = await db.select().from(inventoryBalancesTable).where(eq(inventoryBalancesTable.id, id)).limit(1);
-    if (!current) { res.status(404).json({ error: "Balance not found" }); return; }
+
+    const houseTenantId = await getHouseTenantId();
+    const [current] = await db.select().from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .limit(1);
+    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
 
     const update: Record<string, string> = {};
     if (quantityOnHand !== undefined) update.quantityOnHand = String(quantityOnHand);
     if (parLevel !== undefined) update.parLevel = String(parLevel);
 
-    const [updated] = await db.update(inventoryBalancesTable).set(update).where(eq(inventoryBalancesTable.id, id)).returning();
+    const [updated] = await db.update(inventoryBalancesTable).set(update)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .returning();
+    await recomputeCatalogInventoryTotals(houseTenantId, current.productId);
     await writeAuditLog({
       actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
       action: "INVENTORY_BALANCE_ADJUSTED",

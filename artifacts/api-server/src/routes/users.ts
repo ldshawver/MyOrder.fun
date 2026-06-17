@@ -82,6 +82,14 @@ function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
   return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
 }
 
+function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
+  const actorRole = normalizeRole(actor.role);
+  if (actorRole === "global_admin") return true;
+  if (actorRole !== "admin") return false;
+  if (actor.tenantId == null || target.tenantId == null) return true;
+  return actor.tenantId === target.tenantId;
+}
+
 async function ensureUsersListSchema(): Promise<void> {
   if (usersListSchemaEnsured) return;
 
@@ -373,6 +381,10 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     res.status(404).json({ error: "User not found" });
     return;
   }
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
+    return;
+  }
 
   const actorRole = normalizeRole(actor.role);
   const newRole = body.data.role;
@@ -439,6 +451,10 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!target) {
     res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
     return;
   }
 
@@ -551,6 +567,10 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!target) {
     res.status(404).json({ error: "User not found" });
+    return;
+  }
+  if (!canManageUserInTenant(actor, target)) {
+    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
     return;
   }
 

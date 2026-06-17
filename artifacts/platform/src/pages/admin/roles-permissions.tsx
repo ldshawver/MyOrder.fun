@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@clerk/react";
 
-type Permission = { permission: string; enabled: boolean; editable: boolean };
+type Permission = { key?: string; permission: string; enabled: boolean; editable: boolean };
 type RoleBlock = { role: string; editable: boolean; permissions: Permission[] };
 type Payload = { roles: RoleBlock[]; groups: Record<string, string[]>; tenantId: number | null };
 
@@ -26,12 +26,17 @@ export default function AdminRolesPermissions() {
     if (!data) return;
     setSaving(role);
     const block = data.roles.find((r) => r.role === role);
+    const permissions = Object.fromEntries(
+      (block?.permissions ?? [])
+        .map((permission) => [permission.permission || permission.key, permission.enabled] as const)
+        .filter((entry): entry is readonly [string, boolean] => Boolean(entry[0])),
+    );
     try {
       const token = await getToken();
       const res = await fetch(`/api/admin/roles-permissions/${role}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ permissions: block?.permissions ?? [] }),
+        body: JSON.stringify({ permissions }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? "Failed to save permissions");
       setMessage(`Saved ${role} permissions. Changes were audit logged.`);
@@ -59,7 +64,7 @@ export default function AdminRolesPermissions() {
   }
 
   function toggle(role: string, permission: string, enabled: boolean) {
-    setData((prev) => prev && ({ ...prev, roles: prev.roles.map((r) => r.role !== role ? r : { ...r, permissions: r.permissions.map((p) => p.permission === permission ? { ...p, enabled } : p) }) }));
+    setData((prev) => prev && ({ ...prev, roles: prev.roles.map((r) => r.role !== role ? r : { ...r, permissions: r.permissions.map((p) => (p.permission || p.key) === permission ? { ...p, enabled } : p) }) }));
   }
 
   if (!data) return <div className="p-6 text-sm text-muted-foreground">Loading roles and permissions… {message}</div>;
@@ -69,7 +74,7 @@ export default function AdminRolesPermissions() {
     {message && <div className="rounded border border-border p-3 text-sm">{message}</div>}
     {roles.map((role) => <section key={role.role} className="rounded-xl border border-border p-4 space-y-4" data-testid={`role-card-${role.role}`}>
       <div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold uppercase tracking-wide">{role.role}</h2>{role.role === "admin" && <p className="text-xs text-amber-500">Warning: editing admin permissions may affect tenant administration.</p>}{!role.editable && <p className="text-xs text-muted-foreground">Only global admins can edit this role.</p>}</div><div className="flex gap-2"><button className="rounded border px-3 py-1 text-sm disabled:opacity-50" disabled={!role.editable || saving === role.role} onClick={() => reset(role.role)}>Reset defaults</button><button className="rounded bg-primary px-3 py-1 text-sm text-primary-foreground disabled:opacity-50" disabled={!role.editable || saving === role.role} onClick={() => save(role.role)}>{saving === role.role ? "Saving…" : "Save"}</button></div></div>
-      {Object.entries(data.groups).map(([group, permissions]) => <div key={group}><h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{group}</h3><div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">{permissions.map((permission) => { const item = role.permissions.find((p) => p.permission === permission); if (!item) return null; return <label key={permission} className="flex items-center gap-2 rounded border border-border/60 p-2 text-sm"><input data-testid={`permission-${role.role}-${permission}`} type="checkbox" checked={item.enabled} disabled={!item.editable} onChange={(e) => toggle(role.role, permission, e.target.checked)} /><span>{permission}</span></label>; })}</div></div>)}
+      {Object.entries(data.groups).map(([group, permissions]) => <div key={group}><h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">{group}</h3><div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">{permissions.map((permission) => { const item = role.permissions.find((p) => (p.permission || p.key) === permission); if (!item) return null; return <label key={permission} className="flex items-center gap-2 rounded border border-border/60 p-2 text-sm"><input data-testid={`permission-${role.role}-${permission}`} type="checkbox" checked={item.enabled} disabled={!item.editable} onChange={(e) => toggle(role.role, permission, e.target.checked)} /><span>{permission}</span></label>; })}</div></div>)}
     </section>)}
   </div>;
 }
