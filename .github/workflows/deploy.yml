@@ -62,7 +62,6 @@ jobs:
       DEPLOY_PATH: /opt/alavont
       COMPOSE_PROJECT_NAME: alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
-      TAILSCALE_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
@@ -92,14 +91,7 @@ jobs:
           ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
           echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
-      - name: Connect to Tailscale with auth key
-        if: env.TAILSCALE_AUTHKEY != ''
-        uses: tailscale/github-action@v3
-        with:
-          authkey: ${{ env.TAILSCALE_AUTHKEY }}
-
-      - name: Connect to Tailscale with OAuth
-        if: env.TAILSCALE_AUTHKEY == '' && env.TS_OAUTH_CLIENT_ID != '' && env.TS_OAUTH_SECRET != ''
+      - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
@@ -111,7 +103,7 @@ jobs:
           set -euo pipefail
           echo "GitHub Actions Tailscale tag: tag:github-actions"
           echo "Deploy SSH user: ${VPS_USER}"
-          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag (for example tag:server)."
+          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag, for example tag:server or tag:myorder-vps."
 
       - name: Select reachable VPS host and configure known_hosts
         run: |
@@ -208,7 +200,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
-            "mkdir -p $DEPLOY_PATH"
+            "mkdir -p '$DEPLOY_PATH'"
 
           rsync -az --delete \
             -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $SELECTED_VPS_PORT" \
@@ -235,7 +227,11 @@ jobs:
             "DEPLOY_SHA='${GITHUB_SHA}' DEPLOY_PATH='${DEPLOY_PATH}' COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT_NAME}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
-              cd "${DEPLOY_PATH}"
+              echo "Deploy path: ${DEPLOY_PATH}"
+              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
+              echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
+
+              cd "$DEPLOY_PATH"
 
               echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
@@ -248,19 +244,19 @@ jobs:
               echo "Compose project: ${COMPOSE_PROJECT_NAME}"
 
               echo "Building images without taking the live site down..."
-              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
+              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
 
               echo "Starting database..."
-              docker compose up -d db
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d db
 
               for i in $(seq 1 30); do
-                if docker compose exec -T db pg_isready -q; then
+                if COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db pg_isready -q; then
                   echo "Database ready"
                   break
                 fi
 
                 if [ "$i" = "30" ]; then
-                  docker compose logs db --tail=80
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs db --tail=80
                   exit 1
                 fi
 
@@ -268,10 +264,10 @@ jobs:
               done
 
               echo "Running migrations..."
-              docker compose run --rm migrate
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose run --rm migrate
 
               echo "Starting app services..."
-              docker compose up -d api platform nginx
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
 
               docker compose ps
 
@@ -282,17 +278,17 @@ jobs:
                 fi
 
                 if [ "$i" = "45" ]; then
-                  docker compose ps
-                  docker compose logs api --tail=100
-                  docker compose logs platform --tail=100
-                  docker compose logs nginx --tail=100
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs api --tail=100
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs platform --tail=100
+                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs nginx --tail=100
                   exit 1
                 fi
 
                 sleep 2
               done
 
-              docker compose ps
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
               docker image prune -f
               echo "Deploy complete"
           ENDSSH
