@@ -114,10 +114,27 @@ describe("receipts and deploy workflow", () => {
     for (const required of ["VPS_KNOWN_HOSTS", "VPS_HOST_FALLBACK", "VPS_HOST_FALLBACK_PORT", "SELECTED_VPS_HOST", "SELECTED_VPS_PORT", "tags: tag:github-actions"]) {
       expect(deploy).toContain(required);
     }
+    expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
+    expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
     expect(deploy).toContain("docker compose build --pull");
     expect(deploy).toContain("docker compose up -d db");
     expect(deploy).toContain("docker compose run --rm migrate");
     expect(deploy).toContain("docker compose up -d api platform nginx");
     expect(deploy).not.toMatch(/docker compose down/);
+  });
+
+  it("repo audit delegates committed secret value detection to the script", () => {
+    const workflow = src(".github/workflows/repo-audit.yml");
+    const auditScript = src("scripts/audit-secrets.sh");
+    expect(workflow).toContain("bash scripts/audit-secrets.sh");
+    expect(workflow).not.toContain("grep -R");
+    expect(auditScript).toContain("git ls-files");
+    expect(auditScript).toContain(".env.example");
+    expect(auditScript).toContain("deploy/docker-compose.yml");
+    expect(auditScript).toContain(".github/workflows/repo-audit.yml");
+    expect(auditScript).toContain("process.env");
+    expect(auditScript).toContain("OPENAI_API_KEY)");
+    expect(auditScript).toContain("DATABASE_URL)");
+    expect(auditScript).toContain("postgres(ql)?://");
   });
 });

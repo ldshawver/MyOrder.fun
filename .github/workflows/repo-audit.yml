@@ -20,10 +20,5 @@ jobs:
           test -f .gitignore
           test -f .env.example
 
-      - name: Check for obvious committed secrets
-        run: |
-          ! grep -R "OPENAI_API_KEY\|DATABASE_URL=\|SESSION_SECRET=\|STRIPE_SECRET_KEY\|TWILIO_AUTH_TOKEN\|CLERK_SECRET_KEY" . \
-            --exclude-dir=.git \
-            --exclude-dir=node_modules \
-            --exclude="*.md" \
-            --exclude="pnpm-lock.yaml"
+      - name: Check for committed secret values
+        run: bash scripts/audit-secrets.sh
