@@ -27,6 +27,9 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
       expect(layout).not.toContain(forbidden);
       expect(app).not.toContain(forbidden.replaceAll(" ", ""));
     }
+    expect(layout).not.toContain("SMS & Calls");
+    expect(layout).not.toContain("Contractor Hub");
+    expect(layout).not.toContain("Document Hub");
     expect(app).not.toContain('path="/document-hub"');
     expect(app).not.toContain('path="/contractor-hub"');
     expect(app).not.toContain('path="/admin/communications"');
@@ -55,9 +58,12 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
 describe("catalog/inventory/par/order source of truth", () => {
   it("inventory balance edits validate schema, check tenant ownership, and recompute catalog totals", () => {
     const inventory = api("routes/inventory.ts");
+    expect(inventory).toContain("inventoryBalancesTable");
     expect(inventory).toContain(".strict().safeParse(req.body)");
     expect(inventory).toContain('Catalog product not found for this tenant');
     expect(inventory).toContain('Inventory location not found for this tenant');
+    expect(inventory).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
+    expect(inventory).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
     expect(inventory).toContain("recomputeCatalogInventoryTotals(houseTenantId, productId)");
     expect(inventory).toContain("stockQuantity: String(totals?.qty");
     expect(inventory).toContain("inventoryAmount: String(totals?.qty");
@@ -83,9 +89,12 @@ describe("catalog/inventory/par/order source of truth", () => {
   it("order creation decrements inventory balances and syncs catalog inventory fields", () => {
     const orders = api("routes/orders.ts");
     expect(orders).toContain("db.transaction");
+    expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
     expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
     expect(orders).toContain("InsufficientInventoryError");
+    expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id)");
+    expect(orders).toContain('res.status(409).json({ error: "Insufficient inventory"');
     expect(orders).toContain("UPDATE catalog_items");
     expect(orders).toContain("stock_quantity = COALESCE");
     expect(orders).toContain("inventory_amount = COALESCE");
