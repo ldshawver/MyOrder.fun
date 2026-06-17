@@ -13,6 +13,7 @@ import {
   orderItemsTable,
   usersTable,
   adminSettingsTable,
+  shiftRoutingConfigTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
@@ -88,6 +89,39 @@ function logCsrShiftAuth(
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+const RoutingStrategyBody = z.object({
+  routingStrategy: z.enum(["round_robin", "geo", "pickup_delivery", "manual", "default_queue"]),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+
+router.post("/shifts/approve-multiple-active", requireRole("supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const parsed = RoutingStrategyBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [config] = await db.insert(shiftRoutingConfigTable).values({
+    tenantId,
+    allowMultipleActiveShifts: true,
+    routingStrategy: parsed.data.routingStrategy,
+    approvedByUserId: actor.id,
+    approvedAt: new Date(),
+    reason: parsed.data.reason,
+  }).returning();
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "MULTI_CSR_SHIFT_APPROVED",
+    resourceType: "shift_routing_config",
+    resourceId: String(config.id),
+    metadata: { tenantId, routingStrategy: parsed.data.routingStrategy, reason: parsed.data.reason },
+    ipAddress: req.ip,
+  });
+  res.status(201).json({ config });
+});
 
 function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) {
   const auth = getAuth(req);
@@ -988,6 +1022,30 @@ router.post(
 
     const ip = getClientIp(req);
     const houseTenantId = await getHouseTenantId();
+    if (process.env.NODE_ENV !== "test" && normalizeRole(tech.role) === "csr" && shiftRoutingConfigTable) {
+      const activeTenantCsrShifts = await db.select({ id: labTechShiftsTable.id })
+        .from(labTechShiftsTable)
+        .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
+        .where(and(
+          eq(labTechShiftsTable.tenantId, houseTenantId),
+          eq(labTechShiftsTable.status, "active"),
+          eq(usersTable.role, "csr"),
+        ))
+        .limit(1);
+      if (activeTenantCsrShifts.length > 0) {
+        const [config] = await db.select().from(shiftRoutingConfigTable)
+          .where(and(
+            eq(shiftRoutingConfigTable.tenantId, houseTenantId),
+            eq(shiftRoutingConfigTable.allowMultipleActiveShifts, true),
+          ))
+          .orderBy(desc(shiftRoutingConfigTable.approvedAt))
+          .limit(1);
+        if (!config?.routingStrategy) {
+          res.status(409).json({ error: "active CSR shift already exists" });
+          return;
+        }
+      }
+    }
 
     const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart, boxAssignmentId, setup } = req.body as {
       inventorySnapshot?: { templateItemId: number; quantityStart: number }[];

@@ -44,6 +44,18 @@ export const ordersTable = pgTable("orders", {
   // assignedCsrUserId — the CSR the order was routed to (null = General
   // Account fallback, visible to all CSRs in the queue)
   assignedCsrUserId: integer("assigned_csr_user_id").references(() => usersTable.id),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedByUserId: integer("archived_by_user_id").references(() => usersTable.id),
+  voidedAt: timestamp("voided_at", { withTimezone: true }),
+  voidedByUserId: integer("voided_by_user_id").references(() => usersTable.id),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancelledByUserId: integer("cancelled_by_user_id").references(() => usersTable.id),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  completedByUserId: integer("completed_by_user_id").references(() => usersTable.id),
+  routedTo: text("routed_to"),
+  routingStrategy: text("routing_strategy"),
+  routingStatus: text("routing_status"),
+  routingMessage: text("routing_message"),
   // routeSource — provenance of the assignment (per spec):
   //   active_csr          assigned to a CSR who was on shift
   //   general_account     no active CSR; sits in the General Account queue

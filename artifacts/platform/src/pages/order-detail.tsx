@@ -545,7 +545,7 @@ export default function OrderDetail() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
         <Package size={32} className="text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">Order not found.</p>
+        <p className="text-muted-foreground">This order could not be found or you do not have access to it.</p>
         <Link href="/orders" className="text-primary hover:underline text-sm mt-2">Back to orders</Link>
       </div>
     );

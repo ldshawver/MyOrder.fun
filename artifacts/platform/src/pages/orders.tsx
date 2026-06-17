@@ -6,19 +6,6 @@ import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { SupervisorDelayedOrders } from "@/components/SupervisorDelayedOrders";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
-const SESSION_ORDERS_KEY = "alavont_session_orders";
-
-function getSessionOrderIds(): number[] {
-  try {
-    const raw = sessionStorage.getItem(SESSION_ORDERS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function StatusBadge({ status }: { status: string }) {
   const cls = `status-${status.toLowerCase()}`;
   return (
@@ -51,14 +38,8 @@ export default function Orders() {
   const isCustomer = userRole === "user";
   const isSupervisor = userRole === "global_admin" || userRole === "admin";
 
-  // Customers only see orders from the current browser session
-  const visibleOrders = useMemo(() => {
-    const all = data?.orders ?? [];
-    if (!isCustomer) return all;
-    const sessionIds = getSessionOrderIds();
-    if (sessionIds.length === 0) return [];
-    return all.filter(o => sessionIds.includes(o.id));
-  }, [data?.orders, isCustomer]);
+  // The API enforces tenant and ownership scoping; customers see only their own persisted orders.
+  const visibleOrders = useMemo(() => data?.orders ?? [], [data?.orders]);
 
   const hasPendingOrders = visibleOrders.some(o =>
     o.status === "pending" || o.status === "processing"
@@ -70,12 +51,12 @@ export default function Orders() {
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-title">
-            Orders
+            {isCustomer ? "My Orders" : "Orders"}
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
             {isCustomer
-              ? "Showing orders placed this session. History clears when you close your browser."
-              : "Track and manage your organization's orders."}
+              ? "Showing only orders that belong to your signed-in account."
+              : "Operational handling has moved to Shift / Queue; this page remains tenant-scoped order history."}
           </p>
         </div>
         <Link
@@ -100,11 +81,11 @@ export default function Orders() {
             {isCustomer ? <ShieldAlert size={24} className="text-primary" /> : <Package size={24} className="text-primary" />}
           </div>
           <h3 className="font-semibold text-base mb-2">
-            {isCustomer ? "No orders this session" : "No orders yet"}
+            {isCustomer ? "No orders yet" : "No orders yet"}
           </h3>
           <p className="text-sm text-muted-foreground max-w-xs mb-6">
             {isCustomer
-              ? "Orders placed this session will appear here. History is cleared when your browser session ends."
+              ? "Orders placed from your signed-in account will appear here."
               : "Place your first order to get started with Alavont Therapeutics."}
           </p>
           <Link

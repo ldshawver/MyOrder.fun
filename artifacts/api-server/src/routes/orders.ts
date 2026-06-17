@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, and, desc, lt, isNotNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import {
   db,
@@ -507,11 +507,15 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
+  const actorRole = normalizeRole(actor.role);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
   let rows = await db.select().from(ordersTable)
+    .where(actorRole === "user"
+      ? and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id))
+      : eq(ordersTable.tenantId, tenantId))
     .orderBy(desc(ordersTable.createdAt));
 
   // Customers see only their own orders.
-  const actorRole = normalizeRole(actor.role);
   if (actorRole === "user") {
     rows = rows.filter(o => o.customerId === actor.id);
   }
@@ -525,7 +529,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
   if (query.data.status) rows = rows.filter(o => o.status === query.data.status);
-  if (query.data.customerId) rows = rows.filter(o => o.customerId === query.data.customerId);
+  if (query.data.customerId && actorRole !== "user") rows = rows.filter(o => o.customerId === query.data.customerId);
 
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 20;
@@ -635,7 +639,7 @@ router.post("/orders", async (req, res): Promise<void> => {
 
   // supervisor_manual_assignment; routes to assigned CSR + their active
   // shift, or to the General Account fallback queue).
-  const routing = await decideRouting();
+  const routing = await decideRouting(houseTenantId);
 
   // Legacy assignedTechId/assignedShiftId mirror the routing decision so
   // the existing FulfillmentCard / shift dashboards / legacy reports
@@ -733,6 +737,10 @@ router.post("/orders", async (req, res): Promise<void> => {
         assignedShiftId,
         assignedCsrUserId: routing.assignedCsrUserId,
         routeSource: routing.routeSource,
+        routedTo: routing.routedTo,
+        routingStrategy: routing.rule,
+        routingStatus: routing.routingStatus,
+        routingMessage: routing.routingMessage,
         routedAt: now,
         promisedMinutes: routing.promisedMinutes,
         estimatedReadyAt: routing.estimatedReadyAt,
@@ -1283,18 +1291,112 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, params.data.id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
-    res.status(404).json({ error: "Order not found" });
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
     return;
   }
-  if (actor.role === "user" && order.customerId !== actor.id) {
-    res.status(403).json({ error: "Forbidden" });
+  const role = normalizeRole(actor.role);
+  if (role === "user" && order.customerId !== actor.id) {
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
     return;
   }
   const orderObj = await buildOrderResponse(order);
   res.json(GetOrderResponse.parse(orderObj));
 });
+
+const LifecycleBody = z.object({
+  status: z.enum(["completed", "cancelled", "archived", "voided"]),
+  reason: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+
+type DbActor = NonNullable<Request["dbUser"]>;
+async function actorCanOperateOrder(actor: DbActor, order: typeof ordersTable.$inferSelect, nextStatus: string) {
+  const role = normalizeRole(actor.role);
+  if (role === "user") return false;
+  if (role === "csr") {
+    if (!["completed", "cancelled"].includes(nextStatus)) return false;
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.techId, actor.id),
+      eq(labTechShiftsTable.status, "active"),
+      eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
+    )).limit(1);
+    return !!shift && order.assignedCsrUserId === actor.id;
+  }
+  return ["supervisor", "admin", "global_admin"].includes(role);
+}
+
+async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
+  const actor = req.dbUser!;
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid order id" });
+    return;
+  }
+  const parsed = LifecycleBody.safeParse({ ...req.body, status: forcedStatus ?? req.body?.status });
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { status, reason } = parsed.data;
+  if (["cancelled", "archived", "voided"].includes(status) && !reason) {
+    res.status(400).json({ error: "Reason is required" });
+    return;
+  }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order) {
+    res.status(404).json({ error: "This order could not be found or you do not have access to it." });
+    return;
+  }
+  const role = normalizeRole(actor.role);
+  if (status === "voided" && !["admin", "global_admin"].includes(role)) {
+    res.status(403).json({ error: "Void requires admin permission" });
+    return;
+  }
+  if (!await actorCanOperateOrder(actor, order, status)) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  const prior = order.status;
+  if (prior === "completed" && status !== "archived") {
+    res.status(409).json({ error: "Completed orders cannot be moved back to active states" });
+    return;
+  }
+  if (prior === "voided") {
+    res.status(409).json({ error: "Voided orders cannot be reactivated" });
+    return;
+  }
+  if (prior === "archived" && status !== "voided") {
+    res.status(409).json({ error: "Archived orders require an explicit restore endpoint before active transitions" });
+    return;
+  }
+  const now = new Date();
+  const stamps: Partial<typeof ordersTable.$inferInsert> =
+    status === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
+    status === "cancelled" ? { cancelledAt: now, cancelledByUserId: actor.id, fulfillmentStatus: "cancelled" } :
+    status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
+    { voidedAt: now, voidedByUserId: actor.id };
+  const [updated] = await db.update(ordersTable).set({ status, ...stamps }).where(eq(ordersTable.id, id)).returning();
+  await writeAuditLog({
+    actorId: actor.id,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    action: "ORDER_STATUS_CHANGED",
+    resourceType: "order",
+    resourceId: String(id),
+    metadata: { priorStatus: prior, newStatus: status, reason: reason ?? null },
+    ipAddress: req.ip,
+  });
+  res.json(await buildOrderResponse(updated));
+}
+
+router.patch("/orders/:id/status", (req, res) => { void transitionOrder(req, res); });
+router.post("/orders/:id/complete", (req, res) => { void transitionOrder(req, res, "completed"); });
+router.post("/orders/:id/cancel", (req, res) => { void transitionOrder(req, res, "cancelled"); });
+router.post("/orders/:id/archive", (req, res) => { void transitionOrder(req, res, "archived"); });
+router.post("/orders/:id/void", (req, res) => { void transitionOrder(req, res, "voided"); });
 
 // PATCH /api/orders/:id
 router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {

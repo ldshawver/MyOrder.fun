@@ -102,6 +102,18 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+export const shiftRoutingConfigTable = pgTable("shift_routing_config", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  allowMultipleActiveShifts: boolean("allow_multiple_active_shifts").notNull().default(false),
+  routingStrategy: text("routing_strategy").notNull(),
+  approvedByUserId: integer("approved_by_user_id").references(() => usersTable.id),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 // ─── Inventory Template ───────────────────────────────────────────────────────
 // Canonical list of inventory rows seeded from the spreadsheet.
 // Admins can edit labels, default quantities, and ordering.
