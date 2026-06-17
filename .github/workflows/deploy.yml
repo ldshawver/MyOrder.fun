@@ -53,10 +53,11 @@ jobs:
     needs: test
 
     env:
-      VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_USER: ${{ secrets.VPS_USER }}
-      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      VPS_HOST: ${{ secrets.VPS_HOST || vars.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
+      VPS_PORT: ${{ secrets.VPS_PORT || vars.VPS_PORT || '22' }}
       DEPLOY_PATH: /opt/alavont
+      COMPOSE_PROJECT_NAME: alavont
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TS_AUTHKEY }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -83,6 +84,15 @@ jobs:
       #     oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       #     oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
       #     tags: tag:ci
+
+
+      - name: Log selected deploy target
+        run: |
+          echo "Selected VPS host: ${VPS_HOST}"
+          echo "Selected VPS port: ${VPS_PORT}"
+          echo "Selected SSH user: ${VPS_USER}"
+          echo "Selected deploy path: ${DEPLOY_PATH}"
+          echo "Selected compose project: ${COMPOSE_PROJECT_NAME}"
 
       - name: Install SSH key
         run: |
@@ -115,7 +125,7 @@ jobs:
         with:
           oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ env.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          tags: tag:github-actions
 
       - name: Note when Tailscale is not configured
         if: env.TAILSCALE_AUTHKEY == '' && (env.TS_OAUTH_CLIENT_ID == '' || env.TS_OAUTH_SECRET == '')
@@ -201,17 +211,17 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -p "$VPS_PORT" \
             "$VPS_USER@$VPS_HOST" \
-            "DEPLOY_SHA='${GITHUB_SHA}' bash -s" << 'ENDSSH'
+            "DEPLOY_SHA='${GITHUB_SHA}' DEPLOY_PATH='${DEPLOY_PATH}' COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT_NAME}' bash -s" << 'ENDSSH'
               set -euo pipefail
 
-              cd /opt/alavont
+              cd "$DEPLOY_PATH"
 
               echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
               date -u >> .deployed-sha
 
               chmod +x deploy/*.sh 2>/dev/null || true
 
-              cd /opt/alavont/deploy
+              cd "$DEPLOY_PATH/deploy"
 
               echo "Building containers..."
               DEPLOY_SHA="${DEPLOY_SHA:-unknown}" docker compose build --pull
@@ -239,7 +249,7 @@ jobs:
               docker compose run --rm migrate
 
               echo "Starting app stack..."
-              docker compose up -d db api platform nginx
+              docker compose up -d api platform nginx
 
               echo "Waiting for API health..."
               for i in $(seq 1 30); do

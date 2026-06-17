@@ -21,7 +21,10 @@ const dbState: {
   settings: Array<Record<string, unknown>>;
   tenants: Array<Record<string, unknown>>;
   catalog: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [] };
+  inventoryLocations: Array<Record<string, unknown>>;
+  inventoryBalances: Array<Record<string, unknown>>;
+  csrBoxes: Array<Record<string, unknown>>;
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], csrBoxes: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -127,6 +130,9 @@ vi.mock("@workspace/db", () => {
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id" };
+  const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
+  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand" };
+  const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -137,6 +143,9 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "tenants") return dbState.tenants;
     if (t.__t === "order_items") return orderItems;
     if (t.__t === "catalog") return dbState.catalog;
+    if (t.__t === "inventory_locations") return dbState.inventoryLocations;
+    if (t.__t === "inventory_balances") return dbState.inventoryBalances;
+    if (t.__t === "csr_boxes") return dbState.csrBoxes;
     return [];
   }
 
@@ -205,8 +214,8 @@ vi.mock("@workspace/db", () => {
   });
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn() },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable,
+    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, delete: vi.fn() })) },
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -274,6 +283,9 @@ beforeEach(() => {
   }];
   dbState.tenants = [{ id: 1 }];
   dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
+  dbState.inventoryLocations = [{ id: 1, tenantId: 1, type: "storefront", csrBoxId: null }];
+  dbState.inventoryBalances = [{ id: 1, tenantId: 1, productId: 1, locationId: 1, quantityOnHand: "99" }];
+  dbState.csrBoxes = [];
   mockActor = {};
   _resetBus();
 });

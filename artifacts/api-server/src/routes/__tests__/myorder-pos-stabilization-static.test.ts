@@ -8,26 +8,141 @@ function read(relativePath: string): string {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
 }
 
+function forbiddenLegacyDeployPattern(): RegExp {
+  const luxEmailBot = ["lux", "email", "bot"].join("-");
+  const luxitService = ["luxit", "service"].join("\\.");
+  const composeDown = ["docker compose", "down"].join("\\s+");
+  return new RegExp(`${luxEmailBot}|${luxitService}|${composeDown}`);
+}
+
 describe("MyOrder POS stabilization static checks", () => {
-  it("keeps deployment docs/workflow on the MyOrder target and safe compose sequence", () => {
+  it("keeps deployment workflow on the MyOrder target and safe compose sequence", () => {
     const workflow = read(".github/workflows/deploy.yml");
     const readiness = read("docs/POS_PRODUCTION_READINESS_2026-06-15.md");
     const combined = `${workflow}\n${readiness}`;
 
+    expect(workflow).toContain("DEPLOY_PATH: /opt/alavont");
+    expect(workflow).toContain("COMPOSE_PROJECT_NAME: alavont");
+    expect(workflow).toContain("VPS_USERNAME");
+    expect(workflow).toContain("VPS_USER");
+    expect(workflow).toContain("serveradmin");
+    expect(workflow).toContain("tag:github-actions");
+    expect(workflow).toContain("Selected VPS host:");
+    expect(workflow).toContain("Selected VPS port:");
+    expect(workflow).toContain("Selected deploy path:");
+    expect(workflow).toContain("Selected compose project:");
     expect(combined).toContain("/opt/alavont/deploy");
-    expect(readiness).toContain("docker compose build --pull");
-    expect(readiness).toContain("docker compose up -d db");
-    expect(readiness).toContain("docker compose run --rm migrate");
-    expect(readiness).toContain("docker compose up -d api platform nginx");
-    expect(combined).not.toMatch(/lux-email-bot|luxit\.service|docker compose down/);
+    expect(workflow).toContain('cd "$DEPLOY_PATH/deploy"');
+
+    const buildIndex = workflow.indexOf("docker compose build --pull");
+    const dbIndex = workflow.indexOf("docker compose up -d db");
+    const migrateIndex = workflow.indexOf("docker compose run --rm migrate");
+    const appIndex = workflow.indexOf("docker compose up -d api platform nginx");
+    expect(buildIndex).toBeGreaterThan(-1);
+    expect(dbIndex).toBeGreaterThan(buildIndex);
+    expect(migrateIndex).toBeGreaterThan(dbIndex);
+    expect(appIndex).toBeGreaterThan(migrateIndex);
+
+    expect(workflow).toContain("docker compose ps");
+    expect(workflow).toContain("curl -fsS http://127.0.0.1/api/healthz");
+    expect(workflow).toContain("curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz");
+    expect(combined).not.toMatch(forbiddenLegacyDeployPattern());
   });
 
-  it("documents current MyOrder wording and avoids stale editor terminology", () => {
+  it("keeps repo audit guardrails for secret scanning", () => {
+    const auditScript = read("scripts/audit-secrets.sh");
+
+    expect(auditScript).toContain("Secret audit passed");
+    expect(auditScript).not.toMatch(/grep\s+-R/);
+    expect(auditScript).toContain("PLACEHOLDER_ALLOW_RE");
+    expect(auditScript).toContain("REAL_SECRET_PATTERNS");
+  });
+
+  it("guards inventory/order source-of-truth and transaction safety", () => {
+    const orders = read("artifacts/api-server/src/routes/orders.ts");
+    const shifts = read("artifacts/api-server/src/routes/shifts.ts");
+    const inventoryBalances = read("artifacts/api-server/src/lib/inventoryBalances.ts");
+    const combined = `${orders}\n${shifts}\n${inventoryBalances}`;
+
+    expect(combined).toContain("inventory_balances");
+    expect(combined).toContain("inventoryBalancesTable");
+    expect(shifts).toContain("recomputeCatalogInventoryMirror");
+    expect(shifts).toContain("stockQuantity");
+    expect(shifts).toContain("inventoryAmount");
+    expect(shifts).toContain("parLevel");
+    expect(orders).toContain("db.transaction");
+    expect(orders).toContain("quantity_on_hand >=");
+    expect(orders).toContain("INSUFFICIENT_INVENTORY");
+    expect(orders).toContain("status(409)");
+    expect(orders).not.toContain("GREATEST(0");
+    expect(combined).toContain("tenantId");
+    expect(combined).toContain("locationId");
+  });
+
+  it("guards shift inventory hardening and Start Shift / End Shift compatibility", () => {
+    const shifts = read("artifacts/api-server/src/routes/shifts.ts");
     const readiness = read("docs/POS_PRODUCTION_READINESS_2026-06-15.md");
 
+    expect(shifts).toContain('"/shifts/clock-in"');
+    expect(shifts).toContain('"/shifts/clock-out"');
     expect(readiness).toContain("Start Shift / End Shift");
+    expect(shifts).toContain("inventoryBalancesTable");
+    expect(shifts).toContain("recomputeCatalogInventoryMirror");
+    expect(shifts).toContain("writeAuditLog");
+    expect(shifts).toContain("eq(inventoryBalancesTable.tenantId");
+    expect(shifts).toContain("eq(inventoryBalancesTable.locationId");
+  });
+
+  it("guards catalog visibility and stock parsing fixes from PR #57", () => {
+    const visibility = read("artifacts/api-server/src/lib/catalogVisibility.ts");
+    const importer = read("artifacts/api-server/src/routes/import.ts");
+    const catalog = read("artifacts/api-server/src/routes/catalog.ts");
+    const inventory = read("artifacts/api-server/src/routes/inventory.ts");
+    const shifts = read("artifacts/api-server/src/routes/shifts.ts");
+    const combined = `${catalog}\n${inventory}\n${shifts}`;
+
+    expect(visibility).toContain("isTrueWooCommerceStorefrontRow");
+    expect(visibility).toContain("isVisibleAlavontCatalogRow");
+    expect(visibility).toContain("visibleAlavontCatalogSql");
+    expect(visibility).toContain("merchantProductSource");
+    expect(visibility).toContain("wooProductId");
+    expect(importer).toContain("parseStockStatus");
+    expect(importer).toContain("In Stock");
+    expect(importer).toContain("available");
+    expect(combined).toContain("visibleAlavontCatalogSql");
+  });
+
+  it("guards Document Hub backend auth/audit without requiring active MyOrder navigation exposure", () => {
+    const documentHub = read("artifacts/api-server/src/modules/document-hub/routes/index.ts");
+    const documentHubTests = read("artifacts/api-server/src/modules/document-hub/__tests__/document-hub.test.ts");
+    const layout = read("artifacts/platform/src/components/layout.tsx");
+    const readiness = read("docs/POS_PRODUCTION_READINESS_2026-06-15.md");
+
+    expect(documentHub).toContain("requireAuth");
+    expect(documentHub).toContain("loadDbUser");
+    expect(documentHub).toContain("requireApproved");
+    expect(documentHub).toContain("canUseAsset");
+    expect(documentHub).toContain("requireDocumentManager");
+    expect(documentHub).toContain("writeDocumentAudit");
+    expect(documentHubTests).toContain("denies unauthenticated");
+    expect(documentHubTests).toContain("tenant admins cannot access other-tenant documents");
+    expect(documentHubTests).toContain("without storing raw document contents");
+    expect(readiness).toContain("Document Hub security");
+    expect(readiness).toContain("manual verification");
+
+    if (layout.includes("Document Hub")) {
+      expect(layout).toContain("roles:");
+    }
+  });
+
+  it("documents current MyOrder navigation/editor wording and avoids stale implementation terms", () => {
+    const readiness = read("docs/POS_PRODUCTION_READINESS_2026-06-15.md");
+
+    expect(readiness).toContain("Receipts & Printers");
     expect(readiness).toContain("Puck/Web Editor");
+    expect(readiness).toContain("no SMS & Calls");
+    expect(readiness).toContain("no unrelated MyPayLink/LUXit modules");
+    expect(readiness).toContain("Document Hub should not be exposed in active MyOrder navigation");
     expect(readiness).not.toContain("Plasmic");
   });
 });
-
