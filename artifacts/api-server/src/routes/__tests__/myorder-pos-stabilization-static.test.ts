@@ -83,18 +83,24 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(shifts).toContain(".strict().safeParse(req.body)");
     expect(shifts).toContain("Balance not found for this tenant");
     expect(shifts).toContain("eq(inventoryBalancesTable.tenantId, houseTenantId)");
+    expect(shifts).toContain("await db.update(inventoryBalancesTable).set(update)");
     expect(shifts).toContain("recomputeCatalogInventoryTotals(houseTenantId, current.productId)");
+    expect(shifts).toContain("await writeAuditLog({");
+    expect(shifts).toContain('action: "INVENTORY_BALANCE_ADJUSTED"');
   });
 
   it("order creation decrements inventory balances and syncs catalog inventory fields", () => {
     const orders = api("routes/orders.ts");
     expect(orders).toContain("db.transaction");
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
+    expect(orders).toContain("await tx.insert(ordersTable).values");
+    expect(orders).toContain("await tx.insert(orderItemsTable).values");
     expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
     expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
     expect(orders).toContain("InsufficientInventoryError");
     expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id)");
     expect(orders).toContain('res.status(409).json({ error: "Insufficient inventory"');
+    expect(orders).toContain("await tx.execute(sql`");
     expect(orders).toContain("UPDATE catalog_items");
     expect(orders).toContain("stock_quantity = COALESCE");
     expect(orders).toContain("inventory_amount = COALESCE");
@@ -155,5 +161,19 @@ describe("receipts and deploy workflow", () => {
     expect(auditScript).toContain("OPENAI_API_KEY)");
     expect(auditScript).toContain("DATABASE_URL)");
     expect(auditScript).toContain("postgres(ql)?://");
+  });
+});
+
+describe("shift wording compatibility", () => {
+  const staff = platform("pages/staff.tsx");
+  const shifts = api("routes/shifts.ts");
+
+  it("uses commission-safe Start Shift / End Shift UI copy while retaining backend route compatibility", () => {
+    expect(staff).toContain("Start Shift");
+    expect(staff).toContain("End Shift");
+    expect(staff).toContain('"/api/shifts/clock-in"');
+    expect(staff).toContain('"/api/shifts/clock-out"');
+    expect(shifts).toContain('"/shifts/clock-in"');
+    expect(shifts).toContain('"/shifts/clock-out"');
   });
 });
