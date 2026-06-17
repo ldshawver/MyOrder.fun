@@ -3,7 +3,7 @@ import { BrandProvider } from "@/contexts/BrandContext";
 import { CartProvider } from "@/contexts/CartContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
-import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from '@clerk/react';
+import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser, useAuth } from "@clerk/react";
 import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -37,9 +37,7 @@ import Account from "@/pages/account";
 import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
-import Communications from "@/pages/communications";
 import ContractSignPage from "@/pages/contractor-hub/contract-sign";
-import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
@@ -53,25 +51,28 @@ import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
-import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
-import Layout from "@/components/layout";
+import AdminPuckImport from "@/pages/admin/puck/import";
+
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
-// Only use the proxy URL in production builds — in dev it points to the live
-// domain which isn't reachable from Replit, causing Clerk JS to fail to load.
+
 const clerkProxyUrl = import.meta.env.PROD
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
+
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 type AppRole = "global_admin" | "admin" | "supervisor" | "customer_service_rep" | "user";
 
 function normalizeAppRole(role?: string | null): AppRole {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
+
   if (normalized === "global_admin") return "global_admin";
   if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
   if (normalized === "supervisor") return "supervisor";
+
   if (
     normalized === "customer_service_rep" ||
     normalized === "staff" ||
@@ -89,6 +90,7 @@ function normalizeAppRole(role?: string | null): AppRole {
   ) {
     return "customer_service_rep";
   }
+
   return "user";
 }
 
@@ -99,25 +101,59 @@ function stripBase(path: string): string {
 }
 
 if (!clerkPubKey) {
-  throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file');
+  throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY in .env file");
 }
 
 function AuthBrandWrapper({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ background: "#0A0000" }}>
-      <div className="pointer-events-none fixed inset-0" style={{ backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(180,0,0,0.015) 4px)" }} />
-      <div className="pointer-events-none fixed inset-0 opacity-[0.03]" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E\")", backgroundRepeat: "repeat", backgroundSize: "128px" }} />
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none" style={{ background: "radial-gradient(circle, rgba(220,20,60,0.08) 0%, transparent 70%)", filter: "blur(60px)" }} />
+    <div
+      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden"
+      style={{ background: "#0A0000" }}
+    >
+      <div
+        className="pointer-events-none fixed inset-0"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(180,0,0,0.015) 4px)",
+        }}
+      />
+      <div
+        className="pointer-events-none fixed inset-0 opacity-[0.03]"
+        style={{
+          backgroundImage:
+            "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E\")",
+          backgroundRepeat: "repeat",
+          backgroundSize: "128px",
+        }}
+      />
+      <div
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none"
+        style={{
+          background: "radial-gradient(circle, rgba(220,20,60,0.08) 0%, transparent 70%)",
+          filter: "blur(60px)",
+        }}
+      />
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
         <div className="flex flex-col items-center gap-3 mb-2">
-          <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-12 h-12 object-contain" style={{ filter: "invert(1) brightness(1.2)" }} />
+          <img
+            src="/lc-icon.png"
+            alt="Lucifer Cruz"
+            className="w-12 h-12 object-contain"
+            style={{ filter: "invert(1) brightness(1.2)" }}
+          />
           <div className="text-center">
-            <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>LUCIFER CRUZ</div>
-            <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>Adult Boutique · 18+</div>
+            <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>
+              LUCIFER CRUZ
+            </div>
+            <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
+              Adult Boutique · 18+
+            </div>
           </div>
         </div>
         {children}
-        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>ADULTS ONLY · 18+ · DISCREET · SECURE</p>
+        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>
+          ADULTS ONLY · 18+ · DISCREET · SECURE
+        </p>
       </div>
     </div>
   );
@@ -146,26 +182,25 @@ function SignUpPage() {
 
 function ClerkQueryClientCacheInvalidator() {
   const { addListener } = useClerk();
-  const queryClient = useQueryClient();
+  const queryClientInstance = useQueryClient();
   const prevUserIdRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     const unsubscribe = addListener(({ user }) => {
       const userId = user?.id ?? null;
-      if (
-        prevUserIdRef.current !== undefined &&
-        prevUserIdRef.current !== userId
-      ) {
-        queryClient.clear();
+
+      if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== userId) {
+        queryClientInstance.clear();
       }
+
       prevUserIdRef.current = userId;
     });
+
     return unsubscribe;
-  }, [addListener, queryClient]);
+  }, [addListener, queryClientInstance]);
 
   return null;
 }
-
 
 function canUseVisualEditor(role: string | null | undefined): boolean {
   const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -186,13 +221,21 @@ function HomeRedirect() {
 }
 
 const LoadingScreen = () => (
-  <div className="h-screen w-full flex flex-col items-center justify-center gap-4" style={{ background: "#0A0000" }}>
-    <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-14 h-14 object-contain animate-pulse" style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }} />
-    <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>Loading...</div>
+  <div
+    className="h-screen w-full flex flex-col items-center justify-center gap-4"
+    style={{ background: "#0A0000" }}
+  >
+    <img
+      src="/lc-icon.png"
+      alt="Lucifer Cruz"
+      className="w-14 h-14 object-contain animate-pulse"
+      style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }}
+    />
+    <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>
+      Loading...
+    </div>
   </div>
 );
-
-const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 function useSessionLogger(_userEmail: string) {
   const [location] = useLocation();
@@ -201,32 +244,56 @@ function useSessionLogger(_userEmail: string) {
 
   useEffect(() => {
     if (location === lastPageRef.current) return;
+
     lastPageRef.current = location;
 
-    getToken().then(token => {
-      if (!token) return;
-      fetch(`${BASE_API}/api/session/log`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ page: location, action: "page_view" }),
-      }).catch(() => {});
-    });
+    getToken()
+      .then((token) => {
+        if (!token) return;
+
+        return fetch(`${BASE_API}/api/session/log`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ page: location, action: "page_view" }),
+        });
+      })
+      .catch(() => {});
   }, [location, getToken]);
 }
 
-function AuthErrorScreen({ onSignOut, onRetry }: { onSignOut: () => void; onRetry: () => void }) {
+function AuthErrorScreen({
+  onSignOut,
+  onRetry,
+}: {
+  onSignOut: () => void;
+  onRetry: () => void;
+}) {
   return (
-    <div className="h-screen w-full flex flex-col items-center justify-center gap-6" style={{ background: "#0A0000" }}>
+    <div
+      className="h-screen w-full flex flex-col items-center justify-center gap-6"
+      style={{ background: "#0A0000" }}
+    >
       <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-10 h-10 object-contain" style={{ filter: "invert(1)" }} />
       <div className="text-center flex flex-col gap-1">
-        <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>Unable to load your account.</p>
-        <p className="text-xs font-mono" style={{ color: "#444" }}>The server could not verify your session.</p>
+        <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>
+          Unable to load your account.
+        </p>
+        <p className="text-xs font-mono" style={{ color: "#444" }}>
+          The server could not verify your session.
+        </p>
       </div>
       <div className="flex gap-3">
         <button
           onClick={onRetry}
           className="px-4 py-2 rounded-lg text-xs font-mono tracking-widest uppercase"
-          style={{ background: "rgba(255,255,255,0.06)", color: "#C0C0C0", border: "1px solid rgba(255,255,255,0.1)" }}
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            color: "#C0C0C0",
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
         >
           Retry
         </button>
@@ -258,6 +325,7 @@ function AuthenticatedApp() {
     }
 
     setAuthTokenGetter(() => getToken());
+
     getToken()
       .then((token) => {
         if (!cancelled) setAuthTokenReady(Boolean(token));
@@ -272,7 +340,12 @@ function AuthenticatedApp() {
     };
   }, [clerkLoaded, isSignedIn, getToken]);
 
-  const { data: user, isLoading, isError, error } = useGetCurrentUser({
+  const {
+    data: user,
+    isLoading,
+    isError,
+    error,
+  } = useGetCurrentUser({
     query: {
       queryKey: ["getCurrentUser"],
       enabled: clerkLoaded && isSignedIn === true && authTokenReady,
@@ -290,18 +363,22 @@ function AuthenticatedApp() {
   const initialNdaAccepted = useNdaAccepted();
   const [ndaAccepted, setNdaAccepted] = useState(initialNdaAccepted);
 
-  // Global interceptor: detect 403 "pending/rejected" from any API call mid-session
   const qc = useQueryClient();
   const [midSessionStatus, setMidSessionStatus] = useState<"pending" | "rejected" | null>(null);
+
   useEffect(() => {
     const cache = qc.getQueryCache();
+
     return cache.subscribe((event) => {
       if (event.type !== "updated") return;
       if (event.query.state.status !== "error") return;
+
       const queryKey = event.query.queryKey as unknown[];
       if (queryKey[0] === "getCurrentUser") return;
+
       const err = event.query.state.error as { status?: number; data?: { status?: string } } | null;
       if (err?.status !== 403) return;
+
       const apiStatus = err?.data?.status;
       setMidSessionStatus(apiStatus === "rejected" ? "rejected" : "pending");
     });
@@ -312,6 +389,7 @@ function AuthenticatedApp() {
   async function refreshCurrentUser() {
     await qc.invalidateQueries({ queryKey: ["getCurrentUser"] });
     await qc.refetchQueries({ queryKey: ["getCurrentUser"] });
+
     const state = qc.getQueryState(["getCurrentUser"]);
     if (state?.status === "error") {
       throw new Error("Failed to check status");
@@ -341,13 +419,17 @@ function AuthenticatedApp() {
 
   if (isError) {
     const err = error as { status?: number; data?: { status?: string } } | null;
+
     if (err?.status === 403) {
       const apiStatus = err?.data?.status;
+
       if (apiStatus === "rejected") {
         return <PendingPage status="rejected" userEmail={clerkEmail} />;
       }
+
       return <PendingPage status="pending" userEmail={clerkEmail} onCheckStatus={handleCheckStatus} />;
     }
+
     return (
       <AuthErrorScreen
         onSignOut={() => signOut(() => window.location.replace(`${basePath}/sign-in`))}
@@ -362,6 +444,7 @@ function AuthenticatedApp() {
   const isGlobalAdmin = normalizedRole === "global_admin";
   const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
   const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+  const appRole = normalizeAppRole(user.role);
 
   if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
     return (
@@ -373,86 +456,76 @@ function AuthenticatedApp() {
     );
   }
 
-  const appRole = normalizeAppRole(user.role);
-
   return (
     <>
-      {!ndaAccepted && (
-        <NdaModal userEmail={user.email} onAccept={() => setNdaAccepted(true)} />
-      )}
+      {!ndaAccepted && <NdaModal userEmail={user.email} onAccept={() => setNdaAccepted(true)} />}
       <SessionWatermark email={user.email} />
       <Layout user={user}>
         <Switch>
           <Route path="/dashboard" component={Dashboard} />
-        
-        {/* Catalog */}
-        <Route path="/catalog" component={Catalog} />
-        <Route path="/catalog/:id" component={CatalogItemDetail} />
-        
-        {/* Orders */}
-        <Route path="/orders" component={Orders} />
-        <Route path="/orders/new" component={NewOrder} />
-        <Route path="/orders/:id" component={OrderDetail} />
-        
-        <Route path="/ai-concierge" component={AiConcierge} />
-        
-        {/* Role specific routes */}
-        {appRole === "global_admin" && (
-          <>
-            <Route path="/global-admin" component={GlobalAdmin} />
-            <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
-            <Route path="/global-admin/tenants" component={GlobalAdminTenants} />
-            <Route path="/global-admin/audit" component={GlobalAdminAudit} />
-            <Route path="/global-admin/integrations" component={GlobalAdminIntegrations} />
-          </>
-        )}
 
-        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
-        {isStaff && (
-          <Route path="/admin/inventory" component={AdminInventory} />
-        )}
-        {(["global_admin", "admin"].includes(appRole)) && (
-          <>
-            <Route path="/admin/users" component={AdminUsers} />
-            <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
-            <Route path="/admin/mfa" component={MfaSetup} />
-            <Route path="/admin/import" component={AdminImport} />
-            <Route path="/admin/settings" component={AdminSettingsPage} />
-            <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
-            <Route path="/admin/receipts" component={AdminReceipts} />
-            <Route path="/admin/closeouts" component={AdminCloseouts} />
-            <Route path="/admin/feedback" component={AdminFeedback} />
-            <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
-            <Route path="/admin/credits" component={AdminCredits} />
-            <Route path="/admin/reports" component={AdminReports} />
-            <Route path="/admin/web-editor" component={AdminWebEditor} />
-            <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
-            {canUseVisualEditor(user.role) && (
-              <>
-                <Route path="/admin/puck/import" component={AdminPuckImport} />
-                <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
-                <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
-                <Route path="/admin/visual-editor" component={AdminVisualEditor} />
-              </>
-            )}
-          </>
-        )}
+          <Route path="/catalog" component={Catalog} />
+          <Route path="/catalog/:id" component={CatalogItemDetail} />
 
-        {(["global_admin", "admin", "supervisor", "customer_service_rep"].includes(appRole)) && (
-          <>
-            <Route path="/staff" component={StaffQueue} />
-            <Route path="/csr-settings" component={CsrSettings} />
-            <Route path="/csr-settings/:section" component={CsrSettings} />
-          </>
-        )}
+          <Route path="/orders" component={Orders} />
+          <Route path="/orders/new" component={NewOrder} />
+          <Route path="/orders/:id" component={OrderDetail} />
 
-        {/* User specific */}
-        <Route path="/notifications" component={Notifications} />
-        <Route path="/account" component={Account} />
-        <Route path="/profile" component={Profile} />
-        <Route path="/credits" component={Credits} />
-        <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
-        <Route component={NotFound} />
+          <Route path="/ai-concierge" component={AiConcierge} />
+
+          {appRole === "global_admin" && (
+            <>
+              <Route path="/global-admin" component={GlobalAdmin} />
+              <Route path="/global-admin/onboarding" component={GlobalAdminOnboarding} />
+              <Route path="/global-admin/tenants" component={GlobalAdminTenants} />
+              <Route path="/global-admin/audit" component={GlobalAdminAudit} />
+              <Route path="/global-admin/integrations" component={GlobalAdminIntegrations} />
+            </>
+          )}
+
+          {isStaff && <Route path="/admin/inventory" component={AdminInventory} />}
+
+          {["global_admin", "admin"].includes(appRole) && (
+            <>
+              <Route path="/admin/users" component={AdminUsers} />
+              <Route path="/admin/roles-permissions" component={AdminRolesPermissions} />
+              <Route path="/admin/mfa" component={MfaSetup} />
+              <Route path="/admin/import" component={AdminImport} />
+              <Route path="/admin/settings" component={AdminSettingsPage} />
+              <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
+              <Route path="/admin/receipts" component={AdminReceipts} />
+              <Route path="/admin/closeouts" component={AdminCloseouts} />
+              <Route path="/admin/feedback" component={AdminFeedback} />
+              <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
+              <Route path="/admin/credits" component={AdminCredits} />
+              <Route path="/admin/reports" component={AdminReports} />
+              <Route path="/admin/web-editor" component={AdminWebEditor} />
+
+              {canUseVisualEditor(user.role) && (
+                <>
+                  <Route path="/admin/puck/import" component={AdminPuckImport} />
+                  <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
+                  <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
+                  <Route path="/admin/visual-editor" component={AdminVisualEditor} />
+                </>
+              )}
+            </>
+          )}
+
+          {isStaff && (
+            <>
+              <Route path="/staff" component={StaffQueue} />
+              <Route path="/csr-settings" component={CsrSettings} />
+              <Route path="/csr-settings/:section" component={CsrSettings} />
+            </>
+          )}
+
+          <Route path="/notifications" component={Notifications} />
+          <Route path="/account" component={Account} />
+          <Route path="/profile" component={Profile} />
+          <Route path="/credits" component={Credits} />
+          <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
+          <Route component={NotFound} />
         </Switch>
       </Layout>
     </>
@@ -493,13 +566,14 @@ function Router() {
 
 function ClerkAuthTokenSetter() {
   const { getToken } = useAuth();
+
   useEffect(() => {
     setAuthTokenGetter(() => getToken());
     return () => setAuthTokenGetter(null);
   }, [getToken]);
+
   return null;
 }
-
 
 function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
