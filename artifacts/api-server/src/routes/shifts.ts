@@ -21,12 +21,13 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 // requireRole: sales_rep/lab_tech/business_sitter/lab_technician => CSR,
 // supervisor => admin, customer => user.
 const SHIFT_OPERATOR_ROLES = [
-  "customer_service_rep",
+  "csr",
   "admin",
   "global_admin",
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 import { getHouseTenantId } from "../lib/singleTenant";
+import { visibleAlavontCatalogSql } from "../lib/catalogVisibility";
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -102,7 +103,7 @@ function buildCsrAuthDebug(req: Request, failedCondition: string | null = null) 
     backendRole: user?.role ?? null,
     approvalStatus: user?.status ?? null,
     assignedCompanyStoreLocation,
-    csrPermissionFlag: user ? normalizeRole(user.role) === "customer_service_rep" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
+    csrPermissionFlag: user ? normalizeRole(user.role) === "csr" || normalizeRole(user.role) === "admin" || normalizeRole(user.role) === "global_admin" : false,
     failedCondition,
   };
 }
@@ -157,7 +158,7 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
   }
   const actorRole = normalizeRole(user.role);
   // Staff roles (CSR / admin / global_admin) are implicitly approved.
-  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "customer_service_rep") {
+  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "csr") {
     logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
     logMarekCsrAuthDebug(req, null);
     next();
@@ -547,6 +548,28 @@ async function ensureInventoryLocations(houseTenantId: number): Promise<void> {
   }
 }
 
+async function recomputeCatalogInventoryMirror(tenantId: number, productId: number): Promise<void> {
+  const balances = await db
+    .select({
+      quantityOnHand: inventoryBalancesTable.quantityOnHand,
+      parLevel: inventoryBalancesTable.parLevel,
+    })
+    .from(inventoryBalancesTable)
+    .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId)));
+
+  const stockQuantity = balances.reduce((sum, row) => sum + parseFloat(String(row.quantityOnHand ?? "0")), 0);
+  const parLevel = balances.reduce((sum, row) => sum + parseFloat(String(row.parLevel ?? "0")), 0);
+
+  await db
+    .update(catalogItemsTable)
+    .set({
+      stockQuantity: String(stockQuantity),
+      inventoryAmount: String(stockQuantity),
+      parLevel: String(parLevel),
+    })
+    .where(and(eq(catalogItemsTable.id, productId), eq(catalogItemsTable.tenantId, tenantId)));
+}
+
 // ─── Helper: load active boxes for a tenant ───────────────────────────────────
 async function getActiveCsrBoxes(tenantId: number) {
   return db
@@ -579,8 +602,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .where(
       and(
         eq(catalogItemsTable.isAvailable, true),
-        sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
-        sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+        visibleAlavontCatalogSql(),
         sql`LOWER(COALESCE(${catalogItemsTable.name}, '')) NOT LIKE 'safe%'`,
         sql`LOWER(COALESCE(${catalogItemsTable.alavontName}, '')) NOT LIKE 'safe%'`,
         sql`LOWER(COALESCE(${catalogItemsTable.displayName}, '')) NOT LIKE 'safe%'`,
@@ -743,6 +765,7 @@ type EnrichedItem = {
   unitType: string;
   displayOrder: number;
   catalogItemId: number | null;
+  locationId: number | null;
   itemName: string;
   unitPrice: number;
   quantityStart: number;
@@ -779,6 +802,7 @@ function enrichInventoryWithSales(
       unitType: item.unitType ?? "#",
       displayOrder: item.displayOrder ?? 0,
       catalogItemId: item.catalogItemId ?? null,
+      locationId: item.locationId ?? null,
       itemName: item.itemName,
       unitPrice: parseFloat(String(item.unitPrice ?? 0)),
       quantityStart: qStart,
@@ -1172,6 +1196,7 @@ router.post(
     );
 
     // Persist ending quantities and actual counts
+    const mirrorProductIds = new Set<number>();
     for (const item of enriched) {
       if (item.rowType === "item" || item.rowType === "cash") {
         const actualEnd = actualMap.has(item.id) ? actualMap.get(item.id)! : null;
@@ -1197,6 +1222,34 @@ router.post(
         item.quantityEndActual = actualEnd;
         item.discrepancy = disc;
         item.isFlagged = flagged;
+
+        if (item.rowType === "item" && item.catalogItemId != null && item.locationId != null && actualEnd != null && activeShift.tenantId != null) {
+          const [balance] = await db
+            .select({ id: inventoryBalancesTable.id })
+            .from(inventoryBalancesTable)
+            .where(
+              and(
+                eq(inventoryBalancesTable.tenantId, activeShift.tenantId),
+                eq(inventoryBalancesTable.productId, item.catalogItemId),
+                eq(inventoryBalancesTable.locationId, item.locationId),
+              )
+            )
+            .limit(1);
+
+          if (balance) {
+            await db
+              .update(inventoryBalancesTable)
+              .set({ quantityOnHand: String(actualEnd) })
+              .where(eq(inventoryBalancesTable.id, balance.id));
+            mirrorProductIds.add(item.catalogItemId);
+          }
+        }
+      }
+    }
+
+    if (activeShift.tenantId != null) {
+      for (const productId of mirrorProductIds) {
+        await recomputeCatalogInventoryMirror(activeShift.tenantId, productId);
       }
     }
 
@@ -1254,7 +1307,7 @@ router.post(
     await writeAuditLog({
       actorId: tech.id,
       actorEmail: tech.email,
-      actorRole: tech.role,
+      actorRole: normalizeRole(tech.role),
       action: "shift.clock_out",
       tenantId: activeShift.tenantId ?? null,
       resourceType: "lab_tech_shift",
@@ -1623,7 +1676,7 @@ router.post(
       .insert(csrBoxesTable)
       .values({ tenantId: houseTenantId, slug, label: String(label).trim(), description: description ?? null, location: location ?? null, isActive, displayOrder })
       .returning();
-    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_CREATED", resourceType: "csr_box", resourceId: String(created.id), metadata: { label, slug } });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role), action: "CSR_BOX_CREATED", resourceType: "csr_box", resourceId: String(created.id), metadata: { label, slug } });
     res.status(201).json({ box: created });
   }
 );
@@ -1659,7 +1712,7 @@ router.patch(
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
 
     const [updated] = await db.update(csrBoxesTable).set(update).where(eq(csrBoxesTable.id, id)).returning();
-    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_UPDATED", resourceType: "csr_box", resourceId: String(id), metadata: update as Record<string, unknown> });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role), action: "CSR_BOX_UPDATED", resourceType: "csr_box", resourceId: String(id), metadata: update as Record<string, unknown> });
     res.json({ box: updated });
   }
 );
@@ -1678,7 +1731,7 @@ router.delete(
     if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
 
     const [updated] = await db.update(csrBoxesTable).set({ isActive: false }).where(eq(csrBoxesTable.id, id)).returning();
-    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "CSR_BOX_DEACTIVATED", resourceType: "csr_box", resourceId: String(id) });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role), action: "CSR_BOX_DEACTIVATED", resourceType: "csr_box", resourceId: String(id) });
     res.json({ box: updated });
   }
 );
@@ -1727,7 +1780,7 @@ router.post(
       isActive,
       displayOrder,
     }).returning();
-    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_CREATED", resourceType: "inventory_location", resourceId: String(created.id), metadata: { name, type } });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role), action: "INVENTORY_LOCATION_CREATED", resourceType: "inventory_location", resourceId: String(created.id), metadata: { name, type } });
     res.status(201).json({ location: created });
   }
 );
@@ -1752,7 +1805,7 @@ router.patch(
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
     const [updated] = await db.update(inventoryLocationsTable).set(update).where(eq(inventoryLocationsTable.id, id)).returning();
     if (!updated) { res.status(404).json({ error: "Location not found" }); return; }
-    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_UPDATED", resourceType: "inventory_location", resourceId: String(id), metadata: update });
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role), action: "INVENTORY_LOCATION_UPDATED", resourceType: "inventory_location", resourceId: String(id), metadata: update });
     res.json({ location: updated });
   }
 );
@@ -1834,8 +1887,9 @@ router.patch(
     if (parLevel !== undefined) update.parLevel = String(parLevel);
 
     const [updated] = await db.update(inventoryBalancesTable).set(update).where(eq(inventoryBalancesTable.id, id)).returning();
+    await recomputeCatalogInventoryMirror(current.tenantId, current.productId);
     await writeAuditLog({
-      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+      actorId: actor.id, actorEmail: actor.email, actorRole: normalizeRole(actor.role),
       action: "INVENTORY_BALANCE_ADJUSTED",
       resourceType: "inventory_balance", resourceId: String(id),
       metadata: {

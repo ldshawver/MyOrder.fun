@@ -9,6 +9,7 @@ import {
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { isVisibleAlavontCatalogRow } from "../lib/catalogVisibility";
 import {
   ensureStandardLocations,
   ensureAllInventoryBalances,
@@ -110,6 +111,10 @@ router.get(
           parLevel: catalogItemsTable.parLevel,
           isWooManaged: catalogItemsTable.isWooManaged,
           isLocalAlavont: catalogItemsTable.isLocalAlavont,
+          merchantProductSource: catalogItemsTable.merchantProductSource,
+          wooProductId: catalogItemsTable.wooProductId,
+          alavontId: catalogItemsTable.alavontId,
+          externalMenuId: catalogItemsTable.externalMenuId,
         })
         .from(catalogItemsTable)
         .where(eq(catalogItemsTable.tenantId, houseTenantId))
@@ -133,8 +138,10 @@ router.get(
         .limit(1),
     ]);
 
-    // Only local Alavont products in the inventory grid
-    const localItems = products.filter(p => p.isWooManaged !== true);
+    // Only real WooCommerce storefront rows are excluded from the local
+    // Alavont inventory grid. Older imports may have isWooManaged=true even
+    // though they are uploaded Alavont rows; keep those visible/repairable.
+    const localItems = products.filter(isVisibleAlavontCatalogRow);
 
     // Build balance lookup: "productId:locationId" → balance row
     const balanceMap = new Map<string, typeof balances[0]>();

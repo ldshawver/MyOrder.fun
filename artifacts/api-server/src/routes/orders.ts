@@ -11,6 +11,7 @@ import {
   inventoryTemplatesTable,
   adminSettingsTable,
   inventoryBalancesTable,
+  catalogItemsTable,
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
@@ -511,7 +512,7 @@ router.get("/orders", async (req, res): Promise<void> => {
   // audience scoping so the listing UI cannot drift from realtime
   // alerts. Admin/supervisor still see everything.
   if (
-    actorRole === "customer_service_rep"
+    actorRole === "csr"
   ) {
     rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
   }
@@ -634,181 +635,221 @@ router.post("/orders", async (req, res): Promise<void> => {
     }
   }
 
-  const now = new Date();
-  const [order] = await db.insert(ordersTable).values({
-    tenantId: houseTenantId,
-    customerId: actor.id,
-    status: "pending",
-    paymentStatus: "unpaid",
-    paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-    subtotal: String(subtotal.toFixed(2)),
-    tax: String(tax.toFixed(2)),
-    total: String(finalTotal.toFixed(2)),
-    shippingAddress: body.data.shippingAddress ?? null,
-    deliveryMethod: isCsrDelivery
-      ? "csr_delivery"
-      : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
-    deliveryQuoteId: deliveryQuote?.quoteId ?? null,
-    deliveryQuoteSnapshot: deliveryQuote ?? null,
-    deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
-    deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
-    notes: body.data.notes ?? null,
-    assignedTechId,
-    assignedShiftId,
-    assignedCsrUserId: routing.assignedCsrUserId,
-    routeSource: routing.routeSource,
-    routedAt: now,
-    promisedMinutes: routing.promisedMinutes,
-    estimatedReadyAt: routing.estimatedReadyAt,
-    fulfillmentStatus: "submitted",
-    finalConfirmationAt,
-    legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
-    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
-    selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-  }).returning();
+  let targetLocationId: number | null = null;
 
-  // Persist dual-brand snapshots on the order for auditability
-  const alavontCartSnapshot = normalizedLines.map(l => ({
-    catalogItemId: l.catalog_item_id,
-    alavontName: l.receipt_alavont_name,
-    quantity: l.quantity,
-    unitPrice: l.unit_price,
-  }));
-  const luciferCheckoutSnapshot = normalizedLines.map(l => ({
-    catalogItemId: l.catalog_item_id,
-    luciferCruzName: l.merchant_name,
-    sourceType: l.source_type,
-    wooProductId: l.woo_product_id,
-    wooVariationId: l.woo_variation_id,
-    quantity: l.quantity,
-    unitPrice: l.unit_price,
-  }));
-  const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
-    acceptedAllSalesFinal: true,
-    confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
-    legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
-  });
-  const checkoutSnapshotWithTip = {
-    ...checkoutConversionSnapshot,
-    tip: {
-      amount: tipAmount,
-      percent: checkoutConfirmation?.tipPercent ?? null,
-      recipient: "sales_rep",
-    },
-    pricingSnapshot: {
-      ...checkoutConversionSnapshot.pricingSnapshot,
-      deliveryFee,
-      tipAmount,
-      totalBeforeTip: merchandiseTotal + deliveryFee,
-      total: finalTotal,
-    },
-  };
+  if (assignedShiftId) {
+    const [activeShift] = await db
+      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+      .from(labTechShiftsTable)
+      .where(and(eq(labTechShiftsTable.id, assignedShiftId), eq(labTechShiftsTable.tenantId, houseTenantId)))
+      .limit(1);
 
-  await db.update(ordersTable).set({
-    alavontCartSnapshot,
-    luciferCheckoutSnapshot,
-    checkoutConversionSnapshot: checkoutSnapshotWithTip,
-  }).where(eq(ordersTable.id, order.id));
-
-  // Insert order items using normalized line data
-  // catalogItemName = Alavont display name (internal), luciferCruzName = LC merchant name (processor)
-  for (const line of normalizedLines) {
-    await db.insert(orderItemsTable).values({
-      orderId: order.id,
-      catalogItemId: line.catalog_item_id,
-      catalogItemName: line.catalog_display_name,        // Alavont name for internal records
-      quantity: line.quantity,
-      unitPrice: String(line.unit_price.toFixed(2)),
-      totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
-      // Dual-brand snapshot columns
-      alavontName: line.receipt_alavont_name,
-      luciferCruzName: line.merchant_name,               // LC merchant name — never Alavont
-      receiptName: line.receipt_name ?? line.merchant_name,
-      labelName: line.label_name ?? line.merchant_name,
-      labName: line.lab_name ?? line.receipt_alavont_name,
-      // CJ Dropshipping linkage — persisted so post-payment dispatch can use stored values
-      wooProductId: line.woo_product_id ?? null,
-      wooVariationId: line.woo_variation_id ?? null,
-    });
-  }
-
-  // Decrement inventory_balances for the CSR's assigned box location (fire-and-forget).
-  // If no active shift with a box assignment, decrement the Storefront balance instead.
-  // Errors are logged and never surface to the customer.
-  (async () => {
-    try {
-      let targetLocationId: number | null = null;
-
-      if (assignedShiftId) {
-        const [activeShift] = await db
-          .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
-          .from(labTechShiftsTable)
-          .where(eq(labTechShiftsTable.id, assignedShiftId))
-          .limit(1);
-
-        if (activeShift?.boxAssignmentId) {
-          const [box] = await db
-            .select({ id: csrBoxesTable.id })
-            .from(csrBoxesTable)
-            .where(
-              and(
-                eq(csrBoxesTable.tenantId, houseTenantId),
-                eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
-              )
-            )
-            .limit(1);
-          if (box) {
-            const [loc] = await db
-              .select({ id: inventoryLocationsTable.id })
-              .from(inventoryLocationsTable)
-              .where(
-                and(
-                  eq(inventoryLocationsTable.tenantId, houseTenantId),
-                  eq(inventoryLocationsTable.csrBoxId, box.id),
-                )
-              )
-              .limit(1);
-            targetLocationId = loc?.id ?? null;
-          }
-        }
-      }
-
-      // Fallback: storefront balance when no active CSR box
-      if (!targetLocationId) {
-        const [storefrontLoc] = await db
+    if (activeShift?.boxAssignmentId) {
+      const [box] = await db
+        .select({ id: csrBoxesTable.id })
+        .from(csrBoxesTable)
+        .where(
+          and(
+            eq(csrBoxesTable.tenantId, houseTenantId),
+            eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+          )
+        )
+        .limit(1);
+      if (box) {
+        const [loc] = await db
           .select({ id: inventoryLocationsTable.id })
           .from(inventoryLocationsTable)
           .where(
             and(
               eq(inventoryLocationsTable.tenantId, houseTenantId),
-              eq(inventoryLocationsTable.type, "storefront"),
+              eq(inventoryLocationsTable.csrBoxId, box.id),
             )
           )
           .limit(1);
-        targetLocationId = storefrontLoc?.id ?? null;
+        targetLocationId = loc?.id ?? null;
       }
+    }
+  }
 
+  // Fallback: storefront balance when no active CSR box.
+  if (!targetLocationId) {
+    const [storefrontLoc] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(
+        and(
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.type, "storefront"),
+        )
+      )
+      .limit(1);
+    targetLocationId = storefrontLoc?.id ?? null;
+  }
+
+  const now = new Date();
+  let order: typeof ordersTable.$inferSelect;
+  try {
+    order = await db.transaction(async (tx) => {
       if (targetLocationId) {
         for (const line of normalizedLines) {
           if (!line.catalog_item_id) continue;
-          await db
+
+          const [tenantCatalogItem] = await tx
+            .select({ id: catalogItemsTable.id })
+            .from(catalogItemsTable)
+            .where(and(eq(catalogItemsTable.id, line.catalog_item_id), eq(catalogItemsTable.tenantId, houseTenantId)))
+            .limit(1);
+          if (!tenantCatalogItem) {
+            throw new Error(`CATALOG_ITEM_TENANT_MISMATCH:${line.catalog_item_id}`);
+          }
+
+          const [updatedBalance] = await tx
             .update(inventoryBalancesTable)
             .set({
-              quantityOnHand: sql`GREATEST(0, ${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)})`,
+              quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
             })
             .where(
               and(
                 eq(inventoryBalancesTable.tenantId, houseTenantId),
                 eq(inventoryBalancesTable.productId, line.catalog_item_id),
                 eq(inventoryBalancesTable.locationId, targetLocationId),
+                // Atomic guard: quantity_on_hand >= requested quantity.
+                sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
               )
-            );
+            )
+            .returning({ id: inventoryBalancesTable.id });
+
+          if (!updatedBalance) {
+            throw new Error(`INSUFFICIENT_INVENTORY:${line.catalog_item_id}`);
+          }
+
+          const balances = await tx
+            .select({ quantityOnHand: inventoryBalancesTable.quantityOnHand })
+            .from(inventoryBalancesTable)
+            .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.productId, line.catalog_item_id)));
+          const mirroredStock = balances.reduce((sum, row) => sum + parseFloat(String(row.quantityOnHand ?? "0")), 0);
+          await tx
+            .update(catalogItemsTable)
+            .set({
+              stockQuantity: String(mirroredStock),
+              inventoryAmount: String(mirroredStock),
+            })
+            .where(and(eq(catalogItemsTable.id, line.catalog_item_id), eq(catalogItemsTable.tenantId, houseTenantId)));
         }
       }
-    } catch (err) {
-      logger.warn({ err, orderId: order.id }, "inventory_balances decrement failed — order unaffected");
+
+      const [createdOrder] = await tx.insert(ordersTable).values({
+        tenantId: houseTenantId,
+        customerId: actor.id,
+        status: "pending",
+        paymentStatus: "unpaid",
+        paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+        subtotal: String(subtotal.toFixed(2)),
+        tax: String(tax.toFixed(2)),
+        total: String(finalTotal.toFixed(2)),
+        shippingAddress: body.data.shippingAddress ?? null,
+        deliveryMethod: isCsrDelivery
+          ? "csr_delivery"
+          : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+        deliveryQuoteId: deliveryQuote?.quoteId ?? null,
+        deliveryQuoteSnapshot: deliveryQuote ?? null,
+        deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
+        deliveryCurrency: isCsrDelivery ? "usd" : (deliveryQuote?.currency ?? null),
+        notes: body.data.notes ?? null,
+        assignedTechId,
+        assignedShiftId,
+        assignedCsrUserId: routing.assignedCsrUserId,
+        routeSource: routing.routeSource,
+        routedAt: now,
+        promisedMinutes: routing.promisedMinutes,
+        estimatedReadyAt: routing.estimatedReadyAt,
+        fulfillmentStatus: "submitted",
+        finalConfirmationAt,
+        legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
+        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
+        selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+      }).returning();
+
+      // Persist dual-brand snapshots on the order for auditability.
+      const alavontCartSnapshot = normalizedLines.map(l => ({
+        catalogItemId: l.catalog_item_id,
+        alavontName: l.receipt_alavont_name,
+        quantity: l.quantity,
+        unitPrice: l.unit_price,
+      }));
+      const luciferCheckoutSnapshot = normalizedLines.map(l => ({
+        catalogItemId: l.catalog_item_id,
+        luciferCruzName: l.merchant_name,
+        sourceType: l.source_type,
+        wooProductId: l.woo_product_id,
+        wooVariationId: l.woo_variation_id,
+        quantity: l.quantity,
+        unitPrice: l.unit_price,
+      }));
+      const checkoutConversionSnapshot = buildConversionPreview(normalizedLines, {
+        acceptedAllSalesFinal: true,
+        confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+      });
+      const checkoutSnapshotWithTip = {
+        ...checkoutConversionSnapshot,
+        tip: {
+          amount: tipAmount,
+          percent: checkoutConfirmation?.tipPercent ?? null,
+          recipient: "sales_rep",
+        },
+        pricingSnapshot: {
+          ...checkoutConversionSnapshot.pricingSnapshot,
+          deliveryFee,
+          tipAmount,
+          totalBeforeTip: merchandiseTotal + deliveryFee,
+          total: finalTotal,
+        },
+      };
+
+      await tx.update(ordersTable).set({
+        alavontCartSnapshot,
+        luciferCheckoutSnapshot,
+        checkoutConversionSnapshot: checkoutSnapshotWithTip,
+      }).where(eq(ordersTable.id, createdOrder.id));
+
+      // Insert order items using normalized line data.
+      // catalogItemName = Alavont display name (internal), luciferCruzName = LC merchant name (processor)
+      for (const line of normalizedLines) {
+        await tx.insert(orderItemsTable).values({
+          orderId: createdOrder.id,
+          catalogItemId: line.catalog_item_id,
+          catalogItemName: line.catalog_display_name,        // Alavont name for internal records
+          quantity: line.quantity,
+          unitPrice: String(line.unit_price.toFixed(2)),
+          totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
+          // Dual-brand snapshot columns
+          alavontName: line.receipt_alavont_name,
+          luciferCruzName: line.merchant_name,               // LC merchant name — never Alavont
+          receiptName: line.receipt_name ?? line.merchant_name,
+          labelName: line.label_name ?? line.merchant_name,
+          labName: line.lab_name ?? line.receipt_alavont_name,
+          // CJ Dropshipping linkage — persisted so post-payment dispatch can use stored values
+          wooProductId: line.woo_product_id ?? null,
+          wooVariationId: line.woo_variation_id ?? null,
+        });
+      }
+
+      return createdOrder;
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("INSUFFICIENT_INVENTORY:")) {
+      const catalogItemId = Number(err.message.split(":")[1]);
+      res.status(409).json({ error: "Insufficient inventory", catalogItemId });
+      return;
     }
-  })();
+    if (err instanceof Error && err.message.startsWith("CATALOG_ITEM_TENANT_MISMATCH:")) {
+      const catalogItemId = Number(err.message.split(":")[1]);
+      res.status(403).json({ error: "Catalog item is not available for this tenant", catalogItemId });
+      return;
+    }
+    throw err;
+  }
 
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {
@@ -955,7 +996,7 @@ router.post("/orders/:id/accept", requireRole("customer_service_rep"), async (re
 
   // CSRs may only accept orders assigned to them or sitting in the General
   // Account fallback queue (assignedCsrUserId === null).
-  if (normalizeRole(actor.role) === "customer_service_rep") {
+  if (normalizeRole(actor.role) === "csr") {
     if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
       res.status(403).json({ error: "Order is assigned to another rep" });
       return;
@@ -1622,7 +1663,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-  const isStaff = ["global_admin", "admin", "customer_service_rep"].includes(actor.role ?? "");
+  const isStaff = ["global_admin", "admin", "csr"].includes(normalizeRole(actor.role));
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
   if (!order.deliveryMethod || order.deliveryMethod === "pickup") {
     res.status(422).json({ error: "Order is not a delivery order" }); return;

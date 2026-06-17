@@ -8,12 +8,13 @@ import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSy
 export type CanonicalRole =
   | "global_admin"
   | "admin"
-  | "customer_service_rep"
+  | "csr"
   | "user";
 
 export type LegacyRole =
   | "supervisor"
-  | "csr"
+  | "tenant_admin"
+  | "customer_service_rep"
   | "qsr"
   | "customer_service"
   | "customer_service_specialist"
@@ -31,7 +32,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
     ? role.trim().toLowerCase().replace(/[\s-]+/g, "_")
     : "";
   if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "supervisor") return "admin";
+  if (normalized === "admin" || normalized === "supervisor" || normalized === "tenant_admin") return "admin";
   if (
     normalized === "customer_service_rep" ||
     normalized === "customer_service_representative" ||
@@ -46,7 +47,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
     normalized === "lab_tech" ||
     normalized === "lab_technician"
   ) {
-    return "customer_service_rep";
+    return "csr";
   }
   return "user";
 }
@@ -57,7 +58,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
 export const STAFF_ROLES: readonly CanonicalRole[] = [
   "global_admin",
   "admin",
-  "customer_service_rep",
+  "csr",
 ] as const;
 
 let usersSchemaEnsured = false;
@@ -319,7 +320,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         logger.info(
           {
             userId: user.id,
-            email: user.email,
             dbRoleRaw: user.role,
             dbRoleNormalized: dbRole,
             clerkRoleRaw: meta.role,
@@ -333,7 +333,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         logger.warn(
           {
             userId: user.id,
-            email: user.email,
             dbRoleRaw: user.role,
             dbRoleNormalized: dbRole,
             clerkRoleRaw: meta.role,
@@ -354,7 +353,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         logger.info(
           {
             userId: user.id,
-            email: user.email,
             updates,
             finalRole: reconciled?.role ?? user.role,
             finalStatus: reconciled?.status ?? user.status,
@@ -370,7 +368,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       logger.info(
         {
           userId: user.id,
-          email: user.email,
           dbRoleRaw: user.role,
           dbRoleNormalized: normalizeRole(user.role),
           status: user.status,

@@ -1,4 +1,4 @@
--- Migration: Document Hub / DAM foundation and Contractor Hub signing support
+-- Migration: legacy document storage / DAM foundation and legacy module signing support
 CREATE TABLE IF NOT EXISTS "document_assets" (
   "id" text PRIMARY KEY,
   "company_id" text NOT NULL,

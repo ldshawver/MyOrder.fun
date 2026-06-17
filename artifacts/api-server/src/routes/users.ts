@@ -52,6 +52,7 @@ let usersListSchemaEnsured = false;
 const VALID_ROLES = [
   "global_admin",
   "admin",
+  "csr",
   "customer_service_rep",
   "user",
 ] as const;
@@ -548,7 +549,7 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   const newRole = body.data.approve && body.data.role ? body.data.role : undefined;
 
   const updateSet: Partial<typeof usersTable.$inferInsert> = { status: newStatus };
-  if (newRole) updateSet.role = newRole;
+  if (newRole) updateSet.role = normalizeRole(newRole);
 
   const [updated] = await db
     .update(usersTable)
@@ -560,7 +561,7 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
   if (hasRealClerkUserId(updated.clerkId)) {
     await syncUserToClerk(updated.clerkId, {
       status: newStatus,
-      role: newRole ?? normalizeRole(updated.role),
+      role: normalizeRole(newRole ?? updated.role),
     });
   }
 

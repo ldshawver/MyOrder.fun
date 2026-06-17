@@ -178,7 +178,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     const row = auditLogInsertSpy.mock.calls[0][0] as Record<string, unknown>;
     expect(row.action).toBe("shift.clock_out");
     expect(row.actorId).toBe(50);
-    expect(row.actorRole).toBe("customer_service_rep");
+    expect(row.actorRole).toBe("csr");
     expect(row.resourceType).toBe("lab_tech_shift");
     expect(row.resourceId).toBe("888");
   });

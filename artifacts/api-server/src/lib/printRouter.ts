@@ -80,7 +80,7 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
 
   const admin = admins.find(u => normalizeRole(u.role) === "global_admin")
     ?? admins.find(u => normalizeRole(u.role) === "admin")
-    ?? admins.find(u => normalizeRole(u.role) === "customer_service_rep");
+    ?? admins.find(u => normalizeRole(u.role) === "csr");
 
   if (!admin) return null;
 

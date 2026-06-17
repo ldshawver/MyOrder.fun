@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, adminSettingsTable, inventoryTemplatesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { visibleAlavontCatalogSql } from "../lib/catalogVisibility";
 import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -364,8 +365,7 @@ async function syncImportedCatalogToInventoryTemplates(tenantId: number): Promis
     .where(
       and(
         eq(catalogItemsTable.tenantId, tenantId),
-        eq(catalogItemsTable.isWooManaged, false),
-        eq(catalogItemsTable.isLocalAlavont, true),
+        visibleAlavontCatalogSql(),
       )
     );
 
@@ -512,8 +512,36 @@ function parseBuffer(buffer: Buffer, originalName: string, spec = DEFAULT_IMPORT
 }
 
 // ─── Coercers ─────────────────────────────────────────────────────────────────
-function parseTruthy(v: string): boolean {
-  return ["1", "true", "yes", "y"].includes(v.trim().toLowerCase());
+function parseStockStatus(v: string): boolean {
+  const normalized = v.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (!normalized) return true;
+  if ([
+    "1",
+    "true",
+    "yes",
+    "y",
+    "available",
+    "in stock",
+    "instock",
+    "stocked",
+    "active",
+    "on",
+  ].includes(normalized)) return true;
+  if ([
+    "0",
+    "false",
+    "no",
+    "n",
+    "unavailable",
+    "out of stock",
+    "out",
+    "sold out",
+    "inactive",
+    "off",
+  ].includes(normalized)) return false;
+  // Unknown stock labels from vendor spreadsheets should not silently hide
+  // products from the catalog. Keep them visible so admins can correct the row.
+  return true;
 }
 
 function parsePrice(raw: string): number | null {
@@ -809,7 +837,7 @@ router.post(
       }
 
       // ── Optional/coerced values ──
-      const inStock = rec.alavontInStock ? parseTruthy(rec.alavontInStock) : true;
+      const inStock = rec.alavontInStock ? parseStockStatus(rec.alavontInStock) : true;
       const activePrice = salePrice ?? regularPrice;
       const amount = parseAmount(rec.quantity);
       const alavontImageUrl = rec.alavontImage && isValidUrl(rec.alavontImage) ? rec.alavontImage : null;
