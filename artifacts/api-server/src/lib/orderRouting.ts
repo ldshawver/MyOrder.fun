@@ -43,7 +43,7 @@ export type RoutingDecision = {
   promisedMinutes: number;
 };
 
-const ROUTING_ROLES = ["customer_service_rep"] as const;
+const ROUTING_ROLES = ["csr"] as const;
 
 async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinutes: number }> {
   const [s] = await db.select().from(adminSettingsTable).limit(1);

@@ -201,7 +201,7 @@ describe("normalizeRole", () => {
     ["csr"],
     ["service_rep"],
     ["Customer-Service-Representative"],
-  ])("normalizes %s to customer_service_rep", (role) => {
-    expect(normalizeRole(role)).toBe("customer_service_rep");
+  ])("normalizes %s to csr", (role) => {
+    expect(normalizeRole(role)).toBe("csr");
   });
 });

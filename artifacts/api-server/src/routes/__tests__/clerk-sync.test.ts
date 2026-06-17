@@ -200,18 +200,18 @@ describe("PATCH /api/admin/users/:id/approval", () => {
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/2/approval")
-      .send({ approve: true, role: "customer_service_rep" });
+      .send({ approve: true, role: "csr" });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
 
     const dbRow = dbState.users.find((u) => u.id === 2)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("csr");
 
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "pending-clerk-id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "customer_service_rep" }) },
+      { publicMetadata: expect.objectContaining({ status: "approved", role: "csr" }) },
     );
   });
 
@@ -279,7 +279,7 @@ describe("Admin route aliases", () => {
     dbState.users.push({
       id: 100, clerkId: "csr-clerk-id",
       email: "csr@example.com", firstName: "Care", lastName: "Rep",
-      role: "customer_service_rep", status: "approved", isActive: true, contactPhone: null,
+      role: "csr", status: "approved", isActive: true, contactPhone: null,
       mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
     });
     seedPending(22, "alias-role-csr-clerk-id");
@@ -349,12 +349,12 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
 
     // DB row was reconciled
     const dbRow = dbState.users.find((u) => u.id === 7)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("csr");
   });
 
   it("falls back to Clerk API publicMetadata when session claims omit metadata", async () => {
@@ -380,11 +380,11 @@ describe("loadDbUser sync-on-read (Clerk wins)", () => {
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("approved");
-    expect(res.body.role).toBe("customer_service_rep");
+    expect(res.body.role).toBe("csr");
 
     const dbRow = dbState.users.find((u) => u.id === 17)!;
     expect(dbRow.status).toBe("approved");
-    expect(dbRow.role).toBe("customer_service_rep");
+    expect(dbRow.role).toBe("csr");
   });
 
   it("does nothing when Clerk metadata matches the DB", async () => {

@@ -43,7 +43,7 @@ function normalizeTestRole(role: string | undefined) {
     role === "sales_rep" ||
     role === "lab_tech" ||
     role === "lab_technician"
-  ) return "customer_service_rep";
+  ) return "csr";
   return "user";
 }
 

@@ -8,13 +8,13 @@ import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSy
 export type CanonicalRole =
   | "global_admin"
   | "admin"
-  | "customer_service_rep"
+  | "csr"
   | "user";
 
 export type LegacyRole =
   | "supervisor"
   | "tenant_admin"
-  | "csr"
+  | "customer_service_rep"
   | "qsr"
   | "customer_service"
   | "customer_service_specialist"
@@ -47,7 +47,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
     normalized === "lab_tech" ||
     normalized === "lab_technician"
   ) {
-    return "customer_service_rep";
+    return "csr";
   }
   return "user";
 }
@@ -58,7 +58,7 @@ export function normalizeRole(role: unknown): CanonicalRole {
 export const STAFF_ROLES: readonly CanonicalRole[] = [
   "global_admin",
   "admin",
-  "customer_service_rep",
+  "csr",
 ] as const;
 
 let usersSchemaEnsured = false;

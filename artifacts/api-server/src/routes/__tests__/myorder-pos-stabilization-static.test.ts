@@ -69,6 +69,15 @@ describe("MyOrder POS stabilization static checks", () => {
     expect(auditScript).toContain("values suppressed");
   });
 
+  it("guards lowercase csr as the canonical CSR role", () => {
+    const auth = read("artifacts/api-server/src/lib/auth.ts");
+
+    expect(auth).toContain('| "csr"');
+    expect(auth).toContain('return "csr"');
+    expect(auth).toContain('normalized === "customer_service_rep"');
+    expect(auth).toContain('normalized === "service_rep"');
+  });
+
   it("guards inventory/order source-of-truth and transaction safety", () => {
     const orders = read("artifacts/api-server/src/routes/orders.ts");
     const shifts = read("artifacts/api-server/src/routes/shifts.ts");
