@@ -52,6 +52,7 @@ import AdminReports from "@/pages/admin/reports";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
+import AdminPuckImport from "@/pages/admin/puck-import";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // Only use the proxy URL in production builds — in dev it points to the live
@@ -395,6 +396,7 @@ function AuthenticatedApp() {
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
             {canUseVisualEditor(user.role) && (
               <>
+                <Route path="/admin/puck/import" component={AdminPuckImport} />
                 <Route path="/admin/visual-editor/:pageId/preview" component={AdminVisualEditor} />
                 <Route path="/admin/visual-editor/:pageId" component={AdminVisualEditor} />
                 <Route path="/admin/visual-editor" component={AdminVisualEditor} />
