@@ -36,9 +36,7 @@ import Profile from "@/pages/profile";
 import Credits from "@/pages/credits";
 import CsrSettings from "@/pages/csr-settings";
 import Communications from "@/pages/communications";
-import ContractorHubPage from "@/pages/contractor-hub";
 import ContractSignPage from "@/pages/contractor-hub/contract-sign";
-import DocumentHubPage from "@/pages/document-hub";
 import PublicContractSignPage from "@/pages/public-contract-sign";
 import AdminUsers from "@/pages/admin/users";
 import MfaSetup from "@/pages/admin/mfa";
@@ -53,7 +51,6 @@ import AdminFeedback from "@/pages/admin/feedback";
 import AdminConciergeSettings from "@/pages/admin/concierge-settings";
 import AdminCredits from "@/pages/admin/credits";
 import AdminReports from "@/pages/admin/reports";
-import AdminCommunications from "@/pages/admin/communications";
 import AdminWebEditor from "@/pages/admin/web-editor";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminVisualEditor from "@/pages/admin/visual-editor";
@@ -415,7 +412,6 @@ function AuthenticatedApp() {
             <Route path="/admin/concierge-settings" component={AdminConciergeSettings} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/reports" component={AdminReports} />
-            <Route path="/admin/communications" component={AdminCommunications} />
             <Route path="/admin/web-editor" component={AdminWebEditor} />
             <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
             <Route path="/admin/visual-editor" component={AdminVisualEditor} />
@@ -437,9 +433,7 @@ function AuthenticatedApp() {
         <Route path="/account" component={Account} />
         <Route path="/profile" component={Profile} />
         <Route path="/credits" component={Credits} />
-        <Route path="/contractor-hub" component={ContractorHubPage} />
         <Route path="/app/contractor-hub/contracts/:id/sign" component={ContractSignPage} />
-        <Route path="/document-hub" component={DocumentHubPage} />
         <Route component={NotFound} />
         </Switch>
       </Layout>

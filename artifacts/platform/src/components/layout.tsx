@@ -138,8 +138,6 @@ export default function Layout({ children, user }: { children: ReactNode; user: 
           roles: ALL_ROLES,
           mobileShow: true,
         },
-        { href: "/contractor-hub", label: "Contractor Hub", icon: ClipboardList, roles: ALL_ROLES },
-        { href: "/document-hub", label: "Document Hub", icon: PanelsTopLeft, roles: ALL_ROLES },
         {
           href: "/profile",
           label: "User Account",
@@ -181,16 +179,13 @@ export default function Layout({ children, user }: { children: ReactNode; user: 
       title: "Supervisor",
       roles: ["global_admin", "admin", "supervisor"],
       items: [
-        { href: "/admin/settings", label: "Integrations", icon: Settings, roles: ["global_admin", "admin"] },
         {
           href: "/admin/settings",
           label: "Supervisor Settings",
           icon: Settings,
           roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/print", label: "Printing", icon: Printer, roles: ["global_admin", "admin"] },
-            { href: "/admin/receipts", label: "Receipt Templates", icon: ReceiptText, roles: ["global_admin", "admin"] },
-            { href: "/admin/receipts", label: "Reprint Receipts", icon: ReceiptText, roles: ["global_admin", "admin"] },
+            { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
           ],
         },
         {
@@ -217,7 +212,6 @@ export default function Layout({ children, user }: { children: ReactNode; user: 
         },
         { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
         { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["global_admin", "admin"] },
-        { href: "/admin/communications", label: "SMS & Calls", icon: Phone, roles: ["global_admin", "admin"] },
         { href: "/admin/visual-editor", label: "Visual Editor", icon: PanelsTopLeft, roles: ["global_admin", "admin"] },
       ],
     },
@@ -241,7 +235,7 @@ export default function Layout({ children, user }: { children: ReactNode; user: 
           icon: ShieldAlert,
           roles: ["global_admin"],
           children: [
-            { href: "/admin/print", label: "Printer Settings", icon: Printer, roles: ["global_admin"] },
+            { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin"] },
             { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin"] },
             { href: "/admin/settings", label: "WooCommerce", icon: Store, roles: ["global_admin"] },
