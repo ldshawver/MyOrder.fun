@@ -44,7 +44,7 @@ import {
 } from "../lib/checkoutNormalizer";
 import { z } from "zod";
 import { logger } from "../lib/logger";
-import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
+import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
@@ -500,29 +500,16 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
-  const actorRole = normalizeRole(actor.role);
   const tenantId = actor.tenantId ?? await getHouseTenantId();
   let rows = await db.select().from(ordersTable)
-    .where(actorRole === "user"
-      ? and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id))
-      : eq(ordersTable.tenantId, tenantId))
+    .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id)))
     .orderBy(desc(ordersTable.createdAt));
 
-  // Customers see only their own orders.
-  if (actorRole === "user") {
-    rows = rows.filter(o => o.customerId === actor.id);
-  }
-  // CSR-tier roles see their own assignments + the General Account
-  // fallback queue (assignedCsrUserId === null), matching the SSE
-  // audience scoping so the listing UI cannot drift from realtime
-  // alerts. Admin/supervisor still see everything.
-  if (
-    actorRole === "csr"
-  ) {
-    rows = rows.filter(o => o.assignedCsrUserId === actor.id || o.assignedCsrUserId === null);
-  }
+  // /orders powers the left-nav customer order history and is always scoped
+  // to the logged-in owner. Broader operational views live under
+  // /shift-queue/orders and the admin-specific order endpoints.
   if (query.data.status) rows = rows.filter(o => o.status === query.data.status);
-  if (query.data.customerId && actorRole !== "user") rows = rows.filter(o => o.customerId === query.data.customerId);
+  if (query.data.customerId && query.data.customerId !== actor.id) rows = [];
 
   const page = query.data.page ?? 1;
   const limit = query.data.limit ?? 20;
@@ -974,14 +961,29 @@ router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
-  // CSRs may only accept orders assigned to them or sitting in the General
-  // Account fallback queue (assignedCsrUserId === null).
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(
+    eq(labTechShiftsTable.tenantId, tenantId),
+    eq(labTechShiftsTable.techId, actor.id),
+    eq(labTechShiftsTable.status, "active"),
+  )).limit(1);
+  if (!shift || !isShiftOrderRoutable(shift)) {
+    res.status(403).json({ error: "CSR must have an active ready shift before claiming orders" });
+    return;
+  }
+
+  // CSRs may only accept tenant-local orders assigned to them/their ready
+  // active shift, or sitting in the General Account fallback queue.
   if (normalizeRole(actor.role) === "csr") {
     if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
       res.status(403).json({ error: "Order is assigned to another rep" });
+      return;
+    }
+    if (order.assignedShiftId != null && order.assignedShiftId !== shift.id) {
+      res.status(403).json({ error: "Order is assigned to another shift" });
       return;
     }
   }
@@ -1008,11 +1010,15 @@ router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<
       status: "processing",
       fulfillmentStatus: "accepted",
       assignedCsrUserId: order.assignedCsrUserId ?? actor.id,
+      assignedShiftId: order.assignedShiftId ?? shift.id,
     })
     .where(and(
       eq(ordersTable.id, orderId),
+      eq(ordersTable.tenantId, tenantId),
       sql`${ordersTable.acceptedAt} is null`,
       eq(ordersTable.fulfillmentStatus, "submitted"),
+      order.assignedCsrUserId == null ? sql`${ordersTable.assignedCsrUserId} is null` : eq(ordersTable.assignedCsrUserId, actor.id),
+      order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id),
     ))
     .returning();
   const updated = updatedRows[0];
@@ -1567,13 +1573,33 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
+  const role = normalizeRole(actor.role);
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
+  if (role === "csr") {
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.tenantId, tenantId),
+      eq(labTechShiftsTable.techId, actor.id),
+      eq(labTechShiftsTable.status, "active"),
+      eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
+    )).limit(1);
+    if (!shift || !isShiftOrderRoutable(shift) || order.assignedCsrUserId !== actor.id) {
+      res.status(403).json({ error: "CSR must have the assigned active ready shift to update fulfillment" }); return;
+    }
+  }
+  const allowed: Record<string, string[]> = { submitted: ["accepted"], accepted: ["preparing"], preparing: ["ready", "cancelled"], ready: ["completed", "cancelled"], completed: [], cancelled: [] };
+  const priorFulfillment = order.fulfillmentStatus ?? "submitted";
+  if (!((allowed[priorFulfillment] ?? []).includes(fulfillmentStatus)) && fulfillmentStatus !== priorFulfillment) {
+    res.status(409).json({ error: `Illegal fulfillment transition: ${priorFulfillment} -> ${fulfillmentStatus}` }); return;
+  }
+
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
   if (fulfillmentStatus === "preparing") update.status = "processing";
   if (fulfillmentStatus === "ready") update.status = "ready";
   if (fulfillmentStatus === "completed") update.status = "completed";
   if (fulfillmentStatus === "cancelled") update.status = "cancelled";
 
-  const [updated] = await db.update(ordersTable).set(update).where(eq(ordersTable.id, orderId)).returning();
+  const [updated] = await db.update(ordersTable).set(update).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).returning();
 
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
