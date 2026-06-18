@@ -1,12 +1,36 @@
 import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { useGetCurrentUser, useUpdateCurrentUser } from "@workspace/api-client-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@clerk/react";
+import {
+  useGetCurrentUser,
+  useUpdateCurrentUser,
+} from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Upload, User as UserIcon } from "lucide-react";
+import { MessageSquare, Upload, User as UserIcon } from "lucide-react";
+
+type FeedbackTicket = {
+  id: number;
+  type: string;
+  severity: string;
+  status: string;
+  priority: boolean;
+  title: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type FeedbackComment = {
+  id: number;
+  ticketId: number;
+  body: string;
+  isInternal: boolean;
+  createdAt: string;
+};
 
 const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
 
@@ -19,14 +43,20 @@ function validatePhone(value: string): string | null {
 
 function validateAvatar(value: string): string | null {
   if (!value) return null;
-  return /^https?:\/\//i.test(value) || /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value)
+  return /^https?:\/\//i.test(value) ||
+    /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value)
     ? null
     : "Must be an image URL or uploaded image.";
 }
 
 export default function Profile() {
   const qc = useQueryClient();
-  const { data: user, isLoading, refetch } = useGetCurrentUser({
+  const { getToken } = useAuth();
+  const {
+    data: user,
+    isLoading,
+    refetch,
+  } = useGetCurrentUser({
     query: { queryKey: ["getCurrentUser"] },
   });
 
@@ -49,6 +79,46 @@ export default function Profile() {
     setPhoneError(null);
     setAvatarError(null);
   }, [user]);
+
+  const feedbackQuery = useQuery({
+    queryKey: ["mySubmittedFeedback"],
+    enabled: !isLoading && Boolean(user),
+    queryFn: async () => {
+      const token = await getToken();
+      const res = await fetch("/api/feedback?mine=true", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Failed to load feedback");
+      return body as { tickets: FeedbackTicket[]; total: number };
+    },
+  });
+
+  const commentsQuery = useQuery({
+    queryKey: [
+      "mySubmittedFeedbackComments",
+      feedbackQuery.data?.tickets.map((t) => t.id).join(","),
+    ],
+    enabled: Boolean(feedbackQuery.data?.tickets.length),
+    queryFn: async () => {
+      const token = await getToken();
+      const entries = await Promise.all(
+        (feedbackQuery.data?.tickets ?? []).map(async (ticket) => {
+          const res = await fetch(`/api/feedback/${ticket.id}/comments`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const body = await res.json();
+          if (!res.ok)
+            throw new Error(body.error ?? "Failed to load feedback notes");
+          return [
+            ticket.id,
+            (body.comments ?? []) as FeedbackComment[],
+          ] as const;
+        }),
+      );
+      return Object.fromEntries(entries) as Record<number, FeedbackComment[]>;
+    },
+  });
 
   const mutation = useUpdateCurrentUser({
     mutation: {
@@ -137,29 +207,49 @@ export default function Profile() {
     reader.readAsDataURL(file);
   }
 
-  const initials = `${(user.firstName ?? "").charAt(0)}${(user.lastName ?? "").charAt(0)}`.toUpperCase() || "U";
+  const initials =
+    `${(user.firstName ?? "").charAt(0)}${(user.lastName ?? "").charAt(0)}`.toUpperCase() ||
+    "U";
 
   return (
     <div className="space-y-8 max-w-2xl mx-auto">
       <div className="border-b border-border/50 pb-6">
-        <h1 className="text-3xl font-bold tracking-tight mb-2" data-testid="text-profile-title">Profile</h1>
-        <p className="text-muted-foreground">Update your name, phone number, and avatar.</p>
+        <h1
+          className="text-3xl font-bold tracking-tight mb-2"
+          data-testid="text-profile-title"
+        >
+          Profile
+        </h1>
+        <p className="text-muted-foreground">
+          Update your name, phone number, and avatar.
+        </p>
       </div>
 
       <Card className="rounded-sm border-border/50 shadow-sm">
         <CardHeader className="bg-muted/10 border-b border-border/50 pb-3 flex flex-row items-center gap-3">
           <UserIcon size={16} className="text-muted-foreground" />
-          <CardTitle className="text-sm font-semibold uppercase tracking-wider">Profile Details</CardTitle>
+          <CardTitle className="text-sm font-semibold uppercase tracking-wider">
+            Profile Details
+          </CardTitle>
         </CardHeader>
         <CardContent className="pt-6">
-          <form onSubmit={onSubmit} className="space-y-6" data-testid="form-profile">
+          <form
+            onSubmit={onSubmit}
+            className="space-y-6"
+            data-testid="form-profile"
+          >
             <div className="flex items-center gap-4">
               <Avatar className="w-16 h-16">
-                {avatarUrl ? <AvatarImage src={avatarUrl} alt="Avatar preview" /> : null}
+                {avatarUrl ? (
+                  <AvatarImage src={avatarUrl} alt="Avatar preview" />
+                ) : null}
                 <AvatarFallback>{initials}</AvatarFallback>
               </Avatar>
               <div className="flex-1">
-                <Label htmlFor="avatarUrl" className="text-xs uppercase tracking-wider text-muted-foreground">
+                <Label
+                  htmlFor="avatarUrl"
+                  className="text-xs uppercase tracking-wider text-muted-foreground"
+                >
                   Avatar URL
                 </Label>
                 <Input
@@ -185,14 +275,22 @@ export default function Profile() {
                   />
                 </label>
                 {avatarError && (
-                  <p className="text-xs text-destructive mt-1" data-testid="text-avatar-error">{avatarError}</p>
+                  <p
+                    className="text-xs text-destructive mt-1"
+                    data-testid="text-avatar-error"
+                  >
+                    {avatarError}
+                  </p>
                 )}
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="firstName" className="text-xs uppercase tracking-wider text-muted-foreground">
+                <Label
+                  htmlFor="firstName"
+                  className="text-xs uppercase tracking-wider text-muted-foreground"
+                >
                   First name
                 </Label>
                 <Input
@@ -206,7 +304,10 @@ export default function Profile() {
                 />
               </div>
               <div>
-                <Label htmlFor="lastName" className="text-xs uppercase tracking-wider text-muted-foreground">
+                <Label
+                  htmlFor="lastName"
+                  className="text-xs uppercase tracking-wider text-muted-foreground"
+                >
                   Last name
                 </Label>
                 <Input
@@ -222,7 +323,10 @@ export default function Profile() {
             </div>
 
             <div>
-              <Label htmlFor="contactPhone" className="text-xs uppercase tracking-wider text-muted-foreground">
+              <Label
+                htmlFor="contactPhone"
+                className="text-xs uppercase tracking-wider text-muted-foreground"
+              >
                 Phone number
               </Label>
               <Input
@@ -238,19 +342,35 @@ export default function Profile() {
                 data-testid="input-phone"
               />
               {phoneError && (
-                <p className="text-xs text-destructive mt-1" data-testid="text-phone-error">{phoneError}</p>
+                <p
+                  className="text-xs text-destructive mt-1"
+                  data-testid="text-phone-error"
+                >
+                  {phoneError}
+                </p>
               )}
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Email <span className="font-mono">{user.email}</span> is managed by your sign-in provider and cannot be changed here.
+              Email <span className="font-mono">{user.email}</span> is managed
+              by your sign-in provider and cannot be changed here.
             </div>
 
             {savedMsg && (
-              <p className="text-xs text-green-600 font-mono" data-testid="text-saved">{savedMsg}</p>
+              <p
+                className="text-xs text-green-600 font-mono"
+                data-testid="text-saved"
+              >
+                {savedMsg}
+              </p>
             )}
             {errorMsg && (
-              <p className="text-xs text-destructive font-mono" data-testid="text-error">{errorMsg}</p>
+              <p
+                className="text-xs text-destructive font-mono"
+                data-testid="text-error"
+              >
+                {errorMsg}
+              </p>
             )}
 
             <div className="flex gap-2 pt-2">
@@ -274,6 +394,88 @@ export default function Profile() {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-sm border-border/50 shadow-sm">
+        <CardHeader className="bg-muted/10 border-b border-border/50 pb-3 flex flex-row items-center gap-3">
+          <MessageSquare size={16} className="text-muted-foreground" />
+          <CardTitle className="text-sm font-semibold uppercase tracking-wider">
+            My Submitted Feedback
+          </CardTitle>
+        </CardHeader>
+        <CardContent
+          className="pt-6 space-y-4"
+          data-testid="section-my-feedback"
+        >
+          {feedbackQuery.isLoading && (
+            <p className="text-xs text-muted-foreground">
+              Loading submitted feedback…
+            </p>
+          )}
+          {feedbackQuery.isError && (
+            <p className="text-xs text-destructive">
+              {(feedbackQuery.error as Error).message}
+            </p>
+          )}
+          {!feedbackQuery.isLoading &&
+            (feedbackQuery.data?.tickets.length ?? 0) === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No submitted feedback yet.
+              </p>
+            )}
+          {(feedbackQuery.data?.tickets ?? []).map((ticket) => {
+            const publicNotes = (commentsQuery.data?.[ticket.id] ?? []).filter(
+              (comment) => !comment.isInternal,
+            );
+            return (
+              <article
+                key={ticket.id}
+                className="rounded-sm border border-border/60 p-4 space-y-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold">
+                      #{ticket.id} {ticket.title}
+                    </h3>
+                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                      {ticket.type} · {ticket.severity} · submitted{" "}
+                      {new Date(ticket.createdAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-wider">
+                    {ticket.status.replaceAll("_", " ")}
+                  </span>
+                </div>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                  {ticket.description}
+                </p>
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Public notes
+                  </p>
+                  {commentsQuery.isLoading && (
+                    <p className="text-xs text-muted-foreground">
+                      Loading notes…
+                    </p>
+                  )}
+                  {publicNotes.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      No public notes yet.
+                    </p>
+                  )}
+                  {publicNotes.map((note) => (
+                    <div
+                      key={note.id}
+                      className="rounded-sm bg-muted/30 p-3 text-sm whitespace-pre-wrap"
+                    >
+                      {note.body}
+                    </div>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
         </CardContent>
       </Card>
     </div>
