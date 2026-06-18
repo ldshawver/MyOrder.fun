@@ -23,7 +23,7 @@ const dbState: {
   catalog: Array<Record<string, unknown>>;
   inventoryLocations: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], disclaimerAcceptances: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -123,10 +123,11 @@ vi.mock("../../lib/logger", () => ({
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
-  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
-  const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email" };
-  const labTechShiftsTable = { __t: "shifts", id: "id", tenantId: "tenantId", techId: "techId", status: "status", clockedInAt: "clockedInAt", boxAssignmentId: "boxAssignmentId", setupJson: "setupJson" };
-  const adminSettingsTable = { __t: "admin_settings" };
+  const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
+  const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
+  const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
+  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId" };
+  const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
@@ -145,6 +146,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "catalog") return dbState.catalog;
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
+    if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     return [];
   }
 
@@ -223,7 +225,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve()) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -282,18 +284,19 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
 beforeEach(() => {
   dbState.orders = [];
   dbState.users = [
-    { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved" },
+    { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved", tenantId: 1 },
     { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved" },
     { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
   ];
   dbState.shifts = [];
   dbState.settings = [{
-    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30,
+    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1,
   }];
   dbState.tenants = [{ id: 1 }];
   dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10 }];
+  dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   _resetBus();
 });

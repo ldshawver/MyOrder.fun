@@ -1,13 +1,16 @@
 import { z } from "zod/v4";
+import { logger } from "./logger";
 
 export const inAppAlertModeSchema = z.enum(["silent", "sound", "vibrate", "sound_vibrate"]);
 
-export const notificationPreferencesSchema = z.object({
-  inAppAlerts: z.boolean().default(true),
-  smsTexts: z.boolean().default(true),
-  emails: z.boolean().default(true),
-  inAppAlertMode: inAppAlertModeSchema.default("sound"),
-}).strict();
+export const notificationPreferencesSchema = z
+  .object({
+    inAppAlerts: z.boolean().default(true),
+    smsTexts: z.boolean().default(true),
+    emails: z.boolean().default(true),
+    inAppAlertMode: inAppAlertModeSchema.default("sound"),
+  })
+  .strict();
 
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
 export type NotificationChannel = "in_app" | "sms" | "email";
@@ -36,7 +39,7 @@ export function normalizeNotificationPreferences(raw: unknown): NotificationPref
 }
 
 function normalizeLegacyInAppMode(mode: unknown): NotificationPreferences["inAppAlertMode"] {
-  if (mode === "silent" || mode === "sound" || mode === "vibrate") return mode;
+  if (mode === "silent" || mode === "sound" || mode === "vibrate" || mode === "sound_vibrate") return mode;
   return "sound";
 }
 
@@ -51,12 +54,27 @@ type OptionalNotificationSender = (() => Promise<void> | void) | undefined;
 
 export async function sendOrderStatusSmsEmailIfAllowed(
   raw: unknown,
-  senders: { sms?: OptionalNotificationSender; email?: OptionalNotificationSender },
-): Promise<void> {
-  if (senders.sms && shouldSendNotificationChannel(raw, "sms")) {
-    await senders.sms();
+  senders: { sms?: OptionalNotificationSender; email?: OptionalNotificationSender } = {},
+): Promise<{ sms: boolean; email: boolean }> {
+  const sent = { sms: false, email: false };
+
+  if (shouldSendNotificationChannel(raw, "sms")) {
+    if (senders.sms) {
+      await senders.sms();
+      sent.sms = true;
+    } else {
+      logger.debug("SMS order status notification allowed but no sender configured");
+    }
   }
-  if (senders.email && shouldSendNotificationChannel(raw, "email")) {
-    await senders.email();
+
+  if (shouldSendNotificationChannel(raw, "email")) {
+    if (senders.email) {
+      await senders.email();
+      sent.email = true;
+    } else {
+      logger.debug("Email order status notification allowed but no sender configured");
+    }
   }
+
+  return sent;
 }
