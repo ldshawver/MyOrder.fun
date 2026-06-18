@@ -299,9 +299,14 @@ function isCustomerRole(role: string | null | undefined): boolean {
   return (role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_") === "user";
 }
 
+async function resolveSettingsTenantId(actor?: { tenantId?: number | null; role?: string | null }): Promise<number> {
+  if (actor && !isGlobalAdmin({ role: actor.role ?? "user" }) && actor.tenantId != null) return actor.tenantId;
+  return getHouseTenantId();
+}
+
 async function getTenantScopedSettingsForActor(actor: { tenantId?: number | null; role?: string | null }, createIfMissing = true) {
   await ensureAdminSettingsSchema();
-  if (isGlobalAdmin({ role: actor.role ?? "user" })) return getOrCreateSettings();
+  if (isGlobalAdmin({ role: actor.role ?? "user" })) return getOrCreateSettings(actor);
   if (actor.tenantId == null) return null;
   const [existing] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, actor.tenantId)).limit(1);
   if (existing) return existing;
@@ -320,7 +325,7 @@ async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, 
 }
 
 // Single-tenant: use the one global settings row, creating it if absent
-async function getOrCreateSettings() {
+async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: string | null }) {
   await ensureAdminSettingsSchema();
   const tenantId = await resolveSettingsTenantId(actor);
   const [existing] = await db

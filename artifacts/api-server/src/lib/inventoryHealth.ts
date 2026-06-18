@@ -6,7 +6,7 @@ import {
   inventoryLocationsTable,
 } from "@workspace/db";
 
-export const INVENTORY_KIND_SELLABLE = "sellable";
+export const INVENTORY_KIND_SELLABLE = "sellable_catalog";
 export const INVENTORY_KIND_NON_SELLABLE_SUPPLY = "non_sellable_supply";
 
 export const INVENTORY_HEALTH_CLASSIFICATIONS = [
@@ -20,7 +20,7 @@ export type InventoryHealthClassification = typeof INVENTORY_HEALTH_CLASSIFICATI
 
 export async function ensureInventoryBalanceClassificationSchema(): Promise<void> {
   const statements = [
-    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "is_sellable" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_at" timestamptz`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_by_user_id" integer`,

@@ -62,7 +62,7 @@ export const inventoryBalancesTable = pgTable("inventory_balances", {
   locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
   quantityOnHand: numeric("quantity_on_hand", { precision: 10, scale: 3 }).notNull().default("0"),
   parLevel: numeric("par_level", { precision: 10, scale: 2 }).notNull().default("0"),
-  inventoryKind: text("inventory_kind").notNull().default("sellable"),
+  inventoryKind: text("inventory_kind").notNull().default("sellable_catalog"),
   isSellable: boolean("is_sellable").notNull().default(true),
   quarantinedAt: timestamp("quarantined_at", { withTimezone: true }),
   quarantinedByUserId: integer("quarantined_by_user_id").references(() => usersTable.id),

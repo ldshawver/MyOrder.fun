@@ -135,7 +135,8 @@ describe("catalog/inventory/par/order source of truth", () => {
     const platformInventory = platform("pages/admin/inventory.tsx");
 
     expect(dbSchema).toContain('inventoryKind: text("inventory_kind")');
-    expect(dbSchema).toContain('quarantineStatus: text("quarantine_status")');
+    expect(dbSchema).toContain('isSellable: boolean("is_sellable")');
+    expect(dbSchema).toContain('quarantinedAt: timestamp("quarantined_at"');
     expect(balances).toContain("getOrphanInventoryBalanceReport");
     expect(balances).toContain("sellableInventoryBalancePredicate");
     expect(balances).toContain("leftJoin(catalogItemsTable");

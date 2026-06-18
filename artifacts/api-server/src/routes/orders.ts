@@ -47,13 +47,11 @@ import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
-import { sendOrderStatusSmsEmailIfAllowed } from "../lib/notificationPrefs";
 import {
-  decideRouting,
-  reassignOrder,
-  listActiveCsrs,
-  isShiftOrderRoutable,
-} from "../lib/orderRouting";
+  sendOrderStatusSmsEmailIfAllowed,
+  shouldSendNotificationChannel,
+} from "../lib/notificationPrefs";
+import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
@@ -1480,21 +1478,6 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
       // No active order-status SMS/email sender is configured here today. Future senders must be
       // registered in this helper so SMS/email opt-outs are checked immediately before each send.
       await sendOrderStatusSmsEmailIfAllowed(customerPrefs.notificationPreferences, {});
-    }
-  } catch { /* non-critical */ }
-
-  // SMS/email order status notifications are preference-gated independently.
-  // Missing sender callbacks mean the channel is skipped without failing the
-  // status update; a blocked SMS preference must not block email, or vice versa.
-  try {
-    const [customer] = await db.select({
-      id: usersTable.id,
-      email: usersTable.email,
-      contactPhone: usersTable.contactPhone,
-      notificationPreferences: usersTable.notificationPreferences,
-    }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
-    if (customer) {
-      await sendOrderStatusSmsEmailIfAllowed({ ...customer, notificationPreferences: customer.notificationPreferences as Record<string, unknown> | null | undefined }, updated, body.data.status);
     }
   } catch { /* non-critical */ }
   await writeAuditLog({

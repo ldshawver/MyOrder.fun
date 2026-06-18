@@ -20,7 +20,6 @@ import {
 import {
   ensureInventoryBalanceClassificationSchema,
   getInventoryHealthReport,
-  sellableBalanceWhere,
   INVENTORY_KIND_NON_SELLABLE_SUPPLY,
   INVENTORY_KIND_SELLABLE,
 } from "../lib/inventoryHealth";
@@ -75,7 +74,9 @@ async function ensureInventorySchema(): Promise<void> {
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
-    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_status" text NOT NULL DEFAULT 'active'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "is_sellable" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_at" timestamptz`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_by_user_id" integer`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
     sql`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique') THEN
@@ -90,34 +91,9 @@ async function ensureInventorySchema(): Promise<void> {
 }
 
 
-async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
-  const [totals] = await db
-    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
-    .from(inventoryBalancesTable)
-    .where(and(
-      eq(inventoryBalancesTable.tenantId, tenantId),
-      eq(inventoryBalancesTable.productId, productId),
-      sellableBalanceWhere(),
-    ));
-
-  await db
-    .update(catalogItemsTable)
-    .set({
-      stockQuantity: String(totals?.qty ?? "0"),
-      inventoryAmount: String(totals?.qty ?? "0"),
-      parLevel: String(totals?.par ?? "0"),
-    })
-    .where(and(
-      eq(catalogItemsTable.tenantId, tenantId),
-      eq(catalogItemsTable.id, productId),
-    ));
-}
-
-
 async function resolveInventoryTenantId(req: import("express").Request): Promise<number> {
   const actor = req.dbUser!;
-  const role = normalizeRole(actor.role);
-  if (role === "global_admin") {
+  if (actor.role === "global_admin") {
     const requested = req.query.tenantId ? Number(req.query.tenantId) : undefined;
     if (requested && Number.isInteger(requested) && requested > 0) return requested;
   }
@@ -228,39 +204,8 @@ router.get(
     const houseTenantId = await resolveInventoryTenantId(req);
     await ensureStandardLocations(houseTenantId);
 
-    const [products, locations, balances, settingsRows] = await Promise.all([
-      db
-        .select({
-          id: catalogItemsTable.id,
-          name: catalogItemsTable.name,
-          category: catalogItemsTable.category,
-          price: catalogItemsTable.price,
-          isAvailable: catalogItemsTable.isAvailable,
-          alavontName: catalogItemsTable.alavontName,
-          luciferCruzName: catalogItemsTable.luciferCruzName,
-          alavontCategory: catalogItemsTable.alavontCategory,
-          regularPrice: catalogItemsTable.regularPrice,
-          stockQuantity: catalogItemsTable.stockQuantity,
-          stockUnit: catalogItemsTable.stockUnit,
-          parLevel: catalogItemsTable.parLevel,
-          isWooManaged: catalogItemsTable.isWooManaged,
-          isLocalAlavont: catalogItemsTable.isLocalAlavont,
-        })
-        .from(catalogItemsTable)
-        .where(eq(catalogItemsTable.tenantId, houseTenantId))
-        .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
-      db
-        .select()
-        .from(inventoryLocationsTable)
-        .where(and(
-          eq(inventoryLocationsTable.tenantId, houseTenantId),
-          eq(inventoryLocationsTable.isActive, true),
-        ))
-        .orderBy(asc(inventoryLocationsTable.displayOrder)),
-      db
-        .select()
-        .from(inventoryBalancesTable)
-        .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), sellableBalanceWhere())),
+    const [snapshot, settingsRows] = await Promise.all([
+      getCatalogInventorySnapshot(houseTenantId),
       db
         .select({ pettyCash: adminSettingsTable.pettyCash })
         .from(adminSettingsTable)
@@ -302,7 +247,8 @@ router.patch(
 
     const parsedBody = z.object({
       inventoryKind: z.enum(["sellable_catalog", "non_sellable_supply"]).optional(),
-      quarantineStatus: z.enum(["active", "quarantined"]).optional(),
+      isSellable: z.boolean().optional(),
+      quarantined: z.boolean().optional(),
       quarantineReason: z.string().trim().max(500).nullable().optional(),
     }).strict().safeParse(req.body);
     if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
@@ -315,7 +261,11 @@ router.patch(
 
     const patch: Partial<typeof inventoryBalancesTable.$inferInsert> = {};
     if (parsedBody.data.inventoryKind !== undefined) patch.inventoryKind = parsedBody.data.inventoryKind;
-    if (parsedBody.data.quarantineStatus !== undefined) patch.quarantineStatus = parsedBody.data.quarantineStatus;
+    if (parsedBody.data.isSellable !== undefined) patch.isSellable = parsedBody.data.isSellable;
+    if (parsedBody.data.quarantined !== undefined) {
+      patch.quarantinedAt = parsedBody.data.quarantined ? new Date() : null;
+      patch.quarantinedByUserId = parsedBody.data.quarantined ? actor.id : null;
+    }
     if (parsedBody.data.quarantineReason !== undefined) patch.quarantineReason = parsedBody.data.quarantineReason;
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
 
@@ -337,12 +287,16 @@ router.patch(
       metadata: {
         before: {
           inventoryKind: current.inventoryKind,
-          quarantineStatus: current.quarantineStatus,
+          isSellable: current.isSellable,
+          quarantinedAt: current.quarantinedAt ?? null,
+          quarantinedByUserId: current.quarantinedByUserId ?? null,
           quarantineReason: current.quarantineReason ?? null,
         },
         after: {
           inventoryKind: updated?.inventoryKind ?? current.inventoryKind,
-          quarantineStatus: updated?.quarantineStatus ?? current.quarantineStatus,
+          isSellable: updated?.isSellable ?? current.isSellable,
+          quarantinedAt: updated?.quarantinedAt ?? current.quarantinedAt ?? null,
+          quarantinedByUserId: updated?.quarantinedByUserId ?? current.quarantinedByUserId ?? null,
           quarantineReason: updated?.quarantineReason ?? current.quarantineReason ?? null,
         },
         productId: updated?.productId ?? current.productId,
