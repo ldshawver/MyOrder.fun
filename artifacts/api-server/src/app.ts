@@ -115,6 +115,7 @@ app.get("/healthz", (_req, res) => {
 });
 app.use("/api", healthRouter);
 
+
 // Public access-request form. Mount this before Clerk so brand-new visitors
 // can request access even when they have no session or a stale Clerk cookie.
 app.post("/api/onboarding/request", submitOnboardingRequestHandler);

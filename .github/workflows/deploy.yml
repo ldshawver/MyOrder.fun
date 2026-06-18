@@ -1,10 +1,16 @@
 name: Deploy to VPS
 
+# TEMPORARY DEPLOY FREEZE (2026-06-18): production domain/service mapping
+# must be verified before any MyOrder.fun deploy can run. This removes the
+# automatic push-to-main deploy and requires an explicit confirmation string
+# for a manual dispatch, preventing accidental production runs.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: "Type DEPLOY to intentionally bypass the temporary deploy freeze."
+        required: true
+        default: ""
 
 concurrency:
   group: deploy-myorderfun
@@ -12,6 +18,7 @@ concurrency:
 
 jobs:
   test:
+    if: ${{ github.event.inputs.confirm_production_deploy == 'DEPLOY' }}
     name: Typecheck, Lint & Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -47,6 +54,7 @@ jobs:
         run: pnpm test
 
   deploy:
+    if: ${{ github.event.inputs.confirm_production_deploy == 'DEPLOY' }}
     name: Deploy to VPS
     runs-on: ubuntu-latest
     timeout-minutes: 30
