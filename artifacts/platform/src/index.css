@@ -205,9 +205,9 @@
 }
 
 @keyframes catalog-hero-fade {
-  0% { opacity: 0; transform: scale(1.025); }
-  6%, 36% { opacity: 0.94; transform: scale(1); }
-  46%, 100% { opacity: 0; transform: scale(1.01); }
+  0% { opacity: 0; }
+  6%, 36% { opacity: 0.94; }
+  46%, 100% { opacity: 0; }
 }
 
 .catalog-hero-frame {
