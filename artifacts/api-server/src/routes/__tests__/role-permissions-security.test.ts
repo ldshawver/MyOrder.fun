@@ -82,6 +82,14 @@ describe("role permission security controls", () => {
     expect(inserted).toHaveLength(0);
   });
 
+
+  it("allows tenant admins to persist disabled platform permissions without granting them", async () => {
+    const app = await buildApp();
+    const res = await supertest(app).put("/api/admin/roles-permissions/csr").send({ permissions: { "platform.tenants.manage": false } });
+    expect(res.status).toBe(200);
+    expect(inserted).toEqual(expect.arrayContaining([expect.objectContaining({ tenantId: 1, role: "csr", permission: "platform.tenants.manage", enabled: false })]));
+  });
+
   it("rejects unknown permission keys with strict schema validation", async () => {
     const app = await buildApp();
     const res = await supertest(app).put("/api/admin/roles-permissions/csr").send({ permissions: { "platform.tenants.manage": true, "not.a.permission": true } });

@@ -123,9 +123,9 @@ vi.mock("../../lib/logger", () => ({
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
-  const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
+  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email" };
-  const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
+  const labTechShiftsTable = { __t: "shifts", id: "id", tenantId: "tenantId", techId: "techId", status: "status", clockedInAt: "clockedInAt", boxAssignmentId: "boxAssignmentId", setupJson: "setupJson" };
   const adminSettingsTable = { __t: "admin_settings" };
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
@@ -346,6 +346,7 @@ describe("SSE event emission via the live route handlers", () => {
     const orderId = dbState.orders[0]!.id as number;
 
     const adminCapture = captureEvents("admin", 999);
+    dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     mockActor = dbState.users[1]!; // CSR accepts
     const res = await supertest(buildApp())
       .post(`/api/orders/${orderId}/accept`)
@@ -384,6 +385,7 @@ describe("SSE event emission via the live route handlers", () => {
       .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
     const orderId = dbState.orders[0]!.id as number;
     dbState.orders[0]!.fulfillmentStatus = "preparing";
+    dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     mockActor = dbState.users[1]!;
     const res = await supertest(buildApp())
       .post(`/api/orders/${orderId}/accept`)

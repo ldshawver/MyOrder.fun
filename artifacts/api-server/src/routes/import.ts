@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, catalogItemsTable, auditLogsTable, adminSettingsTable, inventoryTemplatesTable } from "@workspace/db";
+import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
@@ -10,1045 +10,285 @@ import * as XLSX from "xlsx";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MAX_IMPORT_BYTES, files: 1 },
   fileFilter: (_req, file, cb) => {
-    const ok = /\.(csv|tsv|xlsx|xls)$/i.test(file.originalname) ||
-      file.mimetype === "text/csv" ||
-      file.mimetype === "text/tab-separated-values" ||
-      file.mimetype === "text/plain" ||
-      file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-      file.mimetype === "application/vnd.ms-excel";
+    const ok = /\.(csv|tsv|xlsx)$/i.test(file.originalname) || [
+      "text/csv",
+      "text/tab-separated-values",
+      "text/plain",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ].includes(file.mimetype);
     cb(null, ok);
   },
 });
 
-// ─── Canonical Alavont menu import headers ───────────────────────────────────
-// The downloadable template uses these canonical names. For backwards
-// compatibility, the importer also accepts the older friendly "Menu ..." /
-// "Merchant ..." column labels and maps them to the same canonical fields.
-export const EXPECTED_HEADERS = [
-  "regular_price",
-  "alavont_image",
-  "alavont_name",
-  "alavont_desc",
-  "alavont_category",
-  "alavont_in_stock",
-  "alavont_id",
-  "Quantity",
-  "Unit",
-  "lucifer_cruz_name",
-  "lucifer_cruz_image",
-  "lucifer_cruz_desc",
-  "lucifer_cruz_category",
-  "lucifer_cruz_Inventory",
+export const CATALOG_IMPORT_HEADERS = [
+  "sku",
+  "name",
+  "description",
+  "category",
+  "brand",
+  "price",
+  "unit",
+  "quantity_size",
+  "active",
+  "image_url",
+  "safe_name",
+  "safe_description",
+  "safe_category",
+  "safe_image_url",
+  "inventory_location",
+  "current_inventory",
+  "par_level",
+  "reorder_threshold",
+  "sort_order",
 ] as const;
+type CatalogImportHeader = (typeof CATALOG_IMPORT_HEADERS)[number];
+const HEADER_SET = new Set<string>(CATALOG_IMPORT_HEADERS);
+const REQUIRED_HEADERS: CatalogImportHeader[] = ["sku", "name", "category", "price"];
+const DANGEROUS_CELL = /^[=+\-@\t\r]/;
+const MAX_ROWS = 5000;
 
-export type ExpectedHeader = (typeof EXPECTED_HEADERS)[number];
-
-const OPTIONAL_HEADERS = ["Sale_price"] as const;
-const ALL_CANONICAL_HEADERS = [...EXPECTED_HEADERS, ...OPTIONAL_HEADERS] as const;
-type OptionalHeader = (typeof OPTIONAL_HEADERS)[number];
-type ImportCanonical = ExpectedHeader | OptionalHeader;
-type ImportTemplateColumn = {
-  id: string;
-  header: string;
-  canonical: ImportCanonical | `custom:${string}`;
-  required: boolean;
-  sampleValue: string;
-  locked?: boolean;
-};
-type ImportTemplateSpec = {
-  version: 1;
-  columns: ImportTemplateColumn[];
-};
-
-// Canonical header → record field name
-export const HEADER_TO_FIELD: Record<ExpectedHeader, string> = {
-  "regular_price": "regularPrice",
-  "alavont_image": "alavontImage",
-  "alavont_name": "alavontName",
-  "alavont_desc": "alavontDesc",
-  "alavont_category": "alavontCategory",
-  "alavont_in_stock": "alavontInStock",
-  "alavont_id": "alavontId",
-  "Quantity": "quantity",
-  "Unit": "unit",
-  "lucifer_cruz_name": "luciferCruzName",
-  "lucifer_cruz_image": "luciferCruzImage",
-  "lucifer_cruz_desc": "luciferCruzDesc",
-  "lucifer_cruz_category": "luciferCruzCategory",
-  "lucifer_cruz_Inventory": "luciferCruzInventory",
+const LEGACY_ALIASES: Record<string, CatalogImportHeader> = {
+  regular_price: "price",
+  Sale_price: "price",
+  alavont_name: "name",
+  alavont_desc: "description",
+  alavont_category: "category",
+  alavont_image: "image_url",
+  alavont_id: "sku",
+  alavont_in_stock: "active",
+  Quantity: "quantity_size",
+  Unit: "unit",
+  lucifer_cruz_Inventory: "sku",
+  lucifer_cruz_name: "safe_name",
+  lucifer_cruz_desc: "safe_description",
+  lucifer_cruz_category: "safe_category",
+  lucifer_cruz_image: "safe_image_url",
 };
 
-const EXPECTED_SET = new Set<string>(EXPECTED_HEADERS);
-const KNOWN_CANONICAL_SET = new Set<string>(ALL_CANONICAL_HEADERS);
+type ParsedFile = { headers: string[]; rawHeaders: string[]; rows: string[][] };
+type ImportRow = Record<CatalogImportHeader, string>;
 
-const HEADER_ALIASES: Record<string, ExpectedHeader | (typeof OPTIONAL_HEADERS)[number]> = {
-  "Menu Regular Price": "regular_price",
-  "Menu Image": "alavont_image",
-  "Menu Name": "alavont_name",
-  "Menu Description": "alavont_desc",
-  "Menu Category": "alavont_category",
-  "Menu In Stock": "alavont_in_stock",
-  "Menu ID": "alavont_id",
-  "Amount": "Quantity",
-  "Unit Measurement": "Unit",
-  "Merchant Name": "lucifer_cruz_name",
-  "Merchant Image": "lucifer_cruz_image",
-  "Merchant Description": "lucifer_cruz_desc",
-  "Merchant Category": "lucifer_cruz_category",
-  "Merchant Sku": "lucifer_cruz_Inventory",
-  "safe_regular_price": "regular_price",
-  "safe_sale_price": "Sale_price",
-  "safe_image": "lucifer_cruz_image",
-  "safe_name": "lucifer_cruz_name",
-  "safe_desc": "lucifer_cruz_desc",
-  "safe_category": "lucifer_cruz_category",
-  "safe_Inventory": "lucifer_cruz_Inventory",
-  "safe_inventory": "lucifer_cruz_Inventory",
-  "alavont_quantity": "Quantity",
-  "alavont_unit": "Unit",
+type ImportDbClient = Pick<typeof db, "select" | "insert" | "update" | "delete" | "execute">;
+
+type SnapshotPayload = {
+  catalog: Array<typeof catalogItemsTable.$inferSelect>;
+  inventoryTemplates: Array<typeof inventoryTemplatesTable.$inferSelect>;
+  touchedSkus: string[];
+  insertedCatalogIds: number[];
+  insertedInventoryTemplateIds: number[];
 };
 
-const DEFAULT_IMPORT_COLUMNS: ImportTemplateColumn[] = [
-  { id: "regular-price", canonical: "regular_price", header: "regular_price", required: true, sampleValue: "29.99", locked: true },
-  { id: "alavont-image", canonical: "alavont_image", header: "alavont_image", required: true, sampleValue: "https://example.com/alavont.jpg", locked: true },
-  { id: "alavont-name", canonical: "alavont_name", header: "alavont_name", required: true, sampleValue: "Midnight Recovery Complex", locked: true },
-  { id: "alavont-desc", canonical: "alavont_desc", header: "alavont_desc", required: true, sampleValue: "Advanced cellular recovery blend", locked: true },
-  { id: "alavont-category", canonical: "alavont_category", header: "alavont_category", required: true, sampleValue: "Dermatology", locked: true },
-  { id: "alavont-in-stock", canonical: "alavont_in_stock", header: "alavont_in_stock", required: true, sampleValue: "true", locked: true },
-  { id: "alavont-id", canonical: "alavont_id", header: "alavont_id", required: true, sampleValue: "ALV-001", locked: true },
-  { id: "quantity", canonical: "Quantity", header: "Quantity", required: true, sampleValue: "10", locked: true },
-  { id: "unit", canonical: "Unit", header: "Unit", required: true, sampleValue: "ml", locked: true },
-  { id: "sale-price", canonical: "Sale_price", header: "Sale_price", required: false, sampleValue: "", locked: false },
-  { id: "lucifer-cruz-name", canonical: "lucifer_cruz_name", header: "lucifer_cruz_name", required: true, sampleValue: "Velvet Restore Set", locked: true },
-  { id: "lucifer-cruz-image", canonical: "lucifer_cruz_image", header: "lucifer_cruz_image", required: true, sampleValue: "https://example.com/lc.jpg", locked: true },
-  { id: "lucifer-cruz-desc", canonical: "lucifer_cruz_desc", header: "lucifer_cruz_desc", required: true, sampleValue: "Luxurious overnight treatment", locked: true },
-  { id: "lucifer-cruz-category", canonical: "lucifer_cruz_category", header: "lucifer_cruz_category", required: true, sampleValue: "Skin Care", locked: true },
-  { id: "lucifer-cruz-inventory", canonical: "lucifer_cruz_Inventory", header: "lucifer_cruz_Inventory", required: true, sampleValue: "MRC-LAB-001", locked: true },
-];
-
-const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = { version: 1, columns: DEFAULT_IMPORT_COLUMNS };
-let importTemplateColumnEnsured = false;
-let catalogImportSchemaEnsured = false;
-
-// ─── Header normalization (BOM / whitespace strip only — case-sensitive) ──────
-function cleanHeader(raw: string): string {
-  return raw.replace(/^\uFEFF/, "").trim();
-}
-
-function canonicalizeHeader(raw: string, spec = DEFAULT_IMPORT_SPEC): string {
+function cleanHeader(raw: string): string { return raw.replace(/^\uFEFF/, "").trim(); }
+function canonicalizeHeader(raw: string): string {
   const cleaned = cleanHeader(raw);
-  const configured = spec.columns.find(c => c.header === cleaned);
-  if (configured) return configured.canonical;
-  return HEADER_ALIASES[cleaned] ?? cleaned;
+  return LEGACY_ALIASES[cleaned] ?? cleaned;
 }
-
-function normalizeCustomCanonical(header: string, existing: Set<string>): `custom:${string}` {
-  const base = cleanHeader(header)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 48) || "column";
-  let candidate = `custom:${base}` as `custom:${string}`;
-  let i = 2;
-  while (existing.has(candidate)) {
-    candidate = `custom:${base}_${i}` as `custom:${string}`;
-    i++;
-  }
-  return candidate;
+function csvEscape(value: unknown): string {
+  let s = value == null ? "" : String(value);
+  if (DANGEROUS_CELL.test(s)) s = `'${s}`;
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
 }
-
-function isKnownCanonical(value: string): value is ImportCanonical {
-  return KNOWN_CANONICAL_SET.has(value);
-}
-
-function normalizeImportSpec(input: unknown): ImportTemplateSpec {
-  const rawColumns = typeof input === "object" && input !== null && !Array.isArray(input)
-    ? (input as { columns?: unknown }).columns
-    : null;
-  const incoming = Array.isArray(rawColumns) ? rawColumns : DEFAULT_IMPORT_COLUMNS;
-  const columns: ImportTemplateColumn[] = [];
-  const seenCanonicals = new Set<string>();
-  const seenHeaders = new Set<string>();
-
-  for (const raw of incoming) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
-    const item = raw as Record<string, unknown>;
-    const header = cleanHeader(String(item.header ?? ""));
-    if (!header || seenHeaders.has(header)) continue;
-    const canonicalRaw = typeof item.canonical === "string" ? item.canonical : "";
-    const isKnown = isKnownCanonical(canonicalRaw);
-    const canonical = isKnown
-      ? canonicalRaw
-      : normalizeCustomCanonical(header, seenCanonicals);
-
-    if (seenCanonicals.has(canonical)) continue;
-    seenCanonicals.add(canonical);
-    seenHeaders.add(header);
-    const required = EXPECTED_SET.has(canonical);
-    columns.push({
-      id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : String(canonical).replace(/[^a-zA-Z0-9_-]/g, "-"),
-      header,
-      canonical,
-      required,
-      sampleValue: typeof item.sampleValue === "string" ? item.sampleValue : "",
-      locked: required,
-    });
-  }
-
-  for (const defaultColumn of DEFAULT_IMPORT_COLUMNS) {
-    if (!EXPECTED_SET.has(defaultColumn.canonical) || seenCanonicals.has(defaultColumn.canonical)) continue;
-    columns.push(defaultColumn);
-    seenCanonicals.add(defaultColumn.canonical);
-  }
-
-  return { version: 1, columns };
-}
-
-function validateImportSpec(input: unknown): { ok: true; spec: ImportTemplateSpec } | { ok: false; error: string } {
-  const rawColumns = typeof input === "object" && input !== null && !Array.isArray(input)
-    ? (input as { columns?: unknown }).columns
-    : null;
-  if (!Array.isArray(rawColumns)) {
-    return { ok: false, error: "columns must be an array" };
-  }
-  const spec = normalizeImportSpec(input);
-  const headers = spec.columns.map(c => c.header);
-  if (new Set(headers).size !== headers.length) {
-    return { ok: false, error: "Header labels must be unique" };
-  }
-  const present = new Set(spec.columns.map(c => c.canonical));
-  const missing = EXPECTED_HEADERS.filter(c => !present.has(c));
-  if (missing.length > 0) {
-    return { ok: false, error: `Required backend fields cannot be removed: ${missing.join(", ")}` };
-  }
-  if (spec.columns.length > 60) {
-    return { ok: false, error: "Import template cannot exceed 60 columns" };
-  }
-  return { ok: true, spec };
-}
-
-async function getOrCreateSettingsRow() {
-  if (!importTemplateColumnEnsured) {
-    await db.execute(sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "import_template_spec" text`);
-    importTemplateColumnEnsured = true;
-  }
-  const [existing] = await db
-    .select({
-      id: adminSettingsTable.id,
-      tenantId: adminSettingsTable.tenantId,
-      importTemplateSpec: adminSettingsTable.importTemplateSpec,
-    })
-    .from(adminSettingsTable)
-    .limit(1);
-  if (existing) return existing;
-  const tenantId = await getHouseTenantId();
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
-  return created;
-}
-
-async function loadImportSpec(): Promise<ImportTemplateSpec> {
-  const settings = await getOrCreateSettingsRow();
-  if (!settings.importTemplateSpec) return DEFAULT_IMPORT_SPEC;
-  try {
-    return normalizeImportSpec(JSON.parse(settings.importTemplateSpec));
-  } catch {
-    return DEFAULT_IMPORT_SPEC;
-  }
-}
-
-function specRecognizedSet(spec: ImportTemplateSpec): Set<string> {
-  return new Set(spec.columns.map(c => c.canonical));
-}
-
-async function ensureCatalogImportSchema(): Promise<void> {
-  if (catalogImportSchemaEnsured) return;
-  const statements = [
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "external_menu_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "inventory_amount" numeric(10, 2)`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "unit_measurement" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_image" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_sku" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_brand" text NOT NULL DEFAULT 'alavont'`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "internal_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "supplier_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "supplier_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "backend_inventory_notes" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "vendor_sku" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "source_inventory_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "cost_basis" numeric(10, 2)`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "compare_at_price" numeric(10, 2)`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "stock_quantity" numeric(10, 2) DEFAULT 0`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "stock_unit" text DEFAULT '#'`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "par_level" numeric(10, 2) DEFAULT 0`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "media_gallery" jsonb DEFAULT '[]'::jsonb`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "tags" text[] DEFAULT ARRAY[]::text[]`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "metadata" jsonb DEFAULT '{}'::jsonb`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_featured" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_sale_featured" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "regular_price" numeric(10, 2)`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "homie_price" numeric(10, 2)`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_image_url" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_in_stock" boolean NOT NULL DEFAULT true`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_is_upsell" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_is_sample" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_created_date" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_updated_date" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_created_by_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "alavont_created_by" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lucifer_cruz_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lucifer_cruz_image_url" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lucifer_cruz_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lucifer_cruz_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "inventory_tracking_data" jsonb DEFAULT '{}'::jsonb`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "display_image" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_brand_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "marketing_copy" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "upsell_copy" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "promo_badges" text[] DEFAULT ARRAY[]::text[]`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_processing_mode" text DEFAULT 'mapped_lucifer'`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_product_source" text DEFAULT 'local_mapped'`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_woo_managed" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_local_alavont" boolean NOT NULL DEFAULT true`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "woo_product_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "woo_variation_id" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "receipt_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "label_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "lab_name" text`,
-  ];
-  for (const statement of statements) {
-    await db.execute(statement);
-  }
-  catalogImportSchemaEnsured = true;
-}
-
-async function ensureInventoryTemplateSchema(): Promise<void> {
-  const statements = [
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "catalog_item_id" integer`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "alavont_id" text`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_unit_output" text DEFAULT '#'`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "deduction_quantity_per_sale" numeric(10, 3) DEFAULT 1`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "menu_price" numeric(10, 2)`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "payout_price" numeric(10, 2)`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "current_stock" numeric(10, 3)`,
-    sql`ALTER TABLE "inventory_templates" ADD COLUMN IF NOT EXISTS "par_level" numeric(10, 2) DEFAULT 0`,
-  ];
-  for (const statement of statements) {
-    await db.execute(statement);
-  }
-}
-
-async function syncImportedCatalogToInventoryTemplates(tenantId: number): Promise<{ inserted: number; updated: number }> {
-  await ensureInventoryTemplateSchema();
-
-  const catalogRows = await db
-    .select()
-    .from(catalogItemsTable)
-    .where(
-      and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        eq(catalogItemsTable.isWooManaged, false),
-        eq(catalogItemsTable.isLocalAlavont, true),
-      )
-    );
-
-  const templateRows = await db
-    .select()
-    .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.tenantId, tenantId));
-
-  const byCatalogId = new Map(
-    templateRows
-      .filter(row => typeof row.catalogItemId === "number")
-      .map(row => [row.catalogItemId as number, row])
-  );
-  const byAlavontId = new Map(
-    templateRows
-      .filter(row => row.alavontId)
-      .map(row => [row.alavontId as string, row])
-  );
-
-  let inserted = 0;
-  let updated = 0;
-  let nextDisplayOrder = templateRows.reduce((max, row) => Math.max(max, row.displayOrder ?? 0), 0);
-
-  for (const item of catalogRows) {
-    const existing = byCatalogId.get(item.id) ?? (item.alavontId ? byAlavontId.get(item.alavontId) : undefined);
-    const stockValue = item.inventoryAmount ?? item.stockQuantity ?? "0";
-    const itemName = item.alavontName ?? item.displayName ?? item.name;
-    const patch = {
-      sectionName: item.alavontCategory ?? item.category ?? "Alavont",
-      itemName,
-      rowType: "item",
-      unitType: item.stockUnit ?? item.unitMeasurement ?? "#",
-      startingQuantityDefault: String(stockValue ?? "0"),
-      currentStock: String(stockValue ?? "0"),
-      menuPrice: String(item.price ?? "0"),
-      payoutPrice: String(item.costBasis ?? item.price ?? "0"),
-      isActive: item.isAvailable !== false,
-      catalogItemId: item.id,
-      alavontId: item.alavontId ?? item.externalMenuId ?? null,
-      deductionQuantityPerSale: "1",
-      parLevel: String(item.parLevel ?? "0"),
-    };
-
-    if (existing) {
-      await db
-        .update(inventoryTemplatesTable)
-        .set(patch)
-        .where(eq(inventoryTemplatesTable.id, existing.id));
-      updated++;
-    } else {
-      nextDisplayOrder += 10;
-      await db.insert(inventoryTemplatesTable).values({
-        tenantId,
-        displayOrder: nextDisplayOrder,
-        ...patch,
-      });
-      inserted++;
-    }
-  }
-
-  return { inserted, updated };
-}
-
-function formatDatabaseError(err: unknown): string {
-  const e = err as {
-    message?: string;
-    cause?: { message?: string; detail?: string; constraint?: string; code?: string };
-  };
-  const cause = e.cause;
-  const parts = [
-    cause?.message,
-    cause?.detail,
-    cause?.constraint ? `constraint: ${cause.constraint}` : null,
-    cause?.code ? `code: ${cause.code}` : null,
-  ].filter(Boolean);
-  if (parts.length > 0) return parts.join(" — ");
-  return e.message?.split("\n")[0] ?? "unknown database error";
-}
-
-// ─── Delimited (CSV / TSV) parser ─────────────────────────────────────────────
 function parseDelimitedLine(line: string, delim: string): string[] {
-  const result: string[] = [];
-  let cur = "";
-  let inQuote = false;
+  const result: string[] = []; let cur = ""; let inQuote = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (c === '"') {
-      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQuote = !inQuote;
-    } else if (c === delim && !inQuote) {
-      result.push(cur);
-      cur = "";
-    } else {
-      cur += c;
-    }
+    if (c === '"') { if (inQuote && line[i + 1] === '"') { cur += '"'; i++; } else inQuote = !inQuote; }
+    else if (c === delim && !inQuote) { result.push(cur); cur = ""; }
+    else cur += c;
   }
   result.push(cur);
   return result.map(s => s.trim());
 }
-
-type ParsedFile = {
-  headers: string[];          // cleaned (BOM/whitespace stripped)
-  rawHeaders: string[];       // as appeared in file
-  rows: string[][];           // values aligned with headers
-};
-
-function parseBuffer(buffer: Buffer, originalName: string, spec = DEFAULT_IMPORT_SPEC): ParsedFile {
+function parseBuffer(buffer: Buffer, originalName: string): ParsedFile {
   const ext = originalName.split(".").pop()?.toLowerCase() ?? "csv";
-
-  if (ext === "xlsx" || ext === "xls") {
-    const workbook = XLSX.read(buffer, { type: "buffer" });
+  if (!["csv", "tsv", "xlsx"].includes(ext)) throw new Error("Only CSV, TSV, and XLSX files are supported");
+  if (ext === "xlsx") {
+    const workbook = XLSX.read(buffer, { type: "buffer", cellFormula: false, cellHTML: false });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    if (data.length < 1) return { headers: [], rawHeaders: [], rows: [] };
-    const rawHeaders = (data[0] as unknown[]).map(String);
-    const rows = (data.slice(1) as unknown[][]).map(r => r.map(v => String(v ?? "")));
-    return {
-      headers: rawHeaders.map(h => canonicalizeHeader(h, spec)),
-      rawHeaders,
-      rows,
-    };
+    const data: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    if (!data.length) return { headers: [], rawHeaders: [], rows: [] };
+    const rawHeaders = data[0].map(String);
+    return { rawHeaders, headers: rawHeaders.map(canonicalizeHeader), rows: data.slice(1).map(r => r.map(v => String(v ?? ""))) };
   }
-
-  // CSV / TSV — strip BOM up front, normalize line endings
   const text = buffer.toString("utf-8").replace(/^\uFEFF/, "");
-  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  // Drop trailing blank lines (but keep blank lines in middle as empty rows? spec doesn't say — drop)
-  const nonBlank = lines.filter(l => l.trim().length > 0);
-  if (nonBlank.length < 1) return { headers: [], rawHeaders: [], rows: [] };
-
-  const firstLine = nonBlank[0];
-  // Choose delimiter: explicit by extension, otherwise auto-detect (tab beats comma)
-  let delim = ",";
-  if (ext === "tsv") delim = "\t";
-  else if (firstLine.includes("\t") && !firstLine.includes(",")) delim = "\t";
-
-  const rawHeaders = parseDelimitedLine(firstLine, delim);
-  const rows = nonBlank.slice(1).map(l => parseDelimitedLine(l, delim));
-  return {
-    headers: rawHeaders.map(h => canonicalizeHeader(h, spec)),
-    rawHeaders,
-    rows,
-  };
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(l => l.trim());
+  if (!lines.length) return { headers: [], rawHeaders: [], rows: [] };
+  const delim = ext === "tsv" ? "\t" : (lines[0].includes("\t") && !lines[0].includes(",") ? "\t" : ",");
+  const rawHeaders = parseDelimitedLine(lines[0], delim);
+  return { rawHeaders, headers: rawHeaders.map(canonicalizeHeader), rows: lines.slice(1).map(l => parseDelimitedLine(l, delim)) };
+}
+function validateHeaders(headers: string[]) {
+  const missing = REQUIRED_HEADERS.filter(h => !headers.includes(h));
+  const extra = headers.filter(h => !HEADER_SET.has(h));
+  const duplicates = headers.filter((h, i) => headers.indexOf(h) !== i);
+  return { ok: missing.length === 0 && extra.length === 0 && duplicates.length === 0, missing, extra, duplicates };
+}
+function parseNumber(raw: string, field: string, row: number, errors: { row: number; message: string }[], opts: { required?: boolean; min?: number } = {}): number | null {
+  if (!raw.trim()) { if (opts.required) errors.push({ row, message: `${field} is required` }); return null; }
+  const n = Number(raw.replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(n) || (opts.min != null && n < opts.min)) { errors.push({ row, message: `${field} must be a valid number${opts.min != null ? ` >= ${opts.min}` : ""}` }); return null; }
+  return n;
+}
+function parseBool(raw: string): boolean { return !["0", "false", "no", "n", "inactive"].includes(raw.trim().toLowerCase()); }
+function safeText(raw: string, field: string, row: number, errors: { row: number; message: string }[], required = false): string {
+  const value = raw.trim();
+  if (required && !value) errors.push({ row, message: `${field} is required` });
+  if (DANGEROUS_CELL.test(value)) errors.push({ row, message: `${field} cannot start with spreadsheet formula characters (=, +, -, @)` });
+  if (value.length > 1000) errors.push({ row, message: `${field} is too long` });
+  return value;
+}
+function safeUrl(raw: string, field: string, row: number, errors: { row: number; message: string }[]): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (DANGEROUS_CELL.test(value)) { errors.push({ row, message: `${field} cannot be a spreadsheet formula` }); return null; }
+  try { const u = new URL(value); if (!["https:", "http:"].includes(u.protocol)) throw new Error("bad protocol"); return u.toString(); }
+  catch { errors.push({ row, message: `${field} must be an http(s) URL` }); return null; }
+}
+function buildRecord(row: string[], headers: string[]): ImportRow {
+  const out = Object.fromEntries(CATALOG_IMPORT_HEADERS.map(h => [h, ""])) as ImportRow;
+  headers.forEach((h, i) => { if (HEADER_SET.has(h)) out[h as CatalogImportHeader] = row[i] ?? ""; });
+  return out;
+}
+async function ensureSnapshotSchema(): Promise<void> {
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_snapshots (
+    id serial PRIMARY KEY,
+    tenant_id integer NOT NULL REFERENCES tenants(id),
+    actor_id integer REFERENCES users(id),
+    action text NOT NULL DEFAULT 'catalog_import',
+    file_name text,
+    snapshot jsonb NOT NULL,
+    rolled_back_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+}
+async function audit(req: import("express").Request, action: string, tenantId: number, metadata: Record<string, unknown>, resourceId?: string) {
+  const actor = req.dbUser!;
+  await db.insert(auditLogsTable).values({ actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId, action, resourceType: "catalog_import", resourceId, metadata, ipAddress: req.ip ?? undefined });
+}
+async function snapshotTenant(client: ImportDbClient, tenantId: number, touchedSkus: string[], fileName: string | undefined, actorId: number): Promise<number | null> {
+  const catalog = await client.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.sku} = ANY(${touchedSkus})`));
+  const catalogIds = catalog.map((r: typeof catalogItemsTable.$inferSelect) => r.id);
+  const inventoryTemplates = (catalogIds.length ? await client.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), sql`${inventoryTemplatesTable.catalogItemId} = ANY(${catalogIds})`)) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
+  const [created] = await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`) as unknown as [{ id: number }];
+  return created?.id ?? null;
 }
 
-// ─── Coercers ─────────────────────────────────────────────────────────────────
-function parseTruthy(v: string): boolean {
-  return ["1", "true", "yes", "y"].includes(v.trim().toLowerCase());
-}
+router.get("/admin/products/import-template", requireRole("global_admin", "admin"), async (_req, res) => {
+  const sample = ["SKU-001", "Sample Product", "Sample description", "Skin Care", "alavont", "29.99", "ml", "10", "true", "https://example.com/product.jpg", "Safe Sample Product", "Safe payment description", "Wellness", "https://example.com/safe.jpg", "backstock", "25", "10", "5", "10"];
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="catalog_import_template.csv"');
+  res.send([CATALOG_IMPORT_HEADERS.map(csvEscape).join(","), sample.map(csvEscape).join(",")].join("\n"));
+});
+router.get("/admin/products/import-spec", requireRole("global_admin", "admin"), (_req, res) => { res.json({ spec: { version: 1, columns: CATALOG_IMPORT_HEADERS.map(h => ({ id: h, header: h, canonical: h, required: REQUIRED_HEADERS.includes(h), sampleValue: "", locked: true })) } }); } );
 
-function parsePrice(raw: string): number | null {
-  if (!raw?.trim()) return null;
-  const cleaned = raw.replace(/[$,\s]/g, "");
-  const n = parseFloat(cleaned);
-  return isNaN(n) ? null : n;
-}
-
-function parseAmount(raw: string): number | null {
-  if (!raw?.trim()) return null;
-  const n = parseFloat(raw.replace(/[,\s]/g, ""));
-  return isNaN(n) ? null : n;
-}
-
-function isValidUrl(s: string): boolean {
-  try { new URL(s); return true; } catch { return false; }
-}
-
-// ─── Header validation ────────────────────────────────────────────────────────
-type HeaderValidation = {
-  ok: boolean;
-  missing: string[];   // expected headers not present
-  extra: string[];     // present headers not in expected set (cleaned form)
-};
-
-function validateHeaders(headers: string[], spec: ImportTemplateSpec): HeaderValidation {
-  const present = new Set(headers);
-  const missing = EXPECTED_HEADERS.filter(h => !present.has(h));
-  const recognized = specRecognizedSet(spec);
-  const extra = headers.filter(h => !recognized.has(h));
-  return { ok: missing.length === 0 && extra.length === 0, missing, extra };
-}
-
-function parseUserMapping(raw: unknown, spec: ImportTemplateSpec): Record<string, string> {
-  if (typeof raw !== "string" || !raw.trim()) return {};
+router.post("/admin/products/parse-headers", requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
+  if (!req.file?.buffer) { res.status(400).json({ error: "No file provided" }); return; }
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, string> = {};
-    for (const [original, canonical] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof original === "string" && typeof canonical === "string") {
-        out[cleanHeader(original)] = canonicalizeHeader(canonical, spec);
+    const parsed = parseBuffer(req.file.buffer, req.file.originalname);
+    const v = validateHeaders(parsed.headers);
+    res.json({ headerMappings: parsed.headers.map((h, i) => ({ original: parsed.rawHeaders[i] ?? h, canonical: h, recognized: HEADER_SET.has(h) })), missingRequired: v.missing, unknownHeaders: v.extra, duplicateHeaders: v.duplicates, requiredFields: REQUIRED_HEADERS.map(h => ({ canonical: h, friendlyName: h, found: parsed.headers.includes(h), mappedFrom: parsed.rawHeaders[parsed.headers.indexOf(h)] ?? null })), fileColumns: parsed.rawHeaders, allCanonicals: CATALOG_IMPORT_HEADERS.map(h => ({ canonical: h, friendlyName: h, required: REQUIRED_HEADERS.includes(h) })) });
+  } catch (e) { res.status(400).json({ error: `Could not parse file: ${(e as Error).message}` }); }
+});
+
+router.get("/admin/products/export", requireRole("global_admin", "admin"), async (req, res) => {
+  const tenantId = await getHouseTenantId();
+  const rows = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
+  const catalogIds = rows.map((r: typeof catalogItemsTable.$inferSelect) => r.id);
+  const templates = (catalogIds.length ? await db.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), sql`${inventoryTemplatesTable.catalogItemId} = ANY(${catalogIds})`)) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
+  const byCatalog = new Map(templates.map(t => [t.catalogItemId, t]));
+  const lines = [CATALOG_IMPORT_HEADERS.map(csvEscape).join(",")];
+  for (const item of rows) {
+    const tmpl = byCatalog.get(item.id);
+    lines.push([
+      item.sku ?? item.merchantSku ?? item.alavontId ?? "", item.name, item.description ?? "", item.category, item.merchantBrand ?? "alavont", item.price, item.stockUnit ?? item.unitMeasurement ?? "", item.inventoryAmount ?? item.stockQuantity ?? "", item.isAvailable !== false ? "true" : "false", item.imageUrl ?? item.alavontImageUrl ?? "", item.luciferCruzName ?? item.customerSafeName ?? item.name, item.luciferCruzDescription ?? item.customerSafeDescription ?? item.description ?? "", item.luciferCruzCategory ?? item.category, item.luciferCruzImageUrl ?? item.imageUrl ?? "", tmpl?.sectionName ?? "", tmpl?.currentStock ?? item.stockQuantity ?? "", item.parLevel ?? tmpl?.parLevel ?? "", item.parLevel ?? tmpl?.parLevel ?? "", tmpl?.displayOrder ?? "",
+    ].map(csvEscape).join(","));
+  }
+  await audit(req, "catalog_export", tenantId, { count: rows.length });
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="catalog_export.csv"');
+  res.send(lines.join("\n"));
+});
+
+router.post("/admin/products/import", requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
+  const tenantId = await getHouseTenantId(); const actor = req.dbUser!; const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
+  const uploadedFileName = req.file?.originalname;
+  const confirmed = req.body?.confirm === "true" || req.body?.confirm === true || req.query.confirm === "true";
+  if (!req.file?.buffer) { res.status(400).json({ error: "A CSV, TSV, or XLSX file upload is required" }); return; }
+  let parsed: ParsedFile;
+  try { parsed = parseBuffer(req.file.buffer, req.file.originalname); } catch (e) { res.status(400).json({ error: `Could not parse file: ${(e as Error).message}` }); return; }
+  if (parsed.rows.length > MAX_ROWS) { res.status(413).json({ error: `Import is limited to ${MAX_ROWS} data rows` }); return; }
+  const v = validateHeaders(parsed.headers);
+  if (v.missing.length) { res.status(400).json({ error: `Missing required column(s): ${v.missing.join(", ")}`, missingColumns: v.missing }); return; }
+  if (v.extra.length) { res.status(400).json({ error: `Unexpected column(s): ${v.extra.join(", ")}`, extraColumns: v.extra }); return; }
+  if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
+
+  const errors: { row: number; message: string }[] = []; const prepared: Array<{ rec: ImportRow; values: typeof catalogItemsTable.$inferInsert; currentInventory: number | null; sortOrder: number | null; parLevel: number | null }> = [];
+  for (let i = 0; i < parsed.rows.length; i++) {
+    const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
+    const sku = safeText(rec.sku, "sku", rowNum, errors, true); const name = safeText(rec.name, "name", rowNum, errors, true); const category = safeText(rec.category, "category", rowNum, errors, true);
+    const price = parseNumber(rec.price, "price", rowNum, errors, { required: true, min: 0 });
+    const quantity = parseNumber(rec.quantity_size, "quantity_size", rowNum, errors, { min: 0 }); const currentInventory = parseNumber(rec.current_inventory, "current_inventory", rowNum, errors, { min: 0 }); const parLevel = parseNumber(rec.par_level, "par_level", rowNum, errors, { min: 0 }); const sortOrder = parseNumber(rec.sort_order, "sort_order", rowNum, errors, { min: 0 });
+    if (!sku || !name || !category || price === null) continue;
+    const imageUrl = safeUrl(rec.image_url, "image_url", rowNum, errors); const safeImageUrl = safeUrl(rec.safe_image_url, "safe_image_url", rowNum, errors);
+    prepared.push({ rec, currentInventory, sortOrder, parLevel, values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec.description, "description", rowNum, errors) || null, category, price: price.toFixed(2), regularPrice: price.toFixed(2), stockUnit: safeText(rec.unit, "unit", rowNum, errors) || null, inventoryAmount: quantity !== null ? quantity.toFixed(2) : null, stockQuantity: currentInventory !== null ? currentInventory.toFixed(2) : quantity !== null ? quantity.toFixed(2) : "0", isAvailable: rec.active ? parseBool(rec.active) : true, imageUrl, alavontName: name, alavontDescription: rec.description || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: rec.active ? parseBool(rec.active) : true, alavontId: sku, externalMenuId: sku, luciferCruzName: safeText(rec.safe_name || rec.name, "safe_name", rowNum, errors), luciferCruzDescription: safeText(rec.safe_description, "safe_description", rowNum, errors) || null, luciferCruzCategory: safeText(rec.safe_category || rec.category, "safe_category", rowNum, errors) || null, luciferCruzImageUrl: safeImageUrl, merchantName: rec.safe_name || name, merchantDescription: rec.safe_description || null, merchantCategory: rec.safe_category || category, merchantImage: safeImageUrl, merchantBrand: rec.brand || "alavont", parLevel: parLevel !== null ? parLevel.toFixed(2) : "0", isWooManaged: false, isLocalAlavont: true, receiptName: rec.safe_name || name, labelName: rec.safe_name || name, labName: sku } });
+  }
+  const skus = prepared.map(p => p.values.sku).filter(Boolean) as string[];
+  const existing = (skus.length ? await db.select({ id: catalogItemsTable.id, sku: catalogItemsTable.sku }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.sku} = ANY(${skus})`)) : []) as Array<{ id: number; sku: string | null }>;
+  if ((existing.length || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, wouldInsert: prepared.length - existing.length, wouldUpdate: existing.length }); return; }
+  if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - existing.length), updated: existing.length, skipped: 0, errors, total: prepared.length, warnings: existing.length ? [`${existing.length} existing products would be updated.`] : [] }); return; }
+
+  let snapshotId: number | null = null;
+  try {
+    await ensureSnapshotSchema();
+    const importResult = await db.transaction(async (tx) => {
+      let inserted = 0;
+      let updated = 0;
+      const insertedIds: number[] = [];
+      const insertedInventoryTemplateIds: number[] = [];
+      const createdSnapshotId = await snapshotTenant(tx, tenantId, skus, uploadedFileName, actor.id);
+      const bySku = new Map(existing.map(e => [e.sku, e.id]));
+      for (const p of prepared) {
+        const existingId = bySku.get(p.values.sku ?? "");
+        let catalogId = existingId;
+        if (existingId) { await tx.update(catalogItemsTable).set(p.values).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId))); updated++; }
+        else { const [created] = await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id }); catalogId = created.id; insertedIds.push(created.id); inserted++; }
+        const [tmpl] = await tx.select({ id: inventoryTemplatesTable.id }).from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogId!))).limit(1);
+        const patch = { itemName: p.values.name, sectionName: p.rec.inventory_location || null, unitType: p.values.stockUnit ?? "#", startingQuantityDefault: p.values.stockQuantity ?? "0", currentStock: p.currentInventory !== null ? p.currentInventory.toFixed(3) : p.values.stockQuantity ?? "0", menuPrice: p.values.price, payoutPrice: p.values.price, isActive: p.values.isAvailable, catalogItemId: catalogId!, alavontId: p.values.alavontId, deductionQuantityPerSale: "1", parLevel: p.parLevel !== null ? p.parLevel.toFixed(2) : "0" };
+        if (tmpl) await tx.update(inventoryTemplatesTable).set(patch).where(and(eq(inventoryTemplatesTable.id, tmpl.id), eq(inventoryTemplatesTable.tenantId, tenantId)));
+        else { const [createdTemplate] = await tx.insert(inventoryTemplatesTable).values({ tenantId, displayOrder: p.sortOrder ?? 0, ...patch }).returning({ id: inventoryTemplatesTable.id }); insertedInventoryTemplateIds.push(createdTemplate.id); }
       }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function applyUserMapping(headers: string[], rawHeaders: string[], userMapping: Record<string, string>): string[] {
-  if (Object.keys(userMapping).length === 0) return headers;
-  return headers.map((canonical, i) => {
-    const raw = cleanHeader(rawHeaders[i] ?? canonical);
-    return userMapping[raw] ?? canonical;
-  });
-}
-
-// ─── GET /api/admin/products/import-template ──────────────────────────────────
-router.get(
-  "/admin/products/import-spec",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const spec = await loadImportSpec();
-    res.json({ spec, defaultSpec: DEFAULT_IMPORT_SPEC });
-  }
-);
-
-router.put(
-  "/admin/products/import-spec",
-  requireRole("admin"),
-  async (req, res): Promise<void> => {
-    const validation = validateImportSpec(req.body?.spec ?? req.body);
-    if (!validation.ok) {
-      res.status(400).json({ error: validation.error });
-      return;
-    }
-    const settings = await getOrCreateSettingsRow();
-    await db.update(adminSettingsTable)
-      .set({ importTemplateSpec: JSON.stringify(validation.spec) })
-      .where(eq(adminSettingsTable.id, settings.id));
-    res.json({ spec: validation.spec });
-  }
-);
-
-router.get(
-  "/admin/products/import-template",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const spec = await loadImportSpec();
-    const headers = spec.columns.map(c => c.header);
-    const sampleRow = spec.columns.map(c => c.sampleValue ?? "");
-    const csv = [headers.join(","), sampleRow.join(",")].join("\n");
-    res.setHeader("Content-Type", "text/csv");
-    res.setHeader("Content-Disposition", 'attachment; filename="menu_import_template.csv"');
-    res.send(csv);
-  }
-);
-
-// ─── POST /api/admin/products/parse-headers ───────────────────────────────────
-// Inspect a file's headers without importing — used by the UI to preview
-// which expected columns are present and which are missing/extra.
-router.post(
-  "/admin/products/parse-headers",
-  requireRole("global_admin", "admin"),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  upload.single("file") as any,
-  async (req, res): Promise<void> => {
-    if (!req.file?.buffer) {
-      res.status(400).json({ error: "No file provided" });
-      return;
-    }
-
-    let spec: ImportTemplateSpec;
-    try {
-      spec = await loadImportSpec();
-    } catch (e) {
-      res.status(503).json({ error: `Could not load import template spec: ${(e as Error)?.message ?? "unknown"}` });
-      return;
-    }
-
-    let parsed: ParsedFile;
-    try {
-      parsed = parseBuffer(req.file.buffer, req.file.originalname, spec);
-    } catch (e) {
-      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
-      return;
-    }
-
-    const { headers, rawHeaders } = parsed;
-    const v = validateHeaders(headers, spec);
-    const recognized = specRecognizedSet(spec);
-    const specByCanonical = new Map(spec.columns.map(c => [c.canonical, c]));
-
-    // Provide a structured view tailored to the existing UI.
-    const headerMappings = headers.map((h, i) => ({
-      original: rawHeaders[i] ?? h,
-      canonical: h,
-      recognized: recognized.has(h),
-    }));
-
-    res.json({
-      headerMappings,
-      missingRequired: v.missing,
-      unknownHeaders: v.extra,
-      requiredFields: EXPECTED_HEADERS.map(h => ({
-        canonical: h,
-        friendlyName: specByCanonical.get(h)?.header ?? h,
-        found: !v.missing.includes(h),
-        mappedFrom: headers.includes(h) ? (rawHeaders[headers.indexOf(h)] ?? h) : null,
-      })),
-      allCanonicals: spec.columns.map(c => ({
-        canonical: c.canonical,
-        friendlyName: c.header,
-        required: c.required,
-      })),
-      fileColumns: rawHeaders,
-      spec,
+      await tx.execute(sql`UPDATE catalog_import_snapshots SET snapshot = jsonb_set(jsonb_set(snapshot, '{insertedCatalogIds}', ${JSON.stringify(insertedIds)}::jsonb), '{insertedInventoryTemplateIds}', ${JSON.stringify(insertedInventoryTemplateIds)}::jsonb) WHERE id = ${createdSnapshotId}`);
+      return { inserted, updated, snapshotId: createdSnapshotId };
     });
-  }
-);
+    snapshotId = importResult.snapshotId;
+    await ensureStandardLocations(tenantId); const inventoryBalances = await ensureAllInventoryBalances(tenantId);
+    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, snapshotId, total: prepared.length });
+    res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [], snapshotId, inventoryBalances });
+  } catch (e) { res.status(500).json({ error: `Import failed before completion and no catalog/inventory changes were committed: ${(e as Error).message}`, snapshotId }); }
+});
 
-// ─── Row → record mapping ─────────────────────────────────────────────────────
-type RowRecord = {
-  regularPrice: string;
-  salePrice: string;
-  alavontImage: string;
-  alavontName: string;
-  alavontDesc: string;
-  alavontCategory: string;
-  alavontInStock: string;
-  alavontId: string;
-  quantity: string;
-  unit: string;
-  luciferCruzName: string;
-  luciferCruzImage: string;
-  luciferCruzDesc: string;
-  luciferCruzCategory: string;
-  luciferCruzInventory: string;
-};
+router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
+  const tenantId = await getHouseTenantId(); await ensureSnapshotSchema();
+  const [snapshotRow] = await db.execute(sql`SELECT id, snapshot FROM catalog_import_snapshots WHERE tenant_id = ${tenantId} AND rolled_back_at IS NULL ORDER BY created_at DESC LIMIT 1`) as unknown as Array<{ id: number; snapshot: SnapshotPayload }>;
+  if (!snapshotRow) { res.status(404).json({ error: "No unrolled catalog import snapshot found for this tenant" }); return; }
+  const payload = snapshotRow.snapshot;
+  for (const id of payload.insertedInventoryTemplateIds ?? []) await db.delete(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.id, id), eq(inventoryTemplatesTable.tenantId, tenantId)));
+  for (const id of payload.insertedCatalogIds ?? []) await db.delete(catalogItemsTable).where(and(eq(catalogItemsTable.id, id), eq(catalogItemsTable.tenantId, tenantId)));
+  for (const item of payload.catalog) await db.update(catalogItemsTable).set(item).where(and(eq(catalogItemsTable.id, item.id), eq(catalogItemsTable.tenantId, tenantId)));
+  for (const tmpl of payload.inventoryTemplates) await db.update(inventoryTemplatesTable).set(tmpl).where(and(eq(inventoryTemplatesTable.id, tmpl.id), eq(inventoryTemplatesTable.tenantId, tenantId)));
+  await db.execute(sql`UPDATE catalog_import_snapshots SET rolled_back_at = now() WHERE id = ${snapshotRow.id} AND tenant_id = ${tenantId}`);
+  await audit(req, "catalog_import_rollback", tenantId, { snapshotId: snapshotRow.id, restoredCatalog: payload.catalog.length, restoredInventoryTemplates: payload.inventoryTemplates.length });
+  res.json({ rolledBack: true, snapshotId: snapshotRow.id, restoredCatalog: payload.catalog.length, restoredInventoryTemplates: payload.inventoryTemplates.length });
+});
 
-function buildRecord(row: string[], headerIndex: Record<string, number>): RowRecord {
-  const get = (h: ImportCanonical): string => {
-    const idx = headerIndex[h];
-    if (idx === undefined) return "";
-    return (row[idx] ?? "").trim();
-  };
-  return {
-    regularPrice:        get("regular_price"),
-    salePrice:           get("Sale_price"),
-    alavontImage:        get("alavont_image"),
-    alavontName:         get("alavont_name"),
-    alavontDesc:         get("alavont_desc"),
-    alavontCategory:     get("alavont_category"),
-    alavontInStock:      get("alavont_in_stock"),
-    alavontId:           get("alavont_id"),
-    quantity:            get("Quantity"),
-    unit:                get("Unit"),
-    luciferCruzName:     get("lucifer_cruz_name"),
-    luciferCruzImage:    get("lucifer_cruz_image"),
-    luciferCruzDesc:     get("lucifer_cruz_desc"),
-    luciferCruzCategory: get("lucifer_cruz_category"),
-    luciferCruzInventory:get("lucifer_cruz_Inventory"),
-  };
-}
-
-// ─── POST /api/admin/products/import ──────────────────────────────────────────
-router.post(
-  "/admin/products/import",
-  requireRole("global_admin", "admin"),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  upload.single("file") as any,
-  async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const houseTenantId = await getHouseTenantId();
-    const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
-
-    if (!req.file?.buffer) {
-      res.status(400).json({ error: "A file upload is required (CSV or TSV)" });
-      return;
-    }
-
-    const spec = await loadImportSpec();
-    let parsed: ParsedFile;
-    try {
-      parsed = parseBuffer(req.file.buffer, req.file.originalname, spec);
-    } catch (e) {
-      res.status(400).json({ error: `Could not parse file: ${(e as Error)?.message ?? "unknown"}` });
-      return;
-    }
-
-    const { rows } = parsed;
-    const headers = applyUserMapping(parsed.headers, parsed.rawHeaders, parseUserMapping(req.body?.userMapping, spec));
-    const v = validateHeaders(headers, spec);
-
-    if (v.missing.length > 0) {
-      res.status(400).json({
-        error: `Missing required column(s): ${v.missing.join(", ")}`,
-        missingColumns: v.missing,
-      });
-      return;
-    }
-    if (v.extra.length > 0) {
-      res.status(400).json({
-        error: `Unexpected column(s): ${v.extra.join(", ")}`,
-        extraColumns: v.extra,
-      });
-      return;
-    }
-
-    try {
-      await ensureCatalogImportSchema();
-    } catch (err) {
-      res.status(500).json({ error: `Could not prepare catalog import schema: ${formatDatabaseError(err)}` });
-      return;
-    }
-
-    // Header → column index lookup
-    const headerIndex: Record<string, number> = {};
-    headers.forEach((h, i) => { headerIndex[h] = i; });
-
-    let inserted = 0, updated = 0;
-    const skipped = 0;
-    const errors: { row: number; message: string }[] = [];
-
-    for (let i = 0; i < rows.length; i++) {
-      const rowNum = i + 2; // header is row 1
-      const rec = buildRecord(rows[i], headerIndex);
-
-      // ── Required-value checks ──
-      if (!rec.alavontName) {
-        errors.push({ row: rowNum, message: "Menu Name is required" });
-        continue;
-      }
-      if (!rec.alavontCategory) {
-        errors.push({ row: rowNum, message: "Menu Category is required" });
-        continue;
-      }
-      const regularPrice = parsePrice(rec.regularPrice);
-      if (regularPrice === null) {
-        errors.push({ row: rowNum, message: `Menu Regular Price must be numeric (got "${rec.regularPrice}")` });
-        continue;
-      }
-      const salePrice = rec.salePrice ? parsePrice(rec.salePrice) : null;
-      if (rec.salePrice && salePrice === null) {
-        errors.push({ row: rowNum, message: `Sale Price must be numeric when provided (got "${rec.salePrice}")` });
-        continue;
-      }
-      if (!rec.luciferCruzInventory && !rec.alavontId) {
-        errors.push({ row: rowNum, message: "Either Merchant Sku or Menu ID is required" });
-        continue;
-      }
-
-      // ── Optional/coerced values ──
-      const inStock = rec.alavontInStock ? parseTruthy(rec.alavontInStock) : true;
-      const activePrice = salePrice ?? regularPrice;
-      const amount = parseAmount(rec.quantity);
-      const alavontImageUrl = rec.alavontImage && isValidUrl(rec.alavontImage) ? rec.alavontImage : null;
-      const lcImageUrl = rec.luciferCruzImage && isValidUrl(rec.luciferCruzImage) ? rec.luciferCruzImage : null;
-      const lcName = rec.luciferCruzName || rec.alavontName;
-
-      // Build values for insert/update.
-      // alavont_* columns drive the customer-facing catalog;
-      // lucifer_cruz_* columns drive the merchant/payment side.
-      const values: typeof catalogItemsTable.$inferInsert = {
-        tenantId: houseTenantId,
-        // Legacy generic fields (mirrored from alavont fields)
-        name: rec.alavontName,
-        description: rec.alavontDesc || null,
-        category: rec.alavontCategory,
-        sku: rec.luciferCruzInventory || null,
-        price: activePrice.toFixed(2),
-        regularPrice: regularPrice.toFixed(2),
-        compareAtPrice: salePrice !== null && salePrice < regularPrice ? regularPrice.toFixed(2) : null,
-        isSaleFeatured: salePrice !== null && salePrice < regularPrice,
-        isAvailable: inStock,
-        imageUrl: alavontImageUrl,
-        // Alavont-facing fields
-        alavontName: rec.alavontName,
-        alavontDescription: rec.alavontDesc || null,
-        alavontCategory: rec.alavontCategory,
-        alavontImageUrl,
-        alavontInStock: inStock,
-        alavontId: rec.alavontId || null,
-        externalMenuId: rec.alavontId || null,
-        // Quantity / unit
-        inventoryAmount: amount !== null ? amount.toFixed(2) : null,
-        unitMeasurement: rec.unit || null,
-        stockQuantity: amount !== null ? amount.toFixed(2) : null,
-        stockUnit: rec.unit || null,
-        // Lucifer Cruz-facing fields
-        luciferCruzName: lcName,
-        luciferCruzImageUrl: lcImageUrl,
-        luciferCruzDescription: rec.luciferCruzDesc || null,
-        luciferCruzCategory: rec.luciferCruzCategory || null,
-        // Merchant mirrors
-        merchantName: lcName,
-        merchantImage: lcImageUrl,
-        merchantDescription: rec.luciferCruzDesc || null,
-        merchantCategory: rec.luciferCruzCategory || null,
-        merchantSku: rec.luciferCruzInventory || null,
-        merchantBrand: "alavont",
-        merchantProcessingMode: "mapped_lucifer",
-        merchantProductSource: "local_mapped",
-        isWooManaged: false,
-        isLocalAlavont: true,
-        // Print names
-        receiptName: lcName,
-        labelName: lcName,
-        labName: rec.luciferCruzInventory || null,
-      };
-
-      if (dryRun) {
-        inserted++;
-        continue;
-      }
-
-      try {
-        // Upsert key priority:
-        //   1. (tenantId, sku) — lucifer_cruz_Inventory matches any existing sku
-        //   2. (tenantId, externalMenuId) — alavont_id matches any existing externalMenuId
-        //   3. (tenantId, luciferCruzName, isWooManaged=true) — catch woo-synced rows that
-        //      represent the same real product so re-importing the CSV reclassifies them.
-        let existingId: number | undefined;
-        if (rec.luciferCruzInventory) {
-          const [existing] = await db
-            .select({ id: catalogItemsTable.id })
-            .from(catalogItemsTable)
-            .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.sku, rec.luciferCruzInventory)))
-            .limit(1);
-          existingId = existing?.id;
-        }
-        if (!existingId && rec.alavontId) {
-          const [existing] = await db
-            .select({ id: catalogItemsTable.id })
-            .from(catalogItemsTable)
-            .where(and(
-              eq(catalogItemsTable.tenantId, houseTenantId),
-              eq(catalogItemsTable.externalMenuId, rec.alavontId),
-            ))
-            .limit(1);
-          existingId = existing?.id;
-        }
-        // Fallback: find an existing woo-managed row whose luciferCruzName matches
-        // the CSV product name — this reclassifies it as a local Alavont item on update.
-        if (!existingId) {
-          const lcName = rec.luciferCruzName || rec.alavontName;
-          if (lcName) {
-            const [existing] = await db
-              .select({ id: catalogItemsTable.id })
-              .from(catalogItemsTable)
-              .where(and(
-                eq(catalogItemsTable.tenantId, houseTenantId),
-                sql`coalesce(${catalogItemsTable.isWooManaged}, false) = true`,
-                eq(catalogItemsTable.luciferCruzName, lcName),
-              ))
-              .limit(1);
-            existingId = existing?.id;
-          }
-        }
-
-        if (existingId) {
-          await db.update(catalogItemsTable).set(values).where(eq(catalogItemsTable.id, existingId));
-          updated++;
-        } else {
-          await db.insert(catalogItemsTable).values(values);
-          inserted++;
-        }
-      } catch (err) {
-        errors.push({ row: rowNum, message: `database error — ${formatDatabaseError(err)}` });
-      }
-    }
-
-    let inventoryTemplates = { inserted: 0, updated: 0 };
-    let inventoryBalances = { created: 0 };
-
-    if (!dryRun) {
-      try {
-        inventoryTemplates = await syncImportedCatalogToInventoryTemplates(houseTenantId);
-      } catch (err) {
-        errors.push({ row: 0, message: `inventory template sync failed — ${formatDatabaseError(err)}` });
-      }
-
-      // Seed inventory_balances for every local Alavont product × all 4 locations.
-      // This is idempotent and runs after every import so newly-reclassified rows
-      // immediately appear in the inventory grid with qty=0 (backstock uses stock_quantity).
-      try {
-        await ensureStandardLocations(houseTenantId);
-        inventoryBalances = await ensureAllInventoryBalances(houseTenantId);
-      } catch { /* non-fatal — inventory grid still works, just shows no balance rows yet */ }
-
-      try {
-        await db.insert(auditLogsTable).values({
-          actorId: actor.id,
-          actorEmail: actor.email ?? "",
-          actorRole: actor.role,
-          action: "menu_import",
-          resourceType: "catalog_item",
-          metadata: {
-            fileName: req.file.originalname,
-            total: rows.length,
-            inserted,
-            updated,
-            skipped,
-            errorCount: errors.length,
-            inventoryTemplates,
-          },
-          ipAddress: req.ip ?? undefined,
-        });
-      } catch { /* audit failure is non-fatal */ }
-    }
-
-    res.json({ inserted, updated, skipped, errors, inventoryTemplates, inventoryBalances });
-  }
-);
-
-// ─── POST /api/admin/catalog/reclassify-local ─────────────────────────────────
-// One-shot fix for rows that are incorrectly flagged is_woo_managed=true but
-// should be local Alavont products (identified by having an alavontId that does
-// NOT start with "wc_" — those are always set by the WooCommerce sync).
-// Also reclassifies rows where isWooManaged=true but alavontId IS NULL (old
-// import code that inferred woo-managed from the presence of LC fields).
-// After reclassifying, seeds inventory_balances for the newly-local rows.
-// Pass ?dryRun=true to preview the count without writing.
-router.post(
-  "/admin/catalog/reclassify-local",
-  requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const dryRun = req.query.dryRun === "true";
-    const houseTenantId = await getHouseTenantId();
-
-    // Find rows that are marked woo-managed but whose alavontId was NOT assigned
-    // by the WooCommerce sync (sync always uses the pattern "wc_<numeric_id>").
-    const candidates = await db
-      .select({ id: catalogItemsTable.id, alavontId: catalogItemsTable.alavontId, name: catalogItemsTable.name })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, houseTenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = true`,
-        sql`(${catalogItemsTable.alavontId} IS NULL OR ${catalogItemsTable.alavontId} NOT LIKE 'wc\\_%' ESCAPE '\\')`,
-      ));
-
-    if (dryRun) {
-      res.json({ dryRun: true, wouldReclassify: candidates.length, rows: candidates.map(r => ({ id: r.id, name: r.name, alavontId: r.alavontId })) });
-      return;
-    }
-
-    let reclassified = 0;
-    for (const row of candidates) {
-      await db
-        .update(catalogItemsTable)
-        .set({ isWooManaged: false, isLocalAlavont: true, isAvailable: true })
-        .where(eq(catalogItemsTable.id, row.id));
-      reclassified++;
-    }
-
-    // Seed inventory_balances for all newly-local and existing local products.
-    let inventoryBalances = { created: 0 };
-    try {
-      await ensureStandardLocations(houseTenantId);
-      inventoryBalances = await ensureAllInventoryBalances(houseTenantId);
-    } catch { /* non-fatal */ }
-
-    res.json({ reclassified, inventoryBalances });
-  }
-);
-
-// ─── GET /api/admin/products — list all products (admin only) ─────────────────
-router.get(
-  "/admin/products",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const rows = await db.select().from(catalogItemsTable);
-    res.json({ products: rows });
-  }
-);
-
-// ─── Spec doc aliases ─────────────────────────────────────────────────────────
-router.get(
-  "/admin/import/catalog-template",
-  requireRole("global_admin", "admin"),
-  (_req, res): void => {
-    res.redirect(307, "/api/admin/products/import-template");
-  }
-);
-
-router.post(
-  "/admin/import/catalog",
-  requireRole("global_admin", "admin"),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  upload.single("file") as any,
-  (_req, res): void => {
-    res.redirect(307, "/api/admin/products/import");
-  }
-);
+// Compatibility aliases.
+router.get("/admin/import/catalog-template", requireRole("global_admin", "admin"), (_req, res) => { res.redirect(307, "/api/admin/products/import-template"); });
+router.post("/admin/import/catalog", requireRole("global_admin", "admin"), upload.single("file") as never, (_req, res) => { res.redirect(307, "/api/admin/products/import"); });
 
 export default router;

@@ -1,11 +1,12 @@
 import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db, labTechShiftsTable, ordersTable, shiftRoutingConfigTable, usersTable } from "@workspace/db";
+import { isShiftOrderRoutable } from "../lib/orderRouting";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-const ACTIVE_ORDER_STATUSES = ["pending", "queued", "assigned", "in_progress"];
+const QUEUE_ORDER_STATUSES = ["pending", "processing", "ready", "completed"];
 
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("csr", "supervisor", "admin", "global_admin"));
 
@@ -43,7 +44,7 @@ router.get("/shift-queue/status", async (req, res): Promise<void> => {
   const config = await latestRoutingConfig(tenantId);
   const activeShift = shifts[0] ?? null;
   const activeDurationSeconds = activeShift ? Math.max(0, Math.floor((Date.now() - new Date(activeShift.clockedInAt).getTime()) / 1000)) : 0;
-  const activeOrders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, ACTIVE_ORDER_STATUSES)));
+  const activeOrders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES)));
   const defaultQueueCount = activeOrders.filter(o => o.routedTo === "default_queue" || (!o.assignedShiftId && !o.assignedCsrUserId)).length;
   const multiple = shifts.length > 1;
   const approved = config?.allowMultipleActiveShifts === true && !!config.routingStrategy;
@@ -73,15 +74,15 @@ router.get("/shift-queue/orders", async (req, res): Promise<void> => {
   const role = normalizeRole(actor.role);
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
-    if (!shift) {
-      res.status(403).json({ error: "CSR must have an active shift to view the operational queue", orders: [] });
+    if (!shift || !isShiftOrderRoutable(shift)) {
+      res.status(403).json({ error: "CSR must have an active ready shift to view the operational queue", orders: [] });
       return;
     }
-    const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shift.id), inArray(ordersTable.status, ACTIVE_ORDER_STATUSES))).orderBy(desc(ordersTable.createdAt));
+    const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES), sql`(${ordersTable.assignedShiftId} = ${shift.id} OR (${ordersTable.assignedShiftId} IS NULL AND ${ordersTable.assignedCsrUserId} IS NULL))`)).orderBy(desc(ordersTable.createdAt));
     res.json({ orders, total: orders.length });
     return;
   }
-  const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, ACTIVE_ORDER_STATUSES))).orderBy(desc(ordersTable.createdAt));
+  const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES))).orderBy(desc(ordersTable.createdAt));
   res.json({ orders, total: orders.length });
 });
 

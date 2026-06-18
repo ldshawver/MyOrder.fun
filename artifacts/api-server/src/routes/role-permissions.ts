@@ -24,13 +24,13 @@ function groupedPermissions() {
   }, {});
 }
 
-function canEdit(actor: NonNullable<Express.Request["dbUser"]>, role: string, permission?: string): string | null {
+function canEdit(actor: NonNullable<Express.Request["dbUser"]>, role: string, permission?: string, enabled?: boolean): string | null {
   const actorRole = normalizeRole(actor.role);
   const targetRole = normalizeRole(role);
   if (actorRole !== "admin" && actorRole !== "global_admin") return "Only admins can edit permissions";
   if (actorRole === "admin") {
     if (targetRole === ROLE_GLOBAL_ADMIN) return "Tenant admins cannot edit global_admin permissions";
-    if (permission && PLATFORM_PERMISSIONS.includes(permission as Permission)) return "Tenant admins cannot grant platform permissions";
+    if (permission && enabled === true && PLATFORM_PERMISSIONS.includes(permission as Permission)) return "Tenant admins cannot grant platform permissions";
   }
   return null;
 }
@@ -84,7 +84,7 @@ router.put("/admin/roles-permissions/:role", requirePermission("users.manage_per
   const tenantId = scope.tenantId;
 
   for (const [permission, enabled] of Object.entries(parsed.data.permissions)) {
-    const permissionError = canEdit(actor, role, permission);
+    const permissionError = canEdit(actor, role, permission, enabled);
     if (permissionError) return void res.status(403).json({ error: permissionError, permission });
     const safetyError = assertSafeAdminPermissionChange(role, permission, enabled);
     if (safetyError) return void res.status(409).json({ error: safetyError, permission });
