@@ -70,22 +70,35 @@ const CreateTicketBody = z
     pageUrl: z.string().trim().max(1000).nullable().optional(),
     userAgent: z.string().trim().max(1024).nullable().optional(),
     screenshotData: z
-      .string()
-      .max(MAX_SCREENSHOT_BYTES * 2)
-      .nullable()
+      .union([
+        z.string().max(MAX_SCREENSHOT_BYTES * 2),
+        z.null(),
+        z.literal(false),
+      ])
       .optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    context: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (
-      value.metadata !== undefined &&
+      value.metadata != null &&
       Buffer.byteLength(JSON.stringify(value.metadata), "utf8") > 8192
     ) {
       ctx.addIssue({
         code: "custom",
         message: "metadata exceeds 8KB limit",
         path: ["metadata"],
+      });
+    }
+    if (
+      value.context != null &&
+      Buffer.byteLength(JSON.stringify(value.context), "utf8") > 8192
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "context exceeds 8KB limit",
+        path: ["context"],
       });
     }
   });
@@ -317,25 +330,40 @@ router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
 
   const tenantId =
     actor.tenantId ?? (await getHouseTenantId().catch(() => null));
+  const contextJson = parsed.data.context ?? parsed.data.metadata ?? null;
+  const screenshotData =
+    typeof parsed.data.screenshotData === "string" &&
+    parsed.data.screenshotData.length > 0
+      ? parsed.data.screenshotData
+      : null;
 
-  const [created] = await db
-    .insert(feedbackTicketsTable)
-    .values({
-      tenantId,
-      submitterId: actor.id,
-      submitterRole: normalizeFeedbackRole(actor.role),
-      type: parsed.data.type,
-      severity: parsed.data.severity,
-      status: "submitted",
-      priority: false,
-      title: parsed.data.title,
-      description: parsed.data.description,
-      pageUrl: parsed.data.pageUrl ?? null,
-      userAgent: parsed.data.userAgent ?? null,
-      contextJson: parsed.data.metadata ?? null,
-      screenshotData: parsed.data.screenshotData ?? null,
-    })
-    .returning();
+  let created: typeof feedbackTicketsTable.$inferSelect;
+  try {
+    [created] = await db
+      .insert(feedbackTicketsTable)
+      .values({
+        tenantId,
+        submitterId: actor.id,
+        submitterRole: normalizeFeedbackRole(actor.role),
+        type: parsed.data.type,
+        severity: parsed.data.severity,
+        status: "submitted",
+        priority: false,
+        title: parsed.data.title,
+        description: parsed.data.description,
+        pageUrl: parsed.data.pageUrl ?? null,
+        userAgent: parsed.data.userAgent ?? null,
+        contextJson,
+        screenshotData,
+      })
+      .returning();
+  } catch (err) {
+    logger.error({ err }, "Failed to create feedback ticket");
+    res.status(500).json({
+      error: "Feedback could not be submitted. Please try again.",
+    });
+    return;
+  }
 
   // Fan out an in-app notification to every admin/global admin so they see
   // new tickets in their bell dropdown without polling the admin page.

@@ -125,16 +125,16 @@ function FeedbackModal({ open, onOpenChange }: { open: boolean; onOpenChange: (v
           // Auto-captured context — the user doesn't see or edit this.
           pageUrl: window.location.href + (location ? "" : ""),
           userAgent: navigator.userAgent.slice(0, 1024),
-          screenshotData: screenshot,
+          screenshotData: typeof screenshot === "string" && screenshot.length > 0 ? screenshot : null,
         }),
       });
-      const body = await res.json() as { id?: number; error?: string };
-      if (!res.ok) throw new Error(body.error ?? "Submit failed");
+      const body = await res.json().catch(() => ({})) as { id?: number; error?: string };
+      if (!res.ok) throw new Error("Feedback could not be submitted. Please try again.");
       toast({ title: "Thanks — we got it.", description: `Ticket #${body.id} submitted.` });
       reset();
       onOpenChange(false);
-    } catch (e) {
-      toast({ title: "Submit failed", description: (e as Error).message, variant: "destructive" });
+    } catch {
+      toast({ title: "Submit failed", description: "Feedback could not be submitted. Please try again.", variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
