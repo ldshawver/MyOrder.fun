@@ -452,6 +452,88 @@ describe("POST /api/feedback", () => {
     );
   });
 
+  it("normalizes absent screenshot/context values to null before insert", async () => {
+    seedUser(1, "actor-clerk-id", "global_admin");
+    setMockUserId("actor-clerk-id");
+
+    const res = await supertest(buildApp()).post("/api/feedback").send({
+      type: "ux",
+      severity: "medium",
+      title: "Merchant Services Wrongfully named",
+      description: "This is actually Customer Credit. Rename it.",
+      pageUrl: "https://myorder.fun/admin/credits",
+      userAgent: "Mozilla/5.0",
+      context: null,
+      screenshotData: false,
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbState.tickets[0]).toMatchObject({
+      tenantId: 1,
+      submitterId: 1,
+      submitterRole: "global_admin",
+      type: "ux",
+      severity: "medium",
+      status: "submitted",
+      priority: false,
+      title: "Merchant Services Wrongfully named",
+      description: "This is actually Customer Credit. Rename it.",
+      pageUrl: "https://myorder.fun/admin/credits",
+      userAgent: "Mozilla/5.0",
+      contextJson: null,
+      screenshotData: null,
+    });
+  });
+
+  it("stores object context and string screenshot data when provided", async () => {
+    seedUser(1, "actor-clerk-id", "user");
+    setMockUserId("actor-clerk-id");
+    const screenshotData = "data:image/png;base64,abcd1234=";
+
+    const res = await supertest(buildApp())
+      .post("/api/feedback")
+      .send({
+        type: "bug",
+        severity: "high",
+        title: "Screenshot included",
+        description: "The screenshot should be persisted.",
+        context: { route: "/admin/credits" },
+        screenshotData,
+      });
+
+    expect(res.status).toBe(201);
+    expect(dbState.tickets[0]?.contextJson).toEqual({
+      route: "/admin/credits",
+    });
+    expect(dbState.tickets[0]?.screenshotData).toBe(screenshotData);
+  });
+
+  it("returns a generic message when ticket insert fails", async () => {
+    seedUser(1, "actor-clerk-id", "user");
+    setMockUserId("actor-clerk-id");
+    const insertSpy = vi
+      .spyOn(hoistedDb.db, "insert")
+      .mockImplementationOnce(() => {
+        throw new Error(
+          "Failed query: insert into feedback_tickets params: secret",
+        );
+      });
+
+    const res = await supertest(buildApp()).post("/api/feedback").send({
+      type: "general",
+      severity: "low",
+      title: "Generic failure",
+      description: "Do not leak SQL details.",
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: "Feedback could not be submitted. Please try again.",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("Failed query");
+    insertSpy.mockRestore();
+  });
+
   it("rejects payload that fails validation", async () => {
     seedUser(1, "actor-clerk-id", "user");
     setMockUserId("actor-clerk-id");
