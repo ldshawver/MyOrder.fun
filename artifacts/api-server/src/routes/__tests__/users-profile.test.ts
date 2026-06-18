@@ -277,6 +277,34 @@ describe("PATCH /api/users/me", () => {
     expect(dbState.users[0].clerkId).toBe("user-clerk-id");
   });
 
+
+  it("saves and reloads notification preferences for only the authenticated user", async () => {
+    seedUser();
+    seedUser({ id: 2, clerkId: "other-clerk-id", email: "other@example.com", notificationPreferences: { inAppAlerts: true, smsTexts: true, emails: true, inAppAlertMode: "sound" } });
+    const prefs = { inAppAlerts: true, smsTexts: false, emails: false, inAppAlertMode: "sound_vibrate" };
+
+    const res = await supertest(buildApp())
+      .patch("/api/users/me")
+      .send({ notificationPreferences: prefs });
+
+    expect(res.status).toBe(200);
+    expect(res.body.notificationPreferences).toEqual(prefs);
+    expect(dbState.users[0].notificationPreferences).toEqual(prefs);
+    expect(dbState.users[1].notificationPreferences).toEqual({ inAppAlerts: true, smsTexts: true, emails: true, inAppAlertMode: "sound" });
+
+    const reload = await supertest(buildApp()).get("/api/users/me");
+    expect(reload.body.notificationPreferences).toEqual(prefs);
+  });
+
+  it("rejects unknown notification preference fields", async () => {
+    seedUser();
+    const res = await supertest(buildApp())
+      .patch("/api/users/me")
+      .send({ notificationPreferences: { inAppAlerts: true, smsTexts: true, emails: true, inAppAlertMode: "sound", userId: 2 } });
+    expect(res.status).toBe(400);
+    expect(dbState.users[0].notificationPreferences).toBeUndefined();
+  });
+
   it("does not clobber fields that are not in the body", async () => {
     seedUser({ contactPhone: "+15550000000", avatarUrl: "https://cdn.example.com/old.png" });
     const res = await supertest(buildApp())
