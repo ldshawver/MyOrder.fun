@@ -44,6 +44,7 @@ import {
 } from "../lib/checkoutNormalizer";
 import { z } from "zod";
 import { logger } from "../lib/logger";
+import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
@@ -534,7 +535,7 @@ router.get("/orders", async (req, res): Promise<void> => {
 });
 
 // POST /api/orders
-router.post("/orders", async (req, res): Promise<void> => {
+router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = CreateOrderBody.safeParse(req.body);
   if (!body.success) {

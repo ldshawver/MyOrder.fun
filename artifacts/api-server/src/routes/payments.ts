@@ -18,6 +18,7 @@ import {
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
 import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/stripePayload";
+import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -89,7 +90,7 @@ function getStripeClient(): Stripe | null {
 // Creates a Stripe PaymentIntent and returns the client secret so the
 // browser can use Stripe Elements to collect card details.
 // Raw card numbers NEVER touch our server.
-router.post("/payments/tokenize", async (req, res): Promise<void> => {
+router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("payments.tokenize"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const body = TokenizePaymentBody.safeParse(req.body);
   if (!body.success) {
@@ -244,7 +245,7 @@ router.post("/payments/tokenize", async (req, res): Promise<void> => {
 // POST /api/payments/:orderId/apply-credit
 // Applies customer-selected account credit before external payment. Credit can
 // partially reduce the payable total or fully pay the order.
-router.post("/payments/:orderId/apply-credit", async (req, res): Promise<void> => {
+router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerAcceptance("payments.apply_credit"), async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const actor = req.dbUser!;
   const rawId = Array.isArray(req.params.orderId) ? req.params.orderId[0] : req.params.orderId;
@@ -342,7 +343,7 @@ router.post("/payments/:orderId/apply-credit", async (req, res): Promise<void> =
 
 // POST /api/payments/:orderId/confirm
 // Verifies the PaymentIntent succeeded via Stripe, then marks the order as paid.
-router.post("/payments/:orderId/confirm", async (req, res): Promise<void> => {
+router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAcceptance("payments.confirm"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const rawId = Array.isArray(req.params.orderId)
     ? req.params.orderId[0]

@@ -9,7 +9,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useGetCurrentUser, setAuthTokenGetter } from "@workspace/api-client-react";
 import SensitiveScreen from "@/components/privacy/SensitiveScreen";
-import NdaModal, { useNdaAccepted } from "@/components/nda-modal";
+import NdaModal from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
@@ -359,8 +359,10 @@ function AuthenticatedApp() {
 
   const clerkEmail = clerkUser?.primaryEmailAddress?.emailAddress;
 
-  const initialNdaAccepted = useNdaAccepted();
-  const [ndaAccepted, setNdaAccepted] = useState(initialNdaAccepted);
+  const [disclaimer, setDisclaimer] = useState<{ text: string; version: number; required: boolean } | null>(null);
+  const [disclaimerLoading, setDisclaimerLoading] = useState(false);
+  const [disclaimerAccepting, setDisclaimerAccepting] = useState(false);
+  const [disclaimerError, setDisclaimerError] = useState<string | null>(null);
 
   const qc = useQueryClient();
   const [midSessionStatus, setMidSessionStatus] = useState<"pending" | "rejected" | null>(null);
@@ -384,6 +386,46 @@ function AuthenticatedApp() {
   }, [qc]);
 
   useSessionLogger(user?.email ?? "");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user || normalizeAppRole(user.role) !== "user") {
+      setDisclaimer(null);
+      return;
+    }
+    setDisclaimerLoading(true);
+    setDisclaimerError(null);
+    getToken()
+      .then((token) => fetch("/api/customer/disclaimer", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then(async (res) => {
+        if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? "Failed to load disclaimer");
+        return res.json() as Promise<{ text: string; version: number; required: boolean }>;
+      })
+      .then((data) => { if (!cancelled) setDisclaimer(data.required ? data : null); })
+      .catch((err) => { if (!cancelled) setDisclaimerError(err instanceof Error ? err.message : "Failed to load disclaimer"); })
+      .finally(() => { if (!cancelled) setDisclaimerLoading(false); });
+    return () => { cancelled = true; };
+  }, [getToken, user]);
+
+  async function acceptDisclaimer() {
+    if (!disclaimer) return;
+    setDisclaimerAccepting(true);
+    setDisclaimerError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/customer/disclaimer/accept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ version: disclaimer.version }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? "Failed to accept disclaimer");
+      setDisclaimer(null);
+    } catch (err) {
+      setDisclaimerError(err instanceof Error ? err.message : "Failed to accept disclaimer");
+    } finally {
+      setDisclaimerAccepting(false);
+    }
+  }
 
   async function refreshCurrentUser() {
     await qc.invalidateQueries({ queryKey: ["getCurrentUser"] });
@@ -414,7 +456,7 @@ function AuthenticatedApp() {
     );
   }
 
-  if (!clerkLoaded || !authTokenReady || isLoading) return <LoadingScreen />;
+  if (!clerkLoaded || !authTokenReady || isLoading || disclaimerLoading) return <LoadingScreen />;
 
   if (isError) {
     const err = error as { status?: number; data?: { status?: string } } | null;
@@ -472,7 +514,7 @@ function AuthenticatedApp() {
 
   return (
     <>
-      {!ndaAccepted && <NdaModal userEmail={user.email} onAccept={() => setNdaAccepted(true)} />}
+      {disclaimer && <NdaModal userEmail={user.email} text={disclaimer.text} version={disclaimer.version} accepting={disclaimerAccepting} error={disclaimerError} onAccept={acceptDisclaimer} />}
       <SessionWatermark email={user.email} />
       <Layout user={user}>
         <Switch>
