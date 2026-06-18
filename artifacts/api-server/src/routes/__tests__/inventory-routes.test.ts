@@ -54,8 +54,8 @@ vi.mock("@workspace/db", () => {
   const orderItemsTable = cols(["orderId"]);
   const auditLogsTable = {};
   const csrBoxesTable = cols(["id", "tenantId", "slug", "label", "isActive", "displayOrder", "description", "location"]);
-  const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt"]);
-  const inventoryBalancesTable = cols(["id", "tenantId", "productId", "locationId", "quantityOnHand", "parLevel", "updatedAt"]);
+  const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt", "inventoryKind", "quarantineStatus", "quarantineReason"]);
+  const inventoryBalancesTable = cols(["id", "tenantId", "productId", "locationId", "quantityOnHand", "parLevel", "updatedAt", "inventoryKind", "quarantineStatus", "quarantineReason"]);
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
@@ -100,6 +100,28 @@ vi.mock("../../lib/singleTenant", () => ({
   getHouseTenantId: vi.fn().mockResolvedValue(1),
 }));
 
+
+vi.mock("../../lib/inventoryBalances", () => ({
+  ensureStandardLocations: vi.fn().mockResolvedValue(undefined),
+  ensureAllInventoryBalances: vi.fn().mockResolvedValue({ created: 0 }),
+  recomputeCatalogInventoryTotals: vi.fn().mockResolvedValue(undefined),
+  getOrphanInventoryBalanceReport: vi.fn().mockResolvedValue([
+    { id: 77, productId: 999, locationId: 1, quantityOnHand: 4, parLevel: 0, inventoryKind: "sellable_catalog", quarantineStatus: "active", quarantineReason: null, productName: null, locationName: "Backstock", reason: "missing_catalog_product" },
+  ]),
+  getCatalogInventorySnapshot: vi.fn().mockResolvedValue({
+    items: [{
+      id: 1, name: "Item A", stockUnit: "#", parLevel: 3, totalStock: 8,
+      stockQuantity: 8, locations: [
+        { locationId: 1, name: "Backstock", type: "backstock", qty: 5, par: 2 },
+        { locationId: 2, name: "Storefront", type: "storefront", qty: 3, par: 1 },
+      ],
+    }],
+    locations: [
+      { id: 1, name: "Backstock", type: "backstock", csrBoxId: null, displayOrder: 1 },
+      { id: 2, name: "Storefront", type: "storefront", csrBoxId: null, displayOrder: 2 },
+    ],
+  }),
+}));
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), child: vi.fn(() => ({ info: vi.fn(), error: vi.fn() })) },
 }));
@@ -209,12 +231,26 @@ describe("GET /api/admin/inventory — JSON contract", () => {
       id: 1,
       name: "Item A",
       stockUnit: "#",
-      parLevel: 2,
+      parLevel: 3,
       totalStock: 8, // 5 (Backstock) + 3 (Storefront)
     });
     expect(typeof res.body.pettyCash).toBe("number");
   });
 
+
+  it("returns orphan/quarantine report as JSON", async () => {
+    configureDb([]);
+
+    const res = await supertest(buildApp(inventoryRouter)).get("/api/admin/inventory/orphans");
+
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.items[0]).toMatchObject({
+      id: 77,
+      reason: "missing_catalog_product",
+      productName: null,
+    });
+  });
   it("returns JSON 500 (never HTML) when the database throws", async () => {
     configureDb(["throw"]);
 

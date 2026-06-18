@@ -42,6 +42,7 @@ import {
   CartLineInput,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
+import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
@@ -809,7 +810,7 @@ router.post("/orders", async (req, res): Promise<void> => {
             quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
           })
           .where(and(
-            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            sellableInventoryBalancePredicate(houseTenantId),
             eq(inventoryBalancesTable.productId, line.catalog_item_id),
             eq(inventoryBalancesTable.locationId, targetLocationId),
             sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,

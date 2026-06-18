@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and, asc, sql, sum } from "drizzle-orm";
+import { eq, and, asc, sql } from "drizzle-orm";
 import {
   db,
   catalogItemsTable,
@@ -7,12 +7,15 @@ import {
   inventoryBalancesTable,
   inventoryLocationsTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
   ensureStandardLocations,
   ensureAllInventoryBalances,
+  getCatalogInventorySnapshot,
+  recomputeCatalogInventoryTotals,
+  getOrphanInventoryBalanceReport,
 } from "../lib/inventoryBalances";
 
 const router: IRouter = Router();
@@ -64,6 +67,9 @@ async function ensureInventorySchema(): Promise<void> {
       "par_level" numeric(10, 2) NOT NULL DEFAULT 0,
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_status" text NOT NULL DEFAULT 'active'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
     sql`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique') THEN
         ALTER TABLE "inventory_balances" ADD CONSTRAINT "inventory_balances_unique"
@@ -75,28 +81,6 @@ async function ensureInventorySchema(): Promise<void> {
   inventorySchemaEnsured = true;
 }
 
-
-async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
-  const [totals] = await db
-    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
-    .from(inventoryBalancesTable)
-    .where(and(
-      eq(inventoryBalancesTable.tenantId, tenantId),
-      eq(inventoryBalancesTable.productId, productId),
-    ));
-
-  await db
-    .update(catalogItemsTable)
-    .set({
-      stockQuantity: String(totals?.qty ?? "0"),
-      inventoryAmount: String(totals?.qty ?? "0"),
-      parLevel: String(totals?.par ?? "0"),
-    })
-    .where(and(
-      eq(catalogItemsTable.tenantId, tenantId),
-      eq(catalogItemsTable.id, productId),
-    ));
-}
 
 router.use(async (_req, res, next) => {
   try {
@@ -117,39 +101,8 @@ router.get(
     const houseTenantId = await getHouseTenantId();
     await ensureStandardLocations(houseTenantId);
 
-    const [products, locations, balances, settingsRows] = await Promise.all([
-      db
-        .select({
-          id: catalogItemsTable.id,
-          name: catalogItemsTable.name,
-          category: catalogItemsTable.category,
-          price: catalogItemsTable.price,
-          isAvailable: catalogItemsTable.isAvailable,
-          alavontName: catalogItemsTable.alavontName,
-          luciferCruzName: catalogItemsTable.luciferCruzName,
-          alavontCategory: catalogItemsTable.alavontCategory,
-          regularPrice: catalogItemsTable.regularPrice,
-          stockQuantity: catalogItemsTable.stockQuantity,
-          stockUnit: catalogItemsTable.stockUnit,
-          parLevel: catalogItemsTable.parLevel,
-          isWooManaged: catalogItemsTable.isWooManaged,
-          isLocalAlavont: catalogItemsTable.isLocalAlavont,
-        })
-        .from(catalogItemsTable)
-        .where(eq(catalogItemsTable.tenantId, houseTenantId))
-        .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
-      db
-        .select()
-        .from(inventoryLocationsTable)
-        .where(and(
-          eq(inventoryLocationsTable.tenantId, houseTenantId),
-          eq(inventoryLocationsTable.isActive, true),
-        ))
-        .orderBy(asc(inventoryLocationsTable.displayOrder)),
-      db
-        .select()
-        .from(inventoryBalancesTable)
-        .where(eq(inventoryBalancesTable.tenantId, houseTenantId)),
+    const [snapshot, settingsRows] = await Promise.all([
+      getCatalogInventorySnapshot(houseTenantId),
       db
         .select({ pettyCash: adminSettingsTable.pettyCash })
         .from(adminSettingsTable)
@@ -157,59 +110,90 @@ router.get(
         .limit(1),
     ]);
 
-    // Only local Alavont products in the inventory grid
-    const localItems = products.filter(p => p.isWooManaged !== true);
-
-    // Build balance lookup: "productId:locationId" → balance row
-    const balanceMap = new Map<string, typeof balances[0]>();
-    for (const b of balances) {
-      balanceMap.set(`${b.productId}:${b.locationId}`, b);
-    }
-
-    const locationMeta = locations.map(l => ({
-      id: l.id,
-      name: l.name,
-      type: l.type,
-      csrBoxId: l.csrBoxId,
-      displayOrder: l.displayOrder,
-    }));
-
-    const enriched = localItems.map(item => {
-      const locationBreakdown = locationMeta.map(loc => {
-        const b = balanceMap.get(`${item.id}:${loc.id}`);
-        return {
-          locationId: loc.id,
-          name: loc.name,
-          type: loc.type,
-          qty: b ? parseFloat(String(b.quantityOnHand)) : 0,
-          par: b ? parseFloat(String(b.parLevel)) : 0,
-        };
-      });
-      const totalStock = locationBreakdown.reduce((s, l) => s + l.qty, 0);
-      return {
-        id: item.id,
-        name: item.name,
-        alavontName: item.alavontName ?? null,
-        luciferCruzName: item.luciferCruzName ?? null,
-        category: item.alavontCategory ?? item.category,
-        price: parseFloat(String(item.price)),
-        regularPrice: item.regularPrice ? parseFloat(String(item.regularPrice)) : null,
-        stockQuantity: totalStock,
-        stockUnit: item.stockUnit ?? "#",
-        parLevel: item.parLevel ? parseFloat(String(item.parLevel)) : 0,
-        isAvailable: item.isAvailable,
-        isWooManaged: item.isWooManaged ?? false,
-        isLocalAlavont: item.isLocalAlavont ?? true,
-        locations: locationBreakdown,
-        totalStock,
-      };
-    });
-
     res.json({
-      items: enriched,
-      locations: locationMeta,
+      items: snapshot.items,
+      locations: snapshot.locations,
       pettyCash: settingsRows[0]?.pettyCash != null ? parseFloat(String(settingsRows[0].pettyCash)) : 0,
     });
+  }
+);
+
+
+// ─── GET /api/admin/inventory/orphans ─────────────────────────────────────────
+// Admin-visible quarantine/report for balances that are not active sellable catalog stock.
+router.get(
+  "/admin/inventory/orphans",
+  requireRole("global_admin", "admin"),
+  async (_req, res): Promise<void> => {
+    const houseTenantId = await getHouseTenantId();
+    const items = await getOrphanInventoryBalanceReport(houseTenantId);
+    res.json({ items, count: items.length });
+  }
+);
+
+// ─── PATCH /api/admin/inventory/orphans/:id ───────────────────────────────────
+// Explicitly classify a balance as sellable catalog stock or non-sellable supply,
+// and optionally quarantine it so it cannot leak into sellable inventory views.
+router.patch(
+  "/admin/inventory/orphans/:id",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) { res.status(400).json({ error: "Invalid balance id" }); return; }
+
+    const parsedBody = z.object({
+      inventoryKind: z.enum(["sellable_catalog", "non_sellable_supply"]).optional(),
+      quarantineStatus: z.enum(["active", "quarantined"]).optional(),
+      quarantineReason: z.string().trim().max(500).nullable().optional(),
+    }).strict().safeParse(req.body);
+    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
+
+    const houseTenantId = await getHouseTenantId();
+    const [current] = await db.select().from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .limit(1);
+    if (!current) { res.status(404).json({ error: "Inventory balance not found for this tenant" }); return; }
+
+    const patch: Partial<typeof inventoryBalancesTable.$inferInsert> = {};
+    if (parsedBody.data.inventoryKind !== undefined) patch.inventoryKind = parsedBody.data.inventoryKind;
+    if (parsedBody.data.quarantineStatus !== undefined) patch.quarantineStatus = parsedBody.data.quarantineStatus;
+    if (parsedBody.data.quarantineReason !== undefined) patch.quarantineReason = parsedBody.data.quarantineReason;
+    if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
+
+    const [updated] = await db.update(inventoryBalancesTable)
+      .set(patch)
+      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
+      .returning();
+
+    await recomputeCatalogInventoryTotals(houseTenantId, updated?.productId ?? current.productId);
+
+    await writeAuditLog({
+      actorId: actor.id,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      action: "INVENTORY_BALANCE_CLASSIFIED",
+      tenantId: houseTenantId,
+      resourceType: "inventory_balance",
+      resourceId: String(id),
+      metadata: {
+        before: {
+          inventoryKind: current.inventoryKind,
+          quarantineStatus: current.quarantineStatus,
+          quarantineReason: current.quarantineReason ?? null,
+        },
+        after: {
+          inventoryKind: updated?.inventoryKind ?? current.inventoryKind,
+          quarantineStatus: updated?.quarantineStatus ?? current.quarantineStatus,
+          quarantineReason: updated?.quarantineReason ?? current.quarantineReason ?? null,
+        },
+        productId: updated?.productId ?? current.productId,
+        locationId: updated?.locationId ?? current.locationId,
+      },
+      ipAddress: req.ip,
+    });
+
+    res.json({ item: updated });
   }
 );
 

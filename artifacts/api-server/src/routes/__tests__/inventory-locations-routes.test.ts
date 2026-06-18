@@ -46,8 +46,8 @@ vi.mock("@workspace/db", () => {
     "parLevel", "alavontId", "externalMenuId", "costBasis", "price",
   ]);
   const csrBoxesTable = cols(["id", "tenantId", "slug", "label", "isActive", "displayOrder", "description", "location"]);
-  const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt"]);
-  const inventoryBalancesTable = cols(["id", "tenantId", "productId", "locationId", "quantityOnHand", "parLevel", "updatedAt"]);
+  const inventoryLocationsTable = cols(["id", "tenantId", "name", "type", "csrBoxId", "isActive", "displayOrder", "createdAt", "updatedAt", "inventoryKind", "quarantineStatus", "quarantineReason"]);
+  const inventoryBalancesTable = cols(["id", "tenantId", "productId", "locationId", "quantityOnHand", "parLevel", "updatedAt", "inventoryKind", "quarantineStatus", "quarantineReason"]);
   const inventoryTemplatesTable = cols([
     "id", "tenantId", "itemName", "sectionName", "rowType", "unitType",
     "startingQuantityDefault", "displayOrder", "isActive", "catalogItemId",

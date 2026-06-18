@@ -476,6 +476,9 @@ async function ensureShiftSchema(): Promise<void> {
       "par_level" numeric(10, 2) NOT NULL DEFAULT 0,
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_status" text NOT NULL DEFAULT 'active'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
     sql`DO $$ BEGIN
       IF NOT EXISTS (
         SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique'

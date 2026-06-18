@@ -131,7 +131,7 @@ vi.mock("@workspace/db", () => {
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
-  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand" };
+  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", quarantineStatus: "quarantineStatus", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderItems: Array<Record<string, unknown>> = [];
 
@@ -293,7 +293,7 @@ beforeEach(() => {
   dbState.tenants = [{ id: 1 }];
   dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
-  dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10 }];
+  dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", quarantineStatus: "active" }];
   mockActor = {};
   _resetBus();
 });

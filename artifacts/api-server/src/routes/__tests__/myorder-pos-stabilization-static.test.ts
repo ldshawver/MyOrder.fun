@@ -72,9 +72,10 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(inventory).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
     expect(inventory).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
     expect(inventory).toContain("recomputeCatalogInventoryTotals(houseTenantId, productId)");
-    expect(inventory).toContain("stockQuantity: String(totals?.qty");
-    expect(inventory).toContain("inventoryAmount: String(totals?.qty");
-    expect(inventory).toContain("parLevel: String(totals?.par");
+    const balances = api("lib/inventoryBalances.ts");
+    expect(balances).toContain("stockQuantity: String(totals?.qty");
+    expect(balances).toContain("inventoryAmount: String(totals?.qty");
+    expect(balances).toContain("parLevel: String(totals?.par");
   });
 
   it("catalog stock edits mirror into inventory balances instead of trusting catalog totals", () => {
@@ -118,6 +119,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain('eq(labTechShiftsTable.status, "active")');
     expect(orders).toContain("eq(csrBoxesTable.tenantId, houseTenantId)");
     expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
+    expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
   });
 
   it("order creation denies cross-tenant catalog IDs before inventory decrement", () => {
@@ -126,6 +128,24 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("inArray(catalogItemsTable.id, normalizedCatalogIds)");
     expect(orders).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
   });
+  it("surfaces orphan and non-sellable inventory balances in an admin quarantine report", () => {
+    const inventory = api("routes/inventory.ts");
+    const balances = api("lib/inventoryBalances.ts");
+    const dbSchema = src("lib/db/src/schema/shifts.ts");
+    const platformInventory = platform("pages/admin/inventory.tsx");
+
+    expect(dbSchema).toContain('inventoryKind: text("inventory_kind")');
+    expect(dbSchema).toContain('quarantineStatus: text("quarantine_status")');
+    expect(balances).toContain("getOrphanInventoryBalanceReport");
+    expect(balances).toContain("sellableInventoryBalancePredicate");
+    expect(balances).toContain("leftJoin(catalogItemsTable");
+    expect(balances).toContain("non_sellable_supply");
+    expect(inventory).toContain('"/admin/inventory/orphans"');
+    expect(inventory).toContain('z.enum(["sellable_catalog", "non_sellable_supply"])');
+    expect(platformInventory).toContain("Inventory quarantine report");
+    expect(platformInventory).toContain("Mark supply");
+  });
+
 });
 
 describe("receipts and deploy workflow", () => {
