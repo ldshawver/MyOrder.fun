@@ -29,6 +29,8 @@ import { normalizeRole } from "./auth";
 
 export type RouteSource = "active_csr" | "general_account" | "supervisor_override";
 
+export const GENERAL_ACCOUNT_EMAIL = "alavonttherapeutics@gmail.com";
+
 export type RoutingRule =
   | "round_robin"
   | "least_recent_order"
@@ -41,6 +43,7 @@ export type RoutingDecision = {
   routeSource: RouteSource;
   rule: RoutingRule;
   routedTo: "csr_shift" | "default_queue";
+  routedToEmail: string | null;
   routingStatus: "green" | "yellow";
   routingMessage: string;
   estimatedReadyAt: Date;
@@ -66,11 +69,38 @@ export async function getApprovedMultiShiftConfig(tenantId: number) {
 
 type ActiveCsr = { userId: number; shiftId: number };
 
+type ShiftSetupState = {
+  boxAssignmentId?: unknown;
+  inventoryConfirmed?: unknown;
+  startingInventoryConfirmed?: unknown;
+  parLevelsConfirmed?: unknown;
+  printerReady?: unknown;
+  printerAssigned?: unknown;
+};
+
+export function isShiftOrderRoutable(shift: {
+  boxAssignmentId?: string | null;
+  setupJson?: unknown;
+}): boolean {
+  const setup = (shift.setupJson && typeof shift.setupJson === "object" ? shift.setupJson : {}) as ShiftSetupState;
+  const boxAssignmentId = typeof shift.boxAssignmentId === "string" && shift.boxAssignmentId.trim()
+    ? shift.boxAssignmentId.trim()
+    : typeof setup.boxAssignmentId === "string" ? setup.boxAssignmentId.trim() : "";
+
+  const inventoryConfirmed = setup.inventoryConfirmed === true || setup.startingInventoryConfirmed === true;
+  const parLevelsConfirmed = setup.parLevelsConfirmed === true;
+  const printerAssigned = setup.printerAssigned === true || setup.printerReady === true;
+
+  return Boolean(boxAssignmentId && inventoryConfirmed && parLevelsConfirmed && printerAssigned);
+}
+
 export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
   const rows = await db
     .select({
       userId: labTechShiftsTable.techId,
       shiftId: labTechShiftsTable.id,
+      boxAssignmentId: labTechShiftsTable.boxAssignmentId,
+      setupJson: labTechShiftsTable.setupJson,
       role: usersTable.role,
     })
     .from(labTechShiftsTable)
@@ -79,6 +109,7 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
     if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
+    if (!isShiftOrderRoutable(r)) continue;
     if (!seen.has(r.userId)) seen.set(r.userId, { userId: r.userId, shiftId: r.shiftId });
   }
   return [...seen.values()].sort((a, b) => a.userId - b.userId);
@@ -92,16 +123,28 @@ export async function isActiveCsr(userId: number): Promise<boolean> {
 export async function decideRouting(tenantId?: number): Promise<RoutingDecision> {
   const { rule, defaultEtaMinutes } = await getRoutingSettings();
   const eta = new Date(Date.now() + defaultEtaMinutes * 60_000);
-  // general_account always carries assignedShiftId=null — the order is
-  // unowned, so there is no shift to attach to. Active-CSR assignments
-  // alone populate assignedShiftId.
+  // Routing behavior:
+  // 1. Find active CSR shifts.
+  // 2. Keep only shifts that are ready for orders: active shift, box assigned,
+  //    inventory confirmed, par levels confirmed, and printer assigned.
+  // 3. If no ready CSR remains, route to the General Account fallback
+  //    (alavonttherapeutics@gmail.com) by leaving assignedCsrUserId/shiftId null.
+  // 4. If one ready CSR remains, route directly to that CSR.
+  // 5. If multiple ready CSRs remain, use the configured strategy:
+  //    supervisor_manual_assignment => General Account/manual queue;
+  //    least_recent_order => least recently accepted order;
+  //    round_robin/default => least recently routed order.
+  // general_account always carries assignedShiftId=null — the order is unowned,
+  // so there is no shift to attach to. Active-CSR assignments alone populate
+  // assignedShiftId.
   const baseGeneral: Omit<RoutingDecision, "rule"> = {
     assignedCsrUserId: null,
     assignedShiftId: null,
     routeSource: "general_account",
     routedTo: "default_queue",
+    routedToEmail: GENERAL_ACCOUNT_EMAIL,
     routingStatus: "yellow",
-    routingMessage: "No active CSR shift. Orders are routing to default queue.",
+    routingMessage: `No ready CSR shift. Orders are routing to General Account (${GENERAL_ACCOUNT_EMAIL}).`,
     estimatedReadyAt: eta,
     promisedMinutes: defaultEtaMinutes,
   };
@@ -120,6 +163,7 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
       assignedShiftId: only.shiftId,
       routeSource: "active_csr",
       routedTo: "csr_shift",
+      routedToEmail: null,
       routingStatus: "green",
       routingMessage: "Orders are routing to the active CSR shift.",
       rule,
@@ -192,6 +236,7 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
     assignedShiftId: pick.shiftId,
     routeSource: "active_csr",
     routedTo: "csr_shift",
+    routedToEmail: null,
     routingStatus: "green",
     routingMessage: "Orders are routing across approved active CSR shifts.",
     rule: activeConfig.routingStrategy as RoutingRule,
