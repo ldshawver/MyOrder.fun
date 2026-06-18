@@ -1061,6 +1061,9 @@ router.post(
         csrDeliveryOptIn?: boolean;
         wifiSsid?: string;
         pickupNote?: string;
+        inventoryConfirmed?: boolean;
+        startingInventoryConfirmed?: boolean;
+        parLevelsConfirmed?: boolean;
       };
     };
 
@@ -1077,6 +1080,12 @@ router.post(
     const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
 
     const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
+    const hasConfirmedInventory = setup?.inventoryConfirmed === true ||
+      setup?.startingInventoryConfirmed === true ||
+      (inventorySnapshot != null && inventorySnapshot.length > 0) ||
+      legacyInventory.length > 0;
+    const hasConfirmedParLevels = setup?.parLevelsConfirmed === true || hasConfirmedInventory;
+    const hasAssignedPrinter = setup?.printerReady === true;
 
     const [shift] = await db
       .insert(labTechShiftsTable)
@@ -1096,8 +1105,12 @@ router.post(
           wifiReady: computedWifiReady,
           wifiSsid: enteredSsid || null,
           wifiApproved: wifiMatchesApproved,
-          printerReady: setup?.printerReady ?? false,
+          printerReady: hasAssignedPrinter,
+          printerAssigned: hasAssignedPrinter,
           locationReady: setup?.locationReady ?? true,
+          inventoryConfirmed: hasConfirmedInventory,
+          startingInventoryConfirmed: hasConfirmedInventory,
+          parLevelsConfirmed: hasConfirmedParLevels,
           pickupNote: (setup?.pickupNote ?? "").trim() || null,
           csrDeliveryOptIn,
         },
