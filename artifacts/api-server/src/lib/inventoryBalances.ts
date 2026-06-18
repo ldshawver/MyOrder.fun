@@ -52,7 +52,9 @@ async function ensureInventoryTablesExist(): Promise<void> {
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
-    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_status" text NOT NULL DEFAULT 'active'`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "is_sellable" boolean NOT NULL DEFAULT true`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_at" timestamptz`,
+    sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_by_user_id" integer`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
     sql`DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique') THEN
@@ -216,8 +218,9 @@ export interface CatalogInventorySnapshotItem {
 export function sellableInventoryBalancePredicate(tenantId: number) {
   return and(
     eq(inventoryBalancesTable.tenantId, tenantId),
+    eq(inventoryBalancesTable.isSellable, true),
     eq(inventoryBalancesTable.inventoryKind, "sellable_catalog"),
-    eq(inventoryBalancesTable.quarantineStatus, "active"),
+    sql`${inventoryBalancesTable.quarantinedAt} IS NULL`,
     sql`EXISTS (
       SELECT 1 FROM catalog_items ci
       WHERE ci.id = ${inventoryBalancesTable.productId}
@@ -337,7 +340,8 @@ export interface OrphanInventoryBalanceReportItem {
   quantityOnHand: number;
   parLevel: number;
   inventoryKind: "sellable_catalog" | "non_sellable_supply";
-  quarantineStatus: "active" | "quarantined";
+  quarantinedAt: Date | null;
+  quarantinedByUserId: number | null;
   quarantineReason: string | null;
   productName: string | null;
   locationName: string | null;
@@ -355,7 +359,9 @@ export async function getOrphanInventoryBalanceReport(tenantId: number): Promise
       quantityOnHand: inventoryBalancesTable.quantityOnHand,
       parLevel: inventoryBalancesTable.parLevel,
       inventoryKind: inventoryBalancesTable.inventoryKind,
-      quarantineStatus: inventoryBalancesTable.quarantineStatus,
+      isSellable: inventoryBalancesTable.isSellable,
+      quarantinedAt: inventoryBalancesTable.quarantinedAt,
+      quarantinedByUserId: inventoryBalancesTable.quarantinedByUserId,
       quarantineReason: inventoryBalancesTable.quarantineReason,
       productName: catalogItemsTable.name,
       productTenantId: catalogItemsTable.tenantId,
@@ -373,7 +379,8 @@ export async function getOrphanInventoryBalanceReport(tenantId: number): Promise
         OR ${inventoryLocationsTable.id} IS NULL
         OR ${inventoryLocationsTable.tenantId} <> ${tenantId}
         OR ${inventoryBalancesTable.inventoryKind} <> 'sellable_catalog'
-        OR ${inventoryBalancesTable.quarantineStatus} <> 'active'
+        OR ${inventoryBalancesTable.isSellable} <> true
+        OR ${inventoryBalancesTable.quarantinedAt} IS NOT NULL
       )`,
     ))
     .orderBy(asc(inventoryBalancesTable.id));
@@ -381,7 +388,7 @@ export async function getOrphanInventoryBalanceReport(tenantId: number): Promise
   return rows.map((row): OrphanInventoryBalanceReportItem => {
     let reason: OrphanInventoryBalanceReason = "missing_catalog_product";
     if (row.inventoryKind === "non_sellable_supply") reason = "non_sellable_supply";
-    else if (row.quarantineStatus === "quarantined") reason = "quarantined";
+    else if (row.quarantinedAt != null) reason = "quarantined";
     else if (!row.locationTenantId) reason = "missing_location";
     return {
       id: row.id,
@@ -391,7 +398,8 @@ export async function getOrphanInventoryBalanceReport(tenantId: number): Promise
       quantityOnHand: parseFloat(String(row.quantityOnHand ?? "0")),
       parLevel: parseFloat(String(row.parLevel ?? "0")),
       inventoryKind: row.inventoryKind === "non_sellable_supply" ? "non_sellable_supply" : "sellable_catalog",
-      quarantineStatus: row.quarantineStatus === "quarantined" ? "quarantined" : "active",
+      quarantinedAt: row.quarantinedAt ?? null,
+      quarantinedByUserId: row.quarantinedByUserId ?? null,
       quarantineReason: row.quarantineReason ?? null,
       productName: row.productName ?? null,
       locationName: row.locationName ?? null,

@@ -64,6 +64,23 @@ type InventoryHealthResponse = {
   summary: Record<InventoryHealthRow["classification"], number>;
 };
 
+type OrphanBalanceItem = {
+  id: number;
+  tenantId: number;
+  productId: number;
+  locationId: number;
+  quantityOnHand: number;
+  parLevel: number;
+  inventoryKind: "sellable_catalog" | "non_sellable_supply";
+  isSellable?: boolean;
+  quarantinedAt?: string | null;
+  quarantinedByUserId?: number | null;
+  quarantineReason: string | null;
+  productName: string | null;
+  locationName: string | null;
+  reason: "missing_catalog_product" | "missing_location" | "non_sellable_supply" | "quarantined";
+};
+
 // ─── Shift Template Types ─────────────────────────────────────────────────────
 
 type CatalogOption = {
@@ -922,7 +939,7 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
   }
 
 
-  async function updateOrphanBalance(id: number, patch: Partial<Pick<OrphanBalanceItem, "inventoryKind" | "quarantineStatus" | "quarantineReason">>) {
+  async function updateOrphanBalance(id: number, patch: Partial<Pick<OrphanBalanceItem, "inventoryKind" | "isSellable" | "quarantineReason">> & { quarantined?: boolean }) {
     setOrphanActionError(null);
     try {
       const token = await getToken();
@@ -1046,10 +1063,10 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
                 </div>
                 <div className="font-mono text-[11px]">qty {row.quantityOnHand} · par {row.parLevel}</div>
                 <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" className="h-7 gap-1 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { inventoryKind: "non_sellable_supply", quarantineStatus: "quarantined", quarantineReason: "Classified by admin as non-sellable supply" })}>
+                  <Button size="sm" variant="outline" className="h-7 gap-1 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { inventoryKind: "non_sellable_supply", quarantined: true, quarantineReason: "Classified by admin as non-sellable supply" })}>
                     <ShieldOff size={11} /> Mark supply
                   </Button>
-                  <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { quarantineStatus: "quarantined", quarantineReason: "Quarantined by admin for inventory cleanup" })}>
+                  <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { quarantined: true, quarantineReason: "Quarantined by admin for inventory cleanup" })}>
                     Quarantine
                   </Button>
                 </div>
