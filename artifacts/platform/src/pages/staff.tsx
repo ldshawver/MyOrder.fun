@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useListOrders, useGetCurrentUser, type Order, type OrderItem, type ListOrdersStatus } from "@workspace/api-client-react";
+import { useGetCurrentUser, type Order, type OrderItem } from "@workspace/api-client-react";
 import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
@@ -7,7 +7,7 @@ import { Link } from "wouter";
 import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
-  Printer, Truck, HandshakeIcon, ShieldOff, DoorOpen, AlertTriangle, Loader2,
+  Printer, Truck, HandshakeIcon, DoorOpen, AlertTriangle, Loader2,
   CreditCard, Banknote, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -1222,10 +1222,10 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 // ─── Fulfillment Card ─────────────────────────────────────────────────────────
 
 const FULFILLMENT_STEPS = [
-  { status: "ready_behind_gate", label: "Ready Behind Gate", icon: DoorOpen,       color: "blue" },
-  { status: "courier_arrived",   label: "Courier Arrived",   icon: Truck,           color: "yellow" },
-  { status: "handed_off",        label: "Handed Off",        icon: HandshakeIcon,   color: "emerald" },
-  { status: "complete",          label: "Complete & Purge",  icon: ShieldOff,       color: "red" },
+  { status: "accepted", label: "Claim / Select", icon: HandshakeIcon, color: "yellow" },
+  { status: "preparing", label: "Being Prepared", icon: Activity, color: "blue" },
+  { status: "ready", label: "Ready for Pickup/Delivery", icon: DoorOpen, color: "emerald" },
+  { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
 ];
 
 function FulfillmentCard({ order, onRefresh, getToken }: {
@@ -1273,11 +1273,18 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     setLoading(status);
     try {
       const token = await getToken();
-      await fetch(`/api/orders/${order.id}/fulfillment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ fulfillmentStatus: status }),
-      });
+      if (status === "accepted") {
+        await fetch(`/api/orders/${order.id}/accept`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } else {
+        await fetch(`/api/orders/${order.id}/fulfillment`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ fulfillmentStatus: status }),
+        });
+      }
       onRefresh();
     } catch { /* ignore fetch errors */ } finally { setLoading(null); }
   }
@@ -1513,6 +1520,8 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 export default function CustomerServiceRepQueue() {
   const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
+  const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
+  const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [showClockOutModal, setShowClockOutModal] = useState(false);
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
@@ -1524,21 +1533,36 @@ export default function CustomerServiceRepQueue() {
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
 
-  const { data, isLoading } = useListOrders(
-    { status: activeTab as ListOrdersStatus, limit: 50 },
-    { query: { queryKey: ["listOrders", activeTab] } }
-  );
+  const fetchQueue = useCallback(async () => {
+    setIsLoadingQueue(true);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) { setQueueData({ orders: [], total: 0 }); return; }
+      const json = await res.json() as { orders?: ExtendedOrder[]; total?: number };
+      setQueueData({ orders: json.orders ?? [], total: json.total ?? 0 });
+    } finally {
+      setIsLoadingQueue(false);
+    }
+  }, [getToken]);
+
+  const visibleOrders = queueData.orders.filter(order => order.status === activeTab || order.fulfillmentStatus === activeTab);
 
   const refresh = () => {
-    queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+    queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    void fetchQueue();
     refetchShift();
   };
 
   useEffect(() => {
+    void fetchQueue();
+  }, [fetchQueue, shift]);
+
+  useEffect(() => {
     if (!shift) return;
-    const timer = setInterval(refetchShift, 30_000);
+    const timer = setInterval(() => { refetchShift(); void fetchQueue(); }, 30_000);
     return () => clearInterval(timer);
-  }, [shift, refetchShift]);
+  }, [shift, refetchShift, fetchQueue]);
 
   const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => {
     const token = await getToken();
@@ -1628,7 +1652,7 @@ export default function CustomerServiceRepQueue() {
             Shift Dashboard
           </h1>
           <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            Clock in, manage inventory, track cash bank &amp; orders
+            Start shift, manage inventory, track cash bank &amp; orders
           </p>
         </div>
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl" onClick={refresh} title="Refresh">
@@ -1675,13 +1699,13 @@ export default function CustomerServiceRepQueue() {
           ))}
         </div>
 
-        {isLoading ? (
+        {isLoadingQueue ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
               <div key={i} className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
             ))}
           </div>
-        ) : data?.orders?.length === 0 ? (
+        ) : visibleOrders.length === 0 ? (
           <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center">
             <div className="w-14 h-14 rounded-2xl bg-muted/20 flex items-center justify-center mb-4">
               <Package size={24} className="text-muted-foreground" />
@@ -1691,11 +1715,11 @@ export default function CustomerServiceRepQueue() {
           </div>
         ) : (
           <div className="space-y-3">
-            {data?.orders?.map((order) => (
+            {visibleOrders.map((order) => (
               <FulfillmentCard
                 key={order.id}
                 order={order as ExtendedOrder}
-                onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listOrders"] })}
+                onRefresh={refresh}
                 getToken={getToken}
               />
             ))}

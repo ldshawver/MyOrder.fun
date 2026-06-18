@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type MerchantProcessorConfig = Record<string, {
@@ -43,6 +44,8 @@ type AdminSettings = {
   privacyBlurOnBackground: boolean;
   privacyPrintBlockingEnabled: boolean;
   privacyProtectedRoles: string[];
+  customerDisclaimerText: string;
+  customerDisclaimerVersion: number;
 };
 
 const AI_PROMPT_MAX_CHARS = 8000;
@@ -94,6 +97,8 @@ const DEFAULTS: AdminSettings = {
   privacyBlurOnBackground: true,
   privacyPrintBlockingEnabled: true,
   privacyProtectedRoles: ["user", "csr", "supervisor", "admin", "global_admin"],
+  customerDisclaimerText: "Before using MyOrder.fun, you confirm that you are authorized to access this customer account, that the information you provide is accurate, and that you agree to follow all applicable terms, privacy, ordering, pickup, and payment policies.",
+  customerDisclaimerVersion: 1,
 };
 
 export default function AdminSettingsPage() {
@@ -303,6 +308,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
           <TabsTrigger value="ai" className="rounded-lg text-xs">AI Concierge</TabsTrigger>
           <TabsTrigger value="privacy" className="rounded-lg text-xs">Privacy</TabsTrigger>
+          <TabsTrigger value="disclaimer" className="rounded-lg text-xs">Disclaimer</TabsTrigger>
         </TabsList>
 
 
@@ -334,6 +340,46 @@ export default function AdminSettingsPage() {
                 })}
               </div>
             </div>
+          </div>
+        </TabsContent>
+
+
+        <TabsContent value="disclaimer">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer first-login disclaimer</div>
+              <p className="text-xs text-muted-foreground mt-2">Editing this tenant-scoped copy increments the disclaimer version and requires customers to accept the current version before using the app.</p>
+            </div>
+            <div className="text-xs font-mono text-muted-foreground">Current version: {settings.customerDisclaimerVersion}</div>
+            <Textarea
+              value={settings.customerDisclaimerText}
+              onChange={(e) => setSettings(current => ({ ...current, customerDisclaimerText: e.target.value }))}
+              maxLength={5000}
+              rows={8}
+              className="font-mono text-sm"
+            />
+            <Button onClick={async () => {
+              setSaving(true); setError(null);
+              try {
+                const token = await getToken();
+                const res = await fetch("/api/admin/settings/customer-disclaimer", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                  body: JSON.stringify({ text: settings.customerDisclaimerText }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data?.error || "Failed to save disclaimer");
+                setSettings(current => ({ ...current, customerDisclaimerText: data.text, customerDisclaimerVersion: data.version }));
+                setSaved(true);
+                setTimeout(() => setSaved(false), 2000);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to save disclaimer");
+              } finally {
+                setSaving(false);
+              }
+            }} disabled={saving}>
+              <Save className="h-4 w-4 mr-2" /> Save disclaimer
+            </Button>
           </div>
         </TabsContent>
 

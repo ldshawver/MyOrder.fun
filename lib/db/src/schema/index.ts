@@ -8,6 +8,7 @@ export * from "./notifications";
 export * from "./shifts";
 export * from "./print";
 export * from "./settings";
+export * from "./disclaimer";
 export * from "./feedback";
 export * from "./credits";
 export * from "./visual-editor";

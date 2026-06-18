@@ -60,6 +60,8 @@ export const adminSettingsTable = pgTable("admin_settings", {
   privacyBlurOnBackground: boolean("privacy_blur_on_background").notNull().default(true),
   privacyPrintBlockingEnabled: boolean("privacy_print_blocking_enabled").notNull().default(true),
   privacyProtectedRoles: text("privacy_protected_roles").array().notNull().default(["user", "csr", "supervisor", "admin", "global_admin"]),
+  customerDisclaimerText: text("customer_disclaimer_text").notNull().default("Before using MyOrder.fun, you confirm that you are authorized to access this customer account, that the information you provide is accurate, and that you agree to follow all applicable terms, privacy, ordering, pickup, and payment policies."),
+  customerDisclaimerVersion: integer("customer_disclaimer_version").notNull().default(1),
   feedbackArchiveReviewedAfterDays: integer("feedback_archive_reviewed_after_days"),
   feedbackArchiveUnreadAfterDays: integer("feedback_archive_unread_after_days"),
   feedbackArchiveUnreadEnabled: boolean("feedback_archive_unread_enabled").notNull().default(false),

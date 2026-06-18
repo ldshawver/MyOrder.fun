@@ -11,9 +11,11 @@ const dbState: {
   orderItems: Array<Record<string, unknown>>;
   users: Array<Record<string, unknown>>;
   audits: Array<Record<string, unknown>>;
-} = { orders: [], orderItems: [], users: [], audits: [] };
+  settings: Array<Record<string, unknown>>;
+  disclaimerAcceptances: Array<Record<string, unknown>>;
+} = { orders: [], orderItems: [], users: [], audits: [], settings: [], disclaimerAcceptances: [] };
 
-const mockActor: Record<string, unknown> = { id: 1, email: "u@example.com", role: "user" };
+const mockActor: Record<string, unknown> = { id: 1, email: "u@example.com", role: "user", tenantId: 1 };
 
 vi.mock("@clerk/express", () => ({
   clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -105,10 +107,14 @@ vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
   const ordersTable = { __t: "orders", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
+  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId" };
+  const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
     if (t.__t === "orders") return dbState.orders;
     if (t.__t === "order_items") return dbState.orderItems;
+    if (t.__t === "admin_settings") return dbState.settings;
+    if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     return [];
   }
 
@@ -135,6 +141,8 @@ vi.mock("@workspace/db", () => {
     db: { execute: vi.fn(() => Promise.resolve()), select, update },
     ordersTable,
     orderItemsTable,
+    adminSettingsTable,
+    customerDisclaimerAcceptancesTable,
   };
 });
 
@@ -151,6 +159,8 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.orderItems = [];
   dbState.audits = [];
+  dbState.settings = [{ id: 1, tenantId: 1, customerDisclaimerVersion: 1 }];
+  dbState.disclaimerAcceptances = [{ id: 1, tenantId: 1, userId: 1, disclaimerVersion: 1, acceptedAt: new Date() }];
   stripePayloadCalls.length = 0;
   delete process.env.STRIPE_SECRET_KEY;
 });

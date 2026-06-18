@@ -40,18 +40,28 @@ type LocCellState = {
   saving: boolean;
 };
 
-type OrphanBalanceItem = {
+type InventoryHealthRow = {
   id: number;
+  tenantId: number;
   productId: number;
   locationId: number;
   quantityOnHand: number;
   parLevel: number;
-  inventoryKind: "sellable_catalog" | "non_sellable_supply";
-  quarantineStatus: "active" | "quarantined";
-  quarantineReason: string | null;
-  productName: string | null;
-  locationName: string | null;
-  reason: "missing_catalog_product" | "missing_location" | "non_sellable_supply" | "quarantined";
+  updatedAt?: string | null;
+  classification: "sellable_catalog_product" | "non_sellable_supply" | "orphan_balance" | "invalid_location" | "invalid_product";
+  inventoryKind: string;
+  isSellable: boolean;
+  quarantinedAt?: string | null;
+  quarantineReason?: string | null;
+  productName?: string | null;
+  locationName?: string | null;
+  locationIsActive?: boolean | null;
+};
+
+type InventoryHealthResponse = {
+  tenantId: number;
+  rows: InventoryHealthRow[];
+  summary: Record<InventoryHealthRow["classification"], number>;
 };
 
 // ─── Shift Template Types ─────────────────────────────────────────────────────
@@ -1520,11 +1530,113 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   );
 }
 
+
+// ─── Inventory Health Tab ────────────────────────────────────────────────────
+
+function InventoryHealthTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [report, setReport] = useState<InventoryHealthResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const fetchHealth = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/inventory/health", { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error("Failed to load inventory health report");
+      setReport(await res.json() as InventoryHealthResponse);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, [getToken]);
+
+  useEffect(() => { void fetchHealth(); }, [fetchHealth]);
+
+  async function postAction(id: number, path: string, body: unknown) {
+    setBusyId(id);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/inventory/balances/${id}/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error("Inventory health action failed");
+      await fetchHealth();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Inventory health action failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const rows = report?.rows.filter(row => row.classification !== "sellable_catalog_product" || row.quarantinedAt || row.inventoryKind === "non_sellable_supply") ?? [];
+
+  if (loading) return <div className="flex items-center justify-center py-20"><RefreshCw size={20} className="animate-spin text-muted-foreground" /></div>;
+  if (error) return <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">{error}</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {report && Object.entries(report.summary).map(([key, value]) => (
+          <div key={key} className="rounded-xl border border-border/40 bg-card/60 p-3">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{key.replaceAll("_", " ")}</div>
+            <div className="text-xl font-bold mt-1">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-border/40 overflow-hidden">
+        <table className="w-full text-xs">
+          <thead className="bg-muted/40 text-muted-foreground uppercase tracking-wide">
+            <tr>
+              <th className="text-left px-3 py-2">Balance</th>
+              <th className="text-left px-3 py-2">Classification</th>
+              <th className="text-left px-3 py-2">Product / Location</th>
+              <th className="text-right px-3 py-2">Qty</th>
+              <th className="text-right px-3 py-2">Par</th>
+              <th className="text-left px-3 py-2">Quarantine</th>
+              <th className="text-right px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(row => (
+              <tr key={row.id} className="border-t border-border/30">
+                <td className="px-3 py-2 font-mono">#{row.id}<div className="text-muted-foreground">tenant {row.tenantId}</div></td>
+                <td className="px-3 py-2"><Badge variant="outline">{row.classification.replaceAll("_", " ")}</Badge></td>
+                <td className="px-3 py-2">
+                  <div>{row.productName ?? `Missing product #${row.productId}`}</div>
+                  <div className="text-muted-foreground">{row.locationName ?? `Missing location #${row.locationId}`}</div>
+                </td>
+                <td className="px-3 py-2 text-right font-mono">{row.quantityOnHand}</td>
+                <td className="px-3 py-2 text-right font-mono">{row.parLevel}</td>
+                <td className="px-3 py-2 text-muted-foreground">{row.quarantinedAt ? new Date(row.quarantinedAt).toLocaleString() : "—"}</td>
+                <td className="px-3 py-2">
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="outline" disabled={busyId === row.id || Boolean(row.quarantinedAt)} onClick={() => postAction(row.id, "quarantine", { reason: "Quarantined from Inventory Health UI" })}>Quarantine</Button>
+                    <Button size="sm" variant="outline" disabled={busyId === row.id || row.inventoryKind === "non_sellable_supply"} onClick={() => postAction(row.id, "classify", { inventoryKind: "non_sellable_supply" })}>Supply</Button>
+                    <Button size="sm" variant="outline" disabled={busyId === row.id || (row.inventoryKind === "sellable" && row.isSellable)} onClick={() => postAction(row.id, "classify", { inventoryKind: "sellable" })}>Restore</Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={7} className="text-center text-muted-foreground py-8">No orphan, invalid, quarantined, or non-sellable supply balances found.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"stock" | "template" | "boxes" | "locations" | "stockgrid">("template");
+  const [tab, setTab] = useState<"stock" | "template" | "boxes" | "locations" | "stockgrid" | "health">("template");
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -1547,6 +1659,7 @@ export default function AdminInventory() {
           { key: "boxes" as const, label: "CSR Boxes", icon: Package },
           { key: "locations" as const, label: "Locations", icon: MapPin },
           { key: "stockgrid" as const, label: "Stock Grid", icon: BarChart3 },
+          { key: "health" as const, label: "Health", icon: EyeOff },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1572,6 +1685,8 @@ export default function AdminInventory() {
         <LocationsTab getToken={getToken} />
       ) : tab === "stockgrid" ? (
         <StockGridTab getToken={getToken} />
+      ) : tab === "health" ? (
+        <InventoryHealthTab getToken={getToken} />
       ) : (
         <StockLevelsTab getToken={getToken} />
       )}

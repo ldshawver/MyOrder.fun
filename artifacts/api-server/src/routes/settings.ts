@@ -1,10 +1,11 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
-import { db, adminSettingsTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { and, eq, sql } from "drizzle-orm";
+import { db, adminSettingsTable, customerDisclaimerAcceptancesTable } from "@workspace/db";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
+import { z } from "zod";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -68,6 +69,10 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_blur_on_background" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_print_blocking_enabled" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "privacy_protected_roles" text[] NOT NULL DEFAULT ARRAY['user','csr','supervisor','admin','global_admin']::text[]`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "customer_disclaimer_text" text NOT NULL DEFAULT 'Before using MyOrder.fun, you confirm that you are authorized to access this customer account, that the information you provide is accurate, and that you agree to follow all applicable terms, privacy, ordering, pickup, and payment policies.'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "customer_disclaimer_version" integer NOT NULL DEFAULT 1`,
+    sql`CREATE TABLE IF NOT EXISTS "customer_disclaimer_acceptances" ("id" serial PRIMARY KEY, "tenant_id" integer NOT NULL REFERENCES "tenants"("id"), "user_id" integer NOT NULL REFERENCES "users"("id"), "disclaimer_version" integer NOT NULL, "accepted_at" timestamp with time zone NOT NULL DEFAULT now())`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS "customer_disclaimer_acceptances_tenant_user_version_idx" ON "customer_disclaimer_acceptances" ("tenant_id", "user_id", "disclaimer_version")`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
   ];
 
@@ -117,6 +122,8 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     privacyBlurOnBackground: s.privacyBlurOnBackground ?? true,
     privacyPrintBlockingEnabled: s.privacyPrintBlockingEnabled ?? true,
     privacyProtectedRoles: s.privacyProtectedRoles ?? ["user", "csr", "supervisor", "admin", "global_admin"],
+    customerDisclaimerText: s.customerDisclaimerText,
+    customerDisclaimerVersion: s.customerDisclaimerVersion ?? 1,
     updatedAt: s.updatedAt,
   };
 }
@@ -280,12 +287,48 @@ function parseStoredPrinterNetworkConfig(raw: string | null | undefined): Record
   }
 }
 
+
+const CUSTOMER_DISCLAIMER_MAX_CHARS = 5000;
+
+function validateExactKeys(body: Record<string, unknown>, allowed: readonly string[]): string | null {
+  const allowedSet = new Set(allowed);
+  return Object.keys(body).find((key) => !allowedSet.has(key)) ?? null;
+}
+
+function isCustomerRole(role: string | null | undefined): boolean {
+  return (role ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_") === "user";
+}
+
+async function getTenantScopedSettingsForActor(actor: { tenantId?: number | null; role?: string | null }, createIfMissing = true) {
+  await ensureAdminSettingsSchema();
+  if (isGlobalAdmin({ role: actor.role ?? "user" })) return getOrCreateSettings();
+  if (actor.tenantId == null) return null;
+  const [existing] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, actor.tenantId)).limit(1);
+  if (existing) return existing;
+  if (!createIfMissing) return null;
+  const [created] = await db.insert(adminSettingsTable).values({ tenantId: actor.tenantId }).returning();
+  return created;
+}
+
+async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, version: number) {
+  const [acceptance] = await db.select().from(customerDisclaimerAcceptancesTable).where(and(
+    eq(customerDisclaimerAcceptancesTable.tenantId, tenantId),
+    eq(customerDisclaimerAcceptancesTable.userId, userId),
+    eq(customerDisclaimerAcceptancesTable.disclaimerVersion, version),
+  )).limit(1);
+  return acceptance ?? null;
+}
+
 // Single-tenant: use the one global settings row, creating it if absent
 async function getOrCreateSettings() {
   await ensureAdminSettingsSchema();
-  const [existing] = await db.select().from(adminSettingsTable).limit(1);
+  const tenantId = await resolveSettingsTenantId(actor);
+  const [existing] = await db
+    .select()
+    .from(adminSettingsTable)
+    .where(eq(adminSettingsTable.tenantId, tenantId))
+    .limit(1);
   if (existing) return existing;
-  const tenantId = await getHouseTenantId();
   const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
   return created;
 }
@@ -310,9 +353,122 @@ async function getDecryptedWooCreds(): Promise<{
   };
 }
 
+
+// GET /api/customer/disclaimer — current tenant-scoped disclaimer and acceptance state
+router.get("/customer/disclaimer", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  if (actor.tenantId == null) {
+    res.status(403).json({ error: "Customer disclaimer requires a tenant assignment" });
+    return;
+  }
+  const settings = await getTenantScopedSettingsForActor(actor, false);
+  if (!settings || settings.tenantId !== actor.tenantId) {
+    res.status(403).json({ error: "Forbidden: tenant mismatch" });
+    return;
+  }
+  const version = settings.customerDisclaimerVersion ?? 1;
+  const acceptance = await getCurrentDisclaimerAcceptance(actor.tenantId, actor.id, version);
+  res.json({
+    text: settings.customerDisclaimerText,
+    version,
+    accepted: !!acceptance,
+    acceptedAt: acceptance?.acceptedAt ?? null,
+    required: isCustomerRole(actor.role) && !acceptance,
+  });
+});
+
+// POST /api/customer/disclaimer/accept — accepts current version for authenticated user only
+router.post("/customer/disclaimer/accept", async (req, res): Promise<void> => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const unknown = validateExactKeys(body, ["version"]);
+  if (unknown) {
+    res.status(400).json({ error: `Unknown field: ${unknown}` });
+    return;
+  }
+  if (!Number.isInteger(body.version) || Number(body.version) < 1) {
+    res.status(400).json({ error: "version must be a positive integer" });
+    return;
+  }
+  const actor = req.dbUser!;
+  if (actor.tenantId == null) {
+    res.status(403).json({ error: "Customer disclaimer requires a tenant assignment" });
+    return;
+  }
+  const settings = await getTenantScopedSettingsForActor(actor, false);
+  const currentVersion = settings?.customerDisclaimerVersion ?? 1;
+  if (!settings || settings.tenantId !== actor.tenantId || body.version !== currentVersion) {
+    res.status(409).json({ error: "Disclaimer version is no longer current", currentVersion });
+    return;
+  }
+  const existing = await getCurrentDisclaimerAcceptance(actor.tenantId, actor.id, currentVersion);
+  if (existing) {
+    res.json({ accepted: true, version: currentVersion, acceptedAt: existing.acceptedAt });
+    return;
+  }
+  const [created] = await db.insert(customerDisclaimerAcceptancesTable).values({
+    tenantId: actor.tenantId,
+    userId: actor.id,
+    disclaimerVersion: currentVersion,
+  }).returning();
+  res.status(201).json({ accepted: true, version: currentVersion, acceptedAt: created.acceptedAt });
+});
+
+// GET /api/admin/settings/customer-disclaimer
+router.get("/admin/settings/customer-disclaimer", requireRole("global_admin", "admin", "supervisor"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  if (!settings) {
+    res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
+    return;
+  }
+  res.json({ text: settings.customerDisclaimerText, version: settings.customerDisclaimerVersion ?? 1, updatedAt: settings.updatedAt });
+});
+
+// PUT /api/admin/settings/customer-disclaimer
+router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "admin", "supervisor"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const unknown = validateExactKeys(body, ["text"]);
+  if (unknown) {
+    res.status(400).json({ error: `Unknown field: ${unknown}` });
+    return;
+  }
+  if (typeof body.text !== "string") {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  const text = body.text.trim();
+  if (text.length < 20 || text.length > CUSTOMER_DISCLAIMER_MAX_CHARS) {
+    res.status(400).json({ error: `text must be between 20 and ${CUSTOMER_DISCLAIMER_MAX_CHARS} characters` });
+    return;
+  }
+  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  if (!settings) {
+    res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
+    return;
+  }
+  const changed = text !== settings.customerDisclaimerText;
+  const nextVersion = changed ? (settings.customerDisclaimerVersion ?? 1) + 1 : (settings.customerDisclaimerVersion ?? 1);
+  const [updated] = await db.update(adminSettingsTable).set({
+    customerDisclaimerText: text,
+    customerDisclaimerVersion: nextVersion,
+    updatedAt: new Date(),
+  }).where(eq(adminSettingsTable.id, settings.id)).returning();
+  await writeAuditLog({
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email,
+    actorRole: req.dbUser!.role,
+    tenantId: updated.tenantId,
+    action: "settings.customer_disclaimer.updated",
+    resourceType: "admin_settings",
+    resourceId: String(updated.id),
+    metadata: { previousVersion: settings.customerDisclaimerVersion ?? 1, version: nextVersion, changed },
+    ipAddress: req.ip,
+  });
+  res.json({ text: updated.customerDisclaimerText, version: updated.customerDisclaimerVersion ?? 1, updatedAt: updated.updatedAt });
+});
+
 // GET /api/admin/settings
 router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings(_req.dbUser);
   res.json(mapSettings(s));
 });
 
@@ -384,14 +540,14 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     }
   }
 
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   if (Object.keys(update).length === 0) {
     res.json(mapSettings(existing));
     return;
   }
   const [updated] = await db.update(adminSettingsTable)
     .set(update)
-    .where(eq(adminSettingsTable.id, existing.id))
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
   res.json(mapSettings(updated));
 });
@@ -402,7 +558,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
  * only boolean flags indicating whether they have been saved.
  */
 router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings(_req.dbUser);
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -456,7 +612,7 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
       return;
     }
 
-    const existing = await getOrCreateSettings();
+    const existing = await getOrCreateSettings(req.dbUser);
     const [updated] = await db.update(adminSettingsTable)
       .set(update)
       .where(eq(adminSettingsTable.id, existing.id))
@@ -569,8 +725,8 @@ function parseIds(raw: string | null | undefined): number[] {
 }
 
 // GET /api/concierge/promoted — authenticated users: returns full catalog items
-router.get("/concierge/promoted", async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/concierge/promoted", async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   const ids = parseIds(s.conciergePromotedItemIds);
   if (ids.length === 0) { res.json([]); return; }
   const { catalogItemsTable } = await import("@workspace/db");
@@ -588,22 +744,22 @@ router.get("/concierge/promoted", async (_req, res): Promise<void> => {
 });
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
-router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
 
 // PUT /api/admin/concierge/promoted — admin: sets promoted item IDs
-router.put("/admin/concierge/promoted", requireRole("admin"), async (req, res): Promise<void> => {
+router.put("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const ids = req.body?.ids;
   if (!Array.isArray(ids) || ids.length > 8 || !ids.every(x => Number.isInteger(x) && x > 0)) {
     res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });
     return;
   }
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   await db.update(adminSettingsTable)
     .set({ conciergePromotedItemIds: JSON.stringify(ids) })
-    .where(eq(adminSettingsTable.id, existing.id));
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)));
   res.json({ ids });
 });
 
@@ -621,36 +777,50 @@ function parseSteps(raw: string | null | undefined) {
   try { return JSON.parse(raw); } catch { return DEFAULT_CONCIERGE_STEPS; }
 }
 
+const conciergeStepSchema = z.object({
+  emoji: z.string().trim().min(1).max(16),
+  title: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(1000),
+  cta: z.string().trim().min(1).max(80),
+}).strict();
+
+const conciergeStepsSchema = z.array(conciergeStepSchema).min(1).max(8);
+
 // GET /api/concierge/intro-steps — any authenticated user
-router.get("/concierge/intro-steps", async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/concierge/intro-steps", async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
 // GET /api/admin/concierge-steps — admin/supervisor read
-router.get("/admin/concierge-steps", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
-// PUT /api/admin/concierge-steps — global/admin only
-router.put("/admin/concierge-steps", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const body = req.body;
-  if (!Array.isArray(body) || body.length === 0 || body.length > 8) {
-    res.status(400).json({ error: "steps must be an array of 1–8 items" });
+// PUT /api/admin/concierge-steps — supervisor/admin/global_admin only
+router.put("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const parsed = conciergeStepsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid concierge steps payload", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
     return;
   }
-  for (const step of body) {
-    if (typeof step.emoji !== "string" || typeof step.title !== "string" || typeof step.body !== "string" || typeof step.cta !== "string") {
-      res.status(400).json({ error: "each step must have emoji, title, body, and cta strings" });
-      return;
-    }
-  }
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   const [updated] = await db.update(adminSettingsTable)
-    .set({ conciergeIntroSteps: JSON.stringify(body) })
-    .where(eq(adminSettingsTable.id, existing.id))
+    .set({ conciergeIntroSteps: JSON.stringify(parsed.data) })
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
+  void writeAuditLog({
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email,
+    actorRole: req.dbUser!.role,
+    action: "settings.ai_concierge_steps_updated",
+    tenantId: existing.tenantId,
+    resourceType: "admin_settings",
+    resourceId: String(existing.id),
+    metadata: { stepCount: parsed.data.length },
+    ipAddress: req.ip,
+  });
   res.json(parseSteps(updated.conciergeIntroSteps));
 });
 

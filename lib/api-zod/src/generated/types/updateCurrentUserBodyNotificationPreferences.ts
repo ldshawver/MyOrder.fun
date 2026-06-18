@@ -5,10 +5,11 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
-import type { UpdateCurrentUserBodyNotificationPreferencesOrderAlerts } from './updateCurrentUserBodyNotificationPreferencesOrderAlerts';
-import type { UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates } from './updateCurrentUserBodyNotificationPreferencesPlatformUpdates';
+import type { UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode } from './updateCurrentUserBodyNotificationPreferencesInAppAlertMode';
 
 export type UpdateCurrentUserBodyNotificationPreferences = {
-  orderAlerts?: UpdateCurrentUserBodyNotificationPreferencesOrderAlerts;
-  platformUpdates?: UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates;
+  inAppAlerts: boolean;
+  smsTexts: boolean;
+  emails: boolean;
+  inAppAlertMode: UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode;
 } | null;

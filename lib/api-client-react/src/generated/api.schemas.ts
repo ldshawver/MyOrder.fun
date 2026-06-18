@@ -674,29 +674,21 @@ export const UserProfileStatus = {
   deactivated: 'deactivated',
 } as const;
 
-export type UserProfileNotificationPreferencesOrderAlerts = typeof UserProfileNotificationPreferencesOrderAlerts[keyof typeof UserProfileNotificationPreferencesOrderAlerts];
+export type UserProfileNotificationPreferencesInAppAlertMode = typeof UserProfileNotificationPreferencesInAppAlertMode[keyof typeof UserProfileNotificationPreferencesInAppAlertMode];
 
 
-export const UserProfileNotificationPreferencesOrderAlerts = {
-  in_app: 'in_app',
+export const UserProfileNotificationPreferencesInAppAlertMode = {
   silent: 'silent',
   sound: 'sound',
   vibrate: 'vibrate',
-} as const;
-
-export type UserProfileNotificationPreferencesPlatformUpdates = typeof UserProfileNotificationPreferencesPlatformUpdates[keyof typeof UserProfileNotificationPreferencesPlatformUpdates];
-
-
-export const UserProfileNotificationPreferencesPlatformUpdates = {
-  in_app: 'in_app',
-  silent: 'silent',
-  sound: 'sound',
-  vibrate: 'vibrate',
+  sound_vibrate: 'sound_vibrate',
 } as const;
 
 export type UserProfileNotificationPreferences = {
-  orderAlerts?: UserProfileNotificationPreferencesOrderAlerts;
-  platformUpdates?: UserProfileNotificationPreferencesPlatformUpdates;
+  inAppAlerts: boolean;
+  smsTexts: boolean;
+  emails: boolean;
+  inAppAlertMode: UserProfileNotificationPreferencesInAppAlertMode;
 };
 
 export interface UserProfile {
@@ -717,29 +709,21 @@ export interface UserProfile {
   createdAt: string;
 }
 
-export type UpdateCurrentUserBodyNotificationPreferencesOrderAlerts = typeof UpdateCurrentUserBodyNotificationPreferencesOrderAlerts[keyof typeof UpdateCurrentUserBodyNotificationPreferencesOrderAlerts];
+export type UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode = typeof UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode[keyof typeof UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode];
 
 
-export const UpdateCurrentUserBodyNotificationPreferencesOrderAlerts = {
-  in_app: 'in_app',
+export const UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode = {
   silent: 'silent',
   sound: 'sound',
   vibrate: 'vibrate',
-} as const;
-
-export type UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates = typeof UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates[keyof typeof UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates];
-
-
-export const UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates = {
-  in_app: 'in_app',
-  silent: 'silent',
-  sound: 'sound',
-  vibrate: 'vibrate',
+  sound_vibrate: 'sound_vibrate',
 } as const;
 
 export type UpdateCurrentUserBodyNotificationPreferences = {
-  orderAlerts?: UpdateCurrentUserBodyNotificationPreferencesOrderAlerts;
-  platformUpdates?: UpdateCurrentUserBodyNotificationPreferencesPlatformUpdates;
+  inAppAlerts: boolean;
+  smsTexts: boolean;
+  emails: boolean;
+  inAppAlertMode: UpdateCurrentUserBodyNotificationPreferencesInAppAlertMode;
 } | null;
 
 export interface UpdateCurrentUserBody {
@@ -1221,6 +1205,7 @@ export type ListUsersRole = typeof ListUsersRole[keyof typeof ListUsersRole];
 
 
 export const ListUsersRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
   supervisor: 'supervisor',
   csr: 'csr',

@@ -16,6 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -276,6 +277,7 @@ async function mirrorCatalogStockToBackstockAndRecompute(tenantId: number, produ
     .where(and(
       eq(inventoryBalancesTable.tenantId, tenantId),
       eq(inventoryBalancesTable.productId, productId),
+      sellableBalanceWhere(),
     ));
 
   await db.update(catalogItemsTable)

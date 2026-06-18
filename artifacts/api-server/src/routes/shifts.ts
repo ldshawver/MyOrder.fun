@@ -18,6 +18,7 @@ import {
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
@@ -39,6 +40,7 @@ async function recomputeCatalogInventoryTotals(tenantId: number, productId: numb
     .where(and(
       eq(inventoryBalancesTable.tenantId, tenantId),
       eq(inventoryBalancesTable.productId, productId),
+      sellableBalanceWhere(),
     ));
 
   await db
@@ -492,6 +494,7 @@ async function ensureShiftSchema(): Promise<void> {
   for (const statement of statements) {
     await db.execute(statement);
   }
+  await ensureInventoryBalanceClassificationSchema();
   // Seed default boxes if the table is empty for this tenant
   const houseTenantId = await getHouseTenantId();
   const existing = await db
@@ -1866,6 +1869,7 @@ router.get(
       eq(catalogItemsTable.isAvailable, true),
       sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
       sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
+      sellableBalanceWhere(),
     );
     const whereClause = locationId && !isNaN(locationId)
       ? and(baseWhereClause, eq(inventoryBalancesTable.locationId, locationId))
