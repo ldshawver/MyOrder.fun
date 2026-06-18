@@ -5,6 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
+import { z } from "zod";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -321,9 +322,13 @@ async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, 
 // Single-tenant: use the one global settings row, creating it if absent
 async function getOrCreateSettings() {
   await ensureAdminSettingsSchema();
-  const [existing] = await db.select().from(adminSettingsTable).limit(1);
+  const tenantId = await resolveSettingsTenantId(actor);
+  const [existing] = await db
+    .select()
+    .from(adminSettingsTable)
+    .where(eq(adminSettingsTable.tenantId, tenantId))
+    .limit(1);
   if (existing) return existing;
-  const tenantId = await getHouseTenantId();
   const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
   return created;
 }
@@ -463,7 +468,7 @@ router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "a
 
 // GET /api/admin/settings
 router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings(_req.dbUser);
   res.json(mapSettings(s));
 });
 
@@ -535,14 +540,14 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     }
   }
 
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   if (Object.keys(update).length === 0) {
     res.json(mapSettings(existing));
     return;
   }
   const [updated] = await db.update(adminSettingsTable)
     .set(update)
-    .where(eq(adminSettingsTable.id, existing.id))
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
   res.json(mapSettings(updated));
 });
@@ -553,7 +558,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
  * only boolean flags indicating whether they have been saved.
  */
 router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings(_req.dbUser);
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -607,7 +612,7 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
       return;
     }
 
-    const existing = await getOrCreateSettings();
+    const existing = await getOrCreateSettings(req.dbUser);
     const [updated] = await db.update(adminSettingsTable)
       .set(update)
       .where(eq(adminSettingsTable.id, existing.id))
@@ -720,8 +725,8 @@ function parseIds(raw: string | null | undefined): number[] {
 }
 
 // GET /api/concierge/promoted — authenticated users: returns full catalog items
-router.get("/concierge/promoted", async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/concierge/promoted", async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   const ids = parseIds(s.conciergePromotedItemIds);
   if (ids.length === 0) { res.json([]); return; }
   const { catalogItemsTable } = await import("@workspace/db");
@@ -739,22 +744,22 @@ router.get("/concierge/promoted", async (_req, res): Promise<void> => {
 });
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
-router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
 
 // PUT /api/admin/concierge/promoted — admin: sets promoted item IDs
-router.put("/admin/concierge/promoted", requireRole("admin"), async (req, res): Promise<void> => {
+router.put("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const ids = req.body?.ids;
   if (!Array.isArray(ids) || ids.length > 8 || !ids.every(x => Number.isInteger(x) && x > 0)) {
     res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });
     return;
   }
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   await db.update(adminSettingsTable)
     .set({ conciergePromotedItemIds: JSON.stringify(ids) })
-    .where(eq(adminSettingsTable.id, existing.id));
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)));
   res.json({ ids });
 });
 
@@ -772,36 +777,50 @@ function parseSteps(raw: string | null | undefined) {
   try { return JSON.parse(raw); } catch { return DEFAULT_CONCIERGE_STEPS; }
 }
 
+const conciergeStepSchema = z.object({
+  emoji: z.string().trim().min(1).max(16),
+  title: z.string().trim().min(1).max(120),
+  body: z.string().trim().min(1).max(1000),
+  cta: z.string().trim().min(1).max(80),
+}).strict();
+
+const conciergeStepsSchema = z.array(conciergeStepSchema).min(1).max(8);
+
 // GET /api/concierge/intro-steps — any authenticated user
-router.get("/concierge/intro-steps", async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/concierge/intro-steps", async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
 // GET /api/admin/concierge-steps — admin/supervisor read
-router.get("/admin/concierge-steps", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings();
+router.get("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser);
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
-// PUT /api/admin/concierge-steps — global/admin only
-router.put("/admin/concierge-steps", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const body = req.body;
-  if (!Array.isArray(body) || body.length === 0 || body.length > 8) {
-    res.status(400).json({ error: "steps must be an array of 1–8 items" });
+// PUT /api/admin/concierge-steps — supervisor/admin/global_admin only
+router.put("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const parsed = conciergeStepsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid concierge steps payload", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
     return;
   }
-  for (const step of body) {
-    if (typeof step.emoji !== "string" || typeof step.title !== "string" || typeof step.body !== "string" || typeof step.cta !== "string") {
-      res.status(400).json({ error: "each step must have emoji, title, body, and cta strings" });
-      return;
-    }
-  }
-  const existing = await getOrCreateSettings();
+  const existing = await getOrCreateSettings(req.dbUser);
   const [updated] = await db.update(adminSettingsTable)
-    .set({ conciergeIntroSteps: JSON.stringify(body) })
-    .where(eq(adminSettingsTable.id, existing.id))
+    .set({ conciergeIntroSteps: JSON.stringify(parsed.data) })
+    .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
+  void writeAuditLog({
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email,
+    actorRole: req.dbUser!.role,
+    action: "settings.ai_concierge_steps_updated",
+    tenantId: existing.tenantId,
+    resourceType: "admin_settings",
+    resourceId: String(existing.id),
+    metadata: { stepCount: parsed.data.length },
+    ipAddress: req.ip,
+  });
   res.json(parseSteps(updated.conciergeIntroSteps));
 });
 

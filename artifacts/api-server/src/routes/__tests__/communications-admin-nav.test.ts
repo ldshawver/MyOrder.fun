@@ -6,7 +6,7 @@
  * MyOrder.fun navigation cleanup guards.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,7 +20,8 @@ function src(relativePath: string): string {
 const appSrc = src("App.tsx");
 const layoutSrc = src("components/layout.tsx");
 const integrationsSrc = src("pages/global-admin/integrations.tsx");
-const routesIndexSrc = readFileSync(resolve(__dirname, "../index.ts"), "utf8");
+const routesDir = resolve(__dirname, "..");
+const routesIndexSrc = readFileSync(resolve(routesDir, "index.ts"), "utf8");
 
 function countMatches(source: string, pattern: RegExp): number {
   return source.match(pattern)?.length ?? 0;
@@ -91,6 +92,15 @@ describe("MyOrder.fun navigation cleanup", () => {
     expect(appSrc).not.toContain("public-contract-sign");
     expect(routesIndexSrc).not.toContain("contractor-hub");
     expect(routesIndexSrc).not.toContain("document-hub");
+    expect(routesIndexSrc).not.toContain("proposalsRouter");
+  });
+
+  it("does not register stale route modules that are absent from the API routes directory", () => {
+    expect(existsSync(resolve(routesDir, "communications.ts"))).toBe(false);
+    expect(existsSync(resolve(routesDir, "proposals.ts"))).toBe(false);
+    expect(routesIndexSrc).not.toContain('from "./communications"');
+    expect(routesIndexSrc).not.toContain('from "./proposals"');
+    expect(routesIndexSrc).not.toContain("communicationsRouter");
     expect(routesIndexSrc).not.toContain("proposalsRouter");
   });
 

@@ -10,11 +10,33 @@ import { Link } from "wouter";
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
 
-type NotificationMode = "in_app" | "silent" | "sound" | "vibrate";
+type InAppAlertMode = "silent" | "sound" | "vibrate" | "sound_vibrate";
 type NotificationPreferences = {
-  orderAlerts: NotificationMode;
-  platformUpdates: NotificationMode;
+  inAppAlerts: boolean;
+  smsTexts: boolean;
+  emails: boolean;
+  inAppAlertMode: InAppAlertMode;
 };
+
+const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  inAppAlerts: true,
+  smsTexts: true,
+  emails: true,
+  inAppAlertMode: "sound",
+};
+
+function normalizeNotificationPreferences(raw: unknown): NotificationPreferences {
+  if (!raw || typeof raw !== "object") return DEFAULT_NOTIFICATION_PREFERENCES;
+  const prefs = raw as Partial<NotificationPreferences> & { orderAlerts?: string };
+  return {
+    inAppAlerts: typeof prefs.inAppAlerts === "boolean" ? prefs.inAppAlerts : true,
+    smsTexts: typeof prefs.smsTexts === "boolean" ? prefs.smsTexts : true,
+    emails: typeof prefs.emails === "boolean" ? prefs.emails : true,
+    inAppAlertMode: prefs.inAppAlertMode === "silent" || prefs.inAppAlertMode === "sound" || prefs.inAppAlertMode === "vibrate" || prefs.inAppAlertMode === "sound_vibrate"
+      ? prefs.inAppAlertMode
+      : prefs.orderAlerts === "silent" || prefs.orderAlerts === "sound" || prefs.orderAlerts === "vibrate" ? prefs.orderAlerts : "sound",
+  };
+}
 
 export default function Account() {
   const { data: user, isLoading, refetch } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -24,10 +46,7 @@ export default function Account() {
   const [lastName, setLastName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
-  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>({
-    orderAlerts: "sound",
-    platformUpdates: "in_app",
-  });
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFERENCES);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -37,14 +56,9 @@ export default function Account() {
       setLastName(user.lastName ?? "");
       setContactPhone(user.contactPhone ?? "");
       setAvatarUrl(user.avatarUrl ?? "");
-      const prefs = user.notificationPreferences as NotificationPreferences | undefined;
-      if (prefs) {
-        setNotificationPreferences({
-          orderAlerts: prefs.orderAlerts ?? "sound",
-          platformUpdates: prefs.platformUpdates ?? "in_app",
-        });
-        localStorage.setItem("notification_preferences", JSON.stringify(prefs));
-      }
+      const prefs = normalizeNotificationPreferences(user.notificationPreferences);
+      setNotificationPreferences(prefs);
+      localStorage.setItem("notification_preferences", JSON.stringify(prefs));
     }
   }, [user]);
 
@@ -52,11 +66,8 @@ export default function Account() {
     const savedPrefs = localStorage.getItem("notification_preferences");
     if (savedPrefs) {
       try {
-        const parsed = JSON.parse(savedPrefs);
-        setNotificationPreferences({
-          orderAlerts: parsed.orderAlerts ?? "sound",
-          platformUpdates: parsed.platformUpdates ?? "in_app",
-        });
+        const parsed = normalizeNotificationPreferences(JSON.parse(savedPrefs));
+        setNotificationPreferences(parsed);
         return;
       } catch {
         // Fall through to the legacy single-mode preference.
@@ -64,7 +75,7 @@ export default function Account() {
     }
     const legacy = localStorage.getItem("notification_mode");
     if (legacy === "silent" || legacy === "sound" || legacy === "vibrate") {
-      setNotificationPreferences({ orderAlerts: legacy, platformUpdates: "in_app" });
+      setNotificationPreferences({ ...DEFAULT_NOTIFICATION_PREFERENCES, inAppAlertMode: legacy });
     }
   }, []);
 
@@ -132,8 +143,7 @@ export default function Account() {
     reader.readAsDataURL(file);
   }
 
-  async function saveNotificationPreference(key: keyof NotificationPreferences, mode: NotificationMode) {
-    const next = { ...notificationPreferences, [key]: mode };
+  async function saveNotificationPreferences(next: NotificationPreferences) {
     setNotificationPreferences(next);
     localStorage.setItem("notification_preferences", JSON.stringify(next));
     setMsg(null);
@@ -313,33 +323,47 @@ export default function Account() {
           </CardHeader>
           <CardContent className="pt-6">
             <div className="space-y-5">
-              {[
-                { key: "orderAlerts", label: "Order Alerts" },
-                { key: "platformUpdates", label: "Platform Updates" },
-              ].map((group) => (
-                <div key={group.key} className="space-y-2">
-                  <div className="text-[10px] font-mono font-medium text-muted-foreground uppercase tracking-widest">{group.label}</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {[
-                      { value: "in_app", label: "In-App Only" },
-                      { value: "silent", label: "Silent" },
-                      { value: "sound", label: "Sound" },
-                      { value: "vibrate", label: "Vibrate" },
-                    ].map((option) => (
-                      <Button
-                        key={option.value}
-                        type="button"
-                        variant={notificationPreferences[group.key as keyof NotificationPreferences] === option.value ? "default" : "outline"}
-                        className="rounded-sm text-xs uppercase tracking-wider"
-                        onClick={() => saveNotificationPreference(group.key as keyof NotificationPreferences, option.value as NotificationMode)}
-                        data-testid={`button-notification-${group.key}-${option.value}`}
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
-                  </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {[
+                  { key: "inAppAlerts", label: "In-App Alerts" },
+                  { key: "smsTexts", label: "SMS Texts" },
+                  { key: "emails", label: "Email" },
+                ].map((channel) => (
+                  <Button
+                    key={channel.key}
+                    type="button"
+                    variant={notificationPreferences[channel.key as keyof NotificationPreferences] ? "default" : "outline"}
+                    className="rounded-sm text-xs uppercase tracking-wider"
+                    onClick={() => saveNotificationPreferences({ ...notificationPreferences, [channel.key]: !notificationPreferences[channel.key as keyof NotificationPreferences] } as NotificationPreferences)}
+                    data-testid={`button-notification-${channel.key}`}
+                  >
+                    {channel.label}: {notificationPreferences[channel.key as keyof NotificationPreferences] ? "On" : "Off"}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-[10px] font-mono font-medium text-muted-foreground uppercase tracking-widest">In-App Alert Mode</div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { value: "silent", label: "Silent" },
+                    { value: "sound", label: "Sound" },
+                    { value: "vibrate", label: "Vibrate" },
+                    { value: "sound_vibrate", label: "Sound + Vibrate" },
+                  ].map((option) => (
+                    <Button
+                      key={option.value}
+                      type="button"
+                      variant={notificationPreferences.inAppAlertMode === option.value ? "default" : "outline"}
+                      className="rounded-sm text-xs uppercase tracking-wider"
+                      onClick={() => saveNotificationPreferences({ ...notificationPreferences, inAppAlertMode: option.value as InAppAlertMode })}
+                      data-testid={`button-notification-mode-${option.value}`}
+                    >
+                      {option.label}
+                    </Button>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
           </CardContent>
         </Card>

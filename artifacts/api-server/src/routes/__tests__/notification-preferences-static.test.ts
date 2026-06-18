@@ -1,19 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
-const ordersRoute = readFileSync(resolve(__dirname, "../orders.ts"), "utf8");
-const notificationPrefs = readFileSync(resolve(__dirname, "../../lib/notificationPrefs.ts"), "utf8");
-
-describe("order status notification preference wiring", () => {
-  it("keeps the status route wired through the preference-gated helper", () => {
-    expect(ordersRoute).toContain("sendOrderStatusSmsEmailIfAllowed");
-    expect(ordersRoute).toContain("notificationPreferences: usersTable.notificationPreferences");
-    expect(ordersRoute).toContain("contactPhone: usersTable.contactPhone");
+describe("notification preference wiring", () => {
+  it("fixes the account notification settings URL and exposes controls", () => {
+    const app = readFileSync("../platform/src/App.tsx", "utf8");
+    const layout = readFileSync("../platform/src/components/layout.tsx", "utf8");
+    const account = readFileSync("../platform/src/pages/account.tsx", "utf8");
+    expect(app).toContain('<Route path="/account">');
+    expect(layout).toContain('href: "/account", label: "Account Settings"');
+    expect(account).toContain('data-testid={`button-notification-${channel.key}`}');
+    expect(account).toContain('sound_vibrate');
   });
 
-  it("keeps sms and email checks independent", () => {
-    expect(notificationPrefs).toContain('shouldSendNotificationChannel(user.notificationPreferences, "sms")');
-    expect(notificationPrefs).toContain('shouldSendNotificationChannel(user.notificationPreferences, "email")');
+  it("order status notification pipeline checks tenant-scoped current preferences before inserting in-app alerts", () => {
+    const orders = readFileSync("src/routes/orders.ts", "utf8");
+    expect(orders).toContain('shouldSendNotificationChannel(customerPrefs.notificationPreferences, "in_app")');
+    expect(orders).toContain('sendOrderStatusSmsEmailIfAllowed(customerPrefs.notificationPreferences, {})');
+    expect(orders).toContain('eq(usersTable.tenantId, order.tenantId)');
   });
 });

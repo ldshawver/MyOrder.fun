@@ -1,12 +1,14 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
 let mockActor: { id: number; role: string; email: string; tenantId?: number } = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
-const settingsRow: Record<string, unknown> = {
-  id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30,
+const settingsRows: Record<number, Record<string, unknown>> = {
+  1: { id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30 },
+  2: { id: 2, tenantId: 2, orderRoutingRule: "round_robin", defaultEtaMinutes: 30 },
 };
-
+let activeTenantId = 1;
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_q: express.Request, _s: express.Response, n: express.NextFunction) => n(),
   loadDbUser: (q: express.Request, _s: express.Response, n: express.NextFunction) => {
@@ -24,26 +26,27 @@ vi.mock("../../lib/auth", () => ({
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
 vi.mock("../../lib/crypto", () => ({ encrypt: (v: string) => v, safeDecrypt: (v: string | null) => v }));
 vi.mock("@workspace/db", () => {
-  const adminSettingsTable = { id: { name: "id" } } as unknown;
+  const adminSettingsTable = { id: { name: "id" }, tenantId: { name: "tenantId" } } as unknown;
   return {
     db: {
       execute: vi.fn(() => Promise.resolve()),
-      select: () => ({ from: () => ({ limit: async () => [settingsRow] }) }),
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [settingsRows[activeTenantId]] }), limit: async () => [settingsRows[activeTenantId]] }) }),
       update: () => ({
         set: (vals: Record<string, unknown>) => ({
           where: () => ({
-            returning: async () => { Object.assign(settingsRow, vals); return [settingsRow]; },
+            returning: async () => { Object.assign(settingsRows[activeTenantId], vals); return [settingsRows[activeTenantId]]; },
           }),
         }),
       }),
-      insert: () => ({ values: () => ({ returning: async () => [settingsRow] }) }),
+      insert: () => ({ values: (vals: Record<string, unknown>) => ({ returning: async () => { const tenantId = Number(vals.tenantId); settingsRows[tenantId] = { id: tenantId, tenantId, ...vals }; return [settingsRows[tenantId]]; } }) }),
     },
     adminSettingsTable,
   };
 });
 
 vi.mock("drizzle-orm", () => ({
-  eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...conditions: unknown[]) => ({ conditions })),
+  eq: vi.fn((col, val) => { if ((col as { name?: string })?.name === "tenantId") activeTenantId = Number(val); return { col, val }; }),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
@@ -56,8 +59,14 @@ async function buildApp() {
 }
 
 beforeEach(() => {
-  settingsRow.orderRoutingRule = "round_robin";
-  settingsRow.defaultEtaMinutes = 30;
+  activeTenantId = 1;
+  for (const [tenantId, row] of Object.entries(settingsRows)) {
+    row.id = Number(tenantId);
+    row.tenantId = Number(tenantId);
+    row.orderRoutingRule = "round_robin";
+    row.defaultEtaMinutes = 30;
+    delete row.conciergeIntroSteps;
+  }
   mockActor = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
 });
 
@@ -104,5 +113,75 @@ describe("/admin/settings — routing rule contract", () => {
     const r2 = await supertest(await buildApp()).put("/api/admin/settings").send({ orderRoutingRule: "round_robin" });
     expect(r1.status).toBe(403);
     expect(r2.status).toBe(403);
+  });
+});
+
+describe("/admin/concierge-steps — persistence and tenant scope", () => {
+  const tenantOneSteps = [
+    { emoji: "⚡", title: "Tenant One", body: "Only tenant one can see this", cta: "Go" },
+  ];
+  const tenantTwoSteps = [
+    { emoji: "🛍️", title: "Tenant Two", body: "Only tenant two can see this", cta: "Shop" },
+  ];
+
+  it("saves and reloads AI Concierge steps from tenant-scoped DB settings", async () => {
+    const app = await buildApp();
+    const save = await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps);
+    expect(save.status).toBe(200);
+    expect(save.body).toEqual(tenantOneSteps);
+
+    const reload = await supertest(app).get("/api/admin/concierge-steps");
+    expect(reload.status).toBe(200);
+    expect(reload.body).toEqual(tenantOneSteps);
+  });
+
+  it("keeps Tenant A and Tenant B concierge steps isolated", async () => {
+    const app = await buildApp();
+    mockActor = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
+    expect((await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps)).status).toBe(200);
+
+    mockActor = { id: 2, role: "admin", email: "b@x", tenantId: 2 };
+    expect((await supertest(app).put("/api/admin/concierge-steps").send(tenantTwoSteps)).status).toBe(200);
+    expect((await supertest(app).get("/api/admin/concierge-steps")).body).toEqual(tenantTwoSteps);
+
+    mockActor = { id: 1, role: "admin", email: "a@x", tenantId: 1 };
+    expect((await supertest(app).get("/api/admin/concierge-steps")).body).toEqual(tenantOneSteps);
+  });
+
+  it("allows supervisors but denies unauthorized users", async () => {
+    const app = await buildApp();
+    mockActor = { id: 3, role: "supervisor", email: "s@x", tenantId: 1 };
+    expect((await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps)).status).toBe(200);
+
+    mockActor = { id: 4, role: "user", email: "u@x", tenantId: 1 };
+    expect((await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps)).status).toBe(403);
+  });
+
+  it("rejects unknown step fields", async () => {
+    const res = await supertest(await buildApp())
+      .put("/api/admin/concierge-steps")
+      .send([{ ...tenantOneSteps[0], tenantId: 2 }]);
+    expect(res.status).toBe(400);
+  });
+
+  it("uses defaults only when DB concierge steps are absent", async () => {
+    const app = await buildApp();
+    const defaultRes = await supertest(app).get("/api/concierge/intro-steps");
+    expect(defaultRes.status).toBe(200);
+    expect(defaultRes.body[0].title).toBe("Hey! I'm Zappy");
+
+    await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps);
+    const savedRes = await supertest(app).get("/api/concierge/intro-steps");
+    expect(savedRes.body).toEqual(tenantOneSteps);
+  });
+});
+
+
+describe("admin_settings tenant unique-index migration preflight", () => {
+  it("checks duplicate tenant rows before creating the unique index", () => {
+    const sql = readFileSync(new URL("../../../../../lib/db/drizzle/0019_tenant_scoped_concierge_settings.sql", import.meta.url), "utf8");
+    expect(sql).toContain("Preflight failed: admin_settings contains duplicate tenant_id rows");
+    expect(sql.indexOf("DO $$")).toBeLessThan(sql.indexOf("CREATE UNIQUE INDEX"));
+    expect(sql).toContain("HAVING count(*) > 1");
   });
 });

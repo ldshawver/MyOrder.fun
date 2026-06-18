@@ -10,6 +10,7 @@ export type ListUsersRole = typeof ListUsersRole[keyof typeof ListUsersRole];
 
 
 export const ListUsersRole = {
+  global_admin: 'global_admin',
   admin: 'admin',
   supervisor: 'supervisor',
   csr: 'csr',

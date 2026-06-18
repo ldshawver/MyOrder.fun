@@ -1520,8 +1520,10 @@ export const GetCurrentUserResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })
@@ -1543,8 +1545,10 @@ export const UpdateCurrentUserBody = zod.object({
   "lastName": zod.string().max(updateCurrentUserBodyLastNameMax).nullish(),
   "contactPhone": zod.string().optional(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).nullish(),
   "avatarUrl": zod.string().max(updateCurrentUserBodyAvatarUrlMax).nullish()
 })
@@ -1564,8 +1568,10 @@ export const UpdateCurrentUserResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })
@@ -1594,8 +1600,10 @@ export const ListUsersResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })),
@@ -1629,8 +1637,10 @@ export const UpdateUserRoleResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })
@@ -1711,8 +1721,10 @@ export const ListPendingUsersResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })),
@@ -1765,8 +1777,10 @@ export const AdminUpdateUserRoleResponse = zod.object({
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),
   "notificationPreferences": zod.object({
-  "orderAlerts": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional(),
-  "platformUpdates": zod.enum(['in_app', 'silent', 'sound', 'vibrate']).optional()
+  "inAppAlerts": zod.boolean(),
+  "smsTexts": zod.boolean(),
+  "emails": zod.boolean(),
+  "inAppAlertMode": zod.enum(['silent', 'sound', 'vibrate', 'sound_vibrate'])
 }).optional(),
   "createdAt": zod.coerce.date()
 })

@@ -1,76 +1,78 @@
+import { z } from "zod/v4";
 import { logger } from "./logger";
 
-type NotificationChannel = "sms" | "email";
-type PreferenceValue = Record<string, unknown> | null | undefined;
+export const inAppAlertModeSchema = z.enum(["silent", "sound", "vibrate", "sound_vibrate"]);
 
-type OrderStatusNotificationTarget = {
-  id: number;
-  email?: string | null;
-  contactPhone?: string | null;
-  notificationPreferences?: PreferenceValue;
+export const notificationPreferencesSchema = z
+  .object({
+    inAppAlerts: z.boolean().default(true),
+    smsTexts: z.boolean().default(true),
+    emails: z.boolean().default(true),
+    inAppAlertMode: inAppAlertModeSchema.default("sound"),
+  })
+  .strict();
+
+export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
+export type NotificationChannel = "in_app" | "sms" | "email";
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  inAppAlerts: true,
+  smsTexts: true,
+  emails: true,
+  inAppAlertMode: "sound",
 };
 
-type OrderStatusNotificationOrder = {
-  id: number;
-  tenantId?: number | null;
-};
+export function normalizeNotificationPreferences(raw: unknown): NotificationPreferences {
+  if (!raw || typeof raw !== "object") return DEFAULT_NOTIFICATION_PREFERENCES;
 
-type OrderStatusNotificationCallbacks = Partial<Record<NotificationChannel, (payload: {
-  user: OrderStatusNotificationTarget;
-  order: OrderStatusNotificationOrder;
-  status: string;
-  message: string;
-}) => Promise<void> | void>>;
+  const legacy = raw as Record<string, unknown>;
+  const candidate = {
+    inAppAlerts: legacy.inAppAlerts ?? true,
+    smsTexts: legacy.smsTexts ?? true,
+    emails: legacy.emails ?? true,
+    inAppAlertMode: legacy.inAppAlertMode ?? normalizeLegacyInAppMode(legacy.orderAlerts),
+  };
 
-function readNestedBoolean(raw: PreferenceValue, channel: NotificationChannel): boolean | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-  const prefs = raw as Record<string, unknown>;
-  const direct = prefs[channel];
-  if (typeof direct === "boolean") return direct;
-
-  for (const key of ["orderStatus", "orderStatuses", "orderUpdates", "orderNotifications", "orderStatusNotifications"]) {
-    const group = prefs[key];
-    if (group && typeof group === "object" && !Array.isArray(group)) {
-      const value = (group as Record<string, unknown>)[channel];
-      if (typeof value === "boolean") return value;
-    }
-  }
-
-  return undefined;
+  const parsed = notificationPreferencesSchema.safeParse(candidate);
+  if (!parsed.success) return DEFAULT_NOTIFICATION_PREFERENCES;
+  return parsed.data;
 }
 
-export function shouldSendNotificationChannel(raw: PreferenceValue, channel: NotificationChannel): boolean {
-  const explicit = readNestedBoolean(raw, channel);
-  if (explicit !== undefined) return explicit;
-  return true;
+function normalizeLegacyInAppMode(mode: unknown): NotificationPreferences["inAppAlertMode"] {
+  if (mode === "silent" || mode === "sound" || mode === "vibrate" || mode === "sound_vibrate") return mode;
+  return "sound";
 }
+
+export function shouldSendNotificationChannel(raw: unknown, channel: NotificationChannel): boolean {
+  const prefs = normalizeNotificationPreferences(raw);
+  if (channel === "in_app") return prefs.inAppAlerts;
+  if (channel === "sms") return prefs.smsTexts;
+  return prefs.emails;
+}
+
+type OptionalNotificationSender = (() => Promise<void> | void) | undefined;
 
 export async function sendOrderStatusSmsEmailIfAllowed(
-  user: OrderStatusNotificationTarget,
-  order: OrderStatusNotificationOrder,
-  status: string,
-  callbacks: OrderStatusNotificationCallbacks = {},
+  raw: unknown,
+  senders: { sms?: OptionalNotificationSender; email?: OptionalNotificationSender } = {},
 ): Promise<{ sms: boolean; email: boolean }> {
-  const message = `Your order #${order.id} status changed to ${status}.`;
   const sent = { sms: false, email: false };
 
-  if (user.contactPhone && shouldSendNotificationChannel(user.notificationPreferences, "sms")) {
-    const sendSms = callbacks.sms;
-    if (sendSms) {
-      await sendSms({ user, order, status, message });
+  if (shouldSendNotificationChannel(raw, "sms")) {
+    if (senders.sms) {
+      await senders.sms();
       sent.sms = true;
     } else {
-      logger.debug({ userId: user.id, orderId: order.id, status }, "SMS order status notification allowed but no sender configured");
+      logger.debug("SMS order status notification allowed but no sender configured");
     }
   }
 
-  if (user.email && shouldSendNotificationChannel(user.notificationPreferences, "email")) {
-    const sendEmail = callbacks.email;
-    if (sendEmail) {
-      await sendEmail({ user, order, status, message });
+  if (shouldSendNotificationChannel(raw, "email")) {
+    if (senders.email) {
+      await senders.email();
       sent.email = true;
     } else {
-      logger.debug({ userId: user.id, orderId: order.id, status }, "Email order status notification allowed but no sender configured");
+      logger.debug("Email order status notification allowed but no sender configured");
     }
   }
 

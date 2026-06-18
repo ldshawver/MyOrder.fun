@@ -28,6 +28,7 @@ export default function AdminRolesPermissions() {
     const block = data.roles.find((r) => r.role === role);
     const permissions = Object.fromEntries(
       (block?.permissions ?? [])
+        .filter((permission) => permission.editable)
         .map((permission) => [permission.permission || permission.key, permission.enabled] as const)
         .filter((entry): entry is readonly [string, boolean] => Boolean(entry[0])),
     );

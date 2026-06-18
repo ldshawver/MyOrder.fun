@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
 import { syncUserToClerk, syncProfileToClerk, syncAvatarToClerk } from "../lib/clerkSync";
+import { normalizeNotificationPreferences, notificationPreferencesSchema } from "../lib/notificationPrefs";
 
 // E.164-ish: optional leading +, then digits/spaces/dashes, total 7–20 chars.
 const PHONE_REGEX = /^\+?[\d\s-]{7,20}$/;
@@ -39,10 +40,7 @@ const UpdateCurrentUserBody = z.object({
       message: "avatarUrl must be an http(s) URL or uploaded image",
     })
     .nullish(),
-  notificationPreferences: z.object({
-    orderAlerts: z.enum(["in_app", "silent", "sound", "vibrate"]).default("sound"),
-    platformUpdates: z.enum(["in_app", "silent", "sound", "vibrate"]).default("in_app"),
-  }).nullish(),
+  notificationPreferences: notificationPreferencesSchema.nullish(),
 });
 
 const router: IRouter = Router();
@@ -100,7 +98,7 @@ async function ensureUsersListSchema(): Promise<void> {
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_name" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "notification_preferences" jsonb DEFAULT '{"orderAlerts":"sound","platformUpdates":"in_app"}'::jsonb`,
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "notification_preferences" jsonb DEFAULT '{"inAppAlerts":true,"smsTexts":true,"emails":true,"inAppAlertMode":"sound"}'::jsonb`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
@@ -194,7 +192,7 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
     lastName: user.lastName ?? undefined,
     contactPhone: user.contactPhone ?? undefined,
     avatarUrl: user.avatarUrl ?? undefined,
-    notificationPreferences: user.notificationPreferences ?? { orderAlerts: "sound", platformUpdates: "in_app" },
+    notificationPreferences: normalizeNotificationPreferences(user.notificationPreferences),
     role: normalizeRole(user.role),
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,

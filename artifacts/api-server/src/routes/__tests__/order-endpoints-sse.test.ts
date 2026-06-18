@@ -349,6 +349,7 @@ describe("SSE event emission via the live route handlers", () => {
     const orderId = dbState.orders[0]!.id as number;
 
     const adminCapture = captureEvents("admin", 999);
+    dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     mockActor = dbState.users[1]!; // CSR accepts
     const res = await supertest(buildApp())
       .post(`/api/orders/${orderId}/accept`)
@@ -387,6 +388,7 @@ describe("SSE event emission via the live route handlers", () => {
       .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
     const orderId = dbState.orders[0]!.id as number;
     dbState.orders[0]!.fulfillmentStatus = "preparing";
+    dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     mockActor = dbState.users[1]!;
     const res = await supertest(buildApp())
       .post(`/api/orders/${orderId}/accept`)

@@ -2365,13 +2365,18 @@ components:
           nullable: true
         notificationPreferences:
           type: object
+          additionalProperties: false
           properties:
-            orderAlerts:
+            inAppAlerts:
+              type: boolean
+            smsTexts:
+              type: boolean
+            emails:
+              type: boolean
+            inAppAlertMode:
               type: string
-              enum: [in_app, silent, sound, vibrate]
-            platformUpdates:
-              type: string
-              enum: [in_app, silent, sound, vibrate]
+              enum: [silent, sound, vibrate, sound_vibrate]
+          required: [inAppAlerts, smsTexts, emails, inAppAlertMode]
         createdAt:
           type: string
           format: date-time
@@ -2392,13 +2397,18 @@ components:
           type: string
         notificationPreferences:
           type: object
+          additionalProperties: false
           properties:
-            orderAlerts:
+            inAppAlerts:
+              type: boolean
+            smsTexts:
+              type: boolean
+            emails:
+              type: boolean
+            inAppAlertMode:
               type: string
-              enum: [in_app, silent, sound, vibrate]
-            platformUpdates:
-              type: string
-              enum: [in_app, silent, sound, vibrate]
+              enum: [silent, sound, vibrate, sound_vibrate]
+          required: [inAppAlerts, smsTexts, emails, inAppAlertMode]
           nullable: true
         avatarUrl:
           type: string
