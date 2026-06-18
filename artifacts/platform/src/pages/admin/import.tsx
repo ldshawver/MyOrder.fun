@@ -15,28 +15,32 @@ import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 // ─── Template column reference (Alavont import spec) ─────────────────────────
 const REQUIRED_TEMPLATE_HEADERS = [
-  "regular_price",
-  "alavont_image",
-  "alavont_name",
-  "alavont_desc",
-  "alavont_category",
-  "alavont_in_stock",
-  "alavont_id",
-  "Quantity",
-  "Unit",
-  "lucifer_cruz_name",
-  "lucifer_cruz_image",
-  "lucifer_cruz_desc",
-  "lucifer_cruz_category",
-  "lucifer_cruz_Inventory",
+  "sku",
+  "name",
+  "category",
+  "price",
 ];
 
-const OPTIONAL_TEMPLATE_HEADERS = ["Sale_price"];
-
 const TEMPLATE_HEADERS = [
-  ...REQUIRED_TEMPLATE_HEADERS.slice(0, 9),
-  ...OPTIONAL_TEMPLATE_HEADERS,
-  ...REQUIRED_TEMPLATE_HEADERS.slice(9),
+  "sku",
+  "name",
+  "description",
+  "category",
+  "brand",
+  "price",
+  "unit",
+  "quantity_size",
+  "active",
+  "image_url",
+  "safe_name",
+  "safe_description",
+  "safe_category",
+  "safe_image_url",
+  "inventory_location",
+  "current_inventory",
+  "par_level",
+  "reorder_threshold",
+  "sort_order",
 ];
 
 type ImportTemplateColumn = {
@@ -655,6 +659,7 @@ export default function AdminImport() {
 
   const [dryRun, setDryRun] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [rollbackBusy, setRollbackBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -764,6 +769,10 @@ export default function AdminImport() {
 
   async function handleImport() {
     if (!file) return;
+    if (!dryRun) {
+      const ok = window.confirm("Live catalog import can overwrite product, inventory, and par values. A rollback snapshot will be created before changes. Continue?");
+      if (!ok) return;
+    }
     setImporting(true);
     setError(null);
     setResult(null);
@@ -781,7 +790,7 @@ export default function AdminImport() {
         formData.append("userMapping", JSON.stringify(serverMapping));
       }
 
-      const res = await fetch(`/api/admin/products/import?dryRun=${dryRun}`, {
+      const res = await fetch(`/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -810,7 +819,7 @@ export default function AdminImport() {
           setDebugEntries(prev => [{
             label: dryRun ? "Dry Run Import (failed)" : "Live Import (failed)",
             method: "POST",
-            endpoint: `/api/admin/products/import?dryRun=${dryRun}`,
+            endpoint: `/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`,
             status: res.status,
             response: data,
             timestamp: new Date().toLocaleTimeString(),
@@ -823,7 +832,7 @@ export default function AdminImport() {
         setDebugEntries(prev => [{
           label: dryRun ? "Dry Run Import" : "Live Import",
           method: "POST",
-          endpoint: `/api/admin/products/import?dryRun=${dryRun}`,
+          endpoint: `/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`,
           status: res.status,
           response: data,
           timestamp: new Date().toLocaleTimeString(),
@@ -886,6 +895,47 @@ export default function AdminImport() {
     URL.revokeObjectURL(url);
   }
 
+  async function downloadExport() {
+    const token = await getToken();
+    const res = await fetch("/api/admin/products/export", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      setError(`Could not export catalog (HTTP ${res.status})`);
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "catalog_export.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function rollbackLatestImport() {
+    const ok = window.confirm("Undo the latest catalog import for this tenant? This restores the previous catalog, inventory, and par snapshot.");
+    if (!ok) return;
+    setRollbackBusy(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/products/import/rollback", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? `Rollback failed (HTTP ${res.status})`);
+        return;
+      }
+      setResult({ inserted: 0, updated: 0, skipped: 0, errors: [], warnings: [`Rollback restored ${data.restoredCatalog ?? 0} catalog rows and ${data.restoredInventoryTemplates ?? 0} inventory rows.`] });
+      queryClient.invalidateQueries({ queryKey: ["listCatalogItems"] });
+    } catch {
+      setError("Could not reach the server to rollback the latest import.");
+    } finally {
+      setRollbackBusy(false);
+    }
+  }
+
   function reset() {
     setFile(null);
     setIsXlsx(false);
@@ -936,6 +986,12 @@ export default function AdminImport() {
         <Button variant="outline" size="sm" className="gap-2 rounded-xl" onClick={() => void downloadTemplate()}>
           <Download size={14} /> Download Template CSV
         </Button>
+        <Button variant="outline" size="sm" className="gap-2 rounded-xl" onClick={() => void downloadExport()}>
+          <Download size={14} /> Export Catalog CSV
+        </Button>
+        <Button variant="outline" size="sm" className="gap-2 rounded-xl text-amber-300" onClick={() => void rollbackLatestImport()} disabled={rollbackBusy}>
+          {rollbackBusy ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />} Undo Latest Import
+        </Button>
 
         <button
           type="button"
@@ -969,7 +1025,7 @@ export default function AdminImport() {
           >
             <FileText size={36} className="mx-auto mb-4 text-muted-foreground/40" />
             <p className="font-semibold text-sm mb-1">Drop your CSV or Excel file here, or click to browse</p>
-            <p className="text-xs text-muted-foreground mb-4">Accepts .csv and .xlsx · Max 10 MB</p>
+            <p className="text-xs text-muted-foreground mb-4">Accepts .csv and .xlsx · Max 5 MB</p>
             <div className="flex flex-wrap justify-center gap-1.5">
               {importSpec.columns.filter(c => c.required).map(c => (
                 <span key={c.canonical} className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full border border-red-500/30 bg-red-500/10 text-red-300">
