@@ -48,7 +48,12 @@ import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { sendOrderStatusSmsEmailIfAllowed } from "../lib/notificationPrefs";
-import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
+import {
+  decideRouting,
+  reassignOrder,
+  listActiveCsrs,
+  isShiftOrderRoutable,
+} from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
