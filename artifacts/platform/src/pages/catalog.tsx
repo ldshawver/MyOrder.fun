@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import {
   useListCatalogItems,
-  useCreateCatalogItem,
   useUpdateCatalogItem,
   useGetCurrentUser,
   getListCatalogItemsQueryKey,
@@ -11,7 +10,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, Plus, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash } from "lucide-react";
+import { Search, Edit2, Package, ImageOff, ShoppingCart, FlaskConical, Flame, Trash } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
 import { useCart } from "@/contexts/CartContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
@@ -32,6 +31,24 @@ const LC_MAIN_CATEGORIES = [
 ];
 
 const DEFAULT_CATALOG_BANNERS = ["/banners/banner1.png", "/banners/banner2.png", "/banners/banner3.png"];
+
+function getSafeImageSrc(src: string | null | undefined): string | null {
+  const trimmed = src?.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
+
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function getSafeImageSources(sources: string[]): string[] {
+  const safeSources = sources.map(getSafeImageSrc).filter((src): src is string => Boolean(src));
+  return safeSources.length ? safeSources : DEFAULT_CATALOG_BANNERS;
+}
 
 type ExtendedCatalogItem = CatalogItem & {
   luciferCruzName?: string | null;
@@ -785,70 +802,6 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
   );
 }
 
-function AddItemDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const emptyForm = emptyCatalogForm();
-  const [form, setForm] = useState<CatalogItemForm>(emptyForm);
-  const createMutation = useCreateCatalogItem();
-  const queryClient = useQueryClient();
-
-  const handleCreate = () => {
-    if (!form.name || !form.price || !form.category) return;
-    const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
-    createMutation.mutate(
-      {
-        data: {
-          name: form.name,
-          description: form.description || undefined,
-          price: parseFloat(form.price),
-          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
-          regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
-          homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
-          category: form.category,
-          sku: form.sku || undefined,
-          imageUrl: form.imageUrl || undefined,
-          mediaGallery,
-          stockQuantity: parseInt(form.stockQuantity) || 0,
-          isAvailable: true,
-          isFeatured: form.isFeatured,
-          isSaleFeatured: form.isSaleFeatured,
-          alavontName: form.alavontName || undefined,
-          alavontDescription: form.alavontDescription || undefined,
-          alavontCategory: form.alavontCategory || undefined,
-          alavontImageUrl: form.alavontImageUrl || undefined,
-          alavontInStock: form.alavontInStock,
-        },
-      },
-      {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
-          setForm(emptyCatalogForm());
-          onClose();
-        },
-      }
-    );
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={() => onClose()}>
-      <DialogContent className="max-w-lg rounded-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="text-sm font-bold uppercase tracking-wider">Add Menu Item</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3 pt-2">
-          <ItemFormFields form={form} setForm={setForm} />
-          <MediaGalleryFields form={form} setForm={setForm} />
-          <Button
-            className="w-full rounded-xl"
-            onClick={handleCreate}
-            disabled={createMutation.isPending || !form.name || !form.price || !form.category}
-          >
-            {createMutation.isPending ? "Adding..." : "Add to Menu"}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 export default function Catalog() {
   const { getToken } = useAuth();
@@ -860,7 +813,6 @@ export default function Catalog() {
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
   );
   const [editItem, setEditItem] = useState<ExtendedCatalogItem | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
 
   useEffect(() => {
     setBrand(menuMode === "lucifer" ? "lucifer_cruz" : "alavont");
@@ -875,7 +827,7 @@ export default function Catalog() {
         if (!res.ok) return;
         const body = await res.json();
         if (!cancelled && Array.isArray(body.catalogBannerImages) && body.catalogBannerImages.length) {
-          setBannerImages(body.catalogBannerImages);
+          setBannerImages(getSafeImageSources(body.catalogBannerImages));
         }
       } catch {
         // Admin settings are optional for storefront rendering.
@@ -930,15 +882,15 @@ export default function Catalog() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Hero/header: banner sits behind the title and brand buttons. */}
-      <div className="relative overflow-hidden rounded-3xl border border-border/30 min-h-[380px] md:min-h-[460px] catalog-hero">
+      <div className="relative overflow-hidden rounded-3xl border border-border/30 bg-background/95 min-h-[260px] sm:min-h-[320px] md:min-h-[420px] catalog-hero" data-testid="catalog-hero-banner">
         {!isLC && (
           <div className="absolute inset-0 z-0">
-            {bannerImages.map((src, index) => (
+            {getSafeImageSources(bannerImages).map((src, index) => (
               <img
                 key={src}
                 src={src}
                 alt=""
-                className="absolute inset-0 h-full w-full object-cover catalog-hero-frame"
+                className="absolute inset-0 h-full w-full object-contain catalog-hero-frame"
                 style={{ animationDelay: `${index * 10}s` }}
               />
             ))}
@@ -947,77 +899,37 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="relative z-10 flex min-h-[380px] md:min-h-[460px] flex-col justify-between gap-6 p-5 md:p-8">
-          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-            <div className="max-w-2xl rounded-2xl bg-background/35 p-4 backdrop-blur-sm border border-border/20">
-              <h1
-                className="text-3xl md:text-5xl font-bold tracking-tight drop-shadow-lg"
-                data-testid="text-title"
+        <div className="relative z-10 flex min-h-[260px] sm:min-h-[320px] md:min-h-[420px] flex-col justify-start gap-6 p-4 sm:p-5 md:p-8">
+          <div className="flex justify-end">
+            <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
+              <button
+                onClick={() => setMenuMode("alavont")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                  !isLC ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20" : "text-muted-foreground hover:text-foreground"
+                }`}
+                data-testid="tab-alavont"
               >
-                {isLC ? "Lucifer Cruz" : "Menu"}
-              </h1>
-              <p className="text-sm md:text-base text-muted-foreground mt-2" data-testid="text-subtitle">
-                {isLC ? "Adult boutique items available for ordering" : "Browse sales, packages, and the Alavont catalog"}
-              </p>
+                <FlaskConical size={12} />
+                Alavont Therapeutics
+              </button>
+              <button
+                onClick={() => setMenuMode("lucifer")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                  isLC ? "text-white" : "text-muted-foreground hover:text-foreground"
+                }`}
+                style={isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", boxShadow: "0 4px 16px rgba(220,20,60,0.35)" } : {}}
+                data-testid="tab-lucifer"
+              >
+                <Flame size={12} />
+                Lucifer Cruz
+              </button>
             </div>
-            <div className="flex items-center gap-2 shrink-0 relative z-20">
-              {canEdit && !isLC && (
-                <Button size="sm" className="rounded-xl text-xs h-9 shadow-lg" onClick={() => setAddOpen(true)} data-testid="button-add-product">
-                  <Plus size={13} className="mr-1.5" /> Add Item
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div className="relative z-20 inline-flex w-fit p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl">
-            <button
-              onClick={() => setMenuMode("alavont")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-                !isLC ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20" : "text-muted-foreground hover:text-foreground"
-              }`}
-              data-testid="tab-alavont"
-            >
-              <FlaskConical size={12} />
-              Alavont Therapeutics
-            </button>
-            <button
-              onClick={() => setMenuMode("lucifer")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
-                isLC ? "text-white" : "text-muted-foreground hover:text-foreground"
-              }`}
-              style={isLC ? { background: "linear-gradient(135deg, #DC143C, #8B0000)", boxShadow: "0 4px 16px rgba(220,20,60,0.35)" } : {}}
-              data-testid="tab-lucifer"
-            >
-              <Flame size={12} />
-              Lucifer Cruz
-            </button>
           </div>
         </div>
       </div>
 
-      {/* LC branded banner */}
-      {isLC && (
-        <div
-          className="rounded-2xl p-4 border flex items-center gap-3"
-          style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.04)" }}
-        >
-          <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
-          <p className="text-xs" style={{ color: "#C0C0C0" }}>
-            All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
-      {!isLC && (
-        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
-          <p className="text-xs text-muted-foreground">
-            Alavont Thereputics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
       {/* Filters */}
-      <div className="flex gap-2 flex-wrap items-center">
+      <div className="relative z-30 -mt-12 flex gap-2 flex-wrap items-center rounded-2xl border border-border/30 bg-background/80 p-3 shadow-xl backdrop-blur-md md:-mt-16">
         <div className="relative min-w-[180px] max-w-xs">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -1047,6 +959,27 @@ export default function Catalog() {
           ))}
         </div>
       </div>
+
+      {/* LC branded banner */}
+      {isLC && (
+        <div
+          className="rounded-2xl p-4 border flex items-center gap-3"
+          style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.04)" }}
+        >
+          <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
+          <p className="text-xs" style={{ color: "#C0C0C0" }}>
+            All transactions are private and discreet.
+          </p>
+        </div>
+      )}
+
+      {!isLC && (
+        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
+          <p className="text-xs text-muted-foreground">
+            Alavont Thereputics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
+          </p>
+        </div>
+      )}
 
       {/* Grid */}
       {isLoading ? (
@@ -1100,11 +1033,6 @@ export default function Catalog() {
                     ? "No products in the catalog yet. Import a CSV from the Import Menu page."
                     : "No products available right now. Check back soon."}
               </div>
-              {canEdit && !isLC && (
-                <Button size="sm" className="mt-5 rounded-xl" onClick={() => setAddOpen(true)}>
-                  <Plus size={12} className="mr-1.5" /> Add First Item
-                </Button>
-              )}
             </>
           )}
         </div>
@@ -1126,7 +1054,6 @@ export default function Catalog() {
 
       {/* Dialogs */}
       <EditItemDialog item={editItem} open={!!editItem} onClose={() => setEditItem(null)} />
-      <AddItemDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </div>
   );
 }
