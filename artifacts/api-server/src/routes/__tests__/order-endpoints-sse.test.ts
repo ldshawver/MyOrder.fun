@@ -132,7 +132,7 @@ vi.mock("@workspace/db", () => {
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
-  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand" };
+  const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", quarantineStatus: "quarantineStatus", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderItems: Array<Record<string, unknown>> = [];
 

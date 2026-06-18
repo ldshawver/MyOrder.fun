@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
-  Package, MapPin, BarChart3,
+  Package, MapPin, BarChart3, AlertTriangle, ShieldOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -812,6 +812,8 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
   // Key: `${productId}:${locationId}`
   const [cells, setCells] = useState<Record<string, LocCellState>>({});
   const [pettyCash, setPettyCash] = useState<string>("0.00");
+  const [orphanBalances, setOrphanBalances] = useState<OrphanBalanceItem[]>([]);
+  const [orphanActionError, setOrphanActionError] = useState<string | null>(null);
   const [pettyCashDirty, setPettyCashDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -835,6 +837,14 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
       setItems(itemsData);
       setLocations(locData);
       setPettyCash(parseFloat(String(data.pettyCash ?? 0)).toFixed(2));
+
+      const orphanRes = await fetch("/api/admin/inventory/orphans", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (orphanRes.ok) {
+        const orphanData = await orphanRes.json();
+        setOrphanBalances(orphanData.items ?? []);
+      }
 
       const init: Record<string, LocCellState> = {};
       for (const item of itemsData) {
@@ -909,6 +919,26 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
       return next;
     });
     setSaving(false);
+  }
+
+
+  async function updateOrphanBalance(id: number, patch: Partial<Pick<OrphanBalanceItem, "inventoryKind" | "quarantineStatus" | "quarantineReason">>) {
+    setOrphanActionError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/inventory/orphans/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? "Failed to update inventory quarantine status");
+      }
+      await fetchInventory();
+    } catch (e: unknown) {
+      setOrphanActionError(e instanceof Error ? e.message : "Failed to update inventory quarantine status");
+    }
   }
 
   async function ensureAllBalances() {
@@ -988,6 +1018,46 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
           </Button>
         </div>
       </div>
+
+
+      {orphanBalances.length > 0 && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="mt-0.5 text-amber-300" />
+            <div>
+              <div className="text-sm font-bold text-amber-200">Inventory quarantine report</div>
+              <p className="text-xs text-amber-100/80">
+                {orphanBalances.length} balance row{orphanBalances.length === 1 ? "" : "s"} are excluded from customer ordering and sellable stock because they do not resolve to active catalog inventory or are marked as non-sellable supplies.
+              </p>
+            </div>
+          </div>
+          {orphanActionError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">{orphanActionError}</div>
+          )}
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {orphanBalances.slice(0, 9).map(row => (
+              <div key={row.id} className="rounded-xl border border-amber-500/20 bg-background/40 p-3 text-xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">Balance #{row.id}</span>
+                  <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-200">{row.reason.replaceAll("_", " ")}</Badge>
+                </div>
+                <div className="text-muted-foreground">
+                  Product: {row.productName ?? `missing catalog #${row.productId}`} · Location: {row.locationName ?? `missing location #${row.locationId}`}
+                </div>
+                <div className="font-mono text-[11px]">qty {row.quantityOnHand} · par {row.parLevel}</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" className="h-7 gap-1 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { inventoryKind: "non_sellable_supply", quarantineStatus: "quarantined", quarantineReason: "Classified by admin as non-sellable supply" })}>
+                    <ShieldOff size={11} /> Mark supply
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void updateOrphanBalance(row.id, { quarantineStatus: "quarantined", quarantineReason: "Quarantined by admin for inventory cleanup" })}>
+                    Quarantine
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Per-location grid */}
       <div className="overflow-x-auto rounded-2xl border border-border/30">
