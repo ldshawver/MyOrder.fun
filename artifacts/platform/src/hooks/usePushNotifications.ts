@@ -30,23 +30,24 @@ interface UsePushNotificationsOptions {
   onPermissionGranted?: () => void;
 }
 
-type NotificationMode = "in_app" | "silent" | "sound" | "vibrate";
+type NotificationMode = "silent" | "sound" | "vibrate" | "sound_vibrate";
 type NotificationChannel = "orderAlerts" | "platformUpdates";
 
-function getNotificationMode(channel: NotificationChannel): NotificationMode {
+function getNotificationMode(_channel: NotificationChannel): NotificationMode | "off" {
   try {
     const raw = localStorage.getItem("notification_preferences");
     if (raw) {
       const parsed = JSON.parse(raw);
-      const mode = parsed?.[channel];
-      if (mode === "in_app" || mode === "silent" || mode === "sound" || mode === "vibrate") return mode;
+      if (parsed?.inAppAlerts === false) return "off";
+      const mode = parsed?.inAppAlertMode ?? parsed?.[_channel];
+      if (mode === "silent" || mode === "sound" || mode === "vibrate" || mode === "sound_vibrate") return mode;
     }
   } catch {
     // Ignore malformed local preferences.
   }
   const legacy = localStorage.getItem("notification_mode");
   if (legacy === "silent" || legacy === "sound" || legacy === "vibrate") return legacy;
-  return channel === "orderAlerts" ? "sound" : "in_app";
+  return "sound";
 }
 
 function playNotificationTone() {
@@ -93,10 +94,10 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
 
   const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png", channel: NotificationChannel = "platformUpdates") => {
     const mode = getNotificationMode(channel);
-    if (mode === "silent") return;
-    if (mode === "sound") playNotificationTone();
-    if (mode === "vibrate" && "vibrate" in navigator) navigator.vibrate([90, 40, 90]);
-    if (mode === "in_app" || !("Notification" in window) || Notification.permission !== "granted") return;
+    if (mode === "off") return;
+    if (mode === "sound" || mode === "sound_vibrate") playNotificationTone();
+    if ((mode === "vibrate" || mode === "sound_vibrate") && "vibrate" in navigator) navigator.vibrate([90, 40, 90]);
+    if (mode === "silent" || !("Notification" in window) || Notification.permission !== "granted") return;
     const n = new Notification(title, {
       body,
       icon,

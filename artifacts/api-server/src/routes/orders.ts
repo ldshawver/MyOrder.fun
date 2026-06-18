@@ -44,6 +44,7 @@ import {
 } from "../lib/checkoutNormalizer";
 import { z } from "zod";
 import { logger } from "../lib/logger";
+import { sendOrderStatusSmsEmailIfAllowed, shouldSendNotificationChannel } from "../lib/notificationPrefs";
 import { decideRouting, reassignOrder, listActiveCsrs } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
@@ -1438,16 +1439,33 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
     } catch { /* non-critical */ }
   }
 
-  // In-app notification to customer
+  // In-app notification to customer. Channel opt-outs are enforced server-side so clients cannot force sends.
   try {
-    await db.insert(notificationsTable).values({
-      userId: order.customerId,
-      type: "order_status",
-      title: `Order #${order.id} status updated`,
-      message: `Your order status changed to ${body.data.status}.`,
-      resourceType: "order",
-      resourceId: order.id,
-    });
+    const [customerPrefs] = await db
+      .select({ notificationPreferences: usersTable.notificationPreferences })
+      .from(usersTable)
+      .where(and(
+        eq(usersTable.id, order.customerId),
+        eq(usersTable.tenantId, order.tenantId),
+      ))
+      .limit(1);
+
+    if (customerPrefs && shouldSendNotificationChannel(customerPrefs.notificationPreferences, "in_app")) {
+      await db.insert(notificationsTable).values({
+        userId: order.customerId,
+        type: "order_status",
+        title: `Order #${order.id} status updated`,
+        message: `Your order status changed to ${body.data.status}.`,
+        resourceType: "order",
+        resourceId: order.id,
+      });
+    }
+
+    if (customerPrefs) {
+      // No active order-status SMS/email sender is configured here today. Future senders must be
+      // registered in this helper so SMS/email opt-outs are checked immediately before each send.
+      await sendOrderStatusSmsEmailIfAllowed(customerPrefs.notificationPreferences, {});
+    }
   } catch { /* non-critical */ }
   await writeAuditLog({
     actorId: actor.id,
