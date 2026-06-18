@@ -7,6 +7,7 @@ import { clerkMiddleware } from "@clerk/express";
 import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxyMiddleware";
 import router from "./routes";
 import healthRouter from "./routes/health";
+import twilioVoiceRouter from "./routes/twilio-voice";
 import { logger } from "./lib/logger";
 import { submitOnboardingRequestHandler } from "./routes/onboarding";
 
@@ -114,6 +115,37 @@ app.get("/healthz", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 app.use("/api", healthRouter);
+
+
+// ── LUXit emergency PWA/voice public fallbacks ──────────────────────────────
+function sendLuxitFallbackShell(res: Response): void {
+  res
+    .status(200)
+    .setHeader("Content-Type", "text/html; charset=utf-8")
+    .setHeader("Cache-Control", "no-store, max-age=0")
+    .send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LUXit Inbox</title>
+  <style>body{margin:0;background:#0A0000;color:#C0C0C0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}.card{max-width:560px;border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:28px;background:rgba(255,255,255,.04);box-shadow:0 20px 80px rgba(139,0,0,.25)}h1{font-size:18px;letter-spacing:.2em;text-transform:uppercase}p{color:#999;line-height:1.6}.btn{display:inline-block;margin-top:14px;padding:12px 16px;border-radius:12px;background:#8B0000;color:#fff;text-decoration:none;text-transform:uppercase;font-size:12px;letter-spacing:.16em}</style>
+</head>
+<body><main class="wrap"><section class="card"><h1>LUXit Inbox</h1><p>The inbox shell is online. Conversations could not be loaded safely, so no local messages were cleared. Please retry in a moment.</p><a class="btn" href="/app/inbox" onclick="location.reload();return false;">Retry</a></section></main><script>if('serviceWorker' in navigator){navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.update&&r.update())).catch(()=>{});}</script></body>
+</html>`);
+}
+
+app.use(twilioVoiceRouter);
+app.get("/login", (_req, res) => res.redirect(302, "/sign-in"));
+app.get(["/app", "/app/", "/app/inbox"], (req, res) => {
+  try {
+    req.log?.info({ path: req.originalUrl }, "LUXit inbox fallback shell served");
+    sendLuxitFallbackShell(res);
+  } catch (err) {
+    logger.error({ err, path: req.originalUrl }, "LUXit inbox fallback shell failed");
+    if (!res.headersSent) sendLuxitFallbackShell(res);
+  }
+});
 
 // Public access-request form. Mount this before Clerk so brand-new visitors
 // can request access even when they have no session or a stale Clerk cookie.
