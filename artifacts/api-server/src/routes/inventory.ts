@@ -7,13 +7,20 @@ import {
   inventoryBalancesTable,
   inventoryLocationsTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
   ensureStandardLocations,
   ensureAllInventoryBalances,
 } from "../lib/inventoryBalances";
+import {
+  ensureInventoryBalanceClassificationSchema,
+  getInventoryHealthReport,
+  sellableBalanceWhere,
+  INVENTORY_KIND_NON_SELLABLE_SUPPLY,
+  INVENTORY_KIND_SELLABLE,
+} from "../lib/inventoryHealth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -72,6 +79,7 @@ async function ensureInventorySchema(): Promise<void> {
     END $$`,
   ];
   for (const stmt of stmts) await db.execute(stmt);
+  await ensureInventoryBalanceClassificationSchema();
   inventorySchemaEnsured = true;
 }
 
@@ -83,6 +91,7 @@ async function recomputeCatalogInventoryTotals(tenantId: number, productId: numb
     .where(and(
       eq(inventoryBalancesTable.tenantId, tenantId),
       eq(inventoryBalancesTable.productId, productId),
+      sellableBalanceWhere(),
     ));
 
   await db
@@ -98,6 +107,21 @@ async function recomputeCatalogInventoryTotals(tenantId: number, productId: numb
     ));
 }
 
+
+async function resolveInventoryTenantId(req: import("express").Request): Promise<number> {
+  const actor = req.dbUser!;
+  const role = normalizeRole(actor.role);
+  if (role === "global_admin") {
+    const requested = req.query.tenantId ? Number(req.query.tenantId) : undefined;
+    if (requested && Number.isInteger(requested) && requested > 0) return requested;
+  }
+  return actor.tenantId ?? await getHouseTenantId();
+}
+
+const balanceIdParams = z.object({ id: z.coerce.number().int().positive() }).strict();
+const quarantineBody = z.object({ reason: z.string().trim().min(1).max(500).optional() }).strict();
+const classifyBody = z.object({ inventoryKind: z.enum([INVENTORY_KIND_SELLABLE, INVENTORY_KIND_NON_SELLABLE_SUPPLY]) }).strict();
+
 router.use(async (_req, res, next) => {
   try {
     await ensureInventorySchema();
@@ -107,6 +131,87 @@ router.use(async (_req, res, next) => {
   }
 });
 
+// ─── GET /api/admin/inventory/health ─────────────────────────────────────────
+router.get(
+  "/admin/inventory/health",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const tenantId = await resolveInventoryTenantId(req);
+    const report = await getInventoryHealthReport(tenantId);
+    res.json({ tenantId, ...report });
+  }
+);
+
+// ─── POST /api/admin/inventory/balances/:id/quarantine ───────────────────────
+router.post(
+  "/admin/inventory/balances/:id/quarantine",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const params = balanceIdParams.safeParse(req.params);
+    const body = quarantineBody.safeParse(req.body);
+    if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
+    if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+    const tenantId = await resolveInventoryTenantId(req);
+    const [current] = await db.select().from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, params.data.id)))
+      .limit(1);
+    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
+
+    const [updated] = await db.update(inventoryBalancesTable).set({
+      isSellable: false,
+      inventoryKind: current.inventoryKind === INVENTORY_KIND_NON_SELLABLE_SUPPLY ? INVENTORY_KIND_NON_SELLABLE_SUPPLY : INVENTORY_KIND_SELLABLE,
+      quarantinedAt: new Date(),
+      quarantinedByUserId: actor.id,
+      quarantineReason: body.data.reason ?? "Quarantined from inventory health report",
+    }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, current.id))).returning();
+
+    await recomputeCatalogInventoryTotals(tenantId, current.productId);
+    await writeAuditLog({
+      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId,
+      action: "INVENTORY_BALANCE_QUARANTINED", resourceType: "inventory_balance", resourceId: String(current.id),
+      metadata: { productId: current.productId, locationId: current.locationId, reason: body.data.reason ?? null }, ipAddress: req.ip,
+    });
+    res.json({ balance: updated });
+  }
+);
+
+// ─── POST /api/admin/inventory/balances/:id/classify ─────────────────────────
+router.post(
+  "/admin/inventory/balances/:id/classify",
+  requireRole("global_admin", "admin"),
+  async (req, res): Promise<void> => {
+    const actor = req.dbUser!;
+    const params = balanceIdParams.safeParse(req.params);
+    const body = classifyBody.safeParse(req.body);
+    if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
+    if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+    const tenantId = await resolveInventoryTenantId(req);
+    const [current] = await db.select().from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, params.data.id)))
+      .limit(1);
+    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
+
+    const isSupply = body.data.inventoryKind === INVENTORY_KIND_NON_SELLABLE_SUPPLY;
+    const [updated] = await db.update(inventoryBalancesTable).set({
+      inventoryKind: body.data.inventoryKind,
+      isSellable: !isSupply,
+      quarantinedAt: isSupply ? current.quarantinedAt : null,
+      quarantinedByUserId: isSupply ? current.quarantinedByUserId : null,
+      quarantineReason: isSupply ? current.quarantineReason : null,
+    }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, current.id))).returning();
+
+    await recomputeCatalogInventoryTotals(tenantId, current.productId);
+    await writeAuditLog({
+      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId,
+      action: isSupply ? "INVENTORY_BALANCE_CLASSIFIED_NON_SELLABLE" : "INVENTORY_BALANCE_RESTORED_SELLABLE",
+      resourceType: "inventory_balance", resourceId: String(current.id),
+      metadata: { productId: current.productId, locationId: current.locationId, from: current.inventoryKind, to: body.data.inventoryKind }, ipAddress: req.ip,
+    });
+    res.json({ balance: updated });
+  }
+);
+
 // ─── GET /api/admin/inventory ─────────────────────────────────────────────────
 // Returns all non-WooManaged catalog products with per-location breakdown from
 // inventory_balances, plus the list of active locations and petty cash total.
@@ -114,7 +219,7 @@ router.get(
   "/admin/inventory",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = await resolveInventoryTenantId(req);
     await ensureStandardLocations(houseTenantId);
 
     const [products, locations, balances, settingsRows] = await Promise.all([
@@ -149,7 +254,7 @@ router.get(
       db
         .select()
         .from(inventoryBalancesTable)
-        .where(eq(inventoryBalancesTable.tenantId, houseTenantId)),
+        .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), sellableBalanceWhere())),
       db
         .select({ pettyCash: adminSettingsTable.pettyCash })
         .from(adminSettingsTable)

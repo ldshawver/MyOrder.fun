@@ -34,6 +34,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
@@ -801,6 +802,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             eq(inventoryBalancesTable.tenantId, houseTenantId),
             eq(inventoryBalancesTable.productId, line.catalog_item_id),
             eq(inventoryBalancesTable.locationId, targetLocationId),
+            sellableBalanceWhere(),
             sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
           ))
           .returning({ id: inventoryBalancesTable.id });

@@ -12,6 +12,7 @@ import {
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
+import { ensureInventoryBalanceClassificationSchema } from "./inventoryHealth";
 
 let inventoryTablesEnsured = false;
 
@@ -58,6 +59,7 @@ async function ensureInventoryTablesExist(): Promise<void> {
     END $$`,
   ];
   for (const stmt of stmts) await db.execute(stmt);
+  await ensureInventoryBalanceClassificationSchema();
   inventoryTablesEnsured = true;
 }
 
@@ -133,6 +135,7 @@ export async function ensureAllInventoryBalances(tenantId: number): Promise<{ cr
       .where(and(
         eq(catalogItemsTable.tenantId, tenantId),
         sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
+        eq(catalogItemsTable.isAvailable, true),
       )),
     db
       .select()
