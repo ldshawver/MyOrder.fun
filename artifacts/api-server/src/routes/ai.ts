@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
-import { asc, or, like } from "drizzle-orm";
+import { z } from "zod";
+import { and, asc, or, like, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import {
   AiConciergeChatBody,
@@ -10,6 +11,7 @@ import {
   AiCatalogSearchResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
+import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -55,9 +57,9 @@ async function loadConciergePromptTemplate(): Promise<string> {
   }
 }
 
-async function loadAvailableCatalog(): Promise<Array<typeof catalogItemsTable.$inferSelect>> {
+async function loadAvailableCatalog(tenantId: number): Promise<Array<typeof catalogItemsTable.$inferSelect>> {
   try {
-    return await db.select().from(catalogItemsTable).orderBy(asc(catalogItemsTable.name));
+    return await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.isAvailable, true), eq(catalogItemsTable.alavontInStock, true), eq(catalogItemsTable.isWooManaged, false), sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`)).orderBy(asc(catalogItemsTable.alavontName));
   } catch (err) {
     logger.error({ err }, "AI catalog load failed");
     return [];
@@ -68,9 +70,9 @@ function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
   return {
     id: i.id,
     tenantId: i.tenantId,
-    name: i.name,
-    description: i.description,
-    category: i.category,
+    name: i.alavontName ?? i.name,
+    description: i.alavontDescription ?? i.description,
+    category: i.alavontCategory ?? i.category,
     sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
@@ -78,7 +80,7 @@ function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
       ? parseInt(String(i.stockQuantity), 10)
       : undefined,
     isAvailable: i.isAvailable,
-    imageUrl: i.imageUrl,
+    imageUrl: i.alavontImageUrl ?? i.imageUrl,
     tags: i.tags ?? [],
     metadata: i.metadata,
     createdAt: i.createdAt,
@@ -185,6 +187,45 @@ const CART_TOOLS: OpenAITool[] = [
   },
 ];
 
+
+// GET /api/admin/ai/product-master-options — admin dropdown source for upsells/packages/bundles.
+router.get("/admin/ai/product-master-options", async (req, res): Promise<void> => {
+  const actorRole = req.dbUser?.role;
+  if (actorRole !== "global_admin" && actorRole !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const catalog = await loadAvailableCatalog(tenantId);
+  const options = catalog.map(i => ({
+    id: i.id,
+    label: i.alavontName ?? i.name,
+    category: i.alavontCategory ?? i.category,
+    imageUrl: i.alavontImageUrl ?? i.imageUrl,
+    price: parseFloat(i.price as string),
+  }));
+  res.json({ upsellOptions: options, packageOptions: options, bundleOptions: options });
+});
+
+// PATCH /api/admin/ai/product-master-config — persist catalog-backed AI relationship ids in metadata.
+router.patch("/admin/ai/product-master-config", async (req, res): Promise<void> => {
+  const actorRole = req.dbUser?.role;
+  if (actorRole !== "global_admin" && actorRole !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const body = z.object({
+    catalogItemId: z.number().int().positive(),
+    aiUpsellIds: z.array(z.number().int().positive()).max(50).optional(),
+    packageIds: z.array(z.number().int().positive()).max(50).optional(),
+    bundleIds: z.array(z.number().int().positive()).max(50).optional(),
+  }).strict().safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const ids = [body.data.catalogItemId, ...(body.data.aiUpsellIds ?? []), ...(body.data.packageIds ?? []), ...(body.data.bundleIds ?? [])];
+  const validRows = ids.length ? await db.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.id} = ANY(${ids})`)) : [];
+  const validIds = new Set(validRows.map(r => r.id));
+  if (ids.some(id => !validIds.has(id))) { res.status(400).json({ error: "All AI/package/bundle product IDs must belong to this tenant catalog" }); return; }
+  const [item] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, body.data.catalogItemId))).limit(1);
+  const metadata = { ...(item?.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata) ? item.metadata as Record<string, unknown> : {}), ai: { aiUpsellIds: body.data.aiUpsellIds ?? [], packageIds: body.data.packageIds ?? [], bundleIds: body.data.bundleIds ?? [] } };
+  const [updated] = await db.update(catalogItemsTable).set({ metadata }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, body.data.catalogItemId))).returning();
+  res.json({ item: mapCatalogItem(updated) });
+});
+
 // POST /api/ai/chat
 router.post("/ai/chat", async (req, res): Promise<void> => {
   const body = AiConciergeChatBody.safeParse(req.body);
@@ -193,8 +234,9 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await loadAvailableCatalog();
-  const availableItems = catalog.filter(i => i.isAvailable === true && i.alavontInStock !== false);
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const catalog = await loadAvailableCatalog(tenantId);
+  const availableItems = catalog;
 
   // Build catalog context with IDs so function calling can reference them
   const catalogContext = availableItems
@@ -317,19 +359,23 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
   const q = query.trim().toLowerCase();
 
   try {
+    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
     const catalog = await db.select().from(catalogItemsTable)
-      .where(
+      .where(and(
+        eq(catalogItemsTable.tenantId, tenantId),
+        eq(catalogItemsTable.isAvailable, true),
+        eq(catalogItemsTable.alavontInStock, true),
+        eq(catalogItemsTable.isWooManaged, false),
         or(
-          like(catalogItemsTable.name, `%${q}%`),
-          like(catalogItemsTable.category, `%${q}%`),
-          like(catalogItemsTable.description, `%${q}%`),
+              like(catalogItemsTable.alavontName, `%${q}%`),
+          like(catalogItemsTable.alavontCategory, `%${q}%`),
+          like(catalogItemsTable.alavontDescription, `%${q}%`),
         )
-      )
-      .orderBy(asc(catalogItemsTable.name))
+      ))
+      .orderBy(asc(catalogItemsTable.alavontName))
       .limit(limit);
 
-    const available = catalog.filter(i => i.isAvailable === true);
-    res.json(AiCatalogSearchResponse.parse({ items: available.map(mapCatalogItem), query }));
+    res.json(AiCatalogSearchResponse.parse({ items: catalog.map(mapCatalogItem), query }));
   } catch (err) {
     logger.error({ err, query }, "AI catalog search failed");
     res.json(AiCatalogSearchResponse.parse({ items: [], query }));
@@ -344,12 +390,13 @@ router.post("/ai/upsell", async (req, res): Promise<void> => {
     return;
   }
 
-  const catalog = await loadAvailableCatalog();
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const catalog = await loadAvailableCatalog(tenantId);
   const cartItems = catalog.filter(i => body.data.cartItemIds.includes(i.id));
-  const otherItems = catalog.filter(i => !body.data.cartItemIds.includes(i.id) && i.isAvailable);
+  const otherItems = catalog.filter(i => !body.data.cartItemIds.includes(i.id));
 
-  const cartContext = cartItems.map(i => `${i.name} (${i.category})`).join(", ");
-  const otherContext = otherItems.slice(0, 20).map(i => `[ID:${i.id}] ${i.name} (${i.category}) $${parseFloat(i.price as string).toFixed(2)}`).join("\n");
+  const cartContext = cartItems.map(i => `${i.alavontName ?? i.name} (${i.alavontCategory ?? i.category})`).join(", ");
+  const otherContext = otherItems.slice(0, 20).map(i => `[ID:${i.id}] ${i.alavontName ?? i.name} (${i.alavontCategory ?? i.category}) $${parseFloat(i.price as string).toFixed(2)}`).join("\n");
 
   let reasoning: string;
   let suggestedIds: number[] = [];
