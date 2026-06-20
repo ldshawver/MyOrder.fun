@@ -1,0 +1,39 @@
+name: MyOrder VPS Audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run MyOrder VPS audit
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -euo pipefail
+            hostname
+            whoami
+            cat /etc/os-release || true
+
+            cd "${{ secrets.APP_DIR }}"
+
+            echo "Docker containers:"
+            docker ps || true
+
+            echo "Docker compose:"
+            docker compose ps || true
+
+            echo "Project files:"
+            ls -la
+
+            echo "Health check:"
+            curl -I http://127.0.0.1/api/healthz || true
+            curl -I https://myorder.fun/api/healthz || true
