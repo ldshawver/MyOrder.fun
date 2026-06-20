@@ -108,6 +108,36 @@ function executeRows<T>(result: unknown): T[] {
   return [];
 }
 
+
+const IMPORT_LOCATION_ALIASES: Record<string, string[]> = {
+  "Box 1": ["Box 1", "CSR Sales Box 1"],
+  "Box 2": ["Box 2", "CSR Sales Box 2"],
+  Storefront: ["Storefront"],
+  Backstock: ["Backstock"],
+};
+const IMPORT_LOCATION_META: Record<string, { type: string; displayOrder: number }> = {
+  "Box 1": { type: "csr_box", displayOrder: 3 },
+  "Box 2": { type: "csr_box", displayOrder: 4 },
+  Storefront: { type: "storefront", displayOrder: 2 },
+  Backstock: { type: "backstock", displayOrder: 1 },
+};
+
+async function ensureImportLocationMap(client: ImportDbClient, tenantId: number): Promise<Record<string, typeof inventoryLocationsTable.$inferSelect>> {
+  const locations = await client.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))) as Array<typeof inventoryLocationsTable.$inferSelect>;
+  const byCanonical: Record<string, typeof inventoryLocationsTable.$inferSelect> = {};
+  for (const [canonical, aliases] of Object.entries(IMPORT_LOCATION_ALIASES)) {
+    let loc = locations.find(l => aliases.includes(l.name));
+    if (!loc) {
+      const meta = IMPORT_LOCATION_META[canonical];
+      const [created] = await client.insert(inventoryLocationsTable).values({ tenantId, type: meta.type, csrBoxId: null, name: canonical, isActive: true, displayOrder: meta.displayOrder }).returning();
+      loc = created;
+      locations.push(created);
+    }
+    byCanonical[canonical] = loc;
+  }
+  return byCanonical;
+}
+
 type SnapshotPayload = {
   catalog: Array<typeof catalogItemsTable.$inferSelect>;
   inventoryTemplates: Array<typeof inventoryTemplatesTable.$inferSelect>;
@@ -330,6 +360,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
       const insertedIds: number[] = [];
       const insertedInventoryTemplateIds: number[] = [];
       const createdSnapshotId = await snapshotTenant(tx, tenantId, skus, uploadedFileName, actor.id);
+      const importLocations = await ensureImportLocationMap(tx, tenantId);
       const bySku = new Map(existing.map(e => [e.sku, e.id]));
       for (const p of prepared) {
         const existingId = bySku.get(p.values.sku ?? "");
@@ -342,16 +373,23 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
         if (tmpl) await tx.update(inventoryTemplatesTable).set(patch).where(and(eq(inventoryTemplatesTable.id, tmpl.id), eq(inventoryTemplatesTable.tenantId, tenantId)));
         else { const [createdTemplate] = await tx.insert(inventoryTemplatesTable).values({ tenantId, displayOrder: 0, ...patch }).returning({ id: inventoryTemplatesTable.id }); insertedInventoryTemplateIds.push(createdTemplate.id); }
 
-        const locations = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)));
         for (const [canonicalName, qty] of Object.entries(p.inventory)) {
-          const aliases = canonicalName === "Box 1" ? ["Box 1", "CSR Sales Box 1"] : canonicalName === "Box 2" ? ["Box 2", "CSR Sales Box 2"] : [canonicalName];
-          const loc = locations.find(l => aliases.includes(l.name));
-          if (!loc) continue;
+          const loc = importLocations[canonicalName];
           const [bal] = await tx.select({ id: inventoryBalancesTable.id }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, catalogId!), eq(inventoryBalancesTable.locationId, loc.id))).limit(1);
-          const balancePatch = { quantityOnHand: qty.toFixed(3), inventoryKind: p.values.isAvailable === false ? "non_sellable_supply" : "sellable_catalog", isSellable: p.values.isAvailable !== false, quarantineReason: p.values.isAvailable === false ? "Compliance hold from catalog import" : null };
+          const complianceHold = p.values.isAvailable === false;
+          const balancePatch = {
+            quantityOnHand: qty.toFixed(3),
+            inventoryKind: "sellable_catalog",
+            isSellable: !complianceHold,
+            quarantinedAt: complianceHold ? new Date() : null,
+            quarantinedByUserId: complianceHold ? actor.id : null,
+            quarantineReason: complianceHold ? "Compliance hold from catalog import" : null,
+          };
           if (bal) await tx.update(inventoryBalancesTable).set(balancePatch).where(and(eq(inventoryBalancesTable.id, bal.id), eq(inventoryBalancesTable.tenantId, tenantId)));
           else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogId!, locationId: loc.id, parLevel: "0", ...balancePatch });
         }
+        const importedTotalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0).toFixed(3);
+        await tx.update(catalogItemsTable).set({ stockQuantity: importedTotalQty, inventoryAmount: importedTotalQty }).where(and(eq(catalogItemsTable.id, catalogId!), eq(catalogItemsTable.tenantId, tenantId)));
       }
       await tx.execute(sql`UPDATE catalog_import_snapshots SET snapshot = jsonb_set(jsonb_set(snapshot, '{insertedCatalogIds}', ${JSON.stringify(insertedIds)}::jsonb), '{insertedInventoryTemplateIds}', ${JSON.stringify(insertedInventoryTemplateIds)}::jsonb) WHERE id = ${createdSnapshotId}`);
       return { inserted, updated, snapshotId: createdSnapshotId };

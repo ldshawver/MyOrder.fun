@@ -132,6 +132,7 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
     expect(state.catalog).toHaveLength(35);
+    expect(state.catalog.every(item => Number(item.stockQuantity) === 10 && Number(item.inventoryAmount) === 10)).toBe(true);
     expect(state.balances).toHaveLength(140);
     expect(state.balances).toEqual(expect.arrayContaining([
       expect.objectContaining({ locationId: 1, quantityOnHand: "1.000" }),
