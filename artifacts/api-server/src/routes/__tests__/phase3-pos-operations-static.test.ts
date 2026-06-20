@@ -119,6 +119,28 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(importMenuUi).not.toContain('"quantity_size"');
       expect(importMenuUi).not.toContain('"lucifer_cruz_Inventory"');
     });
+
+    it("renders a confirmation preview with counts, cancel, and confirm controls", () => {
+      expect(importMenuUi).toContain("type ImportConfirmation");
+      expect(importMenuUi).toContain('data-testid="import-confirmation-preview"');
+      expect(importMenuUi).toContain("Products to create");
+      expect(importMenuUi).toContain("Products to update");
+      expect(importMenuUi).toContain("Catalog, inventory, and par values may be overwritten");
+      expect(importMenuUi).toContain("Cancel");
+      expect(importMenuUi).toContain("Confirm Import");
+    });
+
+    it("resubmits the preserved file/mapping request with confirm=true after confirmation", () => {
+      expect(importMenuUi).toContain("async function submitImport(confirmImport: boolean)");
+      expect(importMenuUi).toContain('formData.append("file", file)');
+      expect(importMenuUi).toContain('formData.append("userMapping", JSON.stringify(serverMapping))');
+      expect(importMenuUi).toContain("/api/admin/products/import?dryRun=${dryRun}&confirm=${confirmImport}");
+      expect(importMenuUi).toContain("if (data.requiresConfirmation === true)");
+      expect(importMenuUi).toContain("async function handleConfirmImport()");
+      expect(importMenuUi).toContain("await submitImport(true)");
+      expect(importMenuUi).toContain("setConfirmation(null)");
+      expect(importMenuUi).not.toContain('window.confirm("Live catalog import');
+    });
   });
 
   describe("end-to-end Product Master operations chain", () => {

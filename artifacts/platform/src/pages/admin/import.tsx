@@ -108,6 +108,13 @@ type ImportResult = {
   headerMappings?: HeaderMapping[];
 };
 
+type ImportConfirmation = {
+  error: string;
+  requiresConfirmation: true;
+  wouldInsert: number;
+  wouldUpdate: number;
+};
+
 // ─── Client-side CSV preview parser ──────────────────────────────────────────
 function parseCsvPreview(text: string): { rawHeaders: string[]; rows: Record<string, string>[] } {
   const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter(l => l.trim());
@@ -659,6 +666,7 @@ export default function AdminImport() {
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<ImportConfirmation | null>(null);
 
   const loadImportSpec = useCallback(async () => {
     try {
@@ -730,6 +738,7 @@ export default function AdminImport() {
   function handleFile(f: File) {
     setResult(null);
     setError(null);
+    setConfirmation(null);
     setFile(f);
     setUserMapping({});
     setParsedData(null);
@@ -764,14 +773,11 @@ export default function AdminImport() {
     });
   }
 
-  async function handleImport() {
+  async function submitImport(confirmImport: boolean) {
     if (!file) return;
-    if (!dryRun) {
-      const ok = window.confirm("Live catalog import can overwrite product, inventory, and par values. A rollback snapshot will be created before changes. Continue?");
-      if (!ok) return;
-    }
     setImporting(true);
     setError(null);
+    if (!confirmImport) setConfirmation(null);
     setResult(null);
     try {
       const token = await getToken();
@@ -787,7 +793,8 @@ export default function AdminImport() {
         formData.append("userMapping", JSON.stringify(serverMapping));
       }
 
-      const res = await fetch(`/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`, {
+      const endpoint = `/api/admin/products/import?dryRun=${dryRun}&confirm=${confirmImport}`;
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -812,31 +819,41 @@ export default function AdminImport() {
             missingRequired: data.missingRequired ?? prev.missingRequired,
           } : null);
         }
+        if (data.requiresConfirmation === true) {
+          setConfirmation({
+            error: data.error ?? "Catalog import requires confirmation before writing changes.",
+            requiresConfirmation: true,
+            wouldInsert: Number(data.wouldInsert ?? 0),
+            wouldUpdate: Number(data.wouldUpdate ?? 0),
+          });
+        } else {
+          setError(data.error ?? `Import failed (${res.status})`);
+        }
         if (isAdmin) {
           setDebugEntries(prev => [{
-            label: dryRun ? "Dry Run Import (failed)" : "Live Import (failed)",
+            label: dryRun ? "Dry Run Import (failed)" : confirmImport ? "Confirmed Live Import (failed)" : "Live Import Preview",
             method: "POST",
-            endpoint: `/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`,
+            endpoint,
             status: res.status,
             response: data,
             timestamp: new Date().toLocaleTimeString(),
           }, ...prev]);
         }
-        setError(data.error ?? `Import failed (${res.status})`);
         return;
       }
       if (isAdmin) {
         setDebugEntries(prev => [{
-          label: dryRun ? "Dry Run Import" : "Live Import",
+          label: dryRun ? "Dry Run Import" : confirmImport ? "Confirmed Live Import" : "Live Import",
           method: "POST",
-          endpoint: `/api/admin/products/import?dryRun=${dryRun}&confirm=${!dryRun}`,
+          endpoint,
           status: res.status,
           response: data,
           timestamp: new Date().toLocaleTimeString(),
         }, ...prev]);
       }
+      setConfirmation(null);
       setResult(data);
-      if (!dryRun && data.inserted > 0) {
+      if (!dryRun && (data.inserted > 0 || data.updated > 0)) {
         queryClient.invalidateQueries({ queryKey: ["listCatalogItems"] });
       }
     } catch {
@@ -844,6 +861,18 @@ export default function AdminImport() {
     } finally {
       setImporting(false);
     }
+  }
+
+  async function handleImport() {
+    await submitImport(dryRun);
+  }
+
+  async function handleConfirmImport() {
+    await submitImport(true);
+  }
+
+  function handleCancelConfirmation() {
+    setConfirmation(null);
   }
 
   async function saveImportSpec(nextSpec = importSpec) {
@@ -941,6 +970,7 @@ export default function AdminImport() {
     setUserMapping({});
     setResult(null);
     setError(null);
+    setConfirmation(null);
     setParseError(null);
     if (fileRef.current) fileRef.current.value = "";
   }
@@ -1156,11 +1186,51 @@ export default function AdminImport() {
             </div>
           )}
 
+          {/* Confirmation preview */}
+          {confirmation && (
+            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/[0.08] p-4 space-y-4" data-testid="import-confirmation-preview">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={18} className="text-amber-300 shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-2">
+                  <div className="text-sm font-bold text-amber-200">Review Product Master import before writing changes</div>
+                  <p className="text-xs text-amber-100/80">
+                    {confirmation.error} Catalog, inventory, and par values may be overwritten for matching SKUs.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-amber-500/30 bg-background/30 p-3">
+                      <div className="text-[10px] uppercase tracking-widest text-amber-200/70">Products to create</div>
+                      <div className="text-2xl font-bold text-amber-100">{confirmation.wouldInsert}</div>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/30 bg-background/30 p-3">
+                      <div className="text-[10px] uppercase tracking-widest text-amber-200/70">Products to update</div>
+                      <div className="text-2xl font-bold text-amber-100">{confirmation.wouldUpdate}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 justify-end">
+                <Button type="button" variant="outline" size="sm" onClick={handleCancelConfirmation} disabled={importing} className="rounded-xl">
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleConfirmImport()}
+                  disabled={importing}
+                  className="gap-2 rounded-xl"
+                  style={{ background: "linear-gradient(135deg, #d97706, #b45309)", color: "#fff" }}
+                >
+                  {importing ? <><Loader2 size={13} className="animate-spin" /> Confirming...</> : <><CheckCircle2 size={13} /> Confirm Import</>}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Import button */}
           <div className="flex items-center gap-3">
             <Button
               onClick={handleImport}
-              disabled={importing || (parsedData !== null && !canImport && !dryRun)}
+              disabled={importing || confirmation !== null || (parsedData !== null && !canImport && !dryRun)}
               className="gap-2 rounded-xl"
               style={(!importing && (canImport || dryRun)) ? {
                 background: dryRun ? undefined : "linear-gradient(135deg, #7c3aed, #4f46e5)",
