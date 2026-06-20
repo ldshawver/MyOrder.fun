@@ -28,7 +28,7 @@ vi.mock("drizzle-orm", () => {
   };
 });
 
-const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[] } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [] };
+const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[]; executeRowsObject: boolean; failBalanceInsertAt: number | null; balanceInsertAttempts: number } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [], executeRowsObject: false, failBalanceInsertAt: null, balanceInsertAttempts: 0 };
 
 vi.mock("@workspace/db", () => {
   const col = (name: string) => name;
@@ -51,14 +51,28 @@ vi.mock("@workspace/db", () => {
       const row = { id: table._name === "catalog_items" ? state.catalog.length + 1 : state.inventory.length + 1, ...vals };
       if (table._name === "catalog_items") state.catalog.push(row);
       if (table._name === "inventory_templates") state.inventory.push(row);
-      if (table._name === "inventory_balances") state.balances.push(row);
+      if (table._name === "inventory_balances") {
+        state.balanceInsertAttempts += 1;
+        if (state.failBalanceInsertAt === state.balanceInsertAttempts) throw new Error("simulated balance insert failure");
+        state.balances.push(row);
+      }
       if (table._name === "audit_logs") state.audit.push(row);
       return { returning: () => Promise.resolve([row]), then: (resolve: (v: unknown) => void) => resolve(undefined) };
     } })),
     update: vi.fn((table: { _name?: string }) => ({ set: (vals: Record<string, unknown>) => ({ where: () => { const rows = table._name === "catalog_items" ? state.catalog : state.inventory; if (rows[0]) Object.assign(rows[0], vals); return Promise.resolve(); } }) })),
     delete: vi.fn((table: { _name?: string }) => ({ where: () => { if (table._name === "catalog_items") state.catalog = []; if (table._name === "inventory_templates") state.inventory = []; return Promise.resolve(); } })),
-    execute: vi.fn((q: unknown) => { const text = String(q); if (text.includes("SELECT id, snapshot")) return Promise.resolve(state.snapshots); if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve([{ id: 1 }]); return Promise.resolve([]); }),
-    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn((await import("@workspace/db")).db)),
+    execute: vi.fn((q: unknown) => {
+      const text = String(q);
+      const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
+      if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
+      if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
+      return Promise.resolve(wrap([]));
+    }),
+    transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const before = { catalog: [...state.catalog], inventory: [...state.inventory], balances: [...state.balances], audit: [...state.audit] };
+      try { return await fn((await import("@workspace/db")).db); }
+      catch (e) { state.catalog = before.catalog; state.inventory = before.inventory; state.balances = before.balances; state.audit = before.audit; throw e; }
+    }),
   }, catalogItemsTable, inventoryTemplatesTable, inventoryLocationsTable, inventoryBalancesTable, auditLogsTable };
 });
 
@@ -69,7 +83,7 @@ const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,
 const oldHeaders = "sku,name,description,category,brand,price,unit,quantity_size,active,image_url,safe_name,safe_description,safe_category,safe_image_url,inventory_location,current_inventory,par_level,reorder_threshold,sort_order";
 const oldCsv = `${oldHeaders}\nSKU-OLD,Old Name,Desc,Cat,alavont,12.50,ml,10,true,https://example.com/a.jpg,Safe,Safe desc,Safe cat,https://example.com/s.jpg,Back,9,3,2,1\n`;
 
-beforeEach(() => { vi.clearAllMocks(); state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; });
+beforeEach(() => { vi.clearAllMocks(); state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; state.executeRowsObject = false; state.failBalanceInsertAt = null; state.balanceInsertAttempts = 0; });
 
 describe("safe catalog import/export", () => {
   it("template matches accepted headers and includes a sample row", async () => {
@@ -108,6 +122,7 @@ describe("safe catalog import/export", () => {
   });
 
   it("imports 30+ SKUs using inArray instead of tuple-expanded ANY SQL", async () => {
+    state.executeRowsObject = true;
     const rows = Array.from({ length: 35 }, (_, i) => [
       "10.00", "8.00", "true", "Cat", `Name ${i}`, "https://example.com/a.jpg", "Desc", `SKU-${i}`,
       "Safe Cat", `Safe ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4",
@@ -117,12 +132,32 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
     expect(state.catalog).toHaveLength(35);
+    expect(state.balances).toHaveLength(140);
+    expect(state.balances).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: 1, quantityOnHand: "1.000" }),
+      expect.objectContaining({ locationId: 2, quantityOnHand: "2.000" }),
+      expect.objectContaining({ locationId: 3, quantityOnHand: "3.000" }),
+      expect.objectContaining({ locationId: 4, quantityOnHand: "4.000" }),
+    ]));
     expect(vi.mocked(inArray)).toHaveBeenCalledWith("sku", expect.arrayContaining(["SKU-0", "SKU-34"]));
     const skuLookup = vi.mocked(inArray).mock.calls.find(([column, values]) => column === "sku" && Array.isArray(values) && values.length === 35);
     expect(skuLookup?.[1]).toHaveLength(35);
     const sqlTexts = vi.mocked(sql).mock.calls.map(([strings]) => Array.from(strings as TemplateStringsArray).join(""));
     expect(sqlTexts.some(text => /ANY\s*\(\s*\(/i.test(text))).toBe(false);
     expect(sqlTexts.some(text => /sku.*ANY/i.test(text))).toBe(false);
+  });
+
+
+  it("rolls back catalog and inventory changes when confirmed import fails inside the transaction", async () => {
+    state.executeRowsObject = true;
+    state.failBalanceInsertAt = 2;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("no catalog/inventory changes were committed");
+    expect(state.catalog).toHaveLength(0);
+    expect(state.inventory).toHaveLength(0);
+    expect(state.balances).toHaveLength(0);
   });
 
   it("deduplicates SKU lookup values before querying existing products", async () => {

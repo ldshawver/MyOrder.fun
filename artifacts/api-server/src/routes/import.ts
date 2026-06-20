@@ -102,6 +102,12 @@ type ImportRow = Record<CatalogImportHeader, string>;
 
 type ImportDbClient = Pick<typeof db, "select" | "insert" | "update" | "delete" | "execute">;
 
+function executeRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown[] }).rows)) return (result as { rows: T[] }).rows;
+  return [];
+}
+
 type SnapshotPayload = {
   catalog: Array<typeof catalogItemsTable.$inferSelect>;
   inventoryTemplates: Array<typeof inventoryTemplatesTable.$inferSelect>;
@@ -208,8 +214,8 @@ async function snapshotTenant(client: ImportDbClient, tenantId: number, touchedS
     : [];
   const catalogIds = Array.from(new Set(catalog.map((r: typeof catalogItemsTable.$inferSelect) => r.id)));
   const inventoryTemplates = (catalogIds.length ? await client.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), inArray(inventoryTemplatesTable.catalogItemId, catalogIds))) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
-  const [created] = await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus: uniqueTouchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`) as unknown as [{ id: number }];
-  return created?.id ?? null;
+  const snapshotRows = executeRows<{ id: number }>(await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus: uniqueTouchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`));
+  return snapshotRows[0]?.id ?? null;
 }
 
 router.get("/admin/products/import-template", requireRole("global_admin", "admin"), async (_req, res) => {
@@ -359,7 +365,8 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
 
 router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
   const tenantId = await getHouseTenantId(); await ensureSnapshotSchema();
-  const [snapshotRow] = await db.execute(sql`SELECT id, snapshot FROM catalog_import_snapshots WHERE tenant_id = ${tenantId} AND rolled_back_at IS NULL ORDER BY created_at DESC LIMIT 1`) as unknown as Array<{ id: number; snapshot: SnapshotPayload }>;
+  const snapshotRows = executeRows<{ id: number; snapshot: SnapshotPayload }>(await db.execute(sql`SELECT id, snapshot FROM catalog_import_snapshots WHERE tenant_id = ${tenantId} AND rolled_back_at IS NULL ORDER BY created_at DESC LIMIT 1`));
+  const snapshotRow = snapshotRows[0];
   if (!snapshotRow) { res.status(404).json({ error: "No unrolled catalog import snapshot found for this tenant" }); return; }
   const payload = snapshotRow.snapshot;
   for (const id of payload.insertedInventoryTemplateIds ?? []) await db.delete(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.id, id), eq(inventoryTemplatesTable.tenantId, tenantId)));
