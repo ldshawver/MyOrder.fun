@@ -212,16 +212,16 @@ function mapItem(
     displayDescription: i.displayDescription ?? null,
     displayCategory: i.displayCategory ?? null,
     displayImage: i.displayImage ?? null,
-    merchantBrandName: i.merchantBrandName ?? null,
-    marketingCopy: i.marketingCopy ?? null,
-    customerSafeName: i.customerSafeName ?? null,
-    customerSafeDescription: i.customerSafeDescription ?? null,
-    upsellCopy: i.upsellCopy ?? null,
+    merchantBrandName: alavontOnly ? null : (i.merchantBrandName ?? null),
+    marketingCopy: alavontOnly ? null : (i.marketingCopy ?? null),
+    customerSafeName: alavontOnly ? null : (i.customerSafeName ?? null),
+    customerSafeDescription: alavontOnly ? null : (i.customerSafeDescription ?? null),
+    upsellCopy: alavontOnly ? null : (i.upsellCopy ?? null),
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
-    receiptName: i.receiptName ?? null,
-    labName: i.labName ?? null,
+    receiptName: alavontOnly ? null : (i.receiptName ?? null),
+    labName: alavontOnly ? null : (i.labName ?? null),
     // Merchant routing fields — suppressed in Alavont-only (storefront) mode
     merchantProcessingMode: alavontOnly ? null : (i.merchantProcessingMode ?? null),
     merchantProductSource: alavontOnly ? null : (i.merchantProductSource ?? null),
@@ -403,7 +403,9 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const isAdminActor = actorRole === "global_admin" || actorRole === "admin";
   const alavontOnly = !isLuciferMode && !isAdminActor;
 
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
   let rows = await db.select().from(catalogItemsTable)
+    .where(eq(catalogItemsTable.tenantId, tenantId))
     .orderBy(asc(catalogItemsTable.name));
 
   const totalBeforeFilters = rows.length;
@@ -481,6 +483,73 @@ router.get("/catalog", async (req, res): Promise<void> => {
   }));
 });
 
+
+// GET /api/admin/product-master — Edit Catalog Product Master view.
+// Returns exactly the spreadsheet-backed fields plus current per-location balances.
+router.get("/admin/product-master", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const [items, locations, balances] = await Promise.all([
+    db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)).orderBy(asc(catalogItemsTable.name)),
+    db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
+    db.select().from(inventoryBalancesTable).where(eq(inventoryBalancesTable.tenantId, tenantId)),
+  ]);
+  const locationNameById = new Map(locations.map(l => [l.id, l.name]));
+  const qty = new Map<string, number>();
+  for (const b of balances) qty.set(`${b.productId}:${locationNameById.get(b.locationId)}`, parseFloat(String(b.quantityOnHand ?? "0")));
+  const rows = items.map(item => ({
+    id: item.id,
+    lifecycle: {
+      active: item.isAvailable !== false,
+      unavailable: item.isAvailable === false,
+      archived: (item.metadata as Record<string, unknown> | null)?.archived === true,
+      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true || item.alavontInStock === false,
+      nonSellable: item.isAvailable === false || item.alavontInStock === false,
+    },
+    "Regular Price": item.regularPrice != null ? parseFloat(String(item.regularPrice)) : parseFloat(String(item.price ?? "0")),
+    "Sale Price": item.compareAtPrice != null ? parseFloat(String(item.compareAtPrice)) : null,
+    "Active Sale": item.compareAtPrice != null && String(item.price) === String(item.compareAtPrice),
+    "Alavont Category": item.alavontCategory ?? item.category,
+    "Alavont Name": item.alavontName ?? item.name,
+    "Alavont Image": item.alavontImageUrl ?? item.imageUrl ?? null,
+    "Alavont Description": item.alavontDescription ?? item.description ?? null,
+    "Alavont SKU": item.alavontId ?? item.sku ?? item.merchantSku ?? null,
+    "Safe Category": item.luciferCruzCategory ?? item.merchantCategory ?? null,
+    "Safe Name": item.luciferCruzName ?? item.merchantName ?? null,
+    "Safe Image": item.luciferCruzImageUrl ?? item.merchantImage ?? null,
+    "Safe Description": item.luciferCruzDescription ?? item.merchantDescription ?? null,
+    "Box 1 Inventory": qty.get(`${item.id}:Box 1`) ?? qty.get(`${item.id}:CSR Sales Box 1`) ?? 0,
+    "Box 2 Inventory": qty.get(`${item.id}:Box 2`) ?? qty.get(`${item.id}:CSR Sales Box 2`) ?? 0,
+    "Storefront Inventory": qty.get(`${item.id}:Storefront`) ?? 0,
+    "Backstock Inventory": qty.get(`${item.id}:Backstock`) ?? 0,
+  }));
+  res.json({ rows, locations });
+});
+
+// PATCH /api/admin/product-master/:id/lifecycle — archive/reactivate/unavailable/compliance hold.
+router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid product id" }); return; }
+  const body = z.object({
+    active: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    complianceHold: z.boolean().optional(),
+    reason: z.string().trim().max(500).optional(),
+  }).strict().safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).limit(1);
+  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
+  const metadata = safeMetadataPatch(existing.metadata, {
+    archived: body.data.archived ?? (existing.metadata as Record<string, unknown> | null)?.archived === true,
+    complianceHold: body.data.complianceHold ?? (existing.metadata as Record<string, unknown> | null)?.complianceHold === true,
+    lifecycleReason: body.data.reason ?? null,
+  });
+  const available = body.data.complianceHold === true || body.data.archived === true ? false : body.data.active ?? existing.isAvailable;
+  const [updated] = await db.update(catalogItemsTable).set({ isAvailable: available, alavontInStock: available, metadata, updatedAt: new Date() }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
+  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id), metadata: body.data, ipAddress: req.ip });
+  res.json({ item: mapItem(updated ?? existing) });
+});
+
 // POST /api/catalog
 router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const body = CreateCatalogItemBody.safeParse(req.body);
@@ -520,6 +589,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
   const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -530,7 +600,8 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
       merchantProductSource: catalogItemsTable.merchantProductSource,
       wooProductId: catalogItemsTable.wooProductId,
     })
-    .from(catalogItemsTable);
+    .from(catalogItemsTable)
+    .where(eq(catalogItemsTable.tenantId, tenantId));
 
   const seen = new Set<string>();
   const categories: string[] = [];
@@ -604,12 +675,15 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [row] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id)).limit(1);
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const [row] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id))).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  res.json(GetCatalogItemResponse.parse(mapItem(row)));
+  const actorRole = normalizeRole(req.dbUser?.role);
+  const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
+  res.json(GetCatalogItemResponse.parse(mapItem(row, alavontOnly)));
 });
 
 // PATCH /api/catalog/:id

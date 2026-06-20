@@ -15,32 +15,29 @@ import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 // ─── Template column reference (Alavont import spec) ─────────────────────────
 const REQUIRED_TEMPLATE_HEADERS = [
-  "sku",
-  "name",
-  "category",
-  "price",
+  "Regular Price",
+  "Alavont Category",
+  "Alavont Name",
+  "Alavont SKU",
 ];
 
 const TEMPLATE_HEADERS = [
-  "sku",
-  "name",
-  "description",
-  "category",
-  "brand",
-  "price",
-  "unit",
-  "quantity_size",
-  "active",
-  "image_url",
-  "safe_name",
-  "safe_description",
-  "safe_category",
-  "safe_image_url",
-  "inventory_location",
-  "current_inventory",
-  "par_level",
-  "reorder_threshold",
-  "sort_order",
+  "Regular Price",
+  "Sale Price",
+  "Active Sale",
+  "Alavont Category",
+  "Alavont Name",
+  "Alavont Image",
+  "Alavont Description",
+  "Alavont SKU",
+  "Safe Category",
+  "Safe Name",
+  "Safe Image",
+  "Safe Description",
+  "Box 1 Inventory",
+  "Box 2 Inventory",
+  "Storefront Inventory",
+  "Backstock Inventory",
 ];
 
 type ImportTemplateColumn = {
@@ -317,7 +314,7 @@ function ExpectedColumnsRef({ spec }: { spec: ImportTemplateSpec }) {
             </div>
           )}
           <p className="text-[11px] text-muted-foreground/60">
-            Column names are case-sensitive. Order does not matter. The importer also accepts the older friendly labels like Menu Name and Merchant Sku, but the template above is the preferred format.
+            Column names are normalized case-insensitively with trimmed spaces/quotes. The importer accepts approved legacy aliases, but export/template always use the canonical Product Master headers above.
           </p>
         </div>
       )}
@@ -891,7 +888,7 @@ export default function AdminImport() {
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "menu_import_template.csv"; a.click();
+    a.href = url; a.download = "product_master_import_template.csv"; a.click();
     URL.revokeObjectURL(url);
   }
 

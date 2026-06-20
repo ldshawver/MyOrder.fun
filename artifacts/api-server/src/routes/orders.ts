@@ -294,7 +294,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false);
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, actor.tenantId ?? await getHouseTenantId());
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       await writeAuditLog({
@@ -354,7 +354,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items);
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, actor.tenantId ?? await getHouseTenantId());
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       res.status(422).json({
@@ -549,13 +549,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
 
+  const houseTenantId = await getHouseTenantId();
+
   // Dual-brand normalization: converts every Alavont catalog line into a
   // Lucifer Cruz merchant line. Throws CheckoutMappingError (→ 422) when an
   // Alavont item has no LC mapping so a payment intent is NEVER created
   // against an unrouteable cart.
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(strictItems.data);
+    normalizedLines = await normalizeCheckoutCart(strictItems.data, undefined, true, houseTenantId);
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       // Audit BEFORE returning so missing-mapping incidents are observable.
@@ -606,8 +608,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
-
-  const houseTenantId = await getHouseTenantId();
 
   const normalizedCatalogIds = Array.from(new Set(normalizedLines.map(line => line.catalog_item_id)));
   const tenantCatalogRows = normalizedCatalogIds.length > 0
