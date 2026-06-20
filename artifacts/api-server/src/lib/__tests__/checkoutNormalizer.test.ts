@@ -11,6 +11,7 @@ vi.mock("@workspace/db", () => {
 });
 
 vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...conditions) => ({ and: conditions })),
   eq: vi.fn((col, val) => ({ col, val })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
@@ -25,6 +26,7 @@ vi.mock("../logger", () => ({
 
 import { normalizeCheckoutCart, buildMerchantPayloadLines, buildReceiptLines } from "../checkoutNormalizer";
 import { db } from "@workspace/db";
+import { and, eq } from "drizzle-orm";
 
 function makeDbMock(item: Record<string, unknown> | null) {
   const limit = vi.fn().mockResolvedValue([item]);
@@ -118,6 +120,29 @@ describe("checkoutNormalizer", () => {
       expect(result[0].woo_variation_id).toBeNull();
     });
 
+
+    it("scopes checkout lookup by tenant when tenantId is provided", async () => {
+      makeDbMock(makeSampleLocalMappedItem());
+      await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }], undefined, true, 77);
+      expect(and).toHaveBeenCalled();
+      expect(eq).toHaveBeenCalledWith("catalog_items_id", 1);
+    });
+
+    it("keeps customer-facing checkout display on Alavont fields while merchant payload uses Safe fields", async () => {
+      makeDbMock(makeSampleLocalMappedItem({
+        alavontName: "Customer Alavont",
+        alavontDescription: "Customer description",
+        alavontCategory: "Customer category",
+        luciferCruzName: "Safe Merchant",
+        luciferCruzDescription: "Safe merchant description",
+        luciferCruzCategory: "Safe merchant category",
+      }));
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
+      expect(line.display_name).toBe("Customer Alavont");
+      expect(line.display_description).toBe("Customer description");
+      expect(line.display_category).toBe("Customer category");
+      expect(buildMerchantPayloadLines([line])[0].name).toBe("Safe Merchant");
+    });
     it("throws when local_mapped item has no lucifer_cruz_name", async () => {
       makeDbMock(makeSampleLocalMappedItem({ luciferCruzName: null }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
