@@ -45,7 +45,7 @@ export const CATALOG_IMPORT_HEADERS = [
 ] as const;
 type CatalogImportHeader = (typeof CATALOG_IMPORT_HEADERS)[number];
 const HEADER_SET = new Set<string>(CATALOG_IMPORT_HEADERS);
-const IGNORED_LEGACY_HEADERS = new Set(["brand", "unit", "quantity_size", "inventory_location", "par_level", "reorder_threshold", "sort_order"]);
+const IGNORED_LEGACY_HEADERS = new Set(["brand", "unit", "Unit", "quantity_size", "Quantity", "inventory_location", "par_level", "reorder_threshold", "sort_order", "alavont_in_stock", "lucifer_cruz_Inventory"]);
 const REQUIRED_HEADERS: CatalogImportHeader[] = ["Regular Price", "Alavont Name", "Alavont Category", "Alavont SKU"];
 const DANGEROUS_CELL = /^[=+\-@\t\r]/;
 const MAX_ROWS = 5000;
@@ -66,7 +66,6 @@ const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
   "alavont name": "Alavont Name",
   alavont_name: "Alavont Name",
   name: "Alavont Name",
-  alavont_in_stock: "Alavont Name",
   "alavont image": "Alavont Image",
   alavont_image: "Alavont Image",
   image_url: "Alavont Image",
@@ -222,7 +221,7 @@ router.post("/admin/products/parse-headers", requireRole("global_admin", "admin"
   if (!req.file?.buffer) { res.status(400).json({ error: "No file provided" }); return; }
   try {
     const parsed = parseBuffer(req.file.buffer, req.file.originalname);
-    const v = validateHeaders(parsed.headers, parsed.rows)
+    const v = validateHeaders(parsed.headers, parsed.rows);
     res.json({ headerMappings: parsed.headers.map((h, i) => ({ original: parsed.rawHeaders[i] ?? h, canonical: h, recognized: HEADER_SET.has(h) })), missingRequired: v.missing, unknownHeaders: v.extra, duplicateHeaders: v.duplicates, requiredFields: REQUIRED_HEADERS.map(h => ({ canonical: h, friendlyName: h, found: parsed.headers.includes(h), mappedFrom: parsed.rawHeaders[parsed.headers.indexOf(h)] ?? null })), fileColumns: parsed.rawHeaders, allCanonicals: CATALOG_IMPORT_HEADERS.map(h => ({ canonical: h, friendlyName: h, required: REQUIRED_HEADERS.includes(h) })) });
   } catch (e) { res.status(400).json({ error: `Could not parse file: ${(e as Error).message}` }); }
 });
@@ -276,7 +275,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
   let parsed: ParsedFile;
   try { parsed = parseBuffer(req.file.buffer, req.file.originalname); } catch (e) { res.status(400).json({ error: `Could not parse file: ${(e as Error).message}` }); return; }
   if (parsed.rows.length > MAX_ROWS) { res.status(413).json({ error: `Import is limited to ${MAX_ROWS} data rows` }); return; }
-  const v = validateHeaders(parsed.headers, parsed.rows)
+  const v = validateHeaders(parsed.headers, parsed.rows);
   if (v.missing.length) { res.status(400).json({ error: `Missing required column(s): ${v.missing.join(", ")}`, missingColumns: v.missing }); return; }
   if (v.extra.length) { res.status(400).json({ error: `Unexpected column(s): ${v.extra.join(", ")}`, extraColumns: v.extra }); return; }
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }

@@ -12,6 +12,7 @@ const shifts = route("shifts.ts");
 const orders = route("orders.ts");
 const imports = route("import.ts");
 const checkout = lib("checkoutNormalizer.ts");
+const importMenuUi = readFileSync(join(root, "../../platform/src/pages/admin/import.tsx"), "utf8");
 
 describe("Phase 3 POS operations Product Master integration", () => {
   describe("/api/admin/product-master", () => {
@@ -100,6 +101,23 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(shifts).toContain("sales: { orderCount: stats.orderCount");
       expect(shifts).toContain("deposit: { cashBankStart");
       expect(shifts).toContain("supervisor: { supervisorId");
+    });
+  });
+
+
+  describe("Import Menu UI Product Master mapping", () => {
+    it("displays canonical Product Master labels instead of old required headers", () => {
+      expect(importMenuUi).toContain('"Regular Price"');
+      expect(importMenuUi).toContain('"Sale Price"');
+      expect(importMenuUi).toContain('"Active Sale"');
+      expect(importMenuUi).toContain('"Box 1 Inventory"');
+      expect(importMenuUi).toContain('"Box 2 Inventory"');
+      expect(importMenuUi).toContain('"Storefront Inventory"');
+      expect(importMenuUi).toContain('"Backstock Inventory"');
+      expect(importMenuUi).toContain("product_master_import_template.csv");
+      expect(importMenuUi).not.toContain('"alavont_in_stock"');
+      expect(importMenuUi).not.toContain('"quantity_size"');
+      expect(importMenuUi).not.toContain('"lucifer_cruz_Inventory"');
     });
   });
 

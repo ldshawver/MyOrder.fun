@@ -92,6 +92,38 @@ describe("safe catalog import/export", () => {
     expect(res.text).toContain("'+Name");
   });
 
+
+  it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {
+    const uploadHeaders = [
+      "Regular Price", "Sale Price", "Active Sale", "Alavont  Category", "Alavont Name",
+      "Alavont Image", "Alavontb Description", "Alavont  ID", "Safe Category", "Safe Name",
+      "Safe Image", "Safe Description", "Box 1 Inventory", "Box 2 Inventory", "Storefront Quantity", "Backstock Inventory",
+    ].join(",");
+    const row = ["10", "8", "true", "Cat", "Name", "https://example.com/a.jpg", "Desc", "SKU-A", "Safe Cat", "Safe Name", "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4"].join(",");
+    const res = await supertest(buildApp()).post("/api/admin/products/parse-headers").attach("file", Buffer.from(`${uploadHeaders}\n${row}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
+    expect(res.status).toBe(200);
+    expect(res.body.unknownHeaders).toEqual([]);
+    expect(res.body.duplicateHeaders).toEqual([]);
+    expect(res.body.headerMappings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ original: "Sale Price", canonical: "Sale Price", recognized: true }),
+      expect.objectContaining({ original: "Active Sale", canonical: "Active Sale", recognized: true }),
+      expect.objectContaining({ original: "Storefront Quantity", canonical: "Storefront Inventory", recognized: true }),
+      expect.objectContaining({ original: "Alavontb Description", canonical: "Alavont Description", recognized: true }),
+      expect.objectContaining({ original: "Alavont  ID", canonical: "Alavont SKU", recognized: true }),
+    ]));
+  });
+
+  it("template and export emit canonical Product Master headers only", async () => {
+    const template = await supertest(buildApp()).get("/api/admin/products/import-template");
+    expect(template.status).toBe(200);
+    expect(template.text.split("\n")[0]).toBe(headers);
+    state.catalog.push({ id: 1, tenantId: 1, sku: "SKU-1", name: "Name", description: "Desc", category: "Cat", price: "1.00", regularPrice: "1.00", isAvailable: true });
+    const exported = await supertest(buildApp()).get("/api/admin/products/export");
+    expect(exported.status).toBe(200);
+    expect(exported.text.split("\n")[0]).toBe(headers);
+    expect(exported.text.split("\n")[0]).not.toContain("alavont_in_stock");
+    expect(exported.text.split("\n")[0]).not.toContain("quantity_size");
+  });
   it("imports the old template during transition", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(oldCsv), "old.csv");
     expect(res.status).toBe(200);
