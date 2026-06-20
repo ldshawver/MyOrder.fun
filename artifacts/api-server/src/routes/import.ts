@@ -266,7 +266,7 @@ router.post("/admin/products/parse-headers", requireRole("global_admin", "admin"
 });
 
 router.get("/admin/products/export", requireRole("global_admin", "admin"), async (req, res) => {
-  const tenantId = await getHouseTenantId();
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
   const rows = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const catalogIds = rows.map((r: typeof catalogItemsTable.$inferSelect) => r.id);
   const [locations, balances] = await Promise.all([
@@ -307,7 +307,7 @@ router.get("/admin/products/export", requireRole("global_admin", "admin"), async
 });
 
 router.post("/admin/products/import", requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
-  const tenantId = await getHouseTenantId(); const actor = req.dbUser!; const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
+  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
   const uploadedFileName = req.file?.originalname;
   const confirmed = req.body?.confirm === "true" || req.body?.confirm === true || req.query.confirm === "true";
   if (!req.file?.buffer) { res.status(400).json({ error: "A CSV, TSV, or XLSX file upload is required" }); return; }
@@ -357,6 +357,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
     const importResult = await db.transaction(async (tx) => {
       let inserted = 0;
       let updated = 0;
+      let balanceUpserts = 0;
       const insertedIds: number[] = [];
       const insertedInventoryTemplateIds: number[] = [];
       const createdSnapshotId = await snapshotTenant(tx, tenantId, skus, uploadedFileName, actor.id);
@@ -387,22 +388,23 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
           };
           if (bal) await tx.update(inventoryBalancesTable).set(balancePatch).where(and(eq(inventoryBalancesTable.id, bal.id), eq(inventoryBalancesTable.tenantId, tenantId)));
           else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogId!, locationId: loc.id, parLevel: "0", ...balancePatch });
+          balanceUpserts++;
         }
         const importedTotalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0).toFixed(3);
         await tx.update(catalogItemsTable).set({ stockQuantity: importedTotalQty, inventoryAmount: importedTotalQty }).where(and(eq(catalogItemsTable.id, catalogId!), eq(catalogItemsTable.tenantId, tenantId)));
       }
       await tx.execute(sql`UPDATE catalog_import_snapshots SET snapshot = jsonb_set(jsonb_set(snapshot, '{insertedCatalogIds}', ${JSON.stringify(insertedIds)}::jsonb), '{insertedInventoryTemplateIds}', ${JSON.stringify(insertedInventoryTemplateIds)}::jsonb) WHERE id = ${createdSnapshotId}`);
-      return { inserted, updated, snapshotId: createdSnapshotId };
+      return { inserted, updated, balanceUpserts, snapshotId: createdSnapshotId };
     });
     snapshotId = importResult.snapshotId;
     await ensureStandardLocations(tenantId); const inventoryBalances = await ensureAllInventoryBalances(tenantId);
-    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, snapshotId, total: prepared.length });
-    res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [], snapshotId, inventoryBalances });
+    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, balanceUpserts: importResult.balanceUpserts, snapshotId, total: prepared.length });
+    res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [], snapshotId, balanceUpserts: importResult.balanceUpserts, inventoryBalances });
   } catch (e) { res.status(500).json({ error: `Import failed before completion and no catalog/inventory changes were committed: ${(e as Error).message}`, snapshotId }); }
 });
 
 router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
-  const tenantId = await getHouseTenantId(); await ensureSnapshotSchema();
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId(); await ensureSnapshotSchema();
   const snapshotRows = executeRows<{ id: number; snapshot: SnapshotPayload }>(await db.execute(sql`SELECT id, snapshot FROM catalog_import_snapshots WHERE tenant_id = ${tenantId} AND rolled_back_at IS NULL ORDER BY created_at DESC LIMIT 1`));
   const snapshotRow = snapshotRows[0];
   if (!snapshotRow) { res.status(404).json({ error: "No unrolled catalog import snapshot found for this tenant" }); return; }

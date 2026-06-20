@@ -6,12 +6,12 @@ import { inArray, sql } from "drizzle-orm";
 vi.mock("@clerk/express", () => ({ clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(), getAuth: vi.fn(() => ({ userId: "user-clerk-id" })) }));
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
-  loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 1, role: "admin", status: "approved", email: "a@b.com", clerkId: "user-clerk-id" }; next(); },
+  loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 1, tenantId: 1, role: "admin", status: "approved", email: "a@b.com", clerkId: "user-clerk-id" }; next(); },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
-vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn(async () => 1) }));
+vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn(async () => 999) }));
 vi.mock("../../lib/inventoryBalances", () => ({ ensureStandardLocations: vi.fn(async () => undefined), ensureAllInventoryBalances: vi.fn(async () => ({ created: 0 })) }));
 
 vi.mock("drizzle-orm", () => {
@@ -131,6 +131,7 @@ describe("safe catalog import/export", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
+    expect(res.body.balanceUpserts).toBe(140);
     expect(state.catalog).toHaveLength(35);
     expect(state.catalog.every(item => Number(item.stockQuantity) === 10 && Number(item.inventoryAmount) === 10)).toBe(true);
     expect(state.balances).toHaveLength(140);
