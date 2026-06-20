@@ -1,6 +1,7 @@
 import express from "express";
 import supertest from "supertest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { inArray, sql } from "drizzle-orm";
 
 vi.mock("@clerk/express", () => ({ clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(), getAuth: vi.fn(() => ({ userId: "user-clerk-id" })) }));
 vi.mock("../../lib/auth", () => ({
@@ -12,6 +13,20 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn(async () => 1) }));
 vi.mock("../../lib/inventoryBalances", () => ({ ensureStandardLocations: vi.fn(async () => undefined), ensureAllInventoryBalances: vi.fn(async () => ({ created: 0 })) }));
+
+vi.mock("drizzle-orm", () => {
+  const makeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]) => ({
+    strings: Array.from(strings),
+    values,
+    toString: () => Array.from(strings).join("?"),
+  });
+  return {
+    and: vi.fn((...args: unknown[]) => ({ op: "and", args })),
+    eq: vi.fn((column: unknown, value: unknown) => ({ op: "eq", column, value })),
+    inArray: vi.fn((column: unknown, values: unknown[]) => ({ op: "inArray", column, values })),
+    sql: vi.fn(makeSql),
+  };
+});
 
 const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[] } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [] };
 
@@ -90,6 +105,42 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain("'=BAD");
     expect(res.text).toContain("'+Name");
+  });
+
+  it("imports 30+ SKUs using inArray instead of tuple-expanded ANY SQL", async () => {
+    const rows = Array.from({ length: 35 }, (_, i) => [
+      "10.00", "8.00", "true", "Cat", `Name ${i}`, "https://example.com/a.jpg", "Desc", `SKU-${i}`,
+      "Safe Cat", `Safe ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4",
+    ].join(","));
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.inserted).toBe(35);
+    expect(state.catalog).toHaveLength(35);
+    expect(vi.mocked(inArray)).toHaveBeenCalledWith("sku", expect.arrayContaining(["SKU-0", "SKU-34"]));
+    const skuLookup = vi.mocked(inArray).mock.calls.find(([column, values]) => column === "sku" && Array.isArray(values) && values.length === 35);
+    expect(skuLookup?.[1]).toHaveLength(35);
+    const sqlTexts = vi.mocked(sql).mock.calls.map(([strings]) => Array.from(strings as TemplateStringsArray).join(""));
+    expect(sqlTexts.some(text => /ANY\s*\(\s*\(/i.test(text))).toBe(false);
+    expect(sqlTexts.some(text => /sku.*ANY/i.test(text))).toBe(false);
+  });
+
+  it("deduplicates SKU lookup values before querying existing products", async () => {
+    const csv = `${headers}\n10.00,,false,Cat,One,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe One,https://example.com/s.jpg,Safe Desc,1,0,0,0\n11.00,,false,Cat,Two,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe Two,https://example.com/s.jpg,Safe Desc,2,0,0,0\n`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "duplicates.csv");
+
+    expect(res.status).toBe(200);
+    const skuLookup = vi.mocked(inArray).mock.calls.find(([column]) => column === "sku");
+    expect(skuLookup?.[1]).toEqual(["SKU-DUP"]);
+  });
+
+  it("does not query existing catalog rows when no valid SKU values were prepared", async () => {
+    const csv = `${headers}\n10.00,,false,Cat,Missing Sku,https://example.com/a.jpg,Desc,,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,0,0,0,0\n`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "missing-sku.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Alavont SKU is required" })]));
+    expect(vi.mocked(inArray).mock.calls.some(([column]) => column === "sku")).toBe(false);
   });
 
 

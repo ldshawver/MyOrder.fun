@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, inventoryLocationsTable, inventoryBalancesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
@@ -202,10 +202,13 @@ async function audit(req: import("express").Request, action: string, tenantId: n
   await db.insert(auditLogsTable).values({ actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId, action, resourceType: "catalog_import", resourceId, metadata, ipAddress: req.ip ?? undefined });
 }
 async function snapshotTenant(client: ImportDbClient, tenantId: number, touchedSkus: string[], fileName: string | undefined, actorId: number): Promise<number | null> {
-  const catalog = await client.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.sku} = ANY(${touchedSkus})`));
-  const catalogIds = catalog.map((r: typeof catalogItemsTable.$inferSelect) => r.id);
-  const inventoryTemplates = (catalogIds.length ? await client.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), sql`${inventoryTemplatesTable.catalogItemId} = ANY(${catalogIds})`)) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
-  const [created] = await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`) as unknown as [{ id: number }];
+  const uniqueTouchedSkus = Array.from(new Set(touchedSkus.filter(Boolean)));
+  const catalog = uniqueTouchedSkus.length
+    ? await client.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.sku, uniqueTouchedSkus)))
+    : [];
+  const catalogIds = Array.from(new Set(catalog.map((r: typeof catalogItemsTable.$inferSelect) => r.id)));
+  const inventoryTemplates = (catalogIds.length ? await client.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), inArray(inventoryTemplatesTable.catalogItemId, catalogIds))) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
+  const [created] = await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus: uniqueTouchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`) as unknown as [{ id: number }];
   return created?.id ?? null;
 }
 
@@ -232,7 +235,7 @@ router.get("/admin/products/export", requireRole("global_admin", "admin"), async
   const catalogIds = rows.map((r: typeof catalogItemsTable.$inferSelect) => r.id);
   const [locations, balances] = await Promise.all([
     db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
-    catalogIds.length ? db.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), sql`${inventoryBalancesTable.productId} = ANY(${catalogIds})`)) : Promise.resolve([]),
+    catalogIds.length ? db.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), inArray(inventoryBalancesTable.productId, catalogIds))) : Promise.resolve([]),
   ]);
   const locById = new Map(locations.map(l => [l.id, l.name]));
   const qtyByProductLocation = new Map<string, string>();
@@ -306,8 +309,8 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
     const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(safeCategoryLower);
     prepared.push({ rec, inventory, values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: "0", isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
   }
-  const skus = prepared.map(p => p.values.sku).filter(Boolean) as string[];
-  const existing = (skus.length ? await db.select({ id: catalogItemsTable.id, sku: catalogItemsTable.sku }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.sku} = ANY(${skus})`)) : []) as Array<{ id: number; sku: string | null }>;
+  const skus = Array.from(new Set(prepared.map(p => p.values.sku).filter((sku): sku is string => typeof sku === "string" && sku.length > 0)));
+  const existing = (skus.length ? await db.select({ id: catalogItemsTable.id, sku: catalogItemsTable.sku }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.sku, skus))) : []) as Array<{ id: number; sku: string | null }>;
   if ((existing.length || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, wouldInsert: prepared.length - existing.length, wouldUpdate: existing.length }); return; }
   if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - existing.length), updated: existing.length, skipped: 0, errors, total: prepared.length, warnings: existing.length ? [`${existing.length} existing products would be updated.`] : [] }); return; }
 
