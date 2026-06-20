@@ -2293,4 +2293,81 @@ router.get(
   }
 );
 
+
+const ShiftReceiptKind = z.enum(["beginning_inventory", "ending_inventory", "shift_sales", "restocking", "deposit", "supervisor_checkout"]);
+
+async function buildShiftOperationsReceipt(tenantId: number, shiftId: number, kind: z.infer<typeof ShiftReceiptKind>) {
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, shiftId))).limit(1);
+  if (!shift) return null;
+  const stats = await computeShiftStats(shiftId);
+  const items = await db.select().from(shiftInventoryItemsTable).where(eq(shiftInventoryItemsTable.shiftId, shiftId)).orderBy(asc(shiftInventoryItemsTable.displayOrder));
+  const inventory = enrichInventoryWithSales(items, stats.byItem);
+  const summary = shift.summary as Record<string, unknown> | null;
+  return {
+    kind,
+    tenantId,
+    shiftId,
+    boxAssignmentId: shift.boxAssignmentId,
+    generatedAt: new Date().toISOString(),
+    beginningInventory: inventory.map(i => ({ catalogItemId: i.catalogItemId, itemName: i.itemName, quantityStart: i.quantityStart, unitType: i.unitType })),
+    endingInventory: inventory.map(i => ({ catalogItemId: i.catalogItemId, itemName: i.itemName, expectedEnding: i.quantityEnd ?? i.quantityStart - i.quantitySold, countedEnding: i.quantityEndActual, variance: i.discrepancy })),
+    sales: { orderCount: stats.orderCount, totalRevenue: stats.totalRevenue, paymentTotals: stats.paymentTotals },
+    deposit: { cashBankStart: parseFloat(String(shift.cashBankStart ?? 0)), cashBankEndReported: parseFloat(String(shift.cashBankEndReported ?? 0)), depositAmount: shift.depositAmount != null ? parseFloat(String(shift.depositAmount)) : null },
+    supervisor: { supervisorId: shift.supervisorId, supervisorConfirmedAt: shift.supervisorConfirmedAt, tipAmount: shift.tipAmount != null ? parseFloat(String(shift.tipAmount)) : null, differenceAmount: shift.differenceAmount != null ? parseFloat(String(shift.differenceAmount)) : null },
+    summary,
+  };
+}
+
+// GET /api/shifts/:id/receipts/:kind — six required closeout/operations receipts as JSON payloads.
+router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const shiftId = Number(req.params.id);
+  const kind = ShiftReceiptKind.safeParse(req.params.kind);
+  if (!Number.isInteger(shiftId) || shiftId <= 0 || !kind.success) { res.status(400).json({ error: "Invalid shift receipt request" }); return; }
+  const receipt = await buildShiftOperationsReceipt(tenantId, shiftId, kind.data);
+  if (!receipt) { res.status(404).json({ error: "Shift not found" }); return; }
+  res.json({ receipt });
+});
+
+const TransferInventoryBody = z.object({
+  productId: z.number().int().positive(),
+  fromLocationName: z.enum(["Backstock"]),
+  toLocationName: z.enum(["Box 1", "Box 2", "CSR Sales Box 1", "CSR Sales Box 2", "Storefront"]),
+  quantity: z.number().positive().max(1_000_000),
+  reason: z.string().trim().max(500).optional(),
+}).strict();
+
+// POST /api/admin/inventory-transfers — audited Backstock -> Box/Storefront restocking movement.
+router.post("/admin/inventory-transfers", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const parsed = TransferInventoryBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const actor = req.dbUser!;
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const { productId, fromLocationName, toLocationName, quantity, reason } = parsed.data;
+  const locations = await db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)));
+  const from = locations.find(l => l.name === fromLocationName);
+  const toAliases = toLocationName === "Box 1" ? ["Box 1", "CSR Sales Box 1"] : toLocationName === "Box 2" ? ["Box 2", "CSR Sales Box 2"] : [toLocationName];
+  const to = locations.find(l => toAliases.includes(l.name));
+  if (!from || !to) { res.status(404).json({ error: "Inventory location not found for this tenant" }); return; }
+  const result = await db.transaction(async tx => {
+    const decremented = await tx.update(inventoryBalancesTable)
+      .set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(quantity)}` })
+      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId), eq(inventoryBalancesTable.locationId, from.id), sellableBalanceWhere(), sql`${inventoryBalancesTable.quantityOnHand} >= ${String(quantity)}`))
+      .returning();
+    if (decremented.length !== 1) throw new Error("INSUFFICIENT_BACKSTOCK");
+    const [existingTo] = await tx.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId), eq(inventoryBalancesTable.locationId, to.id))).limit(1);
+    const updatedTo = existingTo
+      ? await tx.update(inventoryBalancesTable).set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} + ${String(quantity)}` }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, existingTo.id))).returning()
+      : await tx.insert(inventoryBalancesTable).values({ tenantId, productId, locationId: to.id, quantityOnHand: String(quantity), parLevel: "0" }).returning();
+    return { from: decremented[0], to: updatedTo[0] };
+  }).catch((err: Error) => {
+    if (err.message === "INSUFFICIENT_BACKSTOCK") return null;
+    throw err;
+  });
+  if (!result) { res.status(409).json({ error: "Insufficient Backstock inventory", productId }); return; }
+  await recomputeCatalogInventoryTotals(tenantId, productId);
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "inventory.restock_transfer", tenantId, resourceType: "catalog_item", resourceId: String(productId), metadata: { fromLocationName, toLocationName, quantity, reason: reason ?? null }, ipAddress: req.ip });
+  res.status(201).json({ transfer: { productId, fromLocationName, toLocationName, quantity, reason: reason ?? null }, balances: result });
+});
+
 export default router;

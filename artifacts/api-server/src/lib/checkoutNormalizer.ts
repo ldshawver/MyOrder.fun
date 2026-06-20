@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { db, catalogItemsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logger } from "./logger";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
@@ -97,6 +97,7 @@ export async function normalizeCheckoutCart(
   rawLines: CartLineInputType[],
   receiptMode?: string,
   strictMode = true,
+  tenantId?: number,
 ): Promise<NormalizedCartLine[]> {
   const parsed = CartInputSchema.safeParse(rawLines);
   if (!parsed.success) {
@@ -109,7 +110,7 @@ export async function normalizeCheckoutCart(
     const [ci] = await db
       .select()
       .from(catalogItemsTable)
-      .where(eq(catalogItemsTable.id, line.catalogItemId))
+      .where(tenantId ? and(eq(catalogItemsTable.id, line.catalogItemId), eq(catalogItemsTable.tenantId, tenantId)) : eq(catalogItemsTable.id, line.catalogItemId))
       .limit(1);
 
     if (!ci) {
@@ -201,17 +202,10 @@ export async function normalizeCheckoutCart(
       merchantBrand === "alavont"
         ? ci.merchantSku!
         : (ci.merchantSku ?? ci.wooProductId ?? ci.sku ?? null);
-    const display_name = firstNonEmpty(ci.displayName, ci.customerSafeName, ci.luciferCruzName, ci.alavontName, ci.name) ?? ci.name;
-    const display_description = firstNonEmpty(
-      ci.displayDescription,
-      ci.customerSafeDescription,
-      ci.marketingCopy,
-      ci.luciferCruzDescription,
-      ci.alavontDescription,
-      ci.description,
-    ) ?? "Curated by Zappy for a premium checkout experience.";
-    const display_category = firstNonEmpty(ci.displayCategory, ci.luciferCruzCategory, ci.alavontCategory, ci.category) ?? ci.category;
-    const display_image = firstNonEmpty(ci.displayImage, ci.luciferCruzImageUrl, ci.alavontImageUrl, ci.imageUrl);
+    const display_name = firstNonEmpty(ci.alavontName, ci.displayName, ci.name) ?? ci.name;
+    const display_description = firstNonEmpty(ci.alavontDescription, ci.displayDescription, ci.description) ?? "Curated by Zappy for a premium checkout experience.";
+    const display_category = firstNonEmpty(ci.alavontCategory, ci.displayCategory, ci.category) ?? ci.category;
+    const display_image = firstNonEmpty(ci.alavontImageUrl, ci.displayImage, ci.imageUrl);
     const merchant_brand_name = firstNonEmpty(ci.merchantBrandName, ci.merchantName, "Lucifer Cruz") ?? "Lucifer Cruz";
     const marketing_copy = firstNonEmpty(
       ci.marketingCopy,
