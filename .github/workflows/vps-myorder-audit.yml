@@ -1,30 +1,44 @@
-- name: Connect Tailscale
-  uses: tailscale/github-action@v3
-  with:
-    oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-    oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-    tags: tag:github-actions
+name: VPS MyOrder Audit
 
-- name: Verify Tailnet
-  run: |
-    tailscale status
-    tailscale ping 100.85.15.43
+on:
+  workflow_dispatch:
 
-- name: VPS smoke check
-  uses: appleboy/ssh-action@v1.0.3
-  with:
-    host: 100.85.15.43
-    username: serveradmin
-    key: ${{ secrets.VPS_PRIVATE_KEY }}
-    port: 22
-    timeout: 60s
-    command_timeout: 10m
-    script_stop: true
-    script: |
-      set -euo pipefail
-      hostname
-      whoami
-      cd /opt/alavont
-      docker ps
-      docker compose --env-file deploy/.env -f deploy/docker-compose.yml -p deploy ps
-      curl -I http://127.0.0.1/api/healthz || true
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Verify Tailnet
+        run: |
+          tailscale status
+          tailscale ping 100.85.15.43
+
+      - name: VPS smoke check
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 100.85.15.43
+          username: serveradmin
+          key: ${{ secrets.VPS_PRIVATE_KEY }}
+          port: 22
+          timeout: 60s
+          command_timeout: 10m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            hostname
+            whoami
+            cd /opt/alavont
+            docker ps
+            docker compose --env-file deploy/.env -f deploy/docker-compose.yml -p deploy ps
+            curl -I http://127.0.0.1/api/healthz || true
+            curl -I https://myorder.fun/api/healthz || true
