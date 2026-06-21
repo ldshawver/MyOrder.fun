@@ -43,7 +43,7 @@ import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
-import AdminCatalogDebug from "@/pages/admin/edit-catalog";
+import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -548,7 +548,7 @@ function AuthenticatedApp() {
               <Route path="/admin/mfa" component={MfaSetup} />
               <Route path="/admin/import" component={AdminImport} />
               <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
-              <Route path="/admin/edit-catalog" component={AdminCatalogDebug} />
+              <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
               <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />
               <Route path="/admin/feedback" component={AdminFeedback} />

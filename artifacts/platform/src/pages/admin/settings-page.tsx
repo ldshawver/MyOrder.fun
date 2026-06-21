@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@clerk/react";
-import { Settings, Save, RefreshCw, CheckCircle2, Eye, EyeOff, ShoppingBag } from "lucide-react";
+import { Settings, Save, RefreshCw, CheckCircle2, Eye, EyeOff, ShoppingBag, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +15,8 @@ type MerchantProcessorConfig = Record<string, {
   webhookConfigured?: boolean;
   notes?: string;
 }>;
+
+type CatalogDiagnostics = { summary?: Record<string, unknown>; items?: Array<{ id: number; name: string; missingFields?: string[]; filteredBecause?: string[]; isAvailable?: boolean; alavontName?: string | null; luciferCruzName?: string | null }> };
 
 type AdminSettings = {
   menuImportEnabled: boolean;
@@ -119,6 +121,9 @@ export default function AdminSettingsPage() {
   const [wcError, setWcError] = useState<string | null>(null);
   const [wcTesting, setWcTesting] = useState(false);
   const [wcTestResult, setWcTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [diagnostics, setDiagnostics] = useState<CatalogDiagnostics | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -219,6 +224,22 @@ export default function AdminSettingsPage() {
     } catch { /* ignore */ }
   }
 
+  async function loadCatalogDiagnostics() {
+    setDiagnosticsLoading(true);
+    setDiagnosticsError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/settings/diagnostics/catalog", { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "Failed to load catalog diagnostics");
+      setDiagnostics(data);
+    } catch (e) {
+      setDiagnosticsError(e instanceof Error ? e.message : "Failed to load catalog diagnostics");
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }
+
   async function testWooConnection() {
     setWcTesting(true);
     setWcTestResult(null);
@@ -309,6 +330,7 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="ai" className="rounded-lg text-xs">AI Concierge</TabsTrigger>
           <TabsTrigger value="privacy" className="rounded-lg text-xs">Privacy</TabsTrigger>
           <TabsTrigger value="disclaimer" className="rounded-lg text-xs">Disclaimer</TabsTrigger>
+          <TabsTrigger value="diagnostics" className="rounded-lg text-xs">Diagnostics</TabsTrigger>
         </TabsList>
 
 
@@ -380,6 +402,52 @@ export default function AdminSettingsPage() {
             }} disabled={saving}>
               <Save className="h-4 w-4 mr-2" /> Save disclaimer
             </Button>
+          </div>
+        </TabsContent>
+
+
+
+        <TabsContent value="diagnostics">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest flex items-center gap-2"><Bug size={13} /> Catalog Diagnostics</div>
+                <p className="text-xs text-muted-foreground mt-2">Diagnostics moved here from the removed Catalog Debug page. Safe checkout fields are inspected on the same Product Master row and must not appear as separate inventory products.</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadCatalogDiagnostics()} disabled={diagnosticsLoading} className="gap-2 rounded-xl">
+                <RefreshCw size={13} className={diagnosticsLoading ? "animate-spin" : ""} /> Load
+              </Button>
+            </div>
+            {diagnosticsError && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">{diagnosticsError}</div>}
+            {diagnostics?.summary && (
+              <div className="grid gap-2 md:grid-cols-3">
+                {Object.entries(diagnostics.summary).slice(0, 9).map(([key, value]) => (
+                  <div key={key} className="rounded-xl border border-border/30 bg-muted/10 p-3">
+                    <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{key}</div>
+                    <div className="mt-1 text-sm font-semibold">{typeof value === "object" ? JSON.stringify(value) : String(value)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {diagnostics?.items && (
+              <div className="max-h-96 overflow-auto rounded-xl border border-border/30">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/20 text-muted-foreground">
+                    <tr><th className="p-2 text-left">ID</th><th className="p-2 text-left">Product</th><th className="p-2 text-left">Safe Name</th><th className="p-2 text-left">Issues</th></tr>
+                  </thead>
+                  <tbody>
+                    {diagnostics.items.slice(0, 100).map(item => (
+                      <tr key={item.id} className="border-t border-border/20">
+                        <td className="p-2 font-mono">{item.id}</td>
+                        <td className="p-2">{item.alavontName || item.name}</td>
+                        <td className="p-2 text-muted-foreground">{item.luciferCruzName || "—"}</td>
+                        <td className="p-2 text-muted-foreground">{[...(item.missingFields ?? []), ...(item.filteredBecause ?? [])].join(", ") || "OK"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </TabsContent>
 

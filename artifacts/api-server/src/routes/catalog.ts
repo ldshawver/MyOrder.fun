@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, eq, asc, sql, sum } from "drizzle-orm";
 import { z } from "zod";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable } from "@workspace/db";
+import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -34,6 +34,67 @@ const catalogDisplayUpdateSchema = z.object({
   catalogSectionLayout: z.enum(["grid", "carousel", "stack"]).optional(),
   isVisible: z.boolean().optional(),
 }).strict();
+
+
+function isArchivedOrSafeDuplicateRow(row: { metadata?: unknown }): boolean {
+  const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+  return metadata.archived === true || metadata.safeOnlyDuplicate === true || metadata.mergedIntoCatalogItemId != null;
+}
+
+function activeProductRows<T extends { metadata?: unknown }>(rows: T[]): T[] {
+  return rows.filter(row => !isArchivedOrSafeDuplicateRow(row));
+}
+
+async function archiveSafeDuplicateRows(tenantId: number, actor: { id: number; email: string; role: string } | null, reason = "safe_duplicate_cleanup") {
+  const rows = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId));
+  const activeParents = rows.filter(row => !isArchivedOrSafeDuplicateRow(row) && row.isWooManaged !== true && row.isLocalAlavont !== false);
+  let merged = 0;
+  const archivedIds: number[] = [];
+
+  for (const candidate of rows) {
+    if (isArchivedOrSafeDuplicateRow(candidate) || candidate.isWooManaged === true) continue;
+    const metadata = candidate.metadata && typeof candidate.metadata === "object" && !Array.isArray(candidate.metadata) ? candidate.metadata as Record<string, unknown> : {};
+    const hasAlavontIdentity = Boolean(candidate.alavontName?.trim() || candidate.alavontId?.trim());
+    const looksSafeOnly = candidate.isLocalAlavont === false || candidate.merchantBrand === "lucifer_cruz" || (metadata.safeOnly === true) || (!hasAlavontIdentity && Boolean(candidate.luciferCruzName?.trim() || candidate.merchantName?.trim()));
+    if (!looksSafeOnly) continue;
+
+    const safeName = (candidate.luciferCruzName || candidate.merchantName || candidate.customerSafeName || candidate.name || "").trim().toLowerCase();
+    if (!safeName) continue;
+    const parent = activeParents.find(row => row.id !== candidate.id && [row.luciferCruzName, row.merchantName, row.customerSafeName].some(value => value?.trim().toLowerCase() === safeName));
+    if (!parent) continue;
+
+    const parentMetadata = parent.metadata && typeof parent.metadata === "object" && !Array.isArray(parent.metadata) ? parent.metadata as Record<string, unknown> : {};
+    await db.update(catalogItemsTable).set({
+      luciferCruzName: parent.luciferCruzName ?? candidate.luciferCruzName ?? candidate.merchantName ?? candidate.name,
+      luciferCruzDescription: parent.luciferCruzDescription ?? candidate.luciferCruzDescription ?? candidate.merchantDescription ?? candidate.description,
+      luciferCruzCategory: parent.luciferCruzCategory ?? candidate.luciferCruzCategory ?? candidate.merchantCategory ?? candidate.category,
+      luciferCruzImageUrl: parent.luciferCruzImageUrl ?? candidate.luciferCruzImageUrl ?? candidate.merchantImage ?? candidate.imageUrl,
+      merchantName: parent.merchantName ?? candidate.merchantName ?? candidate.luciferCruzName,
+      merchantDescription: parent.merchantDescription ?? candidate.merchantDescription ?? candidate.luciferCruzDescription,
+      merchantCategory: parent.merchantCategory ?? candidate.merchantCategory ?? candidate.luciferCruzCategory,
+      merchantImage: parent.merchantImage ?? candidate.merchantImage ?? candidate.luciferCruzImageUrl,
+      receiptName: parent.receiptName ?? candidate.receiptName ?? candidate.luciferCruzName ?? candidate.name,
+      labelName: parent.labelName ?? candidate.labelName ?? candidate.luciferCruzName ?? candidate.name,
+      metadata: { ...parentMetadata, safeDuplicateMergedFrom: [...(Array.isArray(parentMetadata.safeDuplicateMergedFrom) ? parentMetadata.safeDuplicateMergedFrom : []), candidate.id] },
+      updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, parent.id)));
+
+    await db.update(catalogItemsTable).set({
+      isAvailable: false,
+      alavontInStock: false,
+      isLocalAlavont: false,
+      metadata: { ...metadata, archived: true, safeOnlyDuplicate: true, mergedIntoCatalogItemId: parent.id, lifecycleReason: reason },
+      updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, candidate.id)));
+    archivedIds.push(candidate.id);
+    merged++;
+  }
+
+  if (actor && merged > 0) {
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "catalog.safe_duplicates_merged", tenantId, resourceType: "catalog_item", metadata: { merged, archivedIds, reason } });
+  }
+  return { merged, archivedIds };
+}
 
 function safeMetadataPatch(current: unknown, patch: Record<string, unknown>) {
   const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
@@ -408,6 +469,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
     .where(eq(catalogItemsTable.tenantId, tenantId))
     .orderBy(asc(catalogItemsTable.name));
 
+  rows = activeProductRows(rows);
   const totalBeforeFilters = rows.length;
 
   if (query.data.category) {
@@ -489,7 +551,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 router.get("/admin/product-master", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
   const [items, locations, balances] = await Promise.all([
-    db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)).orderBy(asc(catalogItemsTable.name)),
+    db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`)).orderBy(asc(catalogItemsTable.name)),
     db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
     db.select().from(inventoryBalancesTable).where(eq(inventoryBalancesTable.tenantId, tenantId)),
   ]);
@@ -599,13 +661,14 @@ router.get("/catalog/categories", async (req, res): Promise<void> => {
       isLocalAlavont: catalogItemsTable.isLocalAlavont,
       merchantProductSource: catalogItemsTable.merchantProductSource,
       wooProductId: catalogItemsTable.wooProductId,
+      metadata: catalogItemsTable.metadata,
     })
     .from(catalogItemsTable)
     .where(eq(catalogItemsTable.tenantId, tenantId));
 
   const seen = new Set<string>();
   const categories: string[] = [];
-  for (const r of rows) {
+  for (const r of activeProductRows(rows)) {
     if (mode === "lucifer") {
       if (r.isWooManaged !== true || r.merchantProductSource !== "woo" || !r.wooProductId) continue;
     } else if (r.isLocalAlavont === false || r.isWooManaged === true) {
@@ -783,17 +846,41 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
     res.status(404).json({ error: "Not found" });
     return;
   }
-  await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, params.data.id));
-  res.sendStatus(204);
+  const [orderUse] = await db.select({ id: orderItemsTable.id }).from(orderItemsTable).where(eq(orderItemsTable.catalogItemId, params.data.id)).limit(1);
+  const [balanceUse] = await db.select({ id: inventoryBalancesTable.id }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.productId, params.data.id))).limit(1);
+  const [templateUse] = await db.select({ id: inventoryTemplatesTable.id }).from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, houseTenantId), eq(inventoryTemplatesTable.catalogItemId, params.data.id))).limit(1);
+  if (orderUse || balanceUse || templateUse) {
+    const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata) ? existing.metadata as Record<string, unknown> : {};
+    const [updated] = await db.update(catalogItemsTable).set({
+      isAvailable: false,
+      alavontInStock: false,
+      metadata: { ...metadata, archived: true, lifecycleReason: "admin_delete_archive", archivedAt: new Date().toISOString() },
+      updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id))).returning();
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.archived", tenantId: houseTenantId, resourceType: "catalog_item", resourceId: String(params.data.id), metadata: { reason: "delete_requested_with_history", hadOrderHistory: !!orderUse, hadInventory: !!balanceUse, hadTemplate: !!templateUse }, ipAddress: req.ip });
+    res.json({ ok: true, mode: "archived", item: mapItem(updated ?? existing) });
+    return;
+  }
+  await db.delete(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)));
+  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.deleted", tenantId: houseTenantId, resourceType: "catalog_item", resourceId: String(params.data.id), metadata: { reason: "delete_requested_no_history" }, ipAddress: req.ip });
+  res.json({ ok: true, mode: "deleted", id: params.data.id });
 });
 
-// ─── GET /api/admin/catalog/debug ────────────────────────────────────────────
+router.post("/admin/product-master/cleanup-safe-duplicates", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const result = await archiveSafeDuplicateRows(tenantId, req.dbUser ? { id: req.dbUser.id, email: req.dbUser.email ?? "", role: req.dbUser.role } : null);
+  res.json({ ok: true, ...result });
+});
+
+// ─── GET /api/admin/settings/diagnostics/catalog ────────────────────────────
 // Returns a full diagnostic breakdown of catalog items and why some may be hidden.
 router.get(
-  "/admin/catalog/debug",
+  "/admin/settings/diagnostics/catalog",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
     const allRows = await db.select().from(catalogItemsTable)
+      .where(eq(catalogItemsTable.tenantId, tenantId))
       .orderBy(asc(catalogItemsTable.id));
 
     const analyzed = allRows.map(r => {
@@ -865,11 +952,15 @@ router.get(
       ).map(([category, count]) => ({ category, count })).sort((a, b) => b.count - a.count),
     };
 
-    console.log(`[catalog/debug] total=${allRows.length} visibleAlavont=${summary.visibleAlavont} visibleLC=${summary.visibleLC}`);
+    req.log.info({ total: allRows.length, visibleAlavont: summary.visibleAlavont, visibleLC: summary.visibleLC }, "catalog diagnostics");
 
     res.json({ summary, items: analyzed });
   }
 );
+
+router.get("/admin/catalog/debug", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+  res.status(404).json({ error: "Catalog Debug has moved to Admin Settings → Diagnostics" });
+});
 
 // ─── POST /api/admin/checkout/normalize-preview ───────────────────────────────
 // Admin-only: Preview normalized cart from raw catalog item IDs

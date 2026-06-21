@@ -110,29 +110,37 @@ function executeRows<T>(result: unknown): T[] {
 
 
 const IMPORT_LOCATION_ALIASES: Record<string, string[]> = {
-  "Box 1": ["Box 1", "CSR Sales Box 1"],
-  "Box 2": ["Box 2", "CSR Sales Box 2"],
+  "Box 1": ["CSR Sales Box 1", "Box 1"],
+  "Box 2": ["CSR Sales Box 2", "Box 2"],
   Storefront: ["Storefront"],
   Backstock: ["Backstock"],
 };
-const IMPORT_LOCATION_META: Record<string, { type: string; displayOrder: number }> = {
-  "Box 1": { type: "csr_box", displayOrder: 3 },
-  "Box 2": { type: "csr_box", displayOrder: 4 },
-  Storefront: { type: "storefront", displayOrder: 2 },
-  Backstock: { type: "backstock", displayOrder: 1 },
+const IMPORT_LOCATION_META: Record<string, { type: string; displayOrder: number; canonicalName: string }> = {
+  "Box 1": { type: "csr_box", displayOrder: 3, canonicalName: "CSR Sales Box 1" },
+  "Box 2": { type: "csr_box", displayOrder: 4, canonicalName: "CSR Sales Box 2" },
+  Storefront: { type: "storefront", displayOrder: 2, canonicalName: "Storefront" },
+  Backstock: { type: "backstock", displayOrder: 1, canonicalName: "Backstock" },
 };
 
 async function ensureImportLocationMap(client: ImportDbClient, tenantId: number): Promise<Record<string, typeof inventoryLocationsTable.$inferSelect>> {
   const locations = await client.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))) as Array<typeof inventoryLocationsTable.$inferSelect>;
   const byCanonical: Record<string, typeof inventoryLocationsTable.$inferSelect> = {};
   for (const [canonical, aliases] of Object.entries(IMPORT_LOCATION_ALIASES)) {
-    let loc = locations.find(l => aliases.includes(l.name));
+    const meta = IMPORT_LOCATION_META[canonical];
+    const csrBoxId = null;
+    let loc = locations.find(l => l.type === meta.type && l.name === meta.canonicalName);
+    loc ??= locations.find(l => aliases.includes(l.name));
     if (!loc) {
-      const meta = IMPORT_LOCATION_META[canonical];
-      const [created] = await client.insert(inventoryLocationsTable).values({ tenantId, type: meta.type, csrBoxId: null, name: canonical, isActive: true, displayOrder: meta.displayOrder }).returning();
+      const [created] = await client.insert(inventoryLocationsTable).values({ tenantId, type: meta.type, csrBoxId, name: meta.canonicalName, isActive: true, displayOrder: meta.displayOrder }).returning();
       loc = created;
       locations.push(created);
+    } else if ((loc.name !== meta.canonicalName || loc.csrBoxId !== csrBoxId) && meta.type !== "csr_box" && loc.type) {
+      const [updated] = await client.update(inventoryLocationsTable).set({ name: meta.canonicalName, type: meta.type, csrBoxId, isActive: true, displayOrder: meta.displayOrder }).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, loc.id))).returning();
+      loc = updated ?? loc;
+      const idx = locations.findIndex(l => l.id === loc!.id);
+      if (idx >= 0) locations[idx] = loc;
     }
+    if (!loc) throw new Error(`Could not resolve import inventory location ${canonical}`);
     byCanonical[canonical] = loc;
   }
   return byCanonical;

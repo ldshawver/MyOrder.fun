@@ -285,7 +285,7 @@ export default function AdminEditCatalog() {
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
-    onSuccess: () => { setDeleteId(null); qc.invalidateQueries({ queryKey: ["edit-catalog"] }); },
+    onSuccess: async () => { setDeleteId(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
   });
 
   const filtered = items.filter(item => {
@@ -493,7 +493,7 @@ export default function AdminEditCatalog() {
               </DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground py-2">
-              This will permanently remove the product and its inventory records. This cannot be undone.
+              This archives products with order/inventory history and only hard-deletes products with no history. The item disappears from catalog, inventory, checkout, CSR shift inventory, and Zappy after confirmation.
             </p>
             <div className="flex gap-2 pt-1">
               <Button
@@ -503,7 +503,7 @@ export default function AdminEditCatalog() {
                 disabled={deleteMutation.isPending}
               >
                 {deleteMutation.isPending ? <Loader2 size={13} className="animate-spin mr-2" /> : null}
-                Delete
+                Archive / Delete
               </Button>
               <Button variant="outline" onClick={() => setDeleteId(null)} disabled={deleteMutation.isPending}>
                 Cancel

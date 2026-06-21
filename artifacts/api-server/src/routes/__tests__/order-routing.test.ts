@@ -123,10 +123,23 @@ describe("decideRouting", () => {
     expect(r.assignedCsrUserId).toBeNull();
     expect(r.assignedShiftId).toBeNull();
     expect(r.routeSource).toBe("general_account");
+    expect(r.routedToEmail).toBe("info@adiken.com");
     // Default 30-minute hourglass
     expect(r.promisedMinutes).toBe(30);
     expect(r.estimatedReadyAt.getTime()).toBeGreaterThan(Date.now() + 25 * 60_000);
     expect(r.estimatedReadyAt.getTime()).toBeLessThan(Date.now() + 35 * 60_000);
+  });
+
+
+  it("treats active but not ready CSR shifts as fallback and does not assign a shift", async () => {
+    activeCsrUsers = [
+      { userId: 42, shiftId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: false } },
+    ];
+    const r = await decideRouting();
+    expect(r.assignedCsrUserId).toBeNull();
+    expect(r.assignedShiftId).toBeNull();
+    expect(r.routeSource).toBe("general_account");
+    expect(r.routedToEmail).toBe("info@adiken.com");
   });
 
   it("uses defaultEtaMinutes from admin_settings (override of the 30-min default)", async () => {

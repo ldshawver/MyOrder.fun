@@ -59,7 +59,7 @@ async function loadConciergePromptTemplate(): Promise<string> {
 
 async function loadAvailableCatalog(tenantId: number): Promise<Array<typeof catalogItemsTable.$inferSelect>> {
   try {
-    return await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.isAvailable, true), eq(catalogItemsTable.alavontInStock, true), eq(catalogItemsTable.isWooManaged, false), sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`)).orderBy(asc(catalogItemsTable.alavontName));
+    return await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.isAvailable, true), eq(catalogItemsTable.alavontInStock, true), eq(catalogItemsTable.isWooManaged, false), sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`, sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`)).orderBy(asc(catalogItemsTable.alavontName));
   } catch (err) {
     logger.error({ err }, "AI catalog load failed");
     return [];
@@ -366,6 +366,8 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
         eq(catalogItemsTable.isAvailable, true),
         eq(catalogItemsTable.alavontInStock, true),
         eq(catalogItemsTable.isWooManaged, false),
+        sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`,
+        sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`,
         or(
               like(catalogItemsTable.alavontName, `%${q}%`),
           like(catalogItemsTable.alavontCategory, `%${q}%`),

@@ -19,7 +19,6 @@ import {
   Upload,
   Settings,
   ClipboardList,
-  Bug,
   ReceiptText,
   ClipboardCheck,
   UserCheck,
@@ -165,7 +164,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           icon: PackageOpen,
           roles: ["global_admin", "admin"],
           children: [
-            { href: "/admin/edit-catalog", label: "Edit Catalog", icon: Bug, roles: ["global_admin", "admin"] },
+            { href: "/admin/edit-catalog", label: "Edit Catalog", icon: PackageOpen, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
@@ -203,7 +202,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin"] },
-            { href: "/admin/catalog-debug", label: "Catalog Debug", icon: Bug, roles: ["global_admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin"] },
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin"] },
             { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin"] },

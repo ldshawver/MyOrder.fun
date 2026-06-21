@@ -628,26 +628,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   // shift, or to the General Account fallback queue).
   const routing = await decideRouting(houseTenantId);
 
-  // Legacy assignedTechId/assignedShiftId mirror the routing decision so
-  // the existing FulfillmentCard / shift dashboards / legacy reports
-  // keep working. When the routing decision is general_account (no CSR
-  // owner), fall back to any active shift for both legacy fields —
-  // routing ownership lives in assignedCsrUserId/routeSource, so the
-  // legacy fallback does not muddy the new vocabulary.
-  let assignedTechId: number | null = routing.assignedCsrUserId;
-  let assignedShiftId: number | null = routing.assignedShiftId;
-  if (!assignedTechId) {
-    const [activeShift] = await db
-      .select()
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "active"))
-      .orderBy(desc(labTechShiftsTable.clockedInAt))
-      .limit(1);
-    if (activeShift) {
-      assignedTechId = activeShift.techId;
-      assignedShiftId = activeShift.id;
-    }
-  }
+  // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
+  // Fallback/general-account orders must remain unassigned so they do not
+  // accidentally attach to a non-ready shift or mutate a CSR box.
+  const assignedTechId: number | null = routing.assignedCsrUserId;
+  const assignedShiftId: number | null = routing.assignedShiftId;
 
   const now = new Date();
 
@@ -682,22 +667,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     }
   }
 
-  if (!targetLocationId) {
-    const [storefrontLoc] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, houseTenantId),
-        eq(inventoryLocationsTable.type, "storefront"),
-      ))
-      .limit(1);
-    targetLocationId = storefrontLoc?.id ?? null;
-  }
-
-  if (!targetLocationId) {
-    res.status(409).json({ error: "No inventory location available for this order" });
-    return;
-  }
+  const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
+  const shouldDeductInventory = routing.routeSource === "active_csr" && targetLocationId != null && immediatePaymentMethod === "cash";
 
   let order: typeof ordersTable.$inferSelect;
   try {
@@ -797,22 +768,24 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           wooVariationId: line.woo_variation_id ?? null,
         });
 
-        const decremented = await tx
-          .update(inventoryBalancesTable)
-          .set({
-            quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
-          })
-          .where(and(
-            sellableInventoryBalancePredicate(houseTenantId),
-            eq(inventoryBalancesTable.productId, line.catalog_item_id),
-            eq(inventoryBalancesTable.locationId, targetLocationId),
-            sellableBalanceWhere(),
-            sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
-          ))
-          .returning({ id: inventoryBalancesTable.id });
+        if (shouldDeductInventory) {
+          const decremented = await tx
+            .update(inventoryBalancesTable)
+            .set({
+              quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
+            })
+            .where(and(
+              sellableInventoryBalancePredicate(houseTenantId),
+              eq(inventoryBalancesTable.productId, line.catalog_item_id),
+              eq(inventoryBalancesTable.locationId, targetLocationId!),
+              sellableBalanceWhere(),
+              sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
+            ))
+            .returning({ id: inventoryBalancesTable.id });
 
-        if (decremented.length !== 1) {
-          throw new InsufficientInventoryError(line.catalog_item_id);
+          if (decremented.length !== 1) {
+            throw new InsufficientInventoryError(line.catalog_item_id);
+          }
         }
 
         await tx.execute(sql`
