@@ -882,7 +882,7 @@ export default function Catalog() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Hero/header: banner sits behind the title and brand buttons. */}
-      <div className="relative overflow-hidden rounded-3xl border border-border/30 bg-background/95 min-h-[260px] sm:min-h-[320px] md:min-h-[420px] catalog-hero" data-testid="catalog-hero-banner">
+      <div className="relative overflow-hidden rounded-3xl border border-border/30 bg-background/95 min-h-[180px] sm:min-h-[220px] md:min-h-[280px] catalog-hero" data-testid="catalog-hero-banner">
         {!isLC && (
           <div className="absolute inset-0 z-0">
             {getSafeImageSources(bannerImages).map((src, index) => (
@@ -899,7 +899,7 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="relative z-10 flex min-h-[260px] sm:min-h-[320px] md:min-h-[420px] flex-col justify-start gap-6 p-4 sm:p-5 md:p-8">
+        <div className="relative z-10 flex min-h-[180px] sm:min-h-[220px] md:min-h-[280px] flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
           <div className="flex justify-end">
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
               <button
@@ -929,7 +929,7 @@ export default function Catalog() {
       </div>
 
       {/* Filters */}
-      <div className="relative z-30 -mt-12 flex gap-2 flex-wrap items-center rounded-2xl border border-border/30 bg-background/80 p-3 shadow-xl backdrop-blur-md md:-mt-16">
+      <div className="relative z-30 -mt-24 flex gap-2 flex-wrap items-center rounded-2xl border border-border/30 bg-background/90 p-3 shadow-xl backdrop-blur-md sm:-mt-28 md:-mt-32">
         <div className="relative min-w-[180px] max-w-xs">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -976,7 +976,7 @@ export default function Catalog() {
       {!isLC && (
         <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
           <p className="text-xs text-muted-foreground">
-            Alavont Thereputics items ordered here are fulfilled through Lucifer Cruz. All transactions are private and discreet.
+            Alavont fulfilled by Lucifer Cruz. All transactions are private and discreet.
           </p>
         </div>
       )}
@@ -1050,7 +1050,9 @@ export default function Catalog() {
         </div>
       )}
 
-      <CatalogNotice className="mt-8" />
+      <div className="mt-8 rounded-2xl border border-border/30 bg-background/80 p-3 text-center text-xs text-muted-foreground">Alavont fulfilled by Lucifer Cruz</div>
+
+      <CatalogNotice className="mt-4" />
 
       {/* Dialogs */}
       <EditItemDialog item={editItem} open={!!editItem} onClose={() => setEditItem(null)} />

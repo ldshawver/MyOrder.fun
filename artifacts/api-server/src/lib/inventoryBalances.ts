@@ -274,7 +274,14 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       isWooManaged: catalogItemsTable.isWooManaged,
       isLocalAlavont: catalogItemsTable.isLocalAlavont,
     }).from(catalogItemsTable)
-      .where(and(eq(catalogItemsTable.tenantId, tenantId), sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`))
+      .where(and(
+        eq(catalogItemsTable.tenantId, tenantId),
+        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
+        sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`,
+        eq(catalogItemsTable.isAvailable, true),
+        sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`,
+        sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`
+      ))
       .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
     db.select().from(inventoryLocationsTable)
       .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)))

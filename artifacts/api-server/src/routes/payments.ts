@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import Stripe from "stripe";
-import { db, ordersTable, orderItemsTable, userCreditsTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
@@ -19,10 +19,55 @@ import {
 } from "../lib/checkoutNormalizer";
 import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/stripePayload";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
+import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
+import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 let creditSchemaEnsured = false;
+class PaymentInventoryError extends Error {
+  constructor(public readonly catalogItemId: number) {
+    super(`Insufficient inventory for catalog item ${catalogItemId}`);
+    this.name = "PaymentInventoryError";
+  }
+}
+
+async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect): Promise<void> {
+  const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
+  if (method === "cash") return;
+  if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
+  const [shift] = await db.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
+  if (!shift?.boxAssignmentId) return;
+  const [box] = await db.select({ id: csrBoxesTable.id }).from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, order.tenantId), eq(csrBoxesTable.slug, shift.boxAssignmentId))).limit(1);
+  if (!box) return;
+  const [loc] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, order.tenantId), eq(inventoryLocationsTable.csrBoxId, box.id))).limit(1);
+  if (!loc) return;
+  const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+
+  await db.transaction(async (tx) => {
+    for (const item of items) {
+      if (!item.catalogItemId) continue;
+      const decremented = await tx.update(inventoryBalancesTable)
+        .set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(item.quantity)}` })
+        .where(and(
+          sellableInventoryBalancePredicate(order.tenantId),
+          eq(inventoryBalancesTable.productId, item.catalogItemId),
+          eq(inventoryBalancesTable.locationId, loc.id),
+          sellableBalanceWhere(),
+          sql`${inventoryBalancesTable.quantityOnHand} >= ${String(item.quantity)}`,
+        ))
+        .returning({ id: inventoryBalancesTable.id });
+      if (decremented.length !== 1) throw new PaymentInventoryError(item.catalogItemId);
+      await tx.execute(sql`
+        UPDATE catalog_items
+        SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0),
+            inventory_amount = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0)
+        WHERE tenant_id = ${order.tenantId} AND id = ${item.catalogItemId}
+      `);
+    }
+  });
+}
+
 
 async function ensureCreditSchema(): Promise<void> {
   if (creditSchemaEnsured) return;
@@ -379,6 +424,20 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
 
   // Sandbox mode — auto-confirm without calling Stripe
   if (isSandbox) {
+    if (order.paymentStatus === "paid") {
+      res.json({ id: order.id, tenantId: order.tenantId, customerId: order.customerId, status: order.status, paymentStatus: order.paymentStatus });
+      return;
+    }
+    try {
+      await deductPaidOrderInventory(order);
+    } catch (err) {
+      if (err instanceof PaymentInventoryError) {
+        res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
+        return;
+      }
+      throw err;
+    }
+
     const [updated] = await db
       .update(ordersTable)
       .set({ paymentStatus: "paid", status: "confirmed" })
@@ -447,6 +506,20 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
       return;
     }
 
+    if (order.paymentStatus === "paid") {
+      res.json({ ...order, paymentStatus: "paid" });
+      return;
+    }
+
+    try {
+      await deductPaidOrderInventory(order);
+    } catch (err) {
+      if (err instanceof PaymentInventoryError) {
+        res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
+        return;
+      }
+      throw err;
+    }
     const [updated] = await db
       .update(ordersTable)
       .set({ paymentStatus: "paid", status: "confirmed" })

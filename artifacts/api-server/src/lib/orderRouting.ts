@@ -29,7 +29,7 @@ import { normalizeRole } from "./auth";
 
 export type RouteSource = "active_csr" | "general_account" | "supervisor_override";
 
-export const GENERAL_ACCOUNT_EMAIL = "alavonttherapeutics@gmail.com";
+export const GENERAL_ACCOUNT_EMAIL = "info@adiken.com";
 
 export type RoutingRule =
   | "round_robin"
@@ -128,7 +128,7 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
   // 2. Keep only shifts that are ready for orders: active shift, box assigned,
   //    inventory confirmed, par levels confirmed, and printer assigned.
   // 3. If no ready CSR remains, route to the General Account fallback
-  //    (alavonttherapeutics@gmail.com) by leaving assignedCsrUserId/shiftId null.
+  //    (info@adiken.com) by leaving assignedCsrUserId/shiftId null.
   // 4. If one ready CSR remains, route directly to that CSR.
   // 5. If multiple ready CSRs remain, use the configured strategy:
   //    supervisor_manual_assignment => General Account/manual queue;
