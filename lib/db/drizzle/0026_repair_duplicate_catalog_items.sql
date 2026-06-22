@@ -1,8 +1,29 @@
--- Repair duplicate Product Master catalog rows.
--- Canonicalization is tenant-scoped and conservative:
---   1. SKU-bearing rows are grouped only by canonical SKU.
---   2. Normalized-name grouping is used only for rows with no SKU-like key.
--- This prevents same-name, different-SKU sellable Product Master rows from being merged.
+-- Repair duplicate Product Master catalog rows by normalized product name.
+--
+-- Canonical choice per tenant + lower(trim(name)) prefers rows that are already
+-- referenced by real POS history/state, in this order:
+--   1. any order_items.catalog_item_id reference
+--   2. any shift_inventory_items.catalog_item_id reference
+--   3. any inventory_balances.product_id reference
+--   4. lowest catalog_items.id
+--
+-- References are moved before duplicate catalog_items are deleted. Duplicate row
+-- JSON is archived in catalog_item_duplicate_repair_archive before mutation.
+--
+-- Verification SQL after migration:
+--   SELECT tenant_id, lower(trim(name)) AS normalized_name, array_agg(id ORDER BY id) AS ids, count(*)
+--   FROM catalog_items
+--   GROUP BY tenant_id, lower(trim(name))
+--   HAVING count(*) > 1;
+-- Expected: 0 rows.
+--
+-- Rollback notes:
+--   This migration is intentionally data-repairing, not automatically reversible.
+--   To manually restore a deleted duplicate, insert duplicate_row from
+--   catalog_item_duplicate_repair_archive back into catalog_items, then move any
+--   desired references from canonical_catalog_item_id back to duplicate_catalog_item_id.
+--   Because order and inventory references may have changed after deployment, a
+--   blind automated rollback could corrupt live POS history/state.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS catalog_item_duplicate_repair_archive (
@@ -19,33 +40,39 @@ CREATE TABLE IF NOT EXISTS catalog_item_duplicate_repair_archive (
 
 DROP TABLE IF EXISTS catalog_item_duplicate_map;
 CREATE TEMP TABLE catalog_item_duplicate_map AS
-WITH keyed AS (
+WITH usage AS (
+  SELECT
+    ci.id,
+    ci.tenant_id,
+    lower(trim(ci.name)) AS normalized_name,
+    EXISTS (SELECT 1 FROM order_items oi WHERE oi.catalog_item_id = ci.id) AS has_order_items,
+    EXISTS (SELECT 1 FROM shift_inventory_items sii WHERE sii.catalog_item_id = ci.id) AS has_shift_inventory_items,
+    EXISTS (SELECT 1 FROM inventory_balances ib WHERE ib.product_id = ci.id) AS has_inventory_balances
+  FROM catalog_items ci
+  WHERE NULLIF(lower(trim(ci.name)), '') IS NOT NULL
+), ranked AS (
   SELECT
     id,
     tenant_id,
-    COALESCE(NULLIF(lower(trim(sku)), ''), NULLIF(lower(trim(alavont_id)), ''), NULLIF(lower(trim(merchant_sku)), '')) AS sku_key,
-    regexp_replace(lower(trim(COALESCE(alavont_name, name))), '[^a-z0-9]+', ' ', 'g') AS name_key
-  FROM catalog_items
-), groups AS (
-  SELECT id, tenant_id, 'sku'::text AS match_strategy, sku_key AS dedupe_key
-  FROM keyed
-  WHERE sku_key IS NOT NULL AND sku_key <> ''
-  UNION ALL
-  SELECT id, tenant_id, 'normalized_name_without_sku'::text AS match_strategy, name_key AS dedupe_key
-  FROM keyed
-  WHERE (sku_key IS NULL OR sku_key = '') AND name_key IS NOT NULL AND name_key <> ''
-), ranked AS (
-  SELECT
-    id AS duplicate_id,
-    min(id) OVER (PARTITION BY tenant_id, match_strategy, dedupe_key) AS canonical_id,
-    match_strategy,
-    dedupe_key,
-    count(*) OVER (PARTITION BY tenant_id, match_strategy, dedupe_key) AS group_count
-  FROM groups
+    normalized_name,
+    first_value(id) OVER (
+      PARTITION BY tenant_id, normalized_name
+      ORDER BY
+        has_order_items DESC,
+        has_shift_inventory_items DESC,
+        has_inventory_balances DESC,
+        id ASC
+    ) AS canonical_id,
+    count(*) OVER (PARTITION BY tenant_id, normalized_name) AS group_count
+  FROM usage
 )
-SELECT duplicate_id, canonical_id, match_strategy, dedupe_key
+SELECT
+  id AS duplicate_id,
+  canonical_id,
+  'lower_trim_name'::text AS match_strategy,
+  normalized_name AS dedupe_key
 FROM ranked
-WHERE group_count > 1 AND duplicate_id <> canonical_id;
+WHERE group_count > 1 AND id <> canonical_id;
 
 -- Archive duplicate catalog rows before any reference movement/deletion.
 INSERT INTO catalog_item_duplicate_repair_archive (
@@ -67,7 +94,7 @@ FROM catalog_item_duplicate_map m
 JOIN catalog_items dup ON dup.id = m.duplicate_id
 ON CONFLICT (duplicate_catalog_item_id) DO NOTHING;
 
--- Move order and shift references; order history rows are retained.
+-- Move order and shift/template references; order history rows are retained.
 UPDATE order_items oi
 SET catalog_item_id = m.canonical_id
 FROM catalog_item_duplicate_map m
@@ -83,15 +110,16 @@ SET catalog_item_id = m.canonical_id
 FROM catalog_item_duplicate_map m
 WHERE sii.catalog_item_id = m.duplicate_id;
 
--- Merge inventory balances by tenant/product/location, preserving total quantity and max PAR.
+-- Merge duplicate inventory balances into canonical product by tenant/location.
+-- Quantity is summed to preserve inventory. PAR uses greatest non-null PAR.
 WITH moved AS (
   SELECT ib.*, m.canonical_id
   FROM inventory_balances ib
   JOIN catalog_item_duplicate_map m ON m.duplicate_id = ib.product_id
-), upserted AS (
+), merged AS (
   UPDATE inventory_balances keep
-  SET quantity_on_hand = keep.quantity_on_hand + moved.quantity_on_hand,
-      par_level = GREATEST(keep.par_level, moved.par_level),
+  SET quantity_on_hand = COALESCE(keep.quantity_on_hand, 0) + COALESCE(moved.quantity_on_hand, 0),
+      par_level = GREATEST(COALESCE(keep.par_level, 0), COALESCE(moved.par_level, 0)),
       updated_at = now()
   FROM moved
   WHERE keep.tenant_id = moved.tenant_id
@@ -104,7 +132,7 @@ SET product_id = moved.canonical_id,
     updated_at = now()
 FROM moved
 WHERE ib.id = moved.id
-  AND NOT EXISTS (SELECT 1 FROM upserted u WHERE u.id = moved.id);
+  AND NOT EXISTS (SELECT 1 FROM merged m WHERE m.id = moved.id);
 
 DELETE FROM inventory_balances ib
 USING catalog_item_duplicate_map m
