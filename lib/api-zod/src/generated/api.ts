@@ -2035,7 +2035,7 @@ export const ListNotificationsResponse = zod.object({
   "notifications": zod.array(zod.object({
   "id": zod.number(),
   "userId": zod.number(),
-  "type": zod.enum(['order_status', 'onboarding_update', 'admin_alert', 'payment_update']),
+  "type": zod.enum(['order_status', 'onboarding_update', 'admin_alert', 'payment_update', 'account_approved', 'feedback_new']),
   "title": zod.string(),
   "message": zod.string(),
   "isRead": zod.boolean(),
@@ -2057,7 +2057,7 @@ export const MarkNotificationReadParams = zod.object({
 export const MarkNotificationReadResponse = zod.object({
   "id": zod.number(),
   "userId": zod.number(),
-  "type": zod.enum(['order_status', 'onboarding_update', 'admin_alert', 'payment_update']),
+  "type": zod.enum(['order_status', 'onboarding_update', 'admin_alert', 'payment_update', 'account_approved', 'feedback_new']),
   "title": zod.string(),
   "message": zod.string(),
   "isRead": zod.boolean(),

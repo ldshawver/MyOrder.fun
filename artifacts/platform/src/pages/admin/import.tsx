@@ -93,6 +93,13 @@ type ParsedHeaders = {
 };
 
 type ImportError = { row: number; message: string };
+type ImportDuplicateWarning = {
+  type: "upload_duplicate_sku" | "upload_duplicate_name" | "db_duplicate_sku" | "db_duplicate_name";
+  key: string;
+  rows: number[];
+  sku: string | null;
+  name: string | null;
+};
 
 type ImportResult = {
   inserted: number;
@@ -106,6 +113,7 @@ type ImportResult = {
   unknownHeaders?: string[];
   total?: number;
   headerMappings?: HeaderMapping[];
+  duplicateWarnings?: ImportDuplicateWarning[];
 };
 
 type ImportConfirmation = {
@@ -113,6 +121,7 @@ type ImportConfirmation = {
   requiresConfirmation: true;
   wouldInsert: number;
   wouldUpdate: number;
+  duplicateWarnings?: ImportDuplicateWarning[];
 };
 
 // ─── Client-side CSV preview parser ──────────────────────────────────────────
@@ -222,6 +231,32 @@ function WooCommerceSync() {
 }
 
 // ─── Result cards ─────────────────────────────────────────────────────────────
+function DuplicateWarningsList({ warnings }: { warnings?: ImportDuplicateWarning[] }) {
+  if (!warnings?.length) return null;
+  const labelFor = (type: ImportDuplicateWarning["type"]) => ({
+    upload_duplicate_sku: "Uploaded duplicate SKU",
+    upload_duplicate_name: "Uploaded duplicate name",
+    db_duplicate_sku: "Existing catalog duplicate SKU",
+    db_duplicate_name: "Existing catalog duplicate name",
+  }[type]);
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="font-semibold text-red-200">Duplicate warnings</div>
+      <div className="max-h-56 overflow-auto rounded-lg border border-red-500/20 bg-black/20">
+        {warnings.map((warning, index) => (
+          <div key={`${warning.type}-${warning.key}-${index}`} className="border-b border-red-500/10 px-3 py-2 last:border-b-0">
+            <div className="font-medium text-red-100">{labelFor(warning.type)}: <span className="font-mono">{warning.key}</span></div>
+            <div className="text-xs text-red-200/80">
+              {warning.rows.length ? <>Rows: {warning.rows.join(", ")} · </> : null}
+              SKU: {warning.sku || "—"} · Name: {warning.name || "—"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ResultCards({ result }: { result: ImportResult }) {
   const errorCount = result.errors.length;
   const total = result.total ?? (result.inserted + result.updated + result.skipped + errorCount);
@@ -825,9 +860,11 @@ export default function AdminImport() {
             requiresConfirmation: true,
             wouldInsert: Number(data.wouldInsert ?? 0),
             wouldUpdate: Number(data.wouldUpdate ?? 0),
+            duplicateWarnings: data.duplicateWarnings,
           });
         } else {
           setError(data.error ?? `Import failed (${res.status})`);
+          setResult(data.duplicateWarnings ? { inserted: 0, updated: 0, skipped: 0, errors: [], duplicateWarnings: data.duplicateWarnings } : null);
         }
         if (isAdmin) {
           setDebugEntries(prev => [{
@@ -1196,6 +1233,7 @@ export default function AdminImport() {
                   <p className="text-xs text-amber-100/80">
                     {confirmation.error} Catalog, inventory, and par values may be overwritten for matching SKUs.
                   </p>
+                  <DuplicateWarningsList warnings={confirmation.duplicateWarnings} />
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <div className="rounded-xl border border-amber-500/30 bg-background/30 p-3">
                       <div className="text-[10px] uppercase tracking-widest text-amber-200/70">Products to create</div>
@@ -1256,7 +1294,10 @@ export default function AdminImport() {
       {error && (
         <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm">
           <AlertCircle size={16} className="shrink-0 mt-0.5" />
-          <span>{error}</span>
+          <div className="min-w-0 flex-1">
+            <div>{error}</div>
+            <DuplicateWarningsList warnings={result?.duplicateWarnings} />
+          </div>
         </div>
       )}
 

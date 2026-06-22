@@ -2714,7 +2714,7 @@ components:
           type: integer
         type:
           type: string
-          enum: [order_status, onboarding_update, admin_alert, payment_update]
+          enum: [order_status, onboarding_update, admin_alert, payment_update, account_approved, feedback_new]
         title:
           type: string
         message:

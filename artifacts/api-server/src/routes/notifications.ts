@@ -12,6 +12,19 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+const KNOWN_NOTIFICATION_TYPES = new Set([
+  "order_status",
+  "onboarding_update",
+  "admin_alert",
+  "payment_update",
+  "account_approved",
+  "feedback_new",
+]);
+
+function normalizeNotificationType(type: string): "order_status" | "onboarding_update" | "admin_alert" | "payment_update" | "account_approved" | "feedback_new" {
+  return KNOWN_NOTIFICATION_TYPES.has(type) ? type as ReturnType<typeof normalizeNotificationType> : "admin_alert";
+}
+
 router.get("/notifications", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const query = ListNotificationsQueryParams.safeParse(req.query);
@@ -33,12 +46,12 @@ router.get("/notifications", async (req, res): Promise<void> => {
     notifications: rows.map(n => ({
       id: n.id,
       userId: n.userId,
-      type: n.type,
+      type: normalizeNotificationType(n.type),
       title: n.title,
       message: n.message,
       isRead: n.isRead,
-      resourceType: n.resourceType,
-      resourceId: n.resourceId,
+      resourceType: n.resourceType ?? undefined,
+      resourceId: n.resourceId ?? undefined,
       createdAt: n.createdAt,
     })),
     unreadCount,
@@ -71,12 +84,12 @@ router.patch("/notifications/:id/read", async (req, res): Promise<void> => {
   res.json(MarkNotificationReadResponse.parse({
     id: updated.id,
     userId: updated.userId,
-    type: updated.type,
+    type: normalizeNotificationType(updated.type),
     title: updated.title,
     message: updated.message,
     isRead: updated.isRead,
-    resourceType: updated.resourceType,
-    resourceId: updated.resourceId,
+    resourceType: updated.resourceType ?? undefined,
+    resourceId: updated.resourceId ?? undefined,
     createdAt: updated.createdAt,
   }));
 });

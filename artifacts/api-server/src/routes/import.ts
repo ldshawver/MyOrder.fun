@@ -4,6 +4,7 @@ import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, invento
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
+import { logger } from "../lib/logger";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -42,6 +43,10 @@ export const CATALOG_IMPORT_HEADERS = [
   "Box 2 Inventory",
   "Storefront Inventory",
   "Backstock Inventory",
+  "Box 1 PAR",
+  "Box 2 PAR",
+  "Storefront PAR",
+  "Backstock PAR",
 ] as const;
 type CatalogImportHeader = (typeof CATALOG_IMPORT_HEADERS)[number];
 const HEADER_SET = new Set<string>(CATALOG_IMPORT_HEADERS);
@@ -96,9 +101,24 @@ const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
   "storefront inventory": "Storefront Inventory",
   "backstock inventory": "Backstock Inventory",
   current_inventory: "Backstock Inventory",
+  "box 1 par": "Box 1 PAR",
+  "box 2 par": "Box 2 PAR",
+  "storefront par": "Storefront PAR",
+  "backstock par": "Backstock PAR",
+  "box 1 par level": "Box 1 PAR",
+  "box 2 par level": "Box 2 PAR",
+  "storefront par level": "Storefront PAR",
+  "backstock par level": "Backstock PAR",
 };
 type ParsedFile = { headers: string[]; rawHeaders: string[]; rows: string[][] };
 type ImportRow = Record<CatalogImportHeader, string>;
+type ImportDuplicateWarning = {
+  type: "upload_duplicate_sku" | "upload_duplicate_name" | "db_duplicate_sku" | "db_duplicate_name";
+  key: string;
+  rows: number[];
+  sku: string | null;
+  name: string | null;
+};
 
 type ImportDbClient = Pick<typeof db, "select" | "insert" | "update" | "delete" | "execute">;
 
@@ -229,6 +249,45 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
   headers.forEach((h, i) => { if (HEADER_SET.has(h)) out[h as CatalogImportHeader] = row[i] ?? ""; });
   return out;
 }
+function normalizeProductName(raw: string | null | undefined): string {
+  return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedName: string }>): ImportDuplicateWarning[] {
+  const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
+  const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
+  for (const p of prepared) {
+    const sku = typeof p.values.sku === "string" ? p.values.sku : null;
+    const name = typeof p.values.name === "string" ? p.values.name : null;
+    const skuKey = String(sku ?? "").trim().toLowerCase();
+    if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
+    if (p.normalizedName) byName.set(p.normalizedName, [...(byName.get(p.normalizedName) ?? []), { row: p.row, sku, name }]);
+  }
+  return [
+    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
+    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_name" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
+  ];
+}
+function buildDbDuplicateWarnings(items: Array<typeof catalogItemsTable.$inferSelect>): ImportDuplicateWarning[] {
+  const bySku = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
+  const byName = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
+  for (const item of items) {
+    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
+    const nameKey = normalizeProductName(item.alavontName ?? item.name);
+    if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), item]);
+    if (nameKey) byName.set(nameKey, [...(byName.get(nameKey) ?? []), item]);
+  }
+  return [
+    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_sku" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
+    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_name" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
+  ];
+}
+function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string {
+  const hasUpload = warnings.some(w => w.type.startsWith("upload_"));
+  const hasDb = warnings.some(w => w.type.startsWith("db_"));
+  if (hasUpload && hasDb) return "Uploaded spreadsheet and existing catalog contain duplicate products.";
+  if (hasUpload) return "Uploaded spreadsheet contains duplicate products.";
+  return "Existing catalog contains duplicate products.";
+}
 async function ensureSnapshotSchema(): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_snapshots (
     id serial PRIMARY KEY,
@@ -257,7 +316,7 @@ async function snapshotTenant(client: ImportDbClient, tenantId: number, touchedS
 }
 
 router.get("/admin/products/import-template", requireRole("global_admin", "admin"), async (_req, res) => {
-  const sample = ["29.99", "19.99", "false", "Wellness", "Sample Product", "https://example.com/product.jpg", "Sample description", "SKU-001", "Safe Wellness", "Safe Sample Product", "https://example.com/safe.jpg", "Safe payment description", "5", "4", "3", "25"];
+  const sample = ["29.99", "19.99", "false", "Wellness", "Sample Product", "https://example.com/product.jpg", "Sample description", "SKU-001", "Safe Wellness", "Safe Sample Product", "https://example.com/safe.jpg", "Safe payment description", "5", "4", "3", "25", "2", "2", "2", "10"];
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="catalog_import_template.csv"');
   res.send([CATALOG_IMPORT_HEADERS.map(csvEscape).join(","), sample.map(csvEscape).join(",")].join("\n"));
@@ -314,7 +373,7 @@ router.get("/admin/products/export", requireRole("global_admin", "admin"), async
   res.send(lines.join("\n"));
 });
 
-router.post("/admin/products/import", requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
+router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/product-master"], requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
   const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
   const uploadedFileName = req.file?.originalname;
   const confirmed = req.body?.confirm === "true" || req.body?.confirm === true || req.query.confirm === "true";
@@ -328,7 +387,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ rec: ImportRow; values: typeof catalogItemsTable.$inferInsert; inventory: Record<string, number> }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: typeof catalogItemsTable.$inferInsert; inventory: Record<string, number>; par: Record<string, number>; normalizedName: string }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -344,6 +403,12 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
       Storefront: parseNumber(rec["Storefront Inventory"], "Storefront Inventory", rowNum, errors, { min: 0 }) ?? 0,
       Backstock: parseNumber(rec["Backstock Inventory"], "Backstock Inventory", rowNum, errors, { min: 0 }) ?? 0,
     };
+    const par = {
+      "Box 1": parseNumber(rec["Box 1 PAR"], "Box 1 PAR", rowNum, errors, { min: 0 }) ?? 0,
+      "Box 2": parseNumber(rec["Box 2 PAR"], "Box 2 PAR", rowNum, errors, { min: 0 }) ?? 0,
+      Storefront: parseNumber(rec["Storefront PAR"], "Storefront PAR", rowNum, errors, { min: 0 }) ?? 0,
+      Backstock: parseNumber(rec["Backstock PAR"], "Backstock PAR", rowNum, errors, { min: 0 }) ?? 0,
+    };
     if (!sku || !name || !category || regularPrice === null || checkoutPrice === null) continue;
     const imageUrl = safeUrl(rec["Alavont Image"], "Alavont Image", rowNum, errors); const safeImageUrl = safeUrl(rec["Safe Image"], "Safe Image", rowNum, errors);
     const safeName = safeText(rec["Safe Name"] || name, "Safe Name", rowNum, errors);
@@ -351,12 +416,35 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
     const safeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
     const safeCategoryLower = `${name} ${category} ${rec["Alavont Description"]}`.toLowerCase();
     const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(safeCategoryLower);
-    prepared.push({ rec, inventory, values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: "0", isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
+    prepared.push({ row: rowNum, rec, inventory, par, normalizedName: normalizeProductName(name), values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
   }
   const skus = Array.from(new Set(prepared.map(p => p.values.sku).filter((sku): sku is string => typeof sku === "string" && sku.length > 0)));
-  const existing = (skus.length ? await db.select({ id: catalogItemsTable.id, sku: catalogItemsTable.sku }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.sku, skus))) : []) as Array<{ id: number; sku: string | null }>;
-  if ((existing.length || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, wouldInsert: prepared.length - existing.length, wouldUpdate: existing.length }); return; }
-  if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - existing.length), updated: existing.length, skipped: 0, errors, total: prepared.length, warnings: existing.length ? [`${existing.length} existing products would be updated.`] : [] }); return; }
+  const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
+  const duplicateWarnings = [
+    ...buildUploadDuplicateWarnings(prepared),
+    ...buildDbDuplicateWarnings(allTenantCatalog),
+  ];
+  const bySku = new Map<string, number>();
+  const byName = new Map<string, number>();
+  for (const item of allTenantCatalog) {
+    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
+    const nameKey = normalizeProductName(item.alavontName ?? item.name);
+    if (skuKey && !bySku.has(skuKey)) bySku.set(skuKey, item.id);
+    if (nameKey && !byName.has(nameKey)) byName.set(nameKey, item.id);
+  }
+  const preview = prepared.map(p => {
+    const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
+    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedName) ?? null;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedName || w.rows.includes(p.row)) };
+  });
+  const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
+  if (duplicateWarnings.length) {
+    logger.warn({ tenantId, count: duplicateWarnings.length, first10Warnings: duplicateWarnings.slice(0, 10) }, "import_duplicate_block");
+    res.status(409).json({ error: duplicateImportErrorMessage(duplicateWarnings), duplicateWarnings, preview, inserted: 0, updated: 0 });
+    return;
+  }
+  if ((matchedIds.size || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, preview, wouldInsert: prepared.length - matchedIds.size, wouldUpdate: matchedIds.size }); return; }
+  if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - matchedIds.size), updated: matchedIds.size, skipped: 0, errors, total: prepared.length, warnings: matchedIds.size ? [`${matchedIds.size} existing products would be updated.`] : [], duplicateWarnings, preview }); return; }
 
   let snapshotId: number | null = null;
   try {
@@ -370,15 +458,15 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
       const insertedInventoryTemplateIds: number[] = [];
       const createdSnapshotId = await snapshotTenant(tx, tenantId, skus, uploadedFileName, actor.id);
       const importLocations = await ensureImportLocationMap(tx, tenantId);
-      const bySku = new Map(existing.map(e => [e.sku, e.id]));
       for (const p of prepared) {
-        const existingId = bySku.get(p.values.sku ?? "");
+        const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
+        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedName);
         let catalogId = existingId;
         if (existingId) { await tx.update(catalogItemsTable).set(p.values).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId))); updated++; }
         else { const [created] = await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id }); catalogId = created.id; insertedIds.push(created.id); inserted++; }
         const [tmpl] = await tx.select({ id: inventoryTemplatesTable.id }).from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogId!))).limit(1);
         const totalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0);
-        const patch = { itemName: p.values.name, sectionName: "Backstock", unitType: p.values.stockUnit ?? "#", startingQuantityDefault: totalQty.toFixed(3), currentStock: totalQty.toFixed(3), menuPrice: p.values.price, payoutPrice: p.values.price, isActive: p.values.isAvailable, catalogItemId: catalogId!, alavontId: p.values.alavontId, deductionQuantityPerSale: "1", parLevel: "0" };
+        const patch = { itemName: p.values.name, sectionName: "Backstock", unitType: p.values.stockUnit ?? "#", startingQuantityDefault: totalQty.toFixed(3), currentStock: totalQty.toFixed(3), menuPrice: p.values.price, payoutPrice: p.values.price, isActive: p.values.isAvailable, catalogItemId: catalogId!, alavontId: p.values.alavontId, deductionQuantityPerSale: "1", parLevel: String(Object.values(p.par).reduce((a, b) => a + b, 0).toFixed(2)) };
         if (tmpl) await tx.update(inventoryTemplatesTable).set(patch).where(and(eq(inventoryTemplatesTable.id, tmpl.id), eq(inventoryTemplatesTable.tenantId, tenantId)));
         else { const [createdTemplate] = await tx.insert(inventoryTemplatesTable).values({ tenantId, displayOrder: 0, ...patch }).returning({ id: inventoryTemplatesTable.id }); insertedInventoryTemplateIds.push(createdTemplate.id); }
 
@@ -388,6 +476,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
           const complianceHold = p.values.isAvailable === false;
           const balancePatch = {
             quantityOnHand: qty.toFixed(3),
+            parLevel: (p.par[canonicalName] ?? 0).toFixed(2),
             inventoryKind: "sellable_catalog",
             isSellable: !complianceHold,
             quarantinedAt: complianceHold ? new Date() : null,
@@ -395,7 +484,7 @@ router.post("/admin/products/import", requireRole("global_admin", "admin"), uplo
             quarantineReason: complianceHold ? "Compliance hold from catalog import" : null,
           };
           if (bal) await tx.update(inventoryBalancesTable).set(balancePatch).where(and(eq(inventoryBalancesTable.id, bal.id), eq(inventoryBalancesTable.tenantId, tenantId)));
-          else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogId!, locationId: loc.id, parLevel: "0", ...balancePatch });
+          else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogId!, locationId: loc.id, ...balancePatch });
           balanceUpserts++;
         }
         const importedTotalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0).toFixed(3);
@@ -428,6 +517,6 @@ router.post("/admin/products/import/rollback", requireRole("global_admin", "admi
 
 // Compatibility aliases.
 router.get("/admin/import/catalog-template", requireRole("global_admin", "admin"), (_req, res) => { res.redirect(307, "/api/admin/products/import-template"); });
-router.post("/admin/import/catalog", requireRole("global_admin", "admin"), upload.single("file") as never, (_req, res) => { res.redirect(307, "/api/admin/products/import"); });
+router.get("/admin/import/product-master-template", requireRole("global_admin", "admin"), (_req, res) => { res.redirect(307, "/api/admin/products/import-template"); });
 
 export default router;

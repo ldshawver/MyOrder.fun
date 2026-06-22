@@ -13,6 +13,7 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn(async () => 999) }));
 vi.mock("../../lib/inventoryBalances", () => ({ ensureStandardLocations: vi.fn(async () => undefined), ensureAllInventoryBalances: vi.fn(async () => ({ created: 0 })) }));
+vi.mock("../../lib/logger", () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
 
 vi.mock("drizzle-orm", () => {
   const makeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]) => ({
@@ -37,18 +38,32 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { _name: "inventory_locations", id: col("id"), tenantId: col("tenantId"), name: col("name"), isActive: col("isActive") };
   const inventoryBalancesTable = { _name: "inventory_balances", id: col("id"), tenantId: col("tenantId"), productId: col("productId"), locationId: col("locationId"), quantityOnHand: col("quantityOnHand") };
   const auditLogsTable = { _name: "audit_logs" };
-  const query = (rows: Record<string, unknown>[]) => ({ where: () => query(rows), limit: () => Promise.resolve(rows.slice(0, 1)), then: (resolve: (v: unknown) => void) => resolve(rows) });
+  const extractFilters = (cond: unknown): Array<{ column: string; value: unknown }> => {
+    if (!cond || typeof cond !== "object") return [];
+    const c = cond as { op?: string; args?: unknown[]; column?: string; value?: unknown };
+    if (c.op === "eq" && typeof c.column === "string") return [{ column: c.column, value: c.value }];
+    if (c.op === "and") return (c.args ?? []).flatMap(extractFilters);
+    return [];
+  };
+  const query = (rows: Record<string, unknown>[]) => ({
+    where: (cond?: unknown) => {
+      const filters = extractFilters(cond);
+      return query(filters.length ? rows.filter(row => filters.every(f => row[f.column] === f.value)) : rows);
+    },
+    limit: () => Promise.resolve(rows.slice(0, 1)),
+    then: (resolve: (v: unknown) => void) => resolve(rows),
+  });
   const tableRows = (table: { _name?: string } | undefined, selection?: unknown) => {
-    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku })) : state.catalog;
-    if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id })) : state.inventory;
+    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
+    if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id, tenantId: r.tenantId, catalogItemId: r.catalogItemId })) : state.inventory;
     if (table?._name === "inventory_locations") return state.locations;
-    if (table?._name === "inventory_balances") return selection ? [] : state.balances;
+    if (table?._name === "inventory_balances") return selection ? state.balances.map(r => ({ id: r.id, tenantId: r.tenantId, productId: r.productId, locationId: r.locationId })) : state.balances;
     return [];
   };
   return { db: {
     select: vi.fn((selection?: unknown) => ({ from: (table: { _name?: string }) => query(tableRows(table, selection)) })),
     insert: vi.fn((table: { _name?: string }) => ({ values: (vals: Record<string, unknown>) => {
-      const row = { id: table._name === "catalog_items" ? state.catalog.length + 1 : state.inventory.length + 1, ...vals };
+      const row = { id: table._name === "catalog_items" ? state.catalog.length + 1 : table._name === "inventory_balances" ? state.balances.length + 1 : state.inventory.length + 1, ...vals };
       if (table._name === "catalog_items") state.catalog.push(row);
       if (table._name === "inventory_templates") state.inventory.push(row);
       if (table._name === "inventory_balances") {
@@ -59,7 +74,12 @@ vi.mock("@workspace/db", () => {
       if (table._name === "audit_logs") state.audit.push(row);
       return { returning: () => Promise.resolve([row]), then: (resolve: (v: unknown) => void) => resolve(undefined) };
     } })),
-    update: vi.fn((table: { _name?: string }) => ({ set: (vals: Record<string, unknown>) => ({ where: () => { const rows = table._name === "catalog_items" ? state.catalog : state.inventory; if (rows[0]) Object.assign(rows[0], vals); return Promise.resolve(); } }) })),
+    update: vi.fn((table: { _name?: string }) => ({ set: (vals: Record<string, unknown>) => ({ where: (cond?: unknown) => {
+      const rows = table._name === "catalog_items" ? state.catalog : table._name === "inventory_templates" ? state.inventory : table._name === "inventory_balances" ? state.balances : [];
+      const filters = extractFilters(cond);
+      for (const row of rows) if (!filters.length || filters.every(f => row[f.column] === f.value)) Object.assign(row, vals);
+      return Promise.resolve();
+    } }) })),
     delete: vi.fn((table: { _name?: string }) => ({ where: () => { if (table._name === "catalog_items") state.catalog = []; if (table._name === "inventory_templates") state.inventory = []; return Promise.resolve(); } })),
     execute: vi.fn((q: unknown) => {
       const text = String(q);
@@ -78,8 +98,8 @@ vi.mock("@workspace/db", () => {
 
 const importRouter = (await import("../import")).default;
 function buildApp() { const app = express(); app.use(express.json()); app.use("/api", importRouter); return app; }
-const headers = "Regular Price,Sale Price,Active Sale,Alavont Category,Alavont Name,Alavont Image,Alavont Description,Alavont SKU,Safe Category,Safe Name,Safe Image,Safe Description,Box 1 Inventory,Box 2 Inventory,Storefront Inventory,Backstock Inventory";
-const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,1,2,3,9\n`;
+const headers = "Regular Price,Sale Price,Active Sale,Alavont Category,Alavont Name,Alavont Image,Alavont Description,Alavont SKU,Safe Category,Safe Name,Safe Image,Safe Description,Box 1 Inventory,Box 2 Inventory,Storefront Inventory,Backstock Inventory,Box 1 PAR,Box 2 PAR,Storefront PAR,Backstock PAR";
+const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,1,2,3,9,2,2,3,9\n`;
 const oldHeaders = "sku,name,description,category,brand,price,unit,quantity_size,active,image_url,safe_name,safe_description,safe_category,safe_image_url,inventory_location,current_inventory,par_level,reorder_threshold,sort_order";
 const oldCsv = `${oldHeaders}\nSKU-OLD,Old Name,Desc,Cat,alavont,12.50,ml,10,true,https://example.com/a.jpg,Safe,Safe desc,Safe cat,https://example.com/s.jpg,Back,9,3,2,1\n`;
 
@@ -121,11 +141,20 @@ describe("safe catalog import/export", () => {
     expect(res.text).toContain("'+Name");
   });
 
+  it("supports the Product Master import compatibility endpoint without redirecting multipart uploads", async () => {
+    const res = await supertest(buildApp()).post("/api/admin/import/product-master?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.inserted).toBe(1);
+    expect(res.body.balanceUpserts).toBe(4);
+    expect(state.balances).toHaveLength(4);
+  });
+
   it("imports 30+ SKUs using inArray instead of tuple-expanded ANY SQL", async () => {
     state.executeRowsObject = true;
     const rows = Array.from({ length: 35 }, (_, i) => [
       "10.00", "8.00", "true", "Cat", `Name ${i}`, "https://example.com/a.jpg", "Desc", `SKU-${i}`,
-      "Safe Cat", `Safe ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4",
+      "Safe Cat", `Safe ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4", "1", "2", "3", "4",
     ].join(","));
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
 
@@ -162,13 +191,37 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(0);
   });
 
-  it("deduplicates SKU lookup values before querying existing products", async () => {
-    const csv = `${headers}\n10.00,,false,Cat,One,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe One,https://example.com/s.jpg,Safe Desc,1,0,0,0\n11.00,,false,Cat,Two,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe Two,https://example.com/s.jpg,Safe Desc,2,0,0,0\n`;
+  it("blocks imports when the upload contains duplicate SKUs and returns structured row diagnostics", async () => {
+    const csv = `${headers}
+10.00,,false,Cat,One,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe One,https://example.com/s.jpg,Safe Desc,1,0,0,0,1,0,0,0
+11.00,,false,Cat,Two,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe Two,https://example.com/s.jpg,Safe Desc,2,0,0,0,2,0,0,0
+`;
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "duplicates.csv");
 
-    expect(res.status).toBe(200);
-    const skuLookup = vi.mocked(inArray).mock.calls.find(([column]) => column === "sku");
-    expect(skuLookup?.[1]).toEqual(["SKU-DUP"]);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Uploaded spreadsheet contains duplicate products.");
+    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "upload_duplicate_sku", key: "sku-dup", rows: [2, 3], sku: "SKU-DUP", name: "One" }),
+    ]));
+    expect(res.body.preview[0].duplicateWarnings).toEqual(expect.arrayContaining([expect.objectContaining({ type: "upload_duplicate_sku", rows: [2, 3] })]));
+    const { logger } = await import("../../lib/logger");
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 1, count: expect.any(Number), first10Warnings: expect.any(Array) }), "import_duplicate_block");
+    expect(state.catalog).toHaveLength(0);
+  });
+
+  it("distinguishes existing catalog duplicates from uploaded spreadsheet duplicates", async () => {
+    state.catalog.push({ id: 1, tenantId: 1, sku: "A", name: "Red Brick", alavontName: "Red Brick" });
+    state.catalog.push({ id: 2, tenantId: 1, sku: "B", name: "Red Brick", alavontName: "Red Brick" });
+    const csv = `${headers}
+10.00,,false,Cat,Unique,https://example.com/a.jpg,Desc,SKU-UNIQUE,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,0,0,0,0,0,0,0,0
+`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "catalog.csv");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Existing catalog contains duplicate products.");
+    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "db_duplicate_name", key: "red brick", rows: [], name: "Red Brick" }),
+    ]));
   });
 
   it("does not query existing catalog rows when no valid SKU values were prepared", async () => {
@@ -180,14 +233,38 @@ describe("safe catalog import/export", () => {
     expect(vi.mocked(inArray).mock.calls.some(([column]) => column === "sku")).toBe(false);
   });
 
+  it("uploading the same file twice updates the original product, PAR values, and preserves inventory rows", async () => {
+    const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(first.status).toBe(200);
+    const productCount = state.catalog.length;
+    const inventoryRowCount = state.balances.length;
+    const secondCsv = `${headers}\n12.50,10.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,7,2,3,9,4,2,3,9\n`;
+    const second = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(secondCsv), "catalog.csv");
+
+    expect(second.status).toBe(200);
+    expect(second.body.updated).toBe(1);
+    expect(state.catalog).toHaveLength(productCount);
+    expect(state.balances).toHaveLength(inventoryRowCount);
+    expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
+    expect(state.balances).toEqual(expect.arrayContaining([expect.objectContaining({ productId: 1, locationId: 1, quantityOnHand: "7.000", parLevel: "4.00" })]));
+  });
+
+  it("dry-run preview shows old and matched product ids, sku, name, PAR values, and duplicate warnings", async () => {
+    state.catalog.push({ id: 6, tenantId: 1, sku: "RB-1", name: "Red Brick", alavontName: "Red Brick" });
+    const csv = `${headers}\n10.00,,false,Cat,Red Brick,https://example.com/a.jpg,Desc,RB-NEW,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,1,0,0,0,5,0,0,0\n`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.preview[0]).toMatchObject({ oldProductId: 6, matchedProductId: 6, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
+  });
 
   it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {
     const uploadHeaders = [
       "Regular Price", "Sale Price", "Active Sale", "Alavont  Category", "Alavont Name",
       "Alavont Image", "Alavontb Description", "Alavont  ID", "Safe Category", "Safe Name",
-      "Safe Image", "Safe Description", "Box 1 Inventory", "Box 2 Inventory", "Storefront Quantity", "Backstock Inventory",
+      "Safe Image", "Safe Description", "Box 1 Inventory", "Box 2 Inventory", "Storefront Quantity", "Backstock Inventory", "Box 1 PAR", "Box 2 PAR", "Storefront PAR", "Backstock PAR",
     ].join(",");
-    const row = ["10", "8", "true", "Cat", "Name", "https://example.com/a.jpg", "Desc", "SKU-A", "Safe Cat", "Safe Name", "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4"].join(",");
+    const row = ["10", "8", "true", "Cat", "Name", "https://example.com/a.jpg", "Desc", "SKU-A", "Safe Cat", "Safe Name", "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4", "1", "2", "3", "4"].join(",");
     const res = await supertest(buildApp()).post("/api/admin/products/parse-headers").attach("file", Buffer.from(`${uploadHeaders}\n${row}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
     expect(res.status).toBe(200);
     expect(res.body.unknownHeaders).toEqual([]);
