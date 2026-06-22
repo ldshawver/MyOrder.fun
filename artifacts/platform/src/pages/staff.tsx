@@ -175,7 +175,7 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [deliveryOptionId, setDeliveryOptionId] = useState("pickup");
   const [wifiReady, setWifiReady] = useState(false);
   const [printerReady, setPrinterReady] = useState(false);
-  const [locationReady, setLocationReady] = useState(true);
+  const [locationReady, setLocationReady] = useState(false);
   const [wifiSsid, setWifiSsid] = useState("");
   const [pickupNote, setPickupNote] = useState("");
   const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
@@ -227,7 +227,13 @@ function ClockInPanel({ onClockIn, getToken }: {
     load();
   }, [getToken]);
 
+  const mandatoryChecksComplete = wifiReady && printerReady && locationReady;
+
   const handleSubmit = async () => {
+    if (!mandatoryChecksComplete) {
+      setError("Confirm WiFi, printer, and pickup/location before clocking in.");
+      return;
+    }
     setClocking(true);
     setError(null);
     try {
@@ -387,9 +393,9 @@ function ClockInPanel({ onClockIn, getToken }: {
           </div>
 
           <div className="md:col-span-3 grid gap-3 md:grid-cols-3 md:items-center">
-            <SetupCheck label="Location" checked={locationReady} onChange={setLocationReady} />
-            <SetupCheck label="WiFi Ready" checked={wifiReady} onChange={setWifiReady} />
-            <SetupCheck label="Printers" checked={printerReady} onChange={setPrinterReady} />
+            <SetupCheck label="I confirm pickup/location is set" checked={locationReady} onChange={setLocationReady} />
+            <SetupCheck label="I confirm WiFi is working" checked={wifiReady} onChange={setWifiReady} />
+            <SetupCheck label="I confirm printer is available" checked={printerReady} onChange={setPrinterReady} />
           </div>
 
           {/* CSR personal delivery opt-in */}
@@ -404,7 +410,7 @@ function ClockInPanel({ onClockIn, getToken }: {
               />
               <div>
                 <div className="text-xs font-semibold">I'll personally deliver orders this shift</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">Customers can choose "CSR Delivery" at checkout. Fee is $5 + 3% of subtotal — paid to you as gratuity.</div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">Customers can choose personal delivery only within 2 miles. Fee is $6 + 3% of sale total and is shown before assignment.</div>
               </div>
             </label>
           )}
@@ -503,7 +509,7 @@ function ClockInPanel({ onClockIn, getToken }: {
         <Button
           className="w-full rounded-xl h-10 font-bold text-sm shadow-lg shadow-primary/20"
           onClick={handleSubmit}
-          disabled={clocking}
+          disabled={clocking || !mandatoryChecksComplete}
           data-testid="button-clock-in"
         >
           <LogIn size={15} className="mr-2" />

@@ -174,7 +174,7 @@ const DEFAULT_UBER_STEPS = [
 const DEFAULT_DELIVERY_OPTIONS = [
   { id: "pickup", label: "Customer Pickup", instructions: "Customer picks up the order at the selected location.", separatePaymentRequired: false, uberSteps: [] as string[] },
   { id: "uber_courier", label: "Uber Courier Delivery", instructions: "Delivery is ONLY available when arranged with Uber Courier. You will place your own Uber Courier request after the order is ready.", separatePaymentRequired: false, uberSteps: DEFAULT_UBER_STEPS },
-  { id: "csr_delivery", label: "CSR Personal Delivery", instructions: "The CSR on duty will personally deliver your order. Only available within 2 miles. Delivery fee: $5 + 3% of order total — goes entirely to your CSR as a gratuity.", separatePaymentRequired: false, uberSteps: [] as string[] },
+  { id: "csr_delivery", label: "CSR Personal Delivery", instructions: "The CSR on duty will personally deliver your order. Only available within 2 miles. Delivery fee: $6 + 3% of sale total — goes entirely to your CSR as a gratuity.", separatePaymentRequired: false, uberSteps: [] as string[] },
 ];
 
 function parsePickupInstructions(raw: string | null | undefined) {
@@ -749,13 +749,13 @@ router.get("/concierge/promoted", async (req, res): Promise<void> => {
 });
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
-router.get("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const s = await getOrCreateSettings(req.dbUser);
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
 
 // PUT /api/admin/concierge/promoted — admin: sets promoted item IDs
-router.put("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+router.put("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const ids = req.body?.ids;
   if (!Array.isArray(ids) || ids.length > 8 || !ids.every(x => Number.isInteger(x) && x > 0)) {
     res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });

@@ -577,6 +577,7 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  csrDeliveryDistanceMiles?: number | null;
 }
 
 export type CreateDeliveryQuoteBodyItemsItem = {

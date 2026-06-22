@@ -241,6 +241,7 @@ export default function NewOrder() {
           shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
+          csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation: {
             acceptedAllSalesFinal: true,
@@ -271,7 +272,9 @@ export default function NewOrder() {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((5 + 0.03 * subtotal) * 100) / 100 : 0;
+  const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
+  const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
+  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
   const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
     ? deliveryQuote.fee
     : deliveryMethod === "csr_delivery"
@@ -288,7 +291,7 @@ export default function NewOrder() {
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
   const deliveryReady = deliveryMethod === "pickup"
-    || deliveryMethod === "csr_delivery"
+    || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
@@ -451,8 +454,9 @@ export default function NewOrder() {
                   {deliveryMethod === "csr_delivery" && (
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
                       <div className="font-semibold text-primary">CSR Personal Delivery</div>
-                      <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep.</div>
-                      <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($5 + 3% of subtotal)</div>
+                      <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep only within 2 miles.</div>
+                      <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($6 + 3% of sale total)</div>
+                      {!csrDeliveryAllowed && <div className="text-destructive">Personal delivery is blocked beyond 2 miles.</div>}
                       {csrStatus?.pickupNote && (
                         <div className="text-muted-foreground italic mt-1">{csrStatus.pickupNote}</div>
                       )}
