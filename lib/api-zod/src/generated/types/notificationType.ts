@@ -14,4 +14,6 @@ export const NotificationType = {
   onboarding_update: 'onboarding_update',
   admin_alert: 'admin_alert',
   payment_update: 'payment_update',
+  account_approved: 'account_approved',
+  feedback_new: 'feedback_new',
 } as const;
