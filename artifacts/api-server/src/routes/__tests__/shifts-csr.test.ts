@@ -145,7 +145,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
   for (const role of ["customer_service_rep", "Customer Service Rep", "CSR", "service_rep", "sales_rep", "lab_tech", "lab_technician", "global_admin"] as const) {
     it(`role=${role} (status=pending) is allowed past requireApproved + requireRole on clock-in`, async () => {
       configureDb({ user: makeUser(role, "pending") });
-      const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+      const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
       // Must NOT be 403 (approval gate) and must NOT be 403/forbidden role gate
       expect(res.status).not.toBe(403);
       expect(res.status).toBe(201);
@@ -155,7 +155,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
 
   it("approved CSR clock-in returns 201 with shift", async () => {
     configureDb({ user: makeUser("customer_service_rep", "approved") });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(201);
     expect(res.body.shift).toBeDefined();
   });
@@ -163,7 +163,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
   it("duplicate clock-in returns 200 with existing shift instead of erroring", async () => {
     const activeShift = { id: 777, techId: 50, status: "active", tenantId: 1, clockedInAt: new Date(), cashBankStart: "0" };
     configureDb({ user: makeUser("customer_service_rep", "approved"), activeShift });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(200);
     expect(res.body.alreadyClockedIn).toBe(true);
     expect(res.body.shift.id).toBe(777);
@@ -186,21 +186,21 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
 
   it("inactive approved CSR is blocked before clock-in", async () => {
     configureDb({ user: makeUser("customer_service_rep", "approved", false) });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/deactivated/i);
   });
 
   it("rejected CSR is blocked before clock-in", async () => {
     configureDb({ user: makeUser("customer_service_rep", "rejected") });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(403);
     expect(res.body.status).toBe("rejected");
   });
 
   it("plain status=pending user (role=user) is still blocked with 403", async () => {
     configureDb({ user: makeUser("user", "pending") });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({});
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(403);
     expect(res.body.error).toMatch(/pending approval/i);
   });

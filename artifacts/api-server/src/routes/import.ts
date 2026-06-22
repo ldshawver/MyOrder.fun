@@ -288,6 +288,133 @@ function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string
   if (hasUpload) return "Uploaded spreadsheet contains duplicate products.";
   return "Existing catalog contains duplicate products.";
 }
+
+
+async function repairTenantCatalogDuplicatesBeforeImport(tenantId: number): Promise<void> {
+  // Product Master imports must not be blocked by historical duplicate catalog rows.
+  // This mirrors migration 0026 for the active tenant and is intentionally
+  // conservative: archive duplicate rows, move references, merge balances, then
+  // delete only the duplicate catalog rows. Existing order/shift history is kept.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS catalog_item_duplicate_repair_archive (
+      id serial PRIMARY KEY,
+      tenant_id integer NOT NULL REFERENCES tenants(id),
+      canonical_catalog_item_id integer NOT NULL REFERENCES catalog_items(id),
+      duplicate_catalog_item_id integer NOT NULL,
+      match_strategy text NOT NULL,
+      match_key text NOT NULL,
+      duplicate_row jsonb NOT NULL,
+      archived_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (duplicate_catalog_item_id)
+    );
+
+    DROP TABLE IF EXISTS catalog_item_duplicate_map;
+    CREATE TEMP TABLE catalog_item_duplicate_map AS
+    WITH usage AS (
+      SELECT
+        ci.id,
+        ci.tenant_id,
+        NULLIF(lower(trim(COALESCE(ci.sku, ci.alavont_id, ci.merchant_sku, ''))), '') AS sku_key,
+        NULLIF(lower(regexp_replace(trim(COALESCE(ci.alavont_name, ci.name, '')), '[^a-z0-9]+', ' ', 'g')), '') AS name_key,
+        EXISTS (SELECT 1 FROM order_items oi WHERE oi.catalog_item_id = ci.id) AS has_order_items,
+        EXISTS (SELECT 1 FROM shift_inventory_items sii WHERE sii.catalog_item_id = ci.id) AS has_shift_inventory_items,
+        EXISTS (SELECT 1 FROM inventory_balances ib WHERE ib.product_id = ci.id) AS has_inventory_balances
+      FROM catalog_items ci
+      WHERE ci.tenant_id = ${tenantId}
+    ), duplicate_groups AS (
+      SELECT id, tenant_id, 'sku'::text AS match_strategy, sku_key AS match_key, has_order_items, has_shift_inventory_items, has_inventory_balances
+      FROM usage WHERE sku_key IS NOT NULL
+      UNION ALL
+      SELECT id, tenant_id, 'normalized_name'::text AS match_strategy, name_key AS match_key, has_order_items, has_shift_inventory_items, has_inventory_balances
+      FROM usage WHERE name_key IS NOT NULL
+    ), ranked AS (
+      SELECT
+        id,
+        tenant_id,
+        match_strategy,
+        match_key,
+        first_value(id) OVER (
+          PARTITION BY tenant_id, match_strategy, match_key
+          ORDER BY has_order_items DESC, has_shift_inventory_items DESC, has_inventory_balances DESC, id ASC
+        ) AS canonical_id,
+        count(*) OVER (PARTITION BY tenant_id, match_strategy, match_key) AS group_count
+      FROM duplicate_groups
+    )
+    SELECT DISTINCT ON (id)
+      id AS duplicate_id,
+      canonical_id,
+      match_strategy,
+      match_key
+    FROM ranked
+    WHERE group_count > 1 AND id <> canonical_id
+    ORDER BY id, match_strategy;
+
+    INSERT INTO catalog_item_duplicate_repair_archive (
+      tenant_id,
+      canonical_catalog_item_id,
+      duplicate_catalog_item_id,
+      match_strategy,
+      match_key,
+      duplicate_row
+    )
+    SELECT
+      dup.tenant_id,
+      m.canonical_id,
+      m.duplicate_id,
+      m.match_strategy,
+      m.match_key,
+      to_jsonb(dup)
+    FROM catalog_item_duplicate_map m
+    JOIN catalog_items dup ON dup.id = m.duplicate_id AND dup.tenant_id = ${tenantId}
+    ON CONFLICT (duplicate_catalog_item_id) DO NOTHING;
+
+    UPDATE order_items oi
+    SET catalog_item_id = m.canonical_id
+    FROM catalog_item_duplicate_map m
+    WHERE oi.catalog_item_id = m.duplicate_id;
+
+    UPDATE inventory_templates it
+    SET catalog_item_id = m.canonical_id
+    FROM catalog_item_duplicate_map m
+    WHERE it.tenant_id = ${tenantId} AND it.catalog_item_id = m.duplicate_id;
+
+    UPDATE shift_inventory_items sii
+    SET catalog_item_id = m.canonical_id
+    FROM catalog_item_duplicate_map m
+    WHERE sii.catalog_item_id = m.duplicate_id;
+
+    WITH moved AS (
+      SELECT ib.*, m.canonical_id
+      FROM inventory_balances ib
+      JOIN catalog_item_duplicate_map m ON m.duplicate_id = ib.product_id
+      WHERE ib.tenant_id = ${tenantId}
+    ), merged AS (
+      UPDATE inventory_balances keep
+      SET quantity_on_hand = COALESCE(keep.quantity_on_hand, 0) + COALESCE(moved.quantity_on_hand, 0),
+          par_level = GREATEST(COALESCE(keep.par_level, 0), COALESCE(moved.par_level, 0)),
+          updated_at = now()
+      FROM moved
+      WHERE keep.tenant_id = moved.tenant_id
+        AND keep.product_id = moved.canonical_id
+        AND keep.location_id = moved.location_id
+      RETURNING moved.id
+    )
+    UPDATE inventory_balances ib
+    SET product_id = moved.canonical_id,
+        updated_at = now()
+    FROM moved
+    WHERE ib.id = moved.id
+      AND NOT EXISTS (SELECT 1 FROM merged m WHERE m.id = moved.id);
+
+    DELETE FROM inventory_balances ib
+    USING catalog_item_duplicate_map m
+    WHERE ib.tenant_id = ${tenantId} AND ib.product_id = m.duplicate_id;
+
+    DELETE FROM catalog_items ci
+    USING catalog_item_duplicate_map m
+    WHERE ci.tenant_id = ${tenantId} AND ci.id = m.duplicate_id;
+  `);
+}
 async function ensureSnapshotSchema(): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_snapshots (
     id serial PRIMARY KEY,
@@ -419,6 +546,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     prepared.push({ row: rowNum, rec, inventory, par, normalizedName: normalizeProductName(name), values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
   }
   const skus = Array.from(new Set(prepared.map(p => p.values.sku).filter((sku): sku is string => typeof sku === "string" && sku.length > 0)));
+  await repairTenantCatalogDuplicatesBeforeImport(tenantId);
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = [
     ...buildUploadDuplicateWarnings(prepared),

@@ -236,3 +236,59 @@ describe("role permission route integration", () => {
     expect(rolePermissions).toContain("permissionAuditLogsTable");
   });
 });
+
+describe("admin/POS/security cleanup regressions", () => {
+  it("repairs orders shift-routing schema drift before shift routes run", () => {
+    const shifts = api("routes/shifts.ts");
+    const migration = src("lib/db/drizzle/0027_orders_shift_schema_drift.sql");
+    expect(shifts).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id"');
+    expect(shifts).toContain('CREATE INDEX IF NOT EXISTS "orders_assigned_shift_idx"');
+    expect(shifts).toContain("router.use(async (_req, res, next) =>");
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS "orders_assigned_shift_idx"');
+    expect(migration.replace(/^--.*$/gm, "")).not.toMatch(/\b(UPDATE|DELETE|TRUNCATE|DROP)\b/i);
+  });
+
+  it("requires explicit CSR setup acknowledgements before clock-in", () => {
+    const shifts = api("routes/shifts.ts");
+    const staff = platform("pages/staff.tsx");
+    expect(shifts).toContain('Clock-in requires WiFi, printer, and pickup/location acknowledgements');
+    expect(staff).toContain('I confirm WiFi is working');
+    expect(staff).toContain('I confirm printer is available');
+    expect(staff).toContain('I confirm pickup/location is set');
+    expect(staff).toContain('disabled={clocking || !mandatoryChecksComplete}');
+  });
+
+  it("keeps featured AI products admin-only and blocks non-admin callers", () => {
+    const settings = api("routes/settings.ts");
+    expect(settings).toContain('router.put("/admin/concierge/promoted", requireRole("global_admin", "admin"');
+    expect(settings).not.toContain('router.put("/admin/concierge/promoted", requireRole("global_admin", "admin", "supervisor"');
+  });
+
+  it("documents and enforces personal delivery fee and 2-mile limit", () => {
+    const orders = api("routes/orders.ts");
+    const newOrder = platform("pages/new-order.tsx");
+    expect(orders).toContain('csrDeliveryDistanceMiles > 2');
+    expect(orders).toContain('CSR personal delivery is only available within 2 miles');
+    expect(orders).toContain('Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100');
+    expect(newOrder).toContain('$6 + 3% of sale total');
+  });
+
+
+  it("documents that this PR is partial and does not complete POS import operations", () => {
+    const notes = src("docs/admin-pos-security-supporting-pr-notes.md");
+    expect(notes).toContain("partial supporting admin/POS/security regression PR");
+    expect(notes).toContain("importer-side duplicate Product Master repair");
+    expect(notes).toContain("35-row Product Master import creates 140 `inventory_balances` rows");
+    expect(notes).toContain("must not be used to mark POS operational by itself");
+  });
+
+  it("adds privacy copy/print/background deterrence on protected screens", () => {
+    const sensitive = platform("components/privacy/SensitiveScreen.tsx");
+    expect(sensitive).toContain('copy_blocked');
+    expect(sensitive).toContain('beforeprint');
+    expect(sensitive).toContain('sensitive_screen_hidden_on_blur');
+    expect(sensitive).toContain('route ??');
+  });
+});

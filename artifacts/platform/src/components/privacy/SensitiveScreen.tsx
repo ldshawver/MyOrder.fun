@@ -2,7 +2,7 @@ import { useAuth } from "@clerk/react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "@/hooks/use-toast";
 
-type PrivacyEvent = "sensitive_screen_viewed" | "sensitive_screen_hidden_on_blur" | "print_attempt" | "screenshot_key_attempt" | "context_menu_blocked";
+type PrivacyEvent = "sensitive_screen_viewed" | "sensitive_screen_hidden_on_blur" | "print_attempt" | "screenshot_key_attempt" | "context_menu_blocked" | "copy_blocked" | "screen_capture_detected";
 
 export type SensitiveScreenProps = {
   children: ReactNode;
@@ -35,7 +35,7 @@ export default function SensitiveScreen({ children, userEmail, userRole, tenantN
   const [covered, setCovered] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const active = privacyModeEnabled && sensitiveScreensProtectionEnabled;
-  const watermark = useMemo(() => [maskEmail(userEmail), userRole || "unknown role", tenantName || "MyOrder.fun", now.toISOString()].join(" • "), [userEmail, userRole, tenantName, now]);
+  const watermark = useMemo(() => [maskEmail(userEmail), userRole || "unknown role", now.toISOString(), tenantName || "MyOrder.fun", route ?? (typeof window !== "undefined" ? window.location.pathname : "protected page")].join(" • "), [userEmail, userRole, tenantName, route, now]);
 
   const logEvent = useCallback(async (eventType: PrivacyEvent) => {
     try {
@@ -84,9 +84,25 @@ export default function SensitiveScreen({ children, userEmail, userRole, tenantN
       if (key === "printscreen") { warn(); void logEvent("screenshot_key_attempt"); }
       if (printBlockingEnabled && key === "p" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); warn(); void logEvent("print_attempt"); }
     };
+    const beforePrint = (event: Event) => { event.preventDefault(); warn(); void logEvent("print_attempt"); };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("beforeprint", beforePrint);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("beforeprint", beforePrint);
+    };
   }, [active, printBlockingEnabled, logEvent, warn]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onCopy = (event: ClipboardEvent) => { event.preventDefault(); warn(); void logEvent("copy_blocked"); };
+    document.addEventListener("copy", onCopy);
+    document.addEventListener("cut", onCopy);
+    return () => {
+      document.removeEventListener("copy", onCopy);
+      document.removeEventListener("cut", onCopy);
+    };
+  }, [active, logEvent, warn]);
 
   const onContextMenu = (event: React.MouseEvent) => {
     if (!active || isEditableTarget(event.target)) return;
@@ -94,7 +110,7 @@ export default function SensitiveScreen({ children, userEmail, userRole, tenantN
   };
 
   return (
-    <section className="sensitive-screen relative min-h-0" onContextMenu={onContextMenu} data-testid="sensitive-screen">
+    <section className="sensitive-screen relative min-h-0" onContextMenu={onContextMenu} onPaste={e => { if (active && !isEditableTarget(e.target)) e.preventDefault(); }} data-testid="sensitive-screen">
       <div className="sensitive-print-warning hidden rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-200">Sensitive content hidden from print/export.</div>
       <div className={active ? "sensitive-screen-content" : undefined}>{children}</div>
       {active && watermarkSensitiveScreens && <div className="sensitive-watermark pointer-events-none absolute inset-0 z-40 overflow-hidden opacity-[0.16]" aria-hidden="true"><div className="absolute inset-0 grid place-items-center text-[11px] font-mono uppercase tracking-widest text-white/70" style={{ transform: "rotate(-24deg)", gridTemplateColumns: "repeat(3, minmax(260px, 1fr))", gap: "4rem" }}>{Array.from({ length: 18 }).map((_, i) => <span key={i}>{watermark}</span>)}</div></div>}

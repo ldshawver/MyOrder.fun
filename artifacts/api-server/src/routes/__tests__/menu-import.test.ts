@@ -31,6 +31,27 @@ vi.mock("drizzle-orm", () => {
 
 const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[]; executeRowsObject: boolean; failBalanceInsertAt: number | null; balanceInsertAttempts: number } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [], executeRowsObject: false, failBalanceInsertAt: null, balanceInsertAttempts: 0 };
 
+function repairMockCatalogDuplicates() {
+  const canonicalByName = new Map<string, Record<string, unknown>>();
+  const duplicateIds = new Set<unknown>();
+  for (const item of [...state.catalog].sort((a, b) => Number(a.id) - Number(b.id))) {
+    const key = String(item.alavontName ?? item.name ?? "").trim().toLowerCase();
+    if (!key) continue;
+    const existing = canonicalByName.get(key);
+    if (!existing) canonicalByName.set(key, item);
+    else {
+      duplicateIds.add(item.id);
+      for (const balance of state.balances) {
+        if (balance.productId === item.id) balance.productId = existing.id;
+      }
+      for (const tmpl of state.inventory) {
+        if (tmpl.catalogItemId === item.id) tmpl.catalogItemId = existing.id;
+      }
+    }
+  }
+  state.catalog = state.catalog.filter(item => !duplicateIds.has(item.id));
+}
+
 vi.mock("@workspace/db", () => {
   const col = (name: string) => name;
   const catalogItemsTable = { _name: "catalog_items", id: col("id"), tenantId: col("tenantId"), sku: col("sku"), merchantSku: col("merchantSku"), alavontId: col("alavontId"), catalogItemId: col("catalogItemId") };
@@ -84,6 +105,7 @@ vi.mock("@workspace/db", () => {
     execute: vi.fn((q: unknown) => {
       const text = String(q);
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
+      if (text.includes("catalog_item_duplicate_map")) { repairMockCatalogDuplicates(); return Promise.resolve(wrap([])); }
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
       return Promise.resolve(wrap([]));
@@ -209,7 +231,27 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(0);
   });
 
-  it("distinguishes existing catalog duplicates from uploaded spreadsheet duplicates", async () => {
+  it("repairs existing Product Master duplicates before import and still creates 140 inventory balances for 35 products", async () => {
+    state.executeRowsObject = true;
+    state.catalog.push({ id: 1, tenantId: 1, sku: "DUP-A", name: "Duplicate Product", alavontName: "Duplicate Product" });
+    state.catalog.push({ id: 2, tenantId: 1, sku: "DUP-B", name: "Duplicate Product", alavontName: "Duplicate Product" });
+    state.balances.push({ id: 1, tenantId: 1, productId: 2, locationId: 1, quantityOnHand: "5.000" });
+    const rows = Array.from({ length: 35 }, (_, i) => [
+      "10.00", "8.00", "true", "Cat", `Fresh Product ${i}`, "https://example.com/a.jpg", "Desc", `FRESH-${i}`,
+      "Safe Cat", `Safe Fresh ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4", "1", "2", "3", "4",
+    ].join(","));
+
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
+
+    expect(res.status).toBe(200);
+    expect(res.body.inserted).toBe(35);
+    expect(res.body.balanceUpserts).toBe(140);
+    expect(state.catalog.filter(item => item.name === "Duplicate Product")).toHaveLength(1);
+    expect(state.balances.filter(balance => String(balance.productId).startsWith("FRESH"))).toHaveLength(0);
+    expect(state.balances.filter(balance => balance.productId !== 1)).toHaveLength(140);
+  });
+
+  it("repairs existing catalog duplicates instead of blocking an otherwise valid import", async () => {
     state.catalog.push({ id: 1, tenantId: 1, sku: "A", name: "Red Brick", alavontName: "Red Brick" });
     state.catalog.push({ id: 2, tenantId: 1, sku: "B", name: "Red Brick", alavontName: "Red Brick" });
     const csv = `${headers}
@@ -217,11 +259,10 @@ describe("safe catalog import/export", () => {
 `;
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "catalog.csv");
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Existing catalog contains duplicate products.");
-    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: "db_duplicate_name", key: "red brick", rows: [], name: "Red Brick" }),
-    ]));
+    expect(res.status).toBe(200);
+    expect(res.body.inserted).toBe(1);
+    expect(state.catalog.filter(item => item.name === "Red Brick")).toHaveLength(1);
+    expect(state.catalog).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-UNIQUE", name: "Unique" })]));
   });
 
   it("does not query existing catalog rows when no valid SKU values were prepared", async () => {

@@ -426,6 +426,22 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_processing_mode" text DEFAULT 'mapped_lucifer'`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_product_source" text DEFAULT 'local_mapped'`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_woo_managed" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_shift_id" integer`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "assigned_csr_user_id" integer`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_to" text`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routing_strategy" text`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routing_status" text`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routing_message" text`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "route_source" text`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "routed_at" timestamp with time zone`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "accepted_at" timestamp with time zone`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "promised_minutes" integer DEFAULT 30`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "estimated_ready_at" timestamp with time zone`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "eta_adjusted_by_supervisor" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "fulfillment_status" text`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_assigned_shift_idx" ON "orders" ("assigned_shift_id")`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_assigned_csr_idx" ON "orders" ("assigned_csr_user_id")`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "is_local_alavont" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "woo_product_id" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "woo_variation_id" text`,
@@ -1084,6 +1100,11 @@ router.post(
     const wifiMatchesApproved = enteredSsid.length > 0 &&
       approvedSsids.some(s => s.toLowerCase() === enteredSsid.toLowerCase());
     const computedWifiReady = wifiMatchesApproved || (setup?.wifiReady ?? false);
+
+    if (setup?.wifiReady !== true || setup?.printerReady !== true || setup?.locationReady !== true) {
+      res.status(400).json({ error: "Clock-in requires WiFi, printer, and pickup/location acknowledgements" });
+      return;
+    }
 
     const csrDeliveryOptIn = setup?.csrDeliveryOptIn === true;
     const hasConfirmedInventory = setup?.inventoryConfirmed === true ||

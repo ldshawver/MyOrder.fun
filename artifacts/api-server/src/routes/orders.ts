@@ -592,8 +592,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
   const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
 
-  // CSR personal delivery fee: $5 flat + 3% of subtotal → goes to CSR as gratuity
-  const csrDeliveryFee = isCsrDelivery ? Math.round((5 + 0.03 * subtotal) * 100) / 100 : 0;
+  const csrDeliveryDistanceMiles = Number((body.data as { csrDeliveryDistanceMiles?: unknown }).csrDeliveryDistanceMiles ?? 0);
+  if (isCsrDelivery && (!Number.isFinite(csrDeliveryDistanceMiles) || csrDeliveryDistanceMiles < 0 || csrDeliveryDistanceMiles > 2)) {
+    res.status(422).json({ error: "CSR personal delivery is only available within 2 miles" });
+    return;
+  }
+  // CSR personal delivery fee: $6 flat + 3% of sale total → goes to CSR as gratuity
+  const csrDeliveryFee = isCsrDelivery ? Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100 : 0;
   const deliveryFee = isCsrDelivery
     ? csrDeliveryFee
     : deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
