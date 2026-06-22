@@ -4,6 +4,7 @@ import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, invento
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
+import { logger } from "../lib/logger";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -111,6 +112,13 @@ const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
 };
 type ParsedFile = { headers: string[]; rawHeaders: string[]; rows: string[][] };
 type ImportRow = Record<CatalogImportHeader, string>;
+type ImportDuplicateWarning = {
+  type: "upload_duplicate_sku" | "upload_duplicate_name" | "db_duplicate_sku" | "db_duplicate_name";
+  key: string;
+  rows: number[];
+  sku: string | null;
+  name: string | null;
+};
 
 type ImportDbClient = Pick<typeof db, "select" | "insert" | "update" | "delete" | "execute">;
 
@@ -244,13 +252,41 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
 function normalizeProductName(raw: string | null | undefined): string {
   return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
-function duplicateKeys<T>(items: T[], key: (item: T) => string): string[] {
-  const counts = new Map<string, number>();
-  for (const item of items) {
-    const k = key(item);
-    if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedName: string }>): ImportDuplicateWarning[] {
+  const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
+  const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
+  for (const p of prepared) {
+    const sku = typeof p.values.sku === "string" ? p.values.sku : null;
+    const name = typeof p.values.name === "string" ? p.values.name : null;
+    const skuKey = String(sku ?? "").trim().toLowerCase();
+    if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
+    if (p.normalizedName) byName.set(p.normalizedName, [...(byName.get(p.normalizedName) ?? []), { row: p.row, sku, name }]);
   }
-  return [...counts.entries()].filter(([, count]) => count > 1).map(([k]) => k);
+  return [
+    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
+    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_name" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
+  ];
+}
+function buildDbDuplicateWarnings(items: Array<typeof catalogItemsTable.$inferSelect>): ImportDuplicateWarning[] {
+  const bySku = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
+  const byName = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
+  for (const item of items) {
+    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
+    const nameKey = normalizeProductName(item.alavontName ?? item.name);
+    if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), item]);
+    if (nameKey) byName.set(nameKey, [...(byName.get(nameKey) ?? []), item]);
+  }
+  return [
+    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_sku" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
+    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_name" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
+  ];
+}
+function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string {
+  const hasUpload = warnings.some(w => w.type.startsWith("upload_"));
+  const hasDb = warnings.some(w => w.type.startsWith("db_"));
+  if (hasUpload && hasDb) return "Uploaded spreadsheet and existing catalog contain duplicate products.";
+  if (hasUpload) return "Uploaded spreadsheet contains duplicate products.";
+  return "Existing catalog contains duplicate products.";
 }
 async function ensureSnapshotSchema(): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_snapshots (
@@ -383,16 +419,10 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     prepared.push({ row: rowNum, rec, inventory, par, normalizedName: normalizeProductName(name), values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
   }
   const skus = Array.from(new Set(prepared.map(p => p.values.sku).filter((sku): sku is string => typeof sku === "string" && sku.length > 0)));
-  const duplicateFileSkus = duplicateKeys(prepared, p => String(p.values.sku ?? "").trim().toLowerCase());
-  const duplicateFileNames = duplicateKeys(prepared, p => p.normalizedName);
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
-  const duplicateDbSkus = duplicateKeys(allTenantCatalog, p => String(p.sku ?? p.alavontId ?? p.merchantSku ?? "").trim().toLowerCase());
-  const duplicateDbNames = duplicateKeys(allTenantCatalog, p => normalizeProductName(p.alavontName ?? p.name));
   const duplicateWarnings = [
-    ...duplicateFileSkus.map(key => `Upload contains duplicate SKU: ${key}`),
-    ...duplicateFileNames.map(key => `Upload contains duplicate normalized name: ${key}`),
-    ...duplicateDbSkus.map(key => `Catalog already contains duplicate SKU: ${key}`),
-    ...duplicateDbNames.map(key => `Catalog already contains duplicate normalized name: ${key}`),
+    ...buildUploadDuplicateWarnings(prepared),
+    ...buildDbDuplicateWarnings(allTenantCatalog),
   ];
   const bySku = new Map<string, number>();
   const byName = new Map<string, number>();
@@ -405,10 +435,14 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
     const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedName) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.includes(skuKey) || w.includes(p.normalizedName)) };
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedName || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
-  if (duplicateWarnings.length) { res.status(409).json({ error: "Duplicate products must be repaired before import can run.", duplicateWarnings, preview, inserted: 0, updated: 0 }); return; }
+  if (duplicateWarnings.length) {
+    logger.warn({ tenantId, count: duplicateWarnings.length, first10Warnings: duplicateWarnings.slice(0, 10) }, "import_duplicate_block");
+    res.status(409).json({ error: duplicateImportErrorMessage(duplicateWarnings), duplicateWarnings, preview, inserted: 0, updated: 0 });
+    return;
+  }
   if ((matchedIds.size || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, preview, wouldInsert: prepared.length - matchedIds.size, wouldUpdate: matchedIds.size }); return; }
   if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - matchedIds.size), updated: matchedIds.size, skipped: 0, errors, total: prepared.length, warnings: matchedIds.size ? [`${matchedIds.size} existing products would be updated.`] : [], duplicateWarnings, preview }); return; }
 

@@ -13,6 +13,7 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: vi.fn(async () => 999) }));
 vi.mock("../../lib/inventoryBalances", () => ({ ensureStandardLocations: vi.fn(async () => undefined), ensureAllInventoryBalances: vi.fn(async () => ({ created: 0 })) }));
+vi.mock("../../lib/logger", () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
 
 vi.mock("drizzle-orm", () => {
   const makeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]) => ({
@@ -190,7 +191,7 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(0);
   });
 
-  it("blocks imports when the upload contains duplicate SKUs", async () => {
+  it("blocks imports when the upload contains duplicate SKUs and returns structured row diagnostics", async () => {
     const csv = `${headers}
 10.00,,false,Cat,One,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe One,https://example.com/s.jpg,Safe Desc,1,0,0,0,1,0,0,0
 11.00,,false,Cat,Two,https://example.com/a.jpg,Desc,SKU-DUP,Safe Cat,Safe Two,https://example.com/s.jpg,Safe Desc,2,0,0,0,2,0,0,0
@@ -198,8 +199,29 @@ describe("safe catalog import/export", () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "duplicates.csv");
 
     expect(res.status).toBe(409);
-    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([expect.stringContaining("duplicate SKU: sku-dup")]));
+    expect(res.body.error).toBe("Uploaded spreadsheet contains duplicate products.");
+    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "upload_duplicate_sku", key: "sku-dup", rows: [2, 3], sku: "SKU-DUP", name: "One" }),
+    ]));
+    expect(res.body.preview[0].duplicateWarnings).toEqual(expect.arrayContaining([expect.objectContaining({ type: "upload_duplicate_sku", rows: [2, 3] })]));
+    const { logger } = await import("../../lib/logger");
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 1, count: expect.any(Number), first10Warnings: expect.any(Array) }), "import_duplicate_block");
     expect(state.catalog).toHaveLength(0);
+  });
+
+  it("distinguishes existing catalog duplicates from uploaded spreadsheet duplicates", async () => {
+    state.catalog.push({ id: 1, tenantId: 1, sku: "A", name: "Red Brick", alavontName: "Red Brick" });
+    state.catalog.push({ id: 2, tenantId: 1, sku: "B", name: "Red Brick", alavontName: "Red Brick" });
+    const csv = `${headers}
+10.00,,false,Cat,Unique,https://example.com/a.jpg,Desc,SKU-UNIQUE,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,0,0,0,0,0,0,0,0
+`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "catalog.csv");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Existing catalog contains duplicate products.");
+    expect(res.body.duplicateWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "db_duplicate_name", key: "red brick", rows: [], name: "Red Brick" }),
+    ]));
   });
 
   it("does not query existing catalog rows when no valid SKU values were prepared", async () => {
