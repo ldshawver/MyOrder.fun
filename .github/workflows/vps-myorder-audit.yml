@@ -23,7 +23,7 @@ jobs:
           tailscale status
           tailscale ping 100.85.15.43
 
-      - name: VPS smoke check
+      - name: VPS apply 0027 migration
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 100.85.15.43
@@ -35,10 +35,17 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            hostname
-            whoami
+
             cd /opt/alavont
-            docker ps
-            docker compose --env-file deploy/.env -f deploy/docker-compose.yml -p deploy ps
-            curl -I http://127.0.0.1/api/healthz || true
-            curl -I https://myorder.fun/api/healthz || true
+
+            echo "== backup =="
+            docker exec deploy-db-1 pg_dump -U alavont_user -d alavont > ~/alavont-before-0027-$(date +%F-%H%M).sql
+
+            echo "== apply 0027 =="
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont < lib/db/drizzle/0027_orders_shift_schema_drift.sql
+
+            echo "== restart api/nginx =="
+            docker compose --env-file deploy/.env -f deploy/docker-compose.yml -p deploy up -d api nginx
+
+            echo "== health =="
+            curl -I http://127.0.0.1/api/healthz
