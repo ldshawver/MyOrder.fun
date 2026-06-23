@@ -85,7 +85,7 @@ jobs:
 
             if [ -f lib/db/drizzle/0027_orders_shift_schema_drift.sql ]; then
 
-              docker exec -i deploy-db-1 pql -U alavont_user -d alavont \
+              docker exec -i deploy-db-1 psql -U alavont_user -d alavont \
                 < lib/db/drizzle/0027_orders_shift_schema_drift.sql
 
             else
@@ -169,7 +169,7 @@ SQL
             echo "===== PRODUCT LOCATION COUNTS ====="
             ########################################################
 
-            docker exec -i deploy-db-1 pql \
+            docker exec -i deploy-db-1 psql \
               -U alavont_user \
               -d alavont <<'SQL'
 
