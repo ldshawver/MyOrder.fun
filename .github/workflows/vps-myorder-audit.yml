@@ -20,13 +20,10 @@ jobs:
 
       - name: Verify Tailnet
         run: |
-          set -e
-
           tailscale status
-
           tailscale ping 100.85.15.43
 
-      - name: VPS Audit
+      - name: VPS MyOrder POS Audit
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 100.85.15.43
@@ -37,235 +34,84 @@ jobs:
           command_timeout: 30m
           script_stop: false
           script: |
-
             set -euxo pipefail
-
-            REPORT=/tmp/myorder_audit.txt
-
-            exec > >(tee $REPORT)
-            exec 2>&1
-
-
-            echo "================================================"
-            echo "MYORDER POS AUDIT"
-            echo "================================================"
-            date
-
 
             cd /opt/alavont
 
-
-            ########################################################
-            echo
             echo "===== GIT ====="
-            ########################################################
-
             git rev-parse HEAD
-
             git log --oneline -5
 
-
-
-            ########################################################
-            echo
             echo "===== BACKUP ====="
-            ########################################################
+            docker exec deploy-db-1 pg_dump -U alavont_user -d alavont > ~/alavont-before-audit-$(date +%F-%H%M).sql
 
-            docker exec deploy-db-1 pg_dump \
-              -U alavont_user \
-              -d alavont \
-              > ~/alavont-before-audit-$(date +%F-%H%M).sql
-
-
-
-            ########################################################
-            echo
             echo "===== APPLY 0027 ====="
-            ########################################################
-
             if [ -f lib/db/drizzle/0027_orders_shift_schema_drift.sql ]; then
-
-              docker exec -i deploy-db-1 psql -U alavont_user -d alavont \
-                < lib/db/drizzle/0027_orders_shift_schema_drift.sql
-
+              docker exec -i deploy-db-1 psql -U alavont_user -d alavont < lib/db/drizzle/0027_orders_shift_schema_drift.sql
             else
-
               echo "0027 migration not found"
-
             fi
 
+            echo "===== RESTART API/NGINX ====="
+            docker compose --env-file deploy/.env -f deploy/docker-compose.yml -p deploy up -d api nginx || true
 
-
-            ########################################################
-            echo
-            echo "===== RESTART ====="
-            ########################################################
-
-            docker compose \
-              --env-file deploy/.env \
-              -f deploy/docker-compose.yml \
-              -p deploy \
-              up -d api nginx
-
-
-
-            ########################################################
-            echo
             echo "===== DOCKER ====="
-            ########################################################
-
             docker ps
 
-
-
-            ########################################################
-            echo
             echo "===== HEALTH ====="
-            ########################################################
-
             curl -I http://127.0.0.1/api/healthz || true
 
-
-
-            ########################################################
-            echo
-            echo "===== PM2 ====="
-            ########################################################
-
-            pm2 list || true
-
-
-
-            ########################################################
-            echo
-            echo "===== PORTS ====="
-            ########################################################
-
-            ss -lntp | grep 8000 || true
-
-            ss -lntp | grep 5000 || true
-
-
-
-            ########################################################
-            echo
             echo "===== PRODUCT MASTER BALANCES ====="
-            ########################################################
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont <<'SQL'
+            SELECT count(*)
+            FROM inventory_balances
+            WHERE product_id BETWEEN 354 AND 388;
+            SQL
 
-            docker exec -i deploy-db-1 psql \
-              -U alavont_user \
-              -d alavont <<'SQL'
-
-SELECT count(*)
-FROM inventory_balances
-WHERE product_id BETWEEN 354 AND 388;
-
-SQL
-
-
-
-            ########################################################
-            echo
             echo "===== PRODUCT LOCATION COUNTS ====="
-            ########################################################
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont <<'SQL'
+            SELECT
+              product_id,
+              count(*) AS locations,
+              sum(quantity_on_hand) AS qty
+            FROM inventory_balances
+            WHERE product_id BETWEEN 354 AND 388
+            GROUP BY product_id
+            ORDER BY product_id;
+            SQL
 
-            docker exec -i deploy-db-1 psql \
-              -U alavont_user \
-              -d alavont <<'SQL'
-
-SELECT
-product_id,
-count(*) locations,
-sum(quantity_on_hand) qty
-FROM inventory_balances
-WHERE product_id BETWEEN 354 AND 388
-GROUP BY product_id
-ORDER BY product_id;
-
-SQL
-
-
-
-
-            ########################################################
-            echo
             echo "===== SHIFT COLUMNS ====="
-            ########################################################
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont <<'SQL'
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='orders'
+            AND column_name IN (
+              'assigned_shift_id',
+              'assigned_csr_user_id',
+              'fulfillment_status',
+              'promised_minutes',
+              'estimated_ready_at'
+            )
+            ORDER BY column_name;
+            SQL
 
-            docker exec -i deploy-db-1 psql \
-              -U alavont_user \
-              -d alavont <<'SQL'
-
-SELECT column_name
-FROM information_schema.columns
-WHERE table_name='orders'
-AND column_name IN (
-
-'assigned_shift_id',
-
-'assigned_csr_user_id',
-
-'fulfillment_status',
-
-'promised_minutes',
-
-'estimated_ready_at'
-
-)
-
-ORDER BY column_name;
-
-SQL
-
-
-
-            ########################################################
-            echo
             echo "===== ACTIVE SHIFTS ====="
-            ########################################################
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont <<'SQL'
+            SELECT
+              id,
+              user_id,
+              status
+            FROM shifts
+            WHERE status='active';
+            SQL
 
-            docker exec -i deploy-db-1 psql \
-              -U alavont_user \
-              -d alavont <<'SQL'
+            echo "===== RECEIPTS / PRINT JOBS ====="
+            docker exec -i deploy-db-1 psql -U alavont_user -d alavont <<'SQL'
+            SELECT count(*)
+            FROM print_jobs;
+            SQL
 
-SELECT
-id,
-user_id,
-status
-FROM shifts
-WHERE status='active';
+            echo "===== API LOGS ====="
+            docker logs deploy-api-1 --tail=120 || true
 
-SQL
-
-
-
-
-            ########################################################
-            echo
-            echo "===== RECEIPTS ====="
-            ########################################################
-
-            docker exec -i deploy-db-1 psql \
-              -U alavont_user \
-              -d alavont <<'SQL'
-
-SELECT count(*)
-FROM print_jobs;
-
-SQL
-
-
-
-
-            ########################################################
-            echo
             echo "===== AUDIT COMPLETE ====="
-            ########################################################
-
-            cp $REPORT /tmp/myorder_audit_final.txt
-
-      - name: Upload Audit Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: myorder-audit
-          path: /tmp/myorder_audit_final.txt
