@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { Component, type ErrorInfo, type ReactNode, useState, useEffect, useCallback } from "react";
 import { useGetCurrentUser, type Order, type OrderItem } from "@workspace/api-client-react";
 import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
@@ -107,6 +107,79 @@ type ActiveShift = {
   stats: ShiftStats;
 };
 
+
+type RawShift = Partial<ActiveShift> & {
+  tech_id?: number | null;
+  box_assignment_id?: string | null;
+  setup_json?: unknown;
+};
+
+const emptyShiftStats = (): ShiftStats => ({
+  orderCount: 0,
+  totalRevenue: 0,
+  cashSales: 0,
+  cardSales: 0,
+  compSales: 0,
+  paymentTotals: {},
+  byItem: [],
+  byCustomer: [],
+});
+
+function normalizeActiveShift(raw: RawShift | null | undefined): ActiveShift | null {
+  if (!raw || raw.status == null) return null;
+  const stats = raw.stats ?? emptyShiftStats();
+  return {
+    id: Number(raw.id ?? 0),
+    techId: Number(raw.techId ?? raw.tech_id ?? 0),
+    status: String(raw.status),
+    ipAddress: raw.ipAddress ?? null,
+    boxAssignmentId: raw.boxAssignmentId ?? raw.box_assignment_id ?? null,
+    clockedInAt: raw.clockedInAt ?? new Date().toISOString(),
+    cashBankStart: Number(raw.cashBankStart ?? 0),
+    runningCashBank: Number(raw.runningCashBank ?? raw.cashBankStart ?? 0),
+    csrDeliveryOptIn: Boolean(raw.csrDeliveryOptIn),
+    csrDeliveryEarnings: Number(raw.csrDeliveryEarnings ?? 0),
+    inventory: Array.isArray(raw.inventory) ? raw.inventory : [],
+    stats: {
+      ...emptyShiftStats(),
+      ...stats,
+      paymentTotals: stats.paymentTotals ?? {},
+      byItem: Array.isArray(stats.byItem) ? stats.byItem : [],
+      byCustomer: Array.isArray(stats.byCustomer) ? stats.byCustomer : [],
+    },
+  };
+}
+
+class StaffErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Staff page crashed", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="max-w-2xl mx-auto rounded-2xl border border-red-500/30 bg-red-500/10 p-6 text-red-100" data-testid="staff-error-card">
+          <div className="flex items-center gap-2 text-lg font-bold text-red-300">
+            <AlertTriangle size={18} /> Staff dashboard hit an error
+          </div>
+          <p className="mt-2 text-sm text-red-100/80">Refresh the page or contact support if this keeps happening.</p>
+          <pre className="mt-4 max-h-40 overflow-auto rounded-xl bg-black/30 p-3 text-xs text-red-100/80">
+            {this.state.error.message}
+          </pre>
+          <Button className="mt-4 rounded-xl" onClick={() => window.location.reload()}>Reload /staff</Button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Shift hook ───────────────────────────────────────────────────────────────
 
 function useShift(getToken: () => Promise<string | null>) {
@@ -121,7 +194,7 @@ function useShift(getToken: () => Promise<string | null>) {
       });
       if (res.ok) {
         const data = await res.json();
-        setShift(data.shift);
+        setShift(normalizeActiveShift(data.shift as RawShift));
       }
     } catch { /* ignore fetch errors */ }
     setLoading(false);
@@ -544,13 +617,15 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
 }) {
   // Pre-populate actual counts with computed expected values
   const initialCounts: Record<number, string> = {};
-  for (const item of shift.inventory) {
+  const shiftInventory = Array.isArray(shift.inventory) ? shift.inventory : [];
+  const shiftStats = shift.stats ?? emptyShiftStats();
+  for (const item of shiftInventory) {
     if (item.rowType === "item") {
       initialCounts[item.id] = String(item.quantityEnd ?? 0);
     }
   }
 
-  const expectedCash = shift.cashBankStart + (shift.stats.cashSales ?? 0);
+  const expectedCash = (shift.cashBankStart ?? 0) + (shiftStats.cashSales ?? 0);
 
   const [actualCounts, setActualCounts] = useState<Record<number, string>>(initialCounts);
   const [cashBankEnd, setCashBankEnd] = useState(expectedCash.toFixed(2));
@@ -559,7 +634,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
-      const endingInventory = shift.inventory
+      const endingInventory = shiftInventory
         .filter(i => i.rowType === "item")
         .map(i => ({
           shiftInventoryItemId: i.id,
@@ -574,7 +649,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
   // Group items by section for display
   const sections: { name: string; items: EnrichedItem[] }[] = [];
   let currentSection: { name: string; items: EnrichedItem[] } | null = null;
-  for (const item of shift.inventory) {
+  for (const item of shiftInventory) {
     if (item.rowType === "section") {
       currentSection = { name: item.sectionName ?? item.itemName, items: [] };
       sections.push(currentSection);
@@ -625,8 +700,8 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
                 <span className="font-bold text-emerald-400">= Expected Total</span>
               </div>
               <div className="grid grid-cols-3 px-4 py-3 font-mono font-bold text-sm">
-                <span>{fmtMoney(shift.cashBankStart)}</span>
-                <span className="text-emerald-400">+{fmtMoney(shift.stats.cashSales)}</span>
+                <span>{fmtMoney(shift.cashBankStart ?? 0)}</span>
+                <span className="text-emerald-400">+{fmtMoney(shiftStats.cashSales ?? 0)}</span>
                 <span className="text-emerald-400">{fmtMoney(expectedCash)}</span>
               </div>
               <div className="px-4 py-3 flex items-center gap-4">
@@ -1015,12 +1090,15 @@ function PaymentStat({ label, amount }: { label: string; amount: number }) {
 // ─── Active Shift Panel ───────────────────────────────────────────────────────
 
 function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOut: () => void }) {
-  const duration = Math.round((Date.now() - new Date(shift.clockedInAt).getTime()) / 60000);
+  const shiftInventory = Array.isArray(shift.inventory) ? shift.inventory : [];
+  const shiftStats = shift.stats ?? emptyShiftStats();
+  const clockedInAtMs = new Date(shift.clockedInAt ?? Date.now()).getTime();
+  const duration = Math.max(0, Math.round((Date.now() - (Number.isNaN(clockedInAtMs) ? Date.now() : clockedInAtMs)) / 60000));
   const [tab, setTab] = useState<"overview" | "customers" | "inventory">("overview");
 
   const sections: { name: string; items: EnrichedItem[] }[] = [];
   let currentSection: { name: string; items: EnrichedItem[] } | null = null;
-  for (const item of shift.inventory) {
+  for (const item of shiftInventory) {
     if (item.rowType === "section") {
       currentSection = { name: item.sectionName ?? item.itemName, items: [] };
       sections.push(currentSection);
@@ -1036,7 +1114,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
     }
   }
 
-  const flagCount = shift.inventory.filter(i => i.isFlagged).length;
+  const flagCount = shiftInventory.filter(i => i.isFlagged).length;
 
   return (
     <div className="glass-card rounded-2xl overflow-hidden border border-emerald-500/20 bg-emerald-500/[0.02]">
@@ -1086,19 +1164,19 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
       {/* Stats bar */}
       <div className="grid grid-cols-4 divide-x divide-border/30 border-b border-border/30">
         <div className="px-4 py-3 text-center">
-          <div className="text-lg font-bold">{shift.stats.orderCount}</div>
+          <div className="text-lg font-bold">{shiftStats.orderCount}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Orders</div>
         </div>
         <div className="px-4 py-3 text-center">
-          <div className="text-lg font-bold text-emerald-400">{fmtMoney(shift.stats.totalRevenue)}</div>
+          <div className="text-lg font-bold text-emerald-400">{fmtMoney(shiftStats.totalRevenue)}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Revenue</div>
         </div>
         <div className="px-4 py-3 text-center">
-          <div className="text-lg font-bold text-emerald-400">{fmtMoney(shift.runningCashBank)}</div>
+          <div className="text-lg font-bold text-emerald-400">{fmtMoney((shift.runningCashBank ?? 0))}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest flex items-center justify-center gap-0.5"><Banknote size={8} />Cash Bank</div>
         </div>
         <div className="px-4 py-3 text-center">
-          <div className="text-lg font-bold">{shift.stats.byItem.reduce((s, i) => s + i.qtySold, 0)}</div>
+          <div className="text-lg font-bold">{shiftStats.byItem.reduce((s, i) => s + i.qtySold, 0)}</div>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Units</div>
         </div>
       </div>
@@ -1133,11 +1211,11 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
       {/* Tab content */}
       <div className="min-h-[120px]">
         {tab === "overview" && (
-          shift.stats.byItem.length === 0 ? (
+          shiftStats.byItem.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-xs text-muted-foreground">No items sold yet</div>
           ) : (
             <div className="divide-y divide-border/20">
-              {shift.stats.byItem.map(item => (
+              {shiftStats.byItem.map(item => (
                 <div key={item.catalogItemId} className="flex justify-between items-center px-6 py-3 hover:bg-white/[0.02]">
                   <div className="text-sm font-medium">{item.name}</div>
                   <div className="flex items-center gap-4">
@@ -1151,11 +1229,11 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
         )}
 
         {tab === "customers" && (
-          shift.stats.byCustomer.length === 0 ? (
+          shiftStats.byCustomer.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-xs text-muted-foreground">No customers served yet</div>
           ) : (
             <div className="divide-y divide-border/20">
-              {shift.stats.byCustomer.map(c => (
+              {shiftStats.byCustomer.map(c => (
                 <div key={c.customerId} className="flex justify-between items-center px-6 py-3 hover:bg-white/[0.02]">
                   <div>
                     <div className="flex items-center gap-2">
@@ -1174,7 +1252,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
         )}
 
         {tab === "inventory" && (
-          shift.inventory.length === 0 ? (
+          shiftInventory.length === 0 ? (
             <div className="flex items-center justify-center py-10 text-xs text-muted-foreground">No inventory tracked</div>
           ) : (
             <div>
@@ -1523,7 +1601,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function CustomerServiceRepQueue() {
+function CustomerServiceRepQueueContent() {
   const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
@@ -1620,7 +1698,7 @@ export default function CustomerServiceRepQueue() {
     // shift }. Treat that as a usable POS state instead of surfacing the raw
     // JSON/debug response as an error.
     if (responseData?.shift) {
-      setShift(responseData.shift as ActiveShift);
+      setShift(normalizeActiveShift(responseData.shift as RawShift));
     }
     await refetchShift();
   };
@@ -1747,5 +1825,14 @@ export default function CustomerServiceRepQueue() {
         <ShiftSummaryModal summary={summaryData} onClose={() => setSummaryData(null)} />
       )}
     </div>
+  );
+}
+
+
+export default function CustomerServiceRepQueue() {
+  return (
+    <StaffErrorBoundary>
+      <CustomerServiceRepQueueContent />
+    </StaffErrorBoundary>
   );
 }
