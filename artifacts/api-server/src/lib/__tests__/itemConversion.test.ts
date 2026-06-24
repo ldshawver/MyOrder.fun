@@ -18,6 +18,7 @@ vi.mock("@workspace/db", () => {
 });
 
 vi.mock("drizzle-orm", () => ({
+  and: vi.fn((...conditions: unknown[]) => ({ conditions })),
   eq: vi.fn((col, val) => ({ col, val })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
@@ -220,6 +221,58 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
       name: "CheckoutMappingError",
       catalogItemId: 100,
       reason: "item_unavailable",
+    });
+  });
+
+  it("(3d) strict checkout conversion accepts production safe columns for category and image", async () => {
+    mockDbReturn([
+      makeAlavontItem({
+        id: 100,
+        customerSafeName: "Customer Safe Tee",
+        customerSafeDescription: "Customer-safe production description",
+        merchantCategory: "Production Merchant Category",
+        merchantImage: "https://merchant.example/safe-tee.jpg",
+        luciferCruzCategory: null,
+        luciferCruzImageUrl: null,
+        displayCategory: "Display fallback category",
+        displayImage: "https://display.example/fallback.jpg",
+      }),
+    ]);
+
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true);
+
+    expect(normalized[0]).toMatchObject({
+      customer_safe_name: "Customer Safe Tee",
+      customer_safe_description: "Customer-safe production description",
+      customer_safe_category: "Production Merchant Category",
+      customer_safe_image: "https://merchant.example/safe-tee.jpg",
+    });
+  });
+
+  it("(3e) strict checkout conversion reports exactly missing safe category and image fields", async () => {
+    mockDbReturn([
+      makeAlavontItem({
+        id: 100,
+        customerSafeName: "Customer Safe Tee",
+        customerSafeDescription: "Customer-safe production description",
+        merchantCategory: null,
+        luciferCruzCategory: null,
+        displayCategory: null,
+        category: null,
+        merchantImage: null,
+        luciferCruzImageUrl: null,
+        displayImage: null,
+        imageUrl: null,
+      }),
+    ]);
+
+    await expect(
+      normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true),
+    ).rejects.toMatchObject({
+      name: "CheckoutMappingError",
+      catalogItemId: 100,
+      reason: "missing_safe_fields",
+      missingSafeFields: ["customer_safe_category", "customer_safe_image"],
     });
   });
 

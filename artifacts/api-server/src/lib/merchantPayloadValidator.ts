@@ -1,9 +1,26 @@
 import type { NormalizedCartLine } from "./checkoutNormalizer";
-export class MerchantPayloadValidationError extends Error { constructor(message = "Merchant payload must use Safe fields only") { super(message); this.name = "MerchantPayloadValidationError"; } }
+export class MerchantPayloadValidationError extends Error {
+  public readonly missingSafeFields?: string[];
+  constructor(message = "Merchant payload must use Safe fields only", missingSafeFields?: string[]) {
+    super(message);
+    this.name = "MerchantPayloadValidationError";
+    this.missingSafeFields = missingSafeFields;
+  }
+}
 export function assertSafeMerchantLines(lines: NormalizedCartLine[]): void {
   for (const line of lines) {
-    const required = [line.customer_safe_name, line.customer_safe_description, line.customer_safe_category, line.customer_safe_image];
-    if (required.some(v => typeof v !== "string" || v.trim().length === 0)) throw new MerchantPayloadValidationError("Missing safe merchant field");
+    const required = {
+      customer_safe_name: line.customer_safe_name,
+      customer_safe_description: line.customer_safe_description,
+      customer_safe_category: line.customer_safe_category,
+      customer_safe_image: line.customer_safe_image,
+    };
+    const missingSafeFields = Object.entries(required)
+      .filter(([, value]) => typeof value !== "string" || value.trim().length === 0)
+      .map(([field]) => field);
+    if (missingSafeFields.length > 0) {
+      throw new MerchantPayloadValidationError(`Missing safe merchant field: ${missingSafeFields.join(", ")}`, missingSafeFields);
+    }
     const forbidden = [line.receipt_alavont_name, line.display_description, line.display_category].filter(Boolean).map(String);
     const safe = [line.customer_safe_name, line.customer_safe_description, line.customer_safe_category, line.customer_safe_image].join("\n").toLowerCase();
     for (const f of forbidden) if (f && ![line.customer_safe_name,line.customer_safe_description,line.customer_safe_category].includes(f) && safe.includes(f.toLowerCase())) throw new MerchantPayloadValidationError();
