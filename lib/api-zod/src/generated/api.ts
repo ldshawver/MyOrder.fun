@@ -668,6 +668,7 @@ export const CreateOrderBody = zod.object({
 })).optional()
 }).optional(),
   "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
+  "checkoutConversionToken": zod.string().optional(),
   "csrDeliveryDistanceMiles": zod.number().min(0).nullish()
 })
 

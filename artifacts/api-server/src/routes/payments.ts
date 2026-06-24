@@ -158,6 +158,11 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     return;
   }
 
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
+    return;
+  }
+
   // Re-normalize cart from order items so the LC-only Stripe payload is built
   // from the SAME conversion path used at /orders. If the conversion fails
   // here (e.g. an item lost its mapping after order creation), the spec'd 422
@@ -315,6 +320,11 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
+    return;
+  }
   if (order.paymentStatus === "paid") {
     res.status(409).json({ error: "Order is already paid" });
     return;
@@ -416,6 +426,11 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
   }
   if (order.customerId !== actor.id && actor.role === "user") {
     res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
     return;
   }
 

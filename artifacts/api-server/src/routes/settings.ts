@@ -22,6 +22,8 @@ type RoutingRule = typeof ROUTING_RULES[number];
 type AdminSettingsWithCsr = typeof adminSettingsTable.$inferSelect & {
   shiftLocationOptions?: string | null;
   deliveryOptions?: string | null;
+  salesTaxMode?: string | null;
+  salesTaxRate?: string | number | null;
 };
 
 // Hard cap on the admin-editable AI prompt to avoid pathological prompts
@@ -37,6 +39,8 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "show_out_of_stock" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['stripe']::text[]`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "checkout_conversion_preview" boolean NOT NULL DEFAULT false`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "sales_tax_mode" text NOT NULL DEFAULT 'added'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "sales_tax_rate" numeric(6, 5) NOT NULL DEFAULT '0.08'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_image_enabled" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "merchant_processor_config" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "auto_print_on_payment" boolean NOT NULL DEFAULT false`,
@@ -93,6 +97,8 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     showOutOfStock: s.showOutOfStock,
     enabledProcessors: s.enabledProcessors,
     checkoutConversionPreview: s.checkoutConversionPreview,
+    salesTaxMode: csrSettings.salesTaxMode ?? "added",
+    salesTaxRate: Number(csrSettings.salesTaxRate ?? 0.08),
     merchantImageEnabled: s.merchantImageEnabled,
     merchantProcessorConfig: parseMerchantProcessorConfig(s.merchantProcessorConfig),
     autoPrintOnPayment: s.autoPrintOnPayment,
@@ -484,7 +490,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
     "receiptTemplateStyle", "labelTemplateStyle", "purgeMode",
     "purgeDelayHours", "keepAuditToken", "keepFailedPaymentLogs",
-    "receiptLineNameMode",
+    "receiptLineNameMode", "salesTaxMode", "salesTaxRate",
     "privacyModeEnabled", "sensitiveScreensProtectionEnabled", "watermarkSensitiveScreens",
     "privacyBlurOnBackground", "privacyPrintBlockingEnabled", "privacyProtectedRoles",
   ];
@@ -503,6 +509,18 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
       .filter(Boolean)
       .slice(0, 6);
     update.catalogBannerImages = JSON.stringify(banners.length ? banners : DEFAULT_CATALOG_BANNERS);
+  }
+  if (body.salesTaxMode !== undefined && body.salesTaxMode !== "added" && body.salesTaxMode !== "included") {
+    res.status(400).json({ error: "salesTaxMode must be added or included" });
+    return;
+  }
+  if (body.salesTaxRate !== undefined) {
+    const rate = Number(body.salesTaxRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+      res.status(400).json({ error: "salesTaxRate must be between 0 and 1" });
+      return;
+    }
+    update.salesTaxRate = String(rate);
   }
   if (body.merchantProcessorConfig !== undefined) {
     update.merchantProcessorConfig = JSON.stringify(cleanMerchantProcessorConfig(body.merchantProcessorConfig));

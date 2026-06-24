@@ -34,6 +34,7 @@ type DeliveryQuote = {
   manifestItems?: Array<{ name: string; quantity: number; price?: number }>;
 };
 type ConversionPreview = {
+  conversionToken: string;
   confirmation: {
     acceptedAllSalesFinal: true;
     confirmedAt: string;
@@ -56,6 +57,8 @@ type ConversionPreview = {
       displayDescription: string;
       displayCategory: string;
       displayImage: string | null;
+      customerSafeName?: string;
+      customerSafeDescription?: string;
       merchantBrandName: string;
       marketingCopy: string;
       upsellCopy: string | null;
@@ -241,6 +244,7 @@ export default function NewOrder() {
           shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
+          checkoutConversionToken: conversionPreview.conversionToken,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation: {
@@ -271,6 +275,7 @@ export default function NewOrder() {
     }
   };
 
+  const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
   const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
   const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
@@ -359,17 +364,25 @@ export default function NewOrder() {
                 <div className="text-[10px] text-muted-foreground mt-1 font-mono">{new Date().toLocaleString()}</div>
               </div>
               <div className="min-h-[420px] p-4 space-y-3">
+              {!conversionPreview && cart.length > 0 && (
+                <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-xs font-semibold text-amber-700 dark:text-amber-300">Cart must be converted before payment.</div>
+              )}
               {cart.length === 0 ? (
                 <div className="h-72 flex flex-col items-center justify-center text-center text-muted-foreground text-sm font-mono uppercase tracking-wider border border-dashed border-border/50 rounded-sm">
                   <ShoppingCart size={24} className="mb-3" />
                   Cart is empty
                 </div>
               ) : (
-                cart.map(item => (
+                cart.map(item => {
+                  const converted = convertedItemById.get(item.id);
+                  return (
                   <div key={item.id} className="border-b border-dashed border-border/40 pb-3 last:border-0" data-testid={`cart-item-${item.id}`}>
                     <div className="flex items-start justify-between gap-3">
+                    {converted?.displayImage && <img src={converted.displayImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
                     <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-sm leading-tight pr-4">{item.name}</div>
+                        <div className="font-semibold text-sm leading-tight pr-4">{converted?.customerSafeName ?? converted?.displayName ?? item.name}</div>
+                      {converted && <div className="text-[10px] uppercase tracking-widest text-primary mt-0.5">Safe Category: {converted.displayCategory}</div>}
+                      {converted && <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{converted.customerSafeDescription ?? converted.displayDescription}</div>}
                       <div className="text-xs text-muted-foreground font-mono mt-0.5">${item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                     </div>
                       <div className="font-mono text-sm font-bold">${(item.price * item.quantity).toFixed(2)}</div>
@@ -385,7 +398,7 @@ export default function NewOrder() {
                       </button>
                     </div>
                   </div>
-                ))
+                );})
               )}
             </div>
               <div className="border-t border-dashed border-border p-4 space-y-2">
