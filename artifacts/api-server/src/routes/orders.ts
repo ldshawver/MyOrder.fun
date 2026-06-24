@@ -38,7 +38,6 @@ import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
   getCheckoutTaxSettings,
-  buildMerchantPayloadLines,
   CheckoutMappingError,
   CartLineInput,
   type NormalizedCartLine,

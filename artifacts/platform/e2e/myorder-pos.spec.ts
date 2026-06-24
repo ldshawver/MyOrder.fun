@@ -26,7 +26,7 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (path === "/api/catalog" || path === "/api/catalog/items") return json({ items: catalog, catalog });
-    if (path === "/api/current-user") return json({ id: 1, role: "user", email: "customer@example.com" });
+    if (path === "/api/current-user") return json({ id: 1, role: "csr", email: "csr@example.com", status: "approved", isActive: true });
     if (path === "/api/admin/settings") return json({ enabledProcessors: processors });
     if (path === "/api/orders/preview-conversion" && method === "POST") {
       return json({
@@ -40,9 +40,14 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
     if (path === "/api/payments/tokenize" && method === "POST") return json({ paymentIntentId: "pi_test_pos", clientSecret: "pi_test_pos_secret", orderId: 9001 });
     if (path === "/api/payments/9001/confirm" && method === "POST") return json({ id: 9001, status: "confirmed", paymentStatus: "paid", inventoryDeducted: true });
     if (path === "/api/orders/9001") return json({ id: 9001, status: "confirmed", paymentStatus: "paid", assignedShiftId: 77 });
-    if (path === "/api/shifts/active") return json({ shift: { id: 77, boxAssignmentId: "sales-box-1", status: "active", setupJson: { inventoryConfirmed: true } } });
-    if (path === "/api/shifts/inventory-template") return json({ items: [{ catalogItemId: 354, itemName: "Calm Drops", quantityStart: "12" }] });
-    if (path === "/api/shift-queue/orders") return json({ orders: [{ id: 9001, status: "pending", assignedShiftId: 77 }] });
+    if (path === "/api/shifts/current" || path === "/api/shifts/active") return json({ shift: {
+      id: 77, tech_id: 1, box_assignment_id: "sales-box-1", status: "active", setup_json: { inventoryConfirmed: true },
+      clockedInAt: new Date(Date.now() - 15 * 60_000).toISOString(), cashBankStart: 100, runningCashBank: 124,
+      inventory: [{ id: 1, templateItemId: 1, sectionName: "Wellness", rowType: "item", unitType: "EA", displayOrder: 1, catalogItemId: 354, itemName: "Calm Drops", unitPrice: 24, quantityStart: 12, quantitySold: 1, quantityEnd: 11, quantityEndActual: null, discrepancy: null, isFlagged: false }],
+      stats: { orderCount: 1, totalRevenue: 24, cashSales: 24, cardSales: 0, compSales: 0, paymentTotals: { cash: 24 }, byItem: [{ catalogItemId: 354, name: "Calm Drops", qtySold: 1, revenue: 24 }], byCustomer: [{ customerId: 1, name: "Test Customer", orderCount: 1, total: 24, paymentMethod: "cash" }] }
+    } });
+    if (path === "/api/shifts/inventory-template") return json({ template: [{ id: 1, catalogItemId: 354, itemName: "Calm Drops", rowType: "item", unitType: "EA", startingQuantityDefault: 12, sectionName: "Wellness", displayOrder: 1, menuPrice: 24, payoutPrice: 0 }], boxes: [{ id: "sales-box-1", label: "CSR Sales Box 1" }] });
+    if (path === "/api/shift-queue/orders") return json({ orders: [{ id: 9001, status: "pending", fulfillmentStatus: "pending", assignedShiftId: 77, customerName: "Test Customer", createdAt: new Date().toISOString(), paymentStatus: "paid", paymentMethod: "cash", total: 24, items: [{ catalogItemId: 354, catalogItemName: "Calm Drops", quantity: 1, unitPrice: 24 }] }], total: 1 });
     if (path === "/api/orders/9001/accept" && method === "POST") return json({ id: 9001, status: "processing" });
     if (path === "/api/orders/9001/fulfillment" && method === "POST") return json({ id: 9001, status: "completed" });
     if (path === "/api/admin/import/product-master" && method === "POST") return json({ importedProducts: 35, catalogItemsCreated: 35, inventoryBalancesUpserted: 140 });
@@ -68,11 +73,22 @@ test.describe("MyOrder.fun POS browser verification", () => {
     await expect(page.getByTestId("button-cashapp")).toHaveCount(0);
   });
 
-  test("CSR shift → queue → order workflow can be driven from mocked POS APIs", async ({ page }) => {
-    await mockPosApi(page);
-    await page.goto("/staff");
-    await page.goto("/shift-queue");
-    await expect(page.getByText(/9001|pending|queue/i).first()).toBeVisible();
+  test.describe("staff dashboard", () => {
+    test.use({ storageState: "playwright/.auth/csr.json" });
+
+    test("/staff renders active shift data without console errors", async ({ page }, testInfo) => {
+      const consoleErrors: string[] = [];
+      page.on("console", msg => { if (msg.type() === "error") consoleErrors.push(msg.text()); });
+      page.on("pageerror", error => consoleErrors.push(error.message));
+
+      await mockPosApi(page);
+      await page.goto("/staff", { waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("text-title")).toContainText("Shift Dashboard");
+      await expect(page.getByText("Shift Active")).toBeVisible();
+      await expect(page.getByText("Calm Drops").first()).toBeVisible();
+      await testInfo.attach("staff-active-shift", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      expect(consoleErrors, `Browser console/page errors:\n${consoleErrors.join("\n")}`).toEqual([]);
+    });
   });
 
   test("supervisor import/archive and payment settings change checkout UI", async ({ page }) => {
