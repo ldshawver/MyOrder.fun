@@ -577,6 +577,7 @@ export interface CreateOrderBody {
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
+  checkoutConversionToken?: string;
   csrDeliveryDistanceMiles?: number | null;
 }
 
