@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
 import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, useTokenizePayment, useConfirmPayment, type CatalogItem } from "@workspace/api-client-react";
@@ -11,6 +12,7 @@ import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Ba
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { toast } from "@/hooks/use-toast";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
@@ -98,6 +100,8 @@ export default function NewOrder() {
   const prevCartRef = useRef("");
   const preloaded = useRef(false);
   const { getToken } = useAuth();
+  const queryClient = useQueryClient();
+  const [orderSubmitError, setOrderSubmitError] = useState<string | null>(null);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { notifyOrderPlaced } = usePushNotifications({
@@ -231,11 +235,13 @@ export default function NewOrder() {
     }
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
     if (cart.length === 0 || !conversionPreview) return;
     if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
     if (requiresDeliveryAddress && !shippingAddress.trim()) return;
 
+    setOrderSubmitError(null);
+    const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual";
 
     try {
       const order = await createOrderMutation.mutateAsync({
@@ -245,33 +251,47 @@ export default function NewOrder() {
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
           checkoutConversionToken: conversionPreview.conversionToken,
+          checkoutConversionSnapshot: conversionPreview,
+          selectedPaymentMethod: paymentMethod,
+          paymentMethod,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation: {
             acceptedAllSalesFinal: true,
             confirmedAt: conversionPreview.confirmation.confirmedAt,
             legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
-            paymentMethod: selectedPaymentMethod as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual",
+            paymentMethod,
             tipAmount,
             tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
           },
         }
       });
 
-      if (selectedPaymentMethod === "stripe") {
+      if (paymentMethod === "stripe") {
         const tokenized = await tokenizeMutation.mutateAsync({ data: { orderId: order.id, amount: order.total } });
         await confirmMutation.mutateAsync({ orderId: order.id, data: { paymentIntentId: tokenized.paymentIntentId } });
       }
 
       notifyOrderPlaced(order.id, user?.firstName || undefined);
+      await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+      await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
       clearCart();
       try {
         const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
         sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
       } catch { /* ignore storage errors */ }
       setLocation(`/orders/${order.id}`);
-    } catch {
-      // Mutation hooks expose their own error state/toasts through the API client.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Order could not be created.";
+      setOrderSubmitError(message);
+      toast({ title: "Order failed", description: message, variant: "destructive" });
+    }
+  };
+
+  const handlePaymentMethodClick = (methodId: string) => {
+    setSelectedPaymentMethod(methodId);
+    if (methodId === "cash" && canSubmit) {
+      void handleSubmit(methodId);
     }
   };
 
@@ -657,7 +677,7 @@ export default function NewOrder() {
                         <button
                           key={method.id}
                           type="button"
-                          onClick={() => setSelectedPaymentMethod(method.id)}
+                          onClick={() => handlePaymentMethodClick(method.id)}
                           className={`rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
                           data-testid={`payment-method-${method.id}`}
                         >
@@ -677,10 +697,14 @@ export default function NewOrder() {
                 </div>
               )}
 
+              {orderSubmitError && (
+                <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
+              )}
+
               <Button 
                 className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider" 
                 disabled={!canSubmit}
-                onClick={handleSubmit}
+                onClick={() => void handleSubmit()}
                 data-testid="button-submit-order"
               >
                 {paymentBusy ? "Processing Payment..." : `Pay & Send Order · $${displayedTotal.toFixed(2)}`}
