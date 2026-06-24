@@ -37,6 +37,8 @@ import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
+  getCheckoutTaxSettings,
+  buildMerchantPayloadLines,
   CheckoutMappingError,
   CartLineInput,
   type NormalizedCartLine,
@@ -157,6 +159,32 @@ router.get(
 
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+const conversionSnapshots = new Map<string, { tenantId: number; userId: number; itemKey: string; snapshot: unknown; createdAt: number }>();
+function cartItemKey(items: Array<{ catalogItemId: number; quantity: number }>): string {
+  return [...items].sort((a, b) => a.catalogItemId - b.catalogItemId).map(i => `${i.catalogItemId}:${i.quantity}`).join("|");
+}
+function createConversionToken(): string {
+  return `cc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+}
+function storeConversionSnapshot(tenantId: number, userId: number, items: Array<{ catalogItemId: number; quantity: number }>, snapshot: unknown): string {
+  const token = createConversionToken();
+  conversionSnapshots.set(token, { tenantId, userId, itemKey: cartItemKey(items), snapshot, createdAt: Date.now() });
+  return token;
+}
+function verifyConversionSnapshot(token: unknown, tenantId: number, userId: number, items: Array<{ catalogItemId: number; quantity: number }>): { ok: true; snapshot: unknown } | { ok: false; error: string } {
+  if (typeof token !== "string" || !token) return { ok: false, error: "Cart must be converted before payment." };
+  const record = conversionSnapshots.get(token);
+  if (!record) return { ok: false, error: "Cart conversion snapshot is missing or expired." };
+  if (Date.now() - record.createdAt > 30 * 60 * 1000) {
+    conversionSnapshots.delete(token);
+    return { ok: false, error: "Cart conversion snapshot expired. Convert Shopping Cart again." };
+  }
+  if (record.tenantId !== tenantId || record.userId !== userId || record.itemKey !== cartItemKey(items)) {
+    return { ok: false, error: "Cart changed after conversion. Convert Shopping Cart again." };
+  }
+  return { ok: true, snapshot: record.snapshot };
+}
+
 const PreviewCartLineInput = z.object({
   catalogItemId: z.number().int().positive(),
   quantity: z.number().int().positive(),
@@ -171,8 +199,8 @@ const PreviewConversionBody = z.object({
   }),
 }).strict();
 
-function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"]) {
-  const totals = computeCheckoutTotals(lines);
+async function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"], tenantId?: number) {
+  const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(tenantId));
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -296,7 +324,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, actor.tenantId ?? await getHouseTenantId());
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, actor.tenantId ?? await getHouseTenantId(), true);
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       await writeAuditLog({
@@ -337,6 +365,40 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
   });
 
   res.json({ ...preview, ...token });
+  const conversionToken = storeConversionSnapshot(actor.tenantId ?? await getHouseTenantId(), actor.id, body.data.items, preview);
+  res.json({ ...preview, conversionToken });
+});
+
+// POST /api/cart/convert
+router.post("/cart/convert", async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const body = PreviewConversionBody.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message, details: body.error.issues });
+    return;
+  }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  try {
+    const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
+    const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
+    const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview);
+    await writeAuditLog({
+      actorId: actor.id,
+      actorEmail: actor.email,
+      actorRole: actor.role,
+      action: "CART_CONVERTED",
+      resourceType: "order",
+      metadata: { itemCount: normalizedLines.length, total: preview.pricingSnapshot.total },
+      ipAddress: req.ip,
+    });
+    res.json({ ...preview, conversionToken });
+  } catch (normErr) {
+    if (normErr instanceof CheckoutMappingError) {
+      res.status(422).json({ error: "Item not available for branded checkout conversion", catalogItemId: normErr.catalogItemId, reason: normErr.reason });
+      return;
+    }
+    res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
+  }
 });
 
 // POST /api/orders/delivery-quote
@@ -553,6 +615,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   const houseTenantId = await getHouseTenantId();
+  if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
+    res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
+    return;
+  }
+  const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
+  if (!conversionCheck.ok) {
+    res.status(422).json({ error: conversionCheck.error });
+    return;
+  }
 
   const conversionSnapshot = (req.body as { checkoutConversionSnapshot?: unknown }).checkoutConversionSnapshot;
   const conversionToken = (req.body as { checkoutConversionToken?: unknown }).checkoutConversionToken;
@@ -731,16 +802,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         acceptedAllSalesFinal: true,
         confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
-      });
+      }, houseTenantId);
+      const conversionSnapshotForOrder = checkoutConversionSnapshot as Awaited<ReturnType<typeof buildConversionPreview>>;
       const checkoutSnapshotWithTip = {
-        ...checkoutConversionSnapshot,
+        ...conversionSnapshotForOrder,
         tip: {
           amount: tipAmount,
           percent: checkoutConfirmation?.tipPercent ?? null,
           recipient: "csr",
         },
         pricingSnapshot: {
-          ...checkoutConversionSnapshot.pricingSnapshot,
+          ...conversionSnapshotForOrder.pricingSnapshot,
           deliveryFee,
           tipAmount,
           totalBeforeTip: merchandiseTotal + deliveryFee,

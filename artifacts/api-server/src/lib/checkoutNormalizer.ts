@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { db, catalogItemsTable } from "@workspace/db";
+import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { logger } from "./logger";
 
@@ -67,11 +67,24 @@ export interface CheckoutTotals {
   tax: number;
   total: number;
   taxRate: number;
+  taxMode: "added" | "included";
 }
 
 // Tax rule lives here so the server is the single source of truth — clients
 // are never trusted with totals. (Out of scope for Task #13: changing the rate.)
 export const CHECKOUT_TAX_RATE = 0.08;
+
+export async function getCheckoutTaxSettings(tenantId?: number): Promise<{ taxMode: "added" | "included"; taxRate: number }> {
+  const [settings] = tenantId
+    ? await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1)
+    : await db.select().from(adminSettingsTable).limit(1);
+  const rawMode = (settings as { salesTaxMode?: string | null } | undefined)?.salesTaxMode;
+  const taxMode = rawMode === "included" ? "included" : "added";
+  const rawRate = Number((settings as { salesTaxRate?: unknown } | undefined)?.salesTaxRate ?? CHECKOUT_TAX_RATE);
+  const taxRate = Number.isFinite(rawRate) && rawRate >= 0 ? rawRate : CHECKOUT_TAX_RATE;
+  void tenantId;
+  return { taxMode, taxRate };
+}
 
 // Thrown when an Alavont catalog item has no resolvable Lucifer Cruz merchant
 // mapping. Carries the offending catalogItemId so the route layer can shape
@@ -100,6 +113,7 @@ export async function normalizeCheckoutCart(
   receiptMode?: string,
   strictMode = true,
   tenantId?: number,
+  requireCompleteSafeFields = false,
 ): Promise<NormalizedCartLine[]> {
   const parsed = CartInputSchema.safeParse(rawLines);
   if (!parsed.success) {
@@ -155,6 +169,15 @@ export async function normalizeCheckoutCart(
         if (!ci.merchantSku) {
           throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
             `Alavont catalog item ${line.catalogItemId} has no merchant_sku — Lucifer Cruz mapping is incomplete.`);
+        }
+        if (requireCompleteSafeFields && !ci.luciferCruzImageUrl) {
+          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_image", `Alavont catalog item ${line.catalogItemId} has no safe image.`);
+        }
+        if (requireCompleteSafeFields && !ci.luciferCruzDescription) {
+          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_description", `Alavont catalog item ${line.catalogItemId} has no safe description.`);
+        }
+        if (requireCompleteSafeFields && !ci.luciferCruzCategory) {
+          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_category", `Alavont catalog item ${line.catalogItemId} has no safe category.`);
         }
         if (
           (ci.alavontId && ci.merchantSku === ci.alavontId) ||
@@ -274,11 +297,17 @@ export async function normalizeCheckoutCart(
 // Server-side authoritative totals. Clients NEVER supply these — any
 // unitPrice/total in the request is rejected by the strict CartLineInput
 // schema, and the order's subtotal/tax/total is rederived here from DB prices.
-export function computeCheckoutTotals(lines: NormalizedCartLine[]): CheckoutTotals {
+export function computeCheckoutTotals(lines: NormalizedCartLine[], settings: { taxMode?: "added" | "included"; taxRate?: number } = {}): CheckoutTotals {
   const subtotal = parseFloat(lines.reduce((s, l) => s + l.line_subtotal, 0).toFixed(2));
-  const tax = parseFloat((subtotal * CHECKOUT_TAX_RATE).toFixed(2));
+  const taxRate = settings.taxRate ?? CHECKOUT_TAX_RATE;
+  const taxMode = settings.taxMode ?? "added";
+  if (taxMode === "included") {
+    const tax = parseFloat((subtotal - subtotal / (1 + taxRate)).toFixed(2));
+    return { subtotal, tax, total: subtotal, taxRate, taxMode };
+  }
+  const tax = parseFloat((subtotal * taxRate).toFixed(2));
   const total = parseFloat((subtotal + tax).toFixed(2));
-  return { subtotal, tax, total, taxRate: CHECKOUT_TAX_RATE };
+  return { subtotal, tax, total, taxRate, taxMode };
 }
 
 export function buildMerchantPayloadLines(

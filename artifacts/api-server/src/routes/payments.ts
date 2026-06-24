@@ -160,6 +160,11 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
   }
   try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
 
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
+    return;
+  }
+
   // Re-normalize cart from order items so the LC-only Stripe payload is built
   // from the SAME conversion path used at /orders. If the conversion fails
   // here (e.g. an item lost its mapping after order creation), the spec'd 422
@@ -319,6 +324,11 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     return;
   }
   try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
+
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
+    return;
+  }
   if (order.paymentStatus === "paid") {
     res.status(409).json({ error: "Order is already paid" });
     return;
@@ -424,6 +434,10 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
   }
 
   try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
+  if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
+    res.status(422).json({ error: "Cart must be converted before payment." });
+    return;
+  }
 
   const stripe = getStripeClient();
   const isSandbox = !stripe || body.data.paymentIntentId.includes("sandbox");
