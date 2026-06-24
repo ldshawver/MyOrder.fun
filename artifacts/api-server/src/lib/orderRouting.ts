@@ -190,14 +190,11 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
   }
 
   const approved = tenantId ? await getApprovedMultiShiftConfig(tenantId) : ({ routingStrategy: rule } as { routingStrategy: string });
-  if (tenantId && !approved) {
-    return {
-      ...baseGeneral,
-      rule,
-      routingMessage: "Multiple active CSR shifts detected but no routing strategy is configured.",
-    };
-  }
-  const activeConfig = approved!;
+  // POS acceptance rule: active CSR shifts should receive orders even when an
+  // explicit multi-shift approval row has not been created yet. Falling back to
+  // round_robin prevents orders from landing in the General Queue while active,
+  // clocked-in, boxed CSRs are available.
+  const activeConfig = approved ?? ({ routingStrategy: rule === "least_recent_order" ? "least_recent_order" : "round_robin" } as { routingStrategy: string });
   const approvedRule = activeConfig.routingStrategy === "default_queue" || activeConfig.routingStrategy === "manual" ? "supervisor_manual_assignment" : "round_robin";
   if (approvedRule === "supervisor_manual_assignment") {
     return { ...baseGeneral, rule: approvedRule, routingMessage: "Multiple active CSR shifts approved; orders are routing to default queue/manual assignment." };

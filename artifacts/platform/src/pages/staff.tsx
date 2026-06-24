@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode, useState, useEffect, useCallback } from "react";
 import { useGetCurrentUser, type Order, type OrderItem } from "@workspace/api-client-react";
 import { CsrAlertBanner } from "@/components/CsrAlertBanner";
+import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
 import { Link } from "wouter";
@@ -1353,11 +1354,21 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 // ─── Fulfillment Card ─────────────────────────────────────────────────────────
 
 const FULFILLMENT_STEPS = [
-  { status: "accepted", label: "Claim / Select", icon: HandshakeIcon, color: "yellow" },
-  { status: "preparing", label: "Being Prepared", icon: Activity, color: "blue" },
-  { status: "ready", label: "Ready for Pickup/Delivery", icon: DoorOpen, color: "emerald" },
+  { status: "accepted", label: "Claim", icon: HandshakeIcon, color: "yellow" },
+  { status: "preparing", label: "Prepare", icon: Activity, color: "blue" },
+  { status: "ready", label: "Ready", icon: DoorOpen, color: "emerald" },
   { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
 ];
+
+function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolean } | null {
+  if (!order.estimatedReadyAt) return null;
+  const etaMs = new Date(order.estimatedReadyAt).getTime();
+  if (Number.isNaN(etaMs)) return null;
+  const lateMinutes = Math.floor((Date.now() - etaMs) / 60_000);
+  if (lateMinutes <= 0) return null;
+  if (lateMinutes > 24 * 60) return { label: "Stale Order", stale: true };
+  return { label: `${lateMinutes}m late`, stale: false };
+}
 
 function FulfillmentCard({ order, onRefresh, getToken }: {
   order: ExtendedOrder;
@@ -1405,20 +1416,28 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     setLoading(status);
     try {
       const token = await getToken();
-      if (status === "accepted") {
-        await fetch(`/api/orders/${order.id}/accept`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } else {
-        await fetch(`/api/orders/${order.id}/fulfillment`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ fulfillmentStatus: status }),
-        });
+      const endpoint = status === "accepted"
+        ? `/api/orders/${order.id}/claim`
+        : status === "preparing"
+        ? `/api/orders/${order.id}/prepare`
+        : status === "ready"
+        ? `/api/orders/${order.id}/ready`
+        : `/api/orders/${order.id}/complete`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: status === "completed"
+          ? { Authorization: `Bearer ${token}` }
+          : { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        ...(status === "completed" ? {} : { body: JSON.stringify({ fulfillmentStatus: status }) }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error ?? `Request failed with HTTP ${res.status}`);
       }
       onRefresh();
-    } catch { /* ignore fetch errors */ } finally { setLoading(null); }
+    } catch (err) {
+      console.error("Fulfillment action failed", err);
+    } finally { setLoading(null); }
   }
 
   async function printReceipt() {
@@ -1444,6 +1463,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   }
 
   const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === fulfillment);
+  const lateState = getOrderLateState(order);
 
   return (
     <div className="glass-card rounded-2xl border border-border/40 overflow-hidden" data-testid={`row-queue-${order.id}`}>
@@ -1465,6 +1485,11 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
             {fulfillment && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
                 {fulfillment.replace(/_/g, " ")}
+              </span>
+            )}
+            {lateState && (
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${lateState.stale ? "bg-red-500/15 text-red-300 border-red-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30"}`}>
+                {lateState.label}
               </span>
             )}
           </div>
@@ -1682,11 +1707,15 @@ function CustomerServiceRepQueueContent() {
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => order.status === activeTab || order.fulfillmentStatus === activeTab);
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
     void fetchQueue();
     refetchShift();
-  };
+  }, [fetchQueue, queryClient, refetchShift]);
+
+  useOrderEvents(() => {
+    refresh();
+  }, Boolean(shift));
 
   useEffect(() => {
     void fetchQueue();
