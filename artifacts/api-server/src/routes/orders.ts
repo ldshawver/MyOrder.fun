@@ -47,6 +47,8 @@ import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
+import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
+import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import {
   sendOrderStatusSmsEmailIfAllowed,
   shouldSendNotificationChannel,
@@ -239,8 +241,10 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
         customerSafeName: line.customer_safe_name,
         displayDescription: line.display_description,
         customerSafeDescription: line.customer_safe_description,
-        displayCategory: line.display_category,
-        displayImage: line.display_image,
+        customerSafeCategory: line.customer_safe_category,
+        customerSafeImage: line.customer_safe_image,
+        displayCategory: line.customer_safe_category,
+        displayImage: line.customer_safe_image,
         merchantBrandName: line.merchant_brand_name,
         marketingCopy: line.marketing_copy,
         upsellCopy: line.upsell_copy,
@@ -343,7 +347,8 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, actor.tenantId ?? await getHouseTenantId());
+  const preview = buildConversionPreview(normalizedLines, body.data.confirmation);
+  const token = await createVerifiedCheckoutConversionToken({ tenantId: actor.tenantId ?? await getHouseTenantId(), userId: actor.id, items: body.data.items, snapshot: preview });
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -359,6 +364,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     ipAddress: req.ip,
   });
 
+  res.json({ ...preview, ...token });
   const conversionToken = storeConversionSnapshot(actor.tenantId ?? await getHouseTenantId(), actor.id, body.data.items, preview);
   res.json({ ...preview, conversionToken });
 });
@@ -619,14 +625,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
 
-  // Dual-brand normalization: converts every Alavont catalog line into a
-  // Lucifer Cruz merchant line. Throws CheckoutMappingError (→ 422) when an
-  // Alavont item has no LC mapping so a payment intent is NEVER created
-  // against an unrouteable cart.
+  const conversionSnapshot = (req.body as { checkoutConversionSnapshot?: unknown }).checkoutConversionSnapshot;
+  const conversionToken = (req.body as { checkoutConversionToken?: unknown }).checkoutConversionToken;
   let normalizedLines: NormalizedCartLine[];
+  let conversionExpiresAt: Date;
+  let trustedTotals: ReturnType<typeof computeCheckoutTotals>;
   try {
-    normalizedLines = await normalizeCheckoutCart(strictItems.data, undefined, true, houseTenantId, true);
+    const verified = await requireVerifiedCheckoutConversion({ tenantId: houseTenantId, userId: actor.id, checkoutConversionToken: conversionToken, requestedItems: strictItems.data, legalDisclaimerAccepted: body.data.checkoutConfirmation?.acceptedAllSalesFinal, finalConfirmationAt: body.data.checkoutConfirmation?.confirmedAt, snapshot: conversionSnapshot });
+    normalizedLines = verified.lines;
+    conversionExpiresAt = verified.conversionExpiresAt;
+    trustedTotals = verified.totals;
   } catch (normErr) {
+    if (normErr instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; }
     if (normErr instanceof CheckoutMappingError) {
       // Audit BEFORE returning so missing-mapping incidents are observable.
       await writeAuditLog({
@@ -651,10 +661,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   // Server-side authoritative totals — any client-supplied numeric fields
   // were rejected above; subtotal/tax/total are rederived from DB prices.
-  const totals = computeCheckoutTotals(normalizedLines, await getCheckoutTaxSettings(houseTenantId));
-  const subtotal = totals.subtotal;
-  const tax = totals.tax;
-  const merchandiseTotal = totals.total;
+  const subtotal = trustedTotals.subtotal;
+  const tax = trustedTotals.tax;
+  const merchandiseTotal = trustedTotals.total;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
@@ -771,6 +780,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+      checkoutConversionExpiresAt: conversionExpiresAt,
       }).returning();
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
@@ -788,7 +798,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         quantity: l.quantity,
         unitPrice: l.unit_price,
       }));
-      const checkoutConversionSnapshot = (conversionCheck.ok ? conversionCheck.snapshot : null) ?? await buildConversionPreview(normalizedLines, {
+      const checkoutConversionSnapshot = (conversionSnapshot as ReturnType<typeof buildConversionPreview>) ?? buildConversionPreview(normalizedLines, {
         acceptedAllSalesFinal: true,
         confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
@@ -885,7 +895,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
   try {
-    const merchantLines = buildMerchantPayloadLines(normalizedLines);
+    const merchantLines = buildSafeMerchantPayloadLines(normalizedLines);
     logger.info(
       { orderId: order.id, merchantLines, actorId: actor.id },
       "MERCHANT_PAYLOAD_AUDIT: LC-safe names for processor — Alavont names NOT present"
@@ -907,6 +917,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       finalConfirmationAt: finalConfirmationAt?.toISOString() ?? null,
       legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
       selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
+      checkoutConversionExpiresAt: conversionExpiresAt,
       deliveryMethod: isCsrDelivery
         ? "csr_delivery"
         : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),

@@ -36,6 +36,8 @@ export interface NormalizedCartLine {
   marketing_copy: string;
   customer_safe_name: string;
   customer_safe_description: string;
+  customer_safe_category: string;
+  customer_safe_image: string;
   upsell_copy: string | null;
   promo_badges: string[];
   receipt_alavont_name: string;
@@ -236,9 +238,10 @@ export async function normalizeCheckoutCart(
       ci.luciferCruzDescription,
       "Converted into a customer-ready branded checkout presentation.",
     ) ?? "Converted into a customer-ready branded checkout presentation.";
-    const customer_safe_name = firstNonEmpty(ci.customerSafeName, ci.luciferCruzName, ci.displayName) ?? ci.name;
-    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription, ci.luciferCruzDescription, ci.displayDescription) ?? display_description;
-
+    const customer_safe_name = firstNonEmpty(ci.customerSafeName, ci.displayName, ci.luciferCruzName);
+    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription, ci.displayDescription, ci.luciferCruzDescription);
+    const customer_safe_category = firstNonEmpty(ci.luciferCruzCategory, ci.merchantCategory);
+    const customer_safe_image = firstNonEmpty(ci.luciferCruzImageUrl, ci.merchantImage);
     const unit_price = parseFloat(ci.price as string);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
@@ -255,8 +258,10 @@ export async function normalizeCheckoutCart(
       display_image,
       merchant_brand_name,
       marketing_copy,
-      customer_safe_name,
-      customer_safe_description,
+      customer_safe_name: customer_safe_name ?? merchant_name,
+      customer_safe_description: customer_safe_description ?? (ci.luciferCruzDescription ?? marketing_copy),
+      customer_safe_category: customer_safe_category ?? (ci.luciferCruzCategory ?? "Safe Checkout"),
+      customer_safe_image: customer_safe_image ?? (ci.luciferCruzImageUrl ?? "safe-checkout.png"),
       upsell_copy: firstNonEmpty(ci.upsellCopy),
       promo_badges: ci.promoBadges ?? [],
       receipt_alavont_name,
@@ -320,8 +325,10 @@ export function buildMerchantPayloadLines(
   woo_variation_id: string | null;
 }> {
   return normalizedLines.map(line => ({
-    name: line.merchant_name,
-    image_url: merchantImageEnabled ? line.merchant_image_url : null,
+    name: line.customer_safe_name ?? line.merchant_name,
+    image_url: merchantImageEnabled ? (line.customer_safe_image || line.merchant_image_url) : null,
+    description: line.customer_safe_description,
+    category: line.customer_safe_category,
     quantity: line.quantity,
     unit_price: line.unit_price,
     total_price: parseFloat((line.unit_price * line.quantity).toFixed(2)),

@@ -12,13 +12,14 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog 
 import { logger } from "../lib/logger";
 import {
   normalizeCheckoutCart,
-  buildMerchantPayloadLines,
   computeCheckoutTotals,
   CheckoutMappingError,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
 import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/stripePayload";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
+import { requireOrderHasVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
+import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
@@ -157,6 +158,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
 
   if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
     res.status(422).json({ error: "Cart must be converted before payment." });
@@ -212,7 +214,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
       );
     }
     logger.info(
-      { orderId: order.id, merchantLines: buildMerchantPayloadLines(normalizedLines), actorId: actor.id, serverAmount },
+      { orderId: order.id, merchantLines: buildSafeMerchantPayloadLines(normalizedLines), actorId: actor.id, serverAmount },
       "MERCHANT_PAYLOAD_AUDIT: Stripe tokenize — LC names for processor (no Alavont names)"
     );
   }
@@ -238,6 +240,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     res.status(500).json({ error: "Payment processor payload validation failed." });
     return;
   }
+
 
   const stripe = getStripeClient();
 
@@ -320,6 +323,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
 
   if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
     res.status(422).json({ error: "Cart must be converted before payment." });
@@ -429,6 +433,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     return;
   }
 
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
   if (!order.checkoutConversionSnapshot || order.legalDisclaimerAccepted !== true || !order.finalConfirmationAt) {
     res.status(422).json({ error: "Cart must be converted before payment." });
     return;
