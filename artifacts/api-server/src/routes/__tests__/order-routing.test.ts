@@ -19,7 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const adminSettings = { orderRoutingRule: "round_robin", defaultEtaMinutes: 30 };
-let activeCsrUsers: Array<{ userId: number; shiftId: number; role: string; boxAssignmentId?: string; setupJson?: Record<string, unknown> }> = [];
+let activeCsrUsers: Array<{ userId: number; shiftId: number; role: string; status?: string; clockedOutAt?: Date | null; boxAssignmentId?: string; setupJson?: Record<string, unknown> }> = [];
 let routedStats: Array<{ userId: number; last: Date | null }> = [];
 let acceptedStats: Array<{ userId: number; last: Date | null }> = [];
 let existingOrderState: { f: string | null; s: string | null } | null = null;
@@ -29,7 +29,7 @@ vi.mock("@workspace/db", () => {
   const tables = {
     adminSettingsTable: { __t: "admin_settings" },
     usersTable: { __t: "users", id: "users.id", role: "users.role" },
-    labTechShiftsTable: { __t: "lab_tech_shifts", id: "shifts.id", techId: "shifts.techId", status: "shifts.status" },
+    labTechShiftsTable: { __t: "lab_tech_shifts", id: "shifts.id", techId: "shifts.techId", status: "shifts.status", clockedOutAt: "shifts.clockedOutAt", boxAssignmentId: "shifts.boxAssignmentId" },
     ordersTable: {
       __t: "orders",
       id: "orders.id",
@@ -131,15 +131,14 @@ describe("decideRouting", () => {
   });
 
 
-  it("treats active but not ready CSR shifts as fallback and does not assign a shift", async () => {
+  it("routes active clocked-in CSR shifts even when legacy readiness flags are absent", async () => {
     activeCsrUsers = [
-      { userId: 42, shiftId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: false } },
+      { userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: false, parLevelsConfirmed: false, printerAssigned: false } },
     ];
     const r = await decideRouting();
-    expect(r.assignedCsrUserId).toBeNull();
-    expect(r.assignedShiftId).toBeNull();
-    expect(r.routeSource).toBe("general_account");
-    expect(r.routedToEmail).toBe("info@adiken.com");
+    expect(r.assignedCsrUserId).toBe(42);
+    expect(r.assignedShiftId).toBe(7);
+    expect(r.routeSource).toBe("active_csr");
   });
 
   it("uses defaultEtaMinutes from admin_settings (override of the 30-min default)", async () => {
@@ -151,7 +150,7 @@ describe("decideRouting", () => {
   });
 
   it("routes to the only active CSR with active_csr source + their shiftId", async () => {
-    activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
+    activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     const r = await decideRouting();
     expect(r.assignedCsrUserId).toBe(42);
     expect(r.assignedShiftId).toBe(7);
@@ -161,8 +160,8 @@ describe("decideRouting", () => {
   it("supervisor_manual_assignment with multiple active CSRs sits in the General Account queue", async () => {
     adminSettings.orderRoutingRule = "supervisor_manual_assignment";
     activeCsrUsers = [
-      { userId: 42, shiftId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
-      { userId: 43, shiftId: 8, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 43, shiftId: 8, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
     ];
     const r = await decideRouting();
     expect(r.assignedCsrUserId).toBeNull();
@@ -172,7 +171,7 @@ describe("decideRouting", () => {
 
   it("supervisor_manual_assignment with exactly one active CSR still routes to that CSR", async () => {
     adminSettings.orderRoutingRule = "supervisor_manual_assignment";
-    activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
+    activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     const r = await decideRouting();
     expect(r.assignedCsrUserId).toBe(42);
     expect(r.assignedShiftId).toBe(7);
@@ -181,9 +180,9 @@ describe("decideRouting", () => {
 
   it("round_robin distributes to the CSR with the oldest max(routedAt) and stamps their shift", async () => {
     activeCsrUsers = [
-      { userId: 10, shiftId: 100, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
-      { userId: 11, shiftId: 101, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
-      { userId: 12, shiftId: 102, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 10, shiftId: 100, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 11, shiftId: 101, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 12, shiftId: 102, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
     ];
     const now = Date.now();
     routedStats = [
@@ -200,8 +199,8 @@ describe("decideRouting", () => {
   it("least_recent_order picks the CSR with the oldest acceptedAt", async () => {
     adminSettings.orderRoutingRule = "least_recent_order";
     activeCsrUsers = [
-      { userId: 20, shiftId: 200, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
-      { userId: 21, shiftId: 201, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 20, shiftId: 200, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
+      { userId: 21, shiftId: 201, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
     ];
     const now = Date.now();
     acceptedStats = [
@@ -215,7 +214,7 @@ describe("decideRouting", () => {
 
 describe("reassignOrder", () => {
   it("rejects targets that are not currently active CSRs", async () => {
-    activeCsrUsers = [{ userId: 7, shiftId: 70, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
+    activeCsrUsers = [{ userId: 7, shiftId: 70, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     await expect(reassignOrder(1, 999)).rejects.toThrow(/active CSR/);
   });
 
@@ -272,7 +271,7 @@ describe("orderEvents SSE bus", () => {
 
   it("scopes order.assigned for CSR — own assignments + null general queue only", () => {
     const csr = fakeRes();
-    const teardown = subscribe({ res: csr.res, userId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
+    const teardown = subscribe({ res: csr.res, userId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
     publishOrderEvent({
       type: "order.assigned", orderId: 10, customerId: 200, assignedCsrUserId: 99,
       routeSource: "active_csr", customerName: "Other", total: 1, itemCount: 1,
@@ -330,9 +329,9 @@ describe("orderEvents SSE bus", () => {
     // previous assignee so their CsrAlertBanner can drop the stale
     // alert card.
     const prior = fakeRes();
-    const teardownPrior = subscribe({ res: prior.res, userId: 7, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
+    const teardownPrior = subscribe({ res: prior.res, userId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
     const next = fakeRes();
-    const teardownNext = subscribe({ res: next.res, userId: 8, role: "customer_service_rep", boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
+    const teardownNext = subscribe({ res: next.res, userId: 8, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
     publishOrderEvent({
       type: "order.updated", orderId: 77, customerId: 300,
       assignedCsrUserId: 7,

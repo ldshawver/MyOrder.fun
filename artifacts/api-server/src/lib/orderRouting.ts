@@ -69,6 +69,17 @@ export async function getApprovedMultiShiftConfig(tenantId: number) {
 
 type ActiveCsr = { userId: number; shiftId: number };
 
+const CSR_BOX_LOCATION_NAMES: Record<string, string> = {
+  "sales-box-1": "CSR Sales Box 1",
+  "sales-box-2": "CSR Sales Box 2",
+};
+
+export function inventoryLocationNameForBoxAssignment(boxAssignmentId: string | null | undefined): string | null {
+  if (!boxAssignmentId) return null;
+  return CSR_BOX_LOCATION_NAMES[boxAssignmentId.trim()] ?? null;
+}
+
+
 type ShiftSetupState = {
   boxAssignmentId?: unknown;
   inventoryConfirmed?: unknown;
@@ -79,6 +90,8 @@ type ShiftSetupState = {
 };
 
 export function isShiftOrderRoutable(shift: {
+  status?: string | null;
+  clockedOutAt?: Date | string | null;
   boxAssignmentId?: string | null;
   setupJson?: unknown;
 }): boolean {
@@ -87,11 +100,7 @@ export function isShiftOrderRoutable(shift: {
     ? shift.boxAssignmentId.trim()
     : typeof setup.boxAssignmentId === "string" ? setup.boxAssignmentId.trim() : "";
 
-  const inventoryConfirmed = setup.inventoryConfirmed === true || setup.startingInventoryConfirmed === true;
-  const parLevelsConfirmed = setup.parLevelsConfirmed === true;
-  const printerAssigned = setup.printerAssigned === true || setup.printerReady === true;
-
-  return Boolean(boxAssignmentId && inventoryConfirmed && parLevelsConfirmed && printerAssigned);
+  return shift.status === "active" && shift.clockedOutAt == null && Boolean(boxAssignmentId);
 }
 
 export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
@@ -101,11 +110,15 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
       shiftId: labTechShiftsTable.id,
       boxAssignmentId: labTechShiftsTable.boxAssignmentId,
       setupJson: labTechShiftsTable.setupJson,
+      status: labTechShiftsTable.status,
+      clockedOutAt: labTechShiftsTable.clockedOutAt,
       role: usersTable.role,
     })
     .from(labTechShiftsTable)
     .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
-    .where(tenantId ? sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.tenantId} = ${tenantId}` : eq(labTechShiftsTable.status, "active"));
+    .where(tenantId
+      ? sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL AND ${labTechShiftsTable.boxAssignmentId} IS NOT NULL AND ${labTechShiftsTable.tenantId} = ${tenantId}`
+      : sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL AND ${labTechShiftsTable.boxAssignmentId} IS NOT NULL`);
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
     if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
@@ -125,8 +138,8 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
   const eta = new Date(Date.now() + defaultEtaMinutes * 60_000);
   // Routing behavior:
   // 1. Find active CSR shifts.
-  // 2. Keep only shifts that are ready for orders: active shift, box assigned,
-  //    inventory confirmed, par levels confirmed, and printer assigned.
+  // 2. Keep only shifts that are eligible for orders: status active, still
+  //    clocked in, and assigned to a CSR sales box.
   // 3. If no ready CSR remains, route to the General Account fallback
   //    (info@adiken.com) by leaving assignedCsrUserId/shiftId null.
   // 4. If one ready CSR remains, route directly to that CSR.
