@@ -12,7 +12,6 @@ import {
   adminSettingsTable,
   inventoryBalancesTable,
   inventoryLocationsTable,
-  csrBoxesTable,
   catalogItemsTable,
 } from "@workspace/db";
 import {
@@ -51,7 +50,7 @@ import {
   sendOrderStatusSmsEmailIfAllowed,
   shouldSendNotificationChannel,
 } from "../lib/notificationPrefs";
-import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable } from "../lib/orderRouting";
+import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable, inventoryLocationNameForBoxAssignment } from "../lib/orderRouting";
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
@@ -649,26 +648,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       .where(eq(labTechShiftsTable.id, assignedShiftId))
       .limit(1);
 
-    if (activeShift?.boxAssignmentId) {
-      const [box] = await db
-        .select({ id: csrBoxesTable.id })
-        .from(csrBoxesTable)
+    const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
+    if (locationName) {
+      const [loc] = await db
+        .select({ id: inventoryLocationsTable.id })
+        .from(inventoryLocationsTable)
         .where(and(
-          eq(csrBoxesTable.tenantId, houseTenantId),
-          eq(csrBoxesTable.slug, activeShift.boxAssignmentId),
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.name, locationName),
         ))
         .limit(1);
-      if (box) {
-        const [loc] = await db
-          .select({ id: inventoryLocationsTable.id })
-          .from(inventoryLocationsTable)
-          .where(and(
-            eq(inventoryLocationsTable.tenantId, houseTenantId),
-            eq(inventoryLocationsTable.csrBoxId, box.id),
-          ))
-          .limit(1);
-        targetLocationId = loc?.id ?? null;
-      }
+      targetLocationId = loc?.id ?? null;
     }
   }
 

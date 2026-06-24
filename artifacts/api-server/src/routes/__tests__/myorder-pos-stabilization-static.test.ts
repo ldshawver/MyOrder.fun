@@ -117,7 +117,8 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("inventory_amount = COALESCE");
     expect(orders).toContain("WHERE tenant_id = ${houseTenantId}");
     expect(orders).toContain('eq(labTechShiftsTable.status, "active")');
-    expect(orders).toContain("eq(csrBoxesTable.tenantId, houseTenantId)");
+    expect(orders).toContain("inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId)");
+    expect(orders).toContain("eq(inventoryLocationsTable.name, locationName)");
     expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
     expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
   });

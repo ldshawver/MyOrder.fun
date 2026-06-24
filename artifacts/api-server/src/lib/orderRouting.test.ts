@@ -1,34 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { isShiftOrderRoutable } from "./orderRouting";
+import { GENERAL_ACCOUNT_EMAIL, inventoryLocationNameForBoxAssignment, isShiftOrderRoutable } from "./orderRouting";
 
-describe("CSR order routing readiness", () => {
-  it("blocks an active CSR shift until box, inventory, par, and printer are confirmed", () => {
-    expect(isShiftOrderRoutable({ boxAssignmentId: "sales-box-1", setupJson: {} })).toBe(false);
-    expect(isShiftOrderRoutable({
-      boxAssignmentId: "sales-box-1",
-      setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true },
-    })).toBe(false);
+describe("CSR order routing eligibility", () => {
+  it("ignores finalized, supervisor-pending, and clocked-out shifts", () => {
+    expect(isShiftOrderRoutable({ status: "finalized", clockedOutAt: null, boxAssignmentId: "sales-box-1" })).toBe(false);
+    expect(isShiftOrderRoutable({ status: "supervisor_pending", clockedOutAt: null, boxAssignmentId: "sales-box-1" })).toBe(false);
+    expect(isShiftOrderRoutable({ status: "active", clockedOutAt: new Date(), boxAssignmentId: "sales-box-1" })).toBe(false);
   });
 
-  it("allows routing only when shift startup prerequisites are complete", () => {
-    expect(isShiftOrderRoutable({
-      boxAssignmentId: "sales-box-1",
-      setupJson: {
-        inventoryConfirmed: true,
-        parLevelsConfirmed: true,
-        printerAssigned: true,
-      },
-    })).toBe(true);
+  it("selects active clocked-in shifts with a box assignment", () => {
+    expect(isShiftOrderRoutable({ status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1" })).toBe(true);
   });
 
-  it("accepts legacy startup flags written by the clock-in endpoint", () => {
-    expect(isShiftOrderRoutable({
-      setupJson: {
-        boxAssignmentId: "sales-box-2",
-        startingInventoryConfirmed: true,
-        parLevelsConfirmed: true,
-        printerReady: true,
-      },
-    })).toBe(true);
+  it("requires a box assignment before a shift can receive orders", () => {
+    expect(isShiftOrderRoutable({ status: "active", clockedOutAt: null, boxAssignmentId: null })).toBe(false);
+    expect(isShiftOrderRoutable({ status: "active", clockedOutAt: null, boxAssignmentId: "" })).toBe(false);
+  });
+
+  it("maps the assigned shift box_assignment_id to the correct inventory location name", () => {
+    expect(inventoryLocationNameForBoxAssignment("sales-box-1")).toBe("CSR Sales Box 1");
+    expect(inventoryLocationNameForBoxAssignment("sales-box-2")).toBe("CSR Sales Box 2");
+  });
+
+  it("keeps no-active-shift fallback orders in the default info@adiken.com queue", () => {
+    expect(GENERAL_ACCOUNT_EMAIL).toBe("info@adiken.com");
   });
 });
