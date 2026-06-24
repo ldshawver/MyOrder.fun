@@ -18,6 +18,12 @@ import { useAuth } from "@clerk/react";
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 
+function safeArray<T>(value: T[] | null | undefined): T[];
+function safeArray<T>(value: unknown): T[];
+function safeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function formatCourierEta(value?: string | null) {
   if (!value) return null;
   const date = new Date(value);
@@ -139,13 +145,13 @@ function normalizeActiveShift(raw: RawShift | null | undefined): ActiveShift | n
     runningCashBank: Number(raw.runningCashBank ?? raw.cashBankStart ?? 0),
     csrDeliveryOptIn: Boolean(raw.csrDeliveryOptIn),
     csrDeliveryEarnings: Number(raw.csrDeliveryEarnings ?? 0),
-    inventory: Array.isArray(raw.inventory) ? raw.inventory : [],
+    inventory: safeArray<EnrichedItem>(raw.inventory),
     stats: {
       ...emptyShiftStats(),
       ...stats,
       paymentTotals: stats.paymentTotals ?? {},
-      byItem: Array.isArray(stats.byItem) ? stats.byItem : [],
-      byCustomer: Array.isArray(stats.byCustomer) ? stats.byCustomer : [],
+      byItem: safeArray<ShiftStats["byItem"][number]>(stats.byItem),
+      byCustomer: safeArray<ShiftStats["byCustomer"][number]>(stats.byCustomer),
     },
   };
 }
@@ -268,12 +274,13 @@ function ClockInPanel({ onClockIn, getToken }: {
         });
         if (res.ok) {
           const data = await res.json();
-          const rows: TemplateRow[] = data.template;
-          const boxOptions: CsrBoxOption[] = (data.boxes && data.boxes.length > 0) ? data.boxes : CLOCK_IN_DEFAULT_BOXES;
+          const rows = safeArray<TemplateRow>(data.template);
+          const safeBoxes = safeArray<CsrBoxOption>(data.boxes);
+          const boxOptions: CsrBoxOption[] = safeBoxes.length > 0 ? safeBoxes : CLOCK_IN_DEFAULT_BOXES;
           setTemplate(rows);
           setBoxes(boxOptions);
-          const nextShiftLocations: ShiftLocationOption[] = Array.isArray(data.shiftLocationOptions) ? data.shiftLocationOptions : [];
-          const nextDeliveryOptions: DeliveryOption[] = Array.isArray(data.deliveryOptions) ? data.deliveryOptions : [];
+          const nextShiftLocations = safeArray<ShiftLocationOption>(data.shiftLocationOptions);
+          const nextDeliveryOptions = safeArray<DeliveryOption>(data.deliveryOptions);
           setShiftLocations(nextShiftLocations);
           setDeliveryOptions(nextDeliveryOptions);
           setPrinterNetworkConfig(data.printerNetworkConfig ?? null);
@@ -301,6 +308,7 @@ function ClockInPanel({ onClockIn, getToken }: {
   }, [getToken]);
 
   const mandatoryChecksComplete = wifiReady && printerReady && locationReady;
+  const safeApprovedSsids = safeArray<string>(printerNetworkConfig?.approvedSsids);
 
   const handleSubmit = async () => {
     if (!mandatoryChecksComplete) {
@@ -440,17 +448,16 @@ function ClockInPanel({ onClockIn, getToken }: {
                   value={wifiSsid}
                   onChange={e => {
                     setWifiSsid(e.target.value);
-                    const approved = printerNetworkConfig?.approvedSsids ?? [];
-                    const match = approved.some(s => s.toLowerCase() === e.target.value.trim().toLowerCase());
+                    const match = safeApprovedSsids.some(s => s.toLowerCase() === e.target.value.trim().toLowerCase());
                     setWifiReady(match);
                   }}
                   placeholder={printerNetworkConfig?.ssid || "Enter Wi-Fi network name (SSID)"}
                   className="h-9 w-full rounded-xl border border-border/50 bg-background/50 px-3 text-sm font-mono"
                   data-testid="input-wifi-ssid"
                 />
-                {(printerNetworkConfig?.approvedSsids ?? []).length > 0 && (
+                {safeApprovedSsids.length > 0 && (
                   <datalist id="approved-ssids-list">
-                    {(printerNetworkConfig?.approvedSsids ?? []).map((s, i) => <option key={i} value={s} />)}
+                    {safeApprovedSsids.map((s, i) => <option key={i} value={s} />)}
                   </datalist>
                 )}
               </div>
@@ -460,7 +467,7 @@ function ClockInPanel({ onClockIn, getToken }: {
                 </span>
               )}
             </div>
-            {!wifiReady && wifiSsid.trim() && (printerNetworkConfig?.approvedSsids ?? []).length > 0 && (
+            {!wifiReady && wifiSsid.trim() && safeApprovedSsids.length > 0 && (
               <div className="text-[11px] text-amber-400/80">SSID not in the approved list. Confirm your network then proceed — or ask an admin to add it.</div>
             )}
           </div>
@@ -617,8 +624,13 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
 }) {
   // Pre-populate actual counts with computed expected values
   const initialCounts: Record<number, string> = {};
-  const shiftInventory = Array.isArray(shift.inventory) ? shift.inventory : [];
-  const shiftStats = shift.stats ?? emptyShiftStats();
+  const shiftInventory = safeArray<EnrichedItem>(shift.inventory);
+  const shiftStats = {
+    ...emptyShiftStats(),
+    ...(shift.stats ?? {}),
+    byItem: safeArray<ShiftStats["byItem"][number]>(shift.stats?.byItem),
+    byCustomer: safeArray<ShiftStats["byCustomer"][number]>(shift.stats?.byCustomer),
+  };
   for (const item of shiftInventory) {
     if (item.rowType === "item") {
       initialCounts[item.id] = String(item.quantityEnd ?? 0);
@@ -835,6 +847,29 @@ type SummaryData = {
   clockedOutAt: string;
 };
 
+function normalizeSummaryData(raw: Partial<SummaryData> | null | undefined): SummaryData | null {
+  if (!raw) return null;
+  const stats = raw.stats ?? emptyShiftStats();
+  return {
+    stats: {
+      ...emptyShiftStats(),
+      ...stats,
+      paymentTotals: stats.paymentTotals ?? {},
+      byItem: safeArray<ShiftStats["byItem"][number]>(stats.byItem),
+      byCustomer: safeArray<ShiftStats["byCustomer"][number]>(stats.byCustomer),
+    },
+    cashBankStart: Number(raw.cashBankStart ?? 0),
+    cashBankEnd: raw.cashBankEnd ?? null,
+    expectedCashBank: Number(raw.expectedCashBank ?? 0),
+    cashDiscrepancy: raw.cashDiscrepancy ?? null,
+    reportedInventoryDifference: raw.reportedInventoryDifference,
+    differenceAmount: raw.differenceAmount,
+    inventorySummary: safeArray<SummaryData["inventorySummary"][number]>(raw.inventorySummary),
+    clockedInAt: raw.clockedInAt ?? new Date().toISOString(),
+    clockedOutAt: raw.clockedOutAt ?? new Date().toISOString(),
+  };
+}
+
 function ShiftSummaryModal({ summary, onClose }: {
   summary: SummaryData | null;
   onClose: () => void;
@@ -845,17 +880,24 @@ function ShiftSummaryModal({ summary, onClose }: {
     ? Math.round((new Date(summary.clockedOutAt).getTime() - new Date(summary.clockedInAt).getTime()) / 60000)
     : 0;
 
-  const flaggedItems = summary.inventorySummary.filter(i => i.isFlagged);
+  const safeInventorySummary = safeArray<SummaryData["inventorySummary"][number]>(summary.inventorySummary);
+  const safeSummaryStats = {
+    ...emptyShiftStats(),
+    ...(summary.stats ?? {}),
+    byItem: safeArray<ShiftStats["byItem"][number]>(summary.stats?.byItem),
+    byCustomer: safeArray<ShiftStats["byCustomer"][number]>(summary.stats?.byCustomer),
+  };
+  const flaggedItems = safeInventorySummary.filter(i => i.isFlagged);
   const hasCashDisc = summary.cashDiscrepancy != null && Math.abs(summary.cashDiscrepancy) > 0.005;
   const hasProblems = flaggedItems.length > 0 || hasCashDisc;
-  const hasActualCounts = summary.inventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
-  const paymentTotals = summary.stats.paymentTotals ?? {};
+  const hasActualCounts = safeInventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
+  const paymentTotals = safeSummaryStats.paymentTotals ?? {};
   const cashAppSales = paymentTotals.cashapp ?? 0;
   const venmoSales = paymentTotals.venmo ?? 0;
   const applePaySales = paymentTotals.apple_pay ?? 0;
   const zelleSales = paymentTotals.zelle ?? 0;
   const paypalSales = paymentTotals.paypal ?? 0;
-  const differenceAmount = summary.differenceAmount ?? summary.stats.totalRevenue;
+  const differenceAmount = summary.differenceAmount ?? safeSummaryStats.totalRevenue;
 
 
   return (
@@ -869,7 +911,7 @@ function ShiftSummaryModal({ summary, onClose }: {
             </div>
             <div>
               <div className="text-sm font-bold">Shift Complete</div>
-              <div className="text-xs text-muted-foreground">{duration} min · {summary.stats.orderCount} orders</div>
+              <div className="text-xs text-muted-foreground">{duration} min · {safeSummaryStats.orderCount} orders</div>
             </div>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
@@ -904,19 +946,19 @@ function ShiftSummaryModal({ summary, onClose }: {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="glass-card rounded-xl p-3 border-emerald-500/15 bg-emerald-500/5">
               <div className="text-[10px] font-semibold text-emerald-400 uppercase tracking-widest mb-1">Total Sales</div>
-              <div className="text-xl font-bold text-emerald-400">{fmtMoney(summary.stats.totalRevenue)}</div>
+              <div className="text-xl font-bold text-emerald-400">{fmtMoney(safeSummaryStats.totalRevenue)}</div>
             </div>
             <div className="glass-card rounded-xl p-3">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><Banknote size={9} />Cash</div>
-              <div className="text-xl font-bold">{fmtMoney(summary.stats.cashSales)}</div>
+              <div className="text-xl font-bold">{fmtMoney(safeSummaryStats.cashSales)}</div>
             </div>
             <div className="glass-card rounded-xl p-3">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 flex items-center gap-1"><CreditCard size={9} />Card</div>
-              <div className="text-xl font-bold">{fmtMoney(summary.stats.cardSales)}</div>
+              <div className="text-xl font-bold">{fmtMoney(safeSummaryStats.cardSales)}</div>
             </div>
             <div className="glass-card rounded-xl p-3">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">Orders</div>
-              <div className="text-xl font-bold">{summary.stats.orderCount}</div>
+              <div className="text-xl font-bold">{safeSummaryStats.orderCount}</div>
             </div>
           </div>
 
@@ -947,7 +989,7 @@ function ShiftSummaryModal({ summary, onClose }: {
               </div>
               <div className="flex justify-between px-4 py-2.5">
                 <span className="text-muted-foreground">+ Cash Sales</span>
-                <span className="font-mono text-emerald-400">+{fmtMoney(summary.stats.cashSales)}</span>
+                <span className="font-mono text-emerald-400">+{fmtMoney(safeSummaryStats.cashSales)}</span>
               </div>
               <div className="flex justify-between px-4 py-2.5 font-bold">
                 <span>Expected Bank Total</span>
@@ -976,11 +1018,11 @@ function ShiftSummaryModal({ summary, onClose }: {
           </div>
 
           {/* Items sold */}
-          {summary.stats.byItem.length > 0 && (
+          {safeSummaryStats.byItem.length > 0 && (
             <div>
               <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Items Sold</div>
               <div className="divide-y divide-border/30 rounded-xl overflow-hidden border border-border/30">
-                {summary.stats.byItem.map(item => (
+                {safeSummaryStats.byItem.map(item => (
                   <div key={item.catalogItemId} className="flex justify-between items-center px-4 py-3">
                     <div className="text-sm font-medium">{item.name}</div>
                     <div className="text-right">
@@ -994,11 +1036,11 @@ function ShiftSummaryModal({ summary, onClose }: {
           )}
 
           {/* By customer */}
-          {summary.stats.byCustomer.length > 0 && (
+          {safeSummaryStats.byCustomer.length > 0 && (
             <div>
               <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">By Customer</div>
               <div className="divide-y divide-border/30 rounded-xl overflow-hidden border border-border/30">
-                {summary.stats.byCustomer.map(c => (
+                {safeSummaryStats.byCustomer.map(c => (
                   <div key={c.customerId} className="flex justify-between items-center px-4 py-3">
                     <div>
                       <div className="text-sm font-medium">{c.name}</div>
@@ -1017,7 +1059,7 @@ function ShiftSummaryModal({ summary, onClose }: {
           )}
 
           {/* Inventory reconciliation */}
-          {summary.inventorySummary.filter(i => i.rowType === "item" || i.rowType === "section").length > 0 && (
+          {safeInventorySummary.filter(i => i.rowType === "item" || i.rowType === "section").length > 0 && (
             <div>
               <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">Inventory Reconciliation</div>
               <div className="rounded-xl overflow-hidden border border-border/30">
@@ -1028,7 +1070,7 @@ function ShiftSummaryModal({ summary, onClose }: {
                   <span className="text-right">Expected</span>
                   {hasActualCounts && <><span className="text-right">Actual</span><span className="text-right">Diff</span></>}
                 </div>
-                {summary.inventorySummary.map((item, i) => {
+                {safeInventorySummary.map((item, i) => {
                   if (item.rowType === "section") {
                     return (
                       <div key={i} className="px-4 py-1.5 bg-muted/20 text-[10px] font-bold text-muted-foreground uppercase tracking-wider border-t border-border/20">
@@ -1090,8 +1132,13 @@ function PaymentStat({ label, amount }: { label: string; amount: number }) {
 // ─── Active Shift Panel ───────────────────────────────────────────────────────
 
 function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOut: () => void }) {
-  const shiftInventory = Array.isArray(shift.inventory) ? shift.inventory : [];
-  const shiftStats = shift.stats ?? emptyShiftStats();
+  const shiftInventory = safeArray<EnrichedItem>(shift.inventory);
+  const shiftStats = {
+    ...emptyShiftStats(),
+    ...(shift.stats ?? {}),
+    byItem: safeArray<ShiftStats["byItem"][number]>(shift.stats?.byItem),
+    byCustomer: safeArray<ShiftStats["byCustomer"][number]>(shift.stats?.byCustomer),
+  };
   const clockedInAtMs = new Date(shift.clockedInAt ?? Date.now()).getTime();
   const duration = Math.max(0, Math.round((Date.now() - (Number.isNaN(clockedInAtMs) ? Date.now() : clockedInAtMs)) / 60000));
   const [tab, setTab] = useState<"overview" | "customers" | "inventory">("overview");
@@ -1326,6 +1373,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     (order.handoffChecklist as Record<string, boolean> | null) ?? {}
   );
   const fulfillment = order.fulfillmentStatus as string | null;
+  const safeItems = safeArray<ExtendedOrderItem>(order.items);
 
   async function toggleChecklistItem(key: string, value: boolean) {
     const next = { ...checklist, [key]: value };
@@ -1425,7 +1473,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
               <Clock size={10} />
               {new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
-            <span>{order.items.length} item{order.items.length !== 1 ? "s" : ""}</span>
+            <span>{safeItems.length} item{safeItems.length !== 1 ? "s" : ""}</span>
             <span className="font-mono font-bold text-foreground">
               ${order.total?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
             </span>
@@ -1527,7 +1575,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
             </div>
           )}
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Line Items</div>
-          {(order.items as ExtendedOrderItem[]).map((item, i) => (
+          {safeItems.map((item, i) => (
             <div key={i} className="flex items-start gap-3 text-xs py-2 border-b border-border/20 last:border-0">
               <div className="flex-1">
                 <div className="font-semibold">{item.labName || item.catalogItemName}</div>
@@ -1624,13 +1672,15 @@ function CustomerServiceRepQueueContent() {
       const res = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       if (!res.ok) { setQueueData({ orders: [], total: 0 }); return; }
       const json = await res.json() as { orders?: ExtendedOrder[]; total?: number };
-      setQueueData({ orders: json.orders ?? [], total: json.total ?? 0 });
+      const safeOrders = safeArray<ExtendedOrder>(json.orders);
+      setQueueData({ orders: safeOrders, total: json.total ?? 0 });
     } finally {
       setIsLoadingQueue(false);
     }
   }, [getToken]);
 
-  const visibleOrders = queueData.orders.filter(order => order.status === activeTab || order.fulfillmentStatus === activeTab);
+  const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
+  const visibleOrders = safeOrders.filter(order => order.status === activeTab || order.fulfillmentStatus === activeTab);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
@@ -1717,7 +1767,7 @@ function CustomerServiceRepQueueContent() {
       const resData = await res.json();
       setShift(null);
       setShowClockOutModal(false);
-      setSummaryData(resData.summary);
+      setSummaryData(normalizeSummaryData(resData.summary));
     }
   };
 

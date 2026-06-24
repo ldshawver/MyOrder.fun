@@ -827,12 +827,6 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         quantity: l.quantity,
         unitPrice: l.unit_price,
       }));
-      const checkoutConversionSnapshot = conversionSnapshot ?? await buildConversionPreview(normalizedLines, {
-        acceptedAllSalesFinal: true,
-        confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
-        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
-      }, houseTenantId);
-      const conversionSnapshotForOrder = checkoutConversionSnapshot as Awaited<ReturnType<typeof buildConversionPreview>>;
       const conversionSnapshotForOrder = isConversionPreviewSnapshot(conversionSnapshot)
         ? conversionSnapshot
         : await buildConversionPreview(normalizedLines, {

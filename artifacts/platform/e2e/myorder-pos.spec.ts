@@ -60,7 +60,7 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
       stats: { orderCount: 1, totalRevenue: 24, cashSales: 24, cardSales: 0, compSales: 0, paymentTotals: { cash: 24 }, byItem: [{ catalogItemId: 354, name: "Calm Drops", qtySold: 1, revenue: 24 }], byCustomer: [{ customerId: 1, name: "Test Customer", orderCount: 1, total: 24, paymentMethod: "cash" }] }
     } });
     if (path === "/api/shifts/inventory-template") return json({ template: [{ id: 1, catalogItemId: 354, itemName: "Calm Drops", rowType: "item", unitType: "EA", startingQuantityDefault: 12, sectionName: "Wellness", displayOrder: 1, menuPrice: 24, payoutPrice: 0 }], boxes: [{ id: "sales-box-1", label: "CSR Sales Box 1" }] });
-    if (path === "/api/shift-queue/orders") return json({ orders: [{ id: 9001, status: "pending", fulfillmentStatus: "pending", assignedShiftId: 77, customerName: "Test Customer", createdAt: new Date().toISOString(), paymentStatus: "paid", paymentMethod: "cash", total: 24, items: [{ catalogItemId: 354, catalogItemName: "Calm Drops", quantity: 1, unitPrice: 24 }] }], total: 1 });
+    if (path === "/api/shift-queue/orders") return json({ orders: [{ id: 9001, status: "pending", fulfillmentStatus: "pending", assignedShiftId: 77, customerName: "Test Customer", createdAt: new Date().toISOString(), paymentStatus: "paid", paymentMethod: "cash", total: 24 }], total: 1 });
     if (path === "/api/orders/9001/accept" && method === "POST") return json({ id: 9001, status: "processing" });
     if (path === "/api/orders/9001/fulfillment" && method === "POST") return json({ id: 9001, status: "completed" });
     if (path === "/api/admin/import/product-master" && method === "POST") return json({ importedProducts: 35, catalogItemsCreated: 35, inventoryBalancesUpserted: 140 });
@@ -101,18 +101,33 @@ test.describe("MyOrder.fun POS browser verification", () => {
   test.describe("staff dashboard", () => {
     test.use({ storageState: "playwright/.auth/csr.json" });
 
-    test("/staff renders active shift data without console errors", async ({ page }, testInfo) => {
-      const consoleErrors: string[] = [];
-      page.on("console", msg => { if (msg.type() === "error") consoleErrors.push(msg.text()); });
-      page.on("pageerror", error => consoleErrors.push(error.message));
+    test("/staff renders active shift data without console, page, or CSP errors", async ({ page }, testInfo) => {
+      const browserErrors: string[] = [];
+      const cspViolations: string[] = [];
+      page.on("console", msg => {
+        const text = msg.text();
+        if (/content security policy|violat/i.test(text)) cspViolations.push(text);
+        if (msg.type() === "error") browserErrors.push(text);
+      });
+      page.on("pageerror", error => browserErrors.push(error.message));
+      page.on("request", request => {
+        if (request.url().includes("rsms.me")) cspViolations.push(`Unexpected rsms.me request: ${request.url()}`);
+      });
+      page.on("requestfailed", request => {
+        const failureText = request.failure()?.errorText ?? "request failed";
+        if (/content security policy|violat/i.test(failureText)) cspViolations.push(`${request.url()} ${failureText}`);
+      });
 
       await mockPosApi(page);
       await page.goto("/staff", { waitUntil: "domcontentloaded" });
       await expect(page.getByTestId("text-title")).toContainText("Shift Dashboard");
-      await expect(page.getByText("Shift Active")).toBeVisible();
+      await expect(page.locator("#root")).not.toBeEmpty();
+      await expect(page.getByText("Shift Active").or(page.getByTestId("staff-error-card")).first()).toBeVisible();
+      await expect(page.getByTestId("staff-error-card")).toHaveCount(0);
       await expect(page.getByText("Calm Drops").first()).toBeVisible();
       await testInfo.attach("staff-active-shift", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
-      expect(consoleErrors, `Browser console/page errors:\n${consoleErrors.join("\n")}`).toEqual([]);
+      expect(browserErrors, `Browser console/page errors:\n${browserErrors.join("\n")}`).toEqual([]);
+      expect(cspViolations, `Browser CSP violations:\n${cspViolations.join("\n")}`).toEqual([]);
     });
   });
 
