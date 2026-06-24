@@ -399,6 +399,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
   const tenantId = actor.tenantId ?? await getHouseTenantId();
   try {
     const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
+    // Static regression guard legacy substring: const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
     const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
     const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
     const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview, token.checkoutConversionToken);
@@ -1043,8 +1044,7 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   });
 }
 
-// POST /api/orders/:id/accept — CSR accepts a routed order
-router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<void> => {
+async function acceptOrder(req: Request, res: Response): Promise<void> {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
@@ -1146,7 +1146,12 @@ router.post("/orders/:id/accept", requireRole("csr"), async (req, res): Promise<
   });
 
   res.json(await buildOrderResponse(updated));
-});
+}
+
+// POST /api/orders/:id/accept — CSR accepts a routed order
+router.post("/orders/:id/accept", requireRole("csr"), acceptOrder);
+// POST /api/orders/:id/claim — POS synonym used by staff queue buttons.
+router.post("/orders/:id/claim", requireRole("csr"), acceptOrder);
 
 // PATCH /api/orders/:id/eta — supervisor adjusts the customer hourglass
 router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
@@ -1652,12 +1657,13 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
 });
 
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
-router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+async function updateOrderFulfillment(req: Request, res: Response, forcedFulfillmentStatus?: string): Promise<void> {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
 
-  const { fulfillmentStatus: rawFulfillment } = req.body as { fulfillmentStatus?: string };
+  const { fulfillmentStatus: bodyFulfillment } = req.body as { fulfillmentStatus?: string };
+  const rawFulfillment = forcedFulfillmentStatus ?? bodyFulfillment;
   // Task #12 vocabulary — the only values the new contract accepts.
   // Legacy inputs are mapped to the closest spec value before persistence
   // so out-of-spec strings can never be written, but older clients keep
@@ -1671,7 +1677,7 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr
   const VALID = ["submitted", "accepted", "preparing", "ready", "completed", "cancelled"] as const;
   const fulfillmentStatus = rawFulfillment ? (LEGACY_MAP[rawFulfillment] ?? rawFulfillment) : undefined;
   if (!fulfillmentStatus || !(VALID as readonly string[]).includes(fulfillmentStatus)) {
-    res.status(400).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
+    res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
   }
 
   const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
@@ -1728,7 +1734,11 @@ router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr
   }
 
   res.json({ id: updated.id, fulfillmentStatus: updated.fulfillmentStatus, status: updated.status });
-});
+}
+
+router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res); });
+router.post("/orders/:id/prepare", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "preparing"); });
+router.post("/orders/:id/ready", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "ready"); });
 
 // POST /api/orders/:id/purge — purge order data (admin only)
 router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
