@@ -34,7 +34,12 @@ describe("checkout conversion gate unit invariants", () => {
 
 describe("safe merchant payload validator", () => {
   it("rejects missing safe fields", () => {
-    expect(() => assertSafeMerchantLines([{ ...safeLine, customer_safe_image: "" }])).toThrow("Missing safe merchant field");
+    expect(() => assertSafeMerchantLines([{ ...safeLine, customer_safe_category: "", customer_safe_image: "" }])).toThrow("Missing safe merchant field: customer_safe_category, customer_safe_image");
+    try {
+      assertSafeMerchantLines([{ ...safeLine, customer_safe_category: "", customer_safe_image: "" }]);
+    } catch (error) {
+      expect(error).toMatchObject({ missingSafeFields: ["customer_safe_category", "customer_safe_image"] });
+    }
   });
 
   it("uses Safe fields only and ignores Alavont fields", () => {
