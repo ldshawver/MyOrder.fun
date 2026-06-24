@@ -106,12 +106,6 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
 // Capture the args passed to buildStripeIntentPayload so the test can assert
 // that the server amount — not the client amount — was forwarded to Stripe.
 const stripePayloadCalls: Array<{ amount: number; lines: unknown[] }> = [];
-const verifiedConversionFields = {
-  legalDisclaimerAccepted: true,
-  finalConfirmationAt: new Date(Date.now() + 60_000),
-  checkoutConversionSnapshot: { converted: true },
-  checkoutConversionExpiresAt: new Date(Date.now() + 15 * 60_000),
-};
 vi.mock("../../lib/stripePayload", () => ({
   LUCIFER_CRUZ_STATEMENT_SUFFIX: "LCRUZ ORDER",
   buildStripeIntentPayload: (input: { orderId: number; amount: number; currency: string; lines: unknown[] }) => {
