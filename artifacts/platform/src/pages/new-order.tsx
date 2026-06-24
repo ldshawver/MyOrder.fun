@@ -37,6 +37,9 @@ type DeliveryQuote = {
 };
 type ConversionPreview = {
   conversionToken: string;
+  checkoutConversionToken?: string;
+  conversionExpiresAt?: string;
+  snapshotHash?: string;
   confirmation: {
     acceptedAllSalesFinal: true;
     confirmedAt: string;
@@ -74,6 +77,34 @@ type ConversionPreview = {
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
 const CONVERSION_NOTE = "Items in this cart will be converted to the appropriate customer-facing items before purchase.";
+
+const isDevelopment = import.meta.env.DEV;
+
+function checkoutSnapshotFromConversion(conversion: ConversionPreview) {
+  const checkoutConversionSnapshot = { ...conversion } as Partial<ConversionPreview>;
+  delete checkoutConversionSnapshot.conversionToken;
+  delete checkoutConversionSnapshot.checkoutConversionToken;
+  delete checkoutConversionSnapshot.conversionExpiresAt;
+  delete checkoutConversionSnapshot.snapshotHash;
+  return checkoutConversionSnapshot;
+}
+
+function checkoutDebugDetails(input: {
+  checkoutConversionToken?: unknown;
+  checkoutConversionSnapshot?: unknown;
+  checkoutConfirmation?: unknown;
+}) {
+  return {
+    hasCheckoutConversionToken: typeof input.checkoutConversionToken === "string" && input.checkoutConversionToken.length > 0,
+    hasCheckoutConversionSnapshot: !!input.checkoutConversionSnapshot,
+    hasCheckoutConfirmation: !!input.checkoutConfirmation,
+  };
+}
+
+function appendDevelopmentCheckoutDebug(message: string, details: ReturnType<typeof checkoutDebugDetails>) {
+  if (!isDevelopment) return message;
+  return `${message} ${JSON.stringify(details)}`;
+}
 
 export default function NewOrder() {
   const [, setLocation] = useLocation();
@@ -178,7 +209,7 @@ export default function NewOrder() {
     setConversionError(null);
     try {
       const token = await getToken();
-      const res = await fetch("/api/orders/preview-conversion", {
+      const res = await fetch("/api/cart/convert", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -197,8 +228,9 @@ export default function NewOrder() {
       if (!res.ok) {
         throw new Error(data?.error ?? "Product conversion failed.");
       }
-      setConversionPreview(data as ConversionPreview);
-      setSelectedPaymentMethod((data as ConversionPreview).converted.paymentMethods[0]?.id ?? "cash");
+      const converted = data as ConversionPreview;
+      setConversionPreview(converted);
+      setSelectedPaymentMethod(current => current || converted.converted.paymentMethods[0]?.id || "cash");
     } catch (e) {
       setConversionError(e instanceof Error ? e.message : "Product conversion failed.");
     } finally {
@@ -244,26 +276,29 @@ export default function NewOrder() {
     const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual";
 
     try {
+      const checkoutConversionToken = conversionPreview.conversionToken;
+      const checkoutConversionSnapshot = checkoutSnapshotFromConversion(conversionPreview);
+      const checkoutConfirmation = {
+        acceptedAllSalesFinal: true as const,
+        confirmedAt: conversionPreview.confirmation.confirmedAt,
+        legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
+        paymentMethod,
+        tipAmount,
+        tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
+      };
       const order = await createOrderMutation.mutateAsync({
         data: {
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
           shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
-          checkoutConversionToken: conversionPreview.conversionToken,
-          checkoutConversionSnapshot: conversionPreview,
+          checkoutConversionToken,
+          checkoutConversionSnapshot,
           selectedPaymentMethod: paymentMethod,
           paymentMethod,
           csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
-          checkoutConfirmation: {
-            acceptedAllSalesFinal: true,
-            confirmedAt: conversionPreview.confirmation.confirmedAt,
-            legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
-            paymentMethod,
-            tipAmount,
-            tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
-          },
+          checkoutConfirmation,
         }
       });
 
@@ -282,7 +317,13 @@ export default function NewOrder() {
       } catch { /* ignore storage errors */ }
       setLocation(`/orders/${order.id}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Order could not be created.";
+      const checkoutConversionToken = conversionPreview?.conversionToken;
+      const checkoutConversionSnapshot = conversionPreview ? checkoutSnapshotFromConversion(conversionPreview) : undefined;
+      const checkoutConfirmation = conversionPreview?.confirmation;
+      const message = appendDevelopmentCheckoutDebug(
+        error instanceof Error ? error.message : "Order could not be created.",
+        checkoutDebugDetails({ checkoutConversionToken, checkoutConversionSnapshot, checkoutConfirmation }),
+      );
       setOrderSubmitError(message);
       toast({ title: "Order failed", description: message, variant: "destructive" });
     }

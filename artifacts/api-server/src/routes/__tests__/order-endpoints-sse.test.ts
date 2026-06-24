@@ -377,6 +377,38 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("POST /api/cart/convert returns conversionToken and POST /api/orders accepts converted Cash checkout", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const converted = await supertest(app)
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+
+    expect(converted.status).toBe(200);
+    expect(converted.body.conversionToken).toEqual(expect.any(String));
+
+    const { conversionToken, checkoutConversionToken, conversionExpiresAt, snapshotHash, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
+    const res = await supertest(app)
+      .post("/api/orders")
+      .send({
+        items: convertedItems,
+        shippingAddress: "x",
+        notes: "",
+        paymentMethod: "cash",
+        selectedPaymentMethod: "cash",
+        checkoutConversionToken: conversionToken,
+        checkoutConversionSnapshot,
+        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+      });
+
+    expect([200, 201]).toContain(res.status);
+    expect(dbState.orders).toHaveLength(1);
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(checkoutConversionToken).toEqual(expect.any(String));
+    expect(conversionExpiresAt).toEqual(expect.any(String));
+    expect(snapshotHash).toEqual(expect.any(String));
+  });
+
   it("POST /api/orders rejects unconverted carts with 422", async () => {
     mockActor = dbState.users[0]!;
     const res = await supertest(buildApp())
