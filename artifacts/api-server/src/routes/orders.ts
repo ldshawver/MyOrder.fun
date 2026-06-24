@@ -38,7 +38,6 @@ import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
   getCheckoutTaxSettings,
-  buildMerchantPayloadLines,
   CheckoutMappingError,
   CartLineInput,
   type NormalizedCartLine,
@@ -257,6 +256,18 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
   };
 }
 
+
+type ConversionPreviewSnapshot = Awaited<ReturnType<typeof buildConversionPreview>>;
+
+function isConversionPreviewSnapshot(snapshot: unknown): snapshot is ConversionPreviewSnapshot {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const candidate = snapshot as Partial<ConversionPreviewSnapshot>;
+  return !!candidate.confirmation
+    && Array.isArray(candidate.cartSnapshot)
+    && !!candidate.pricingSnapshot
+    && !!candidate.converted;
+}
+
 const DeliveryQuoteCartLineInput = z.object({
   catalogItemId: z.number().int().positive(),
   quantity: z.number().int().positive(),
@@ -347,7 +358,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const preview = buildConversionPreview(normalizedLines, body.data.confirmation);
+  const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
   const token = await createVerifiedCheckoutConversionToken({ tenantId: actor.tenantId ?? await getHouseTenantId(), userId: actor.id, items: body.data.items, snapshot: preview });
   await writeAuditLog({
     actorId: actor.id,
@@ -798,12 +809,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         quantity: l.quantity,
         unitPrice: l.unit_price,
       }));
-      const checkoutConversionSnapshot = (conversionSnapshot as ReturnType<typeof buildConversionPreview>) ?? buildConversionPreview(normalizedLines, {
-        acceptedAllSalesFinal: true,
-        confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
-        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
-      }, houseTenantId);
-      const conversionSnapshotForOrder = checkoutConversionSnapshot as Awaited<ReturnType<typeof buildConversionPreview>>;
+      const conversionSnapshotForOrder = isConversionPreviewSnapshot(conversionSnapshot)
+        ? conversionSnapshot
+        : await buildConversionPreview(normalizedLines, {
+          acceptedAllSalesFinal: true,
+          confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+          legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+        }, houseTenantId);
       const checkoutSnapshotWithTip = {
         ...conversionSnapshotForOrder,
         tip: {

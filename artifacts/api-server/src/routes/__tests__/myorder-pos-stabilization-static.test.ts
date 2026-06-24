@@ -123,6 +123,16 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
   });
 
+  it("awaits converted checkout snapshot construction before order metadata and persistence use it", () => {
+    const orders = api("routes/orders.ts");
+    expect(orders).toContain("const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);");
+    expect(orders).toContain("confirmedAt: preview.confirmation.confirmedAt");
+    expect(orders).toContain("total: preview.pricingSnapshot.total");
+    expect(orders).toContain("const conversionSnapshotForOrder = isConversionPreviewSnapshot(conversionSnapshot)");
+    expect(orders).toContain(": await buildConversionPreview(normalizedLines, {");
+    expect(orders).not.toContain("conversionSnapshot as ReturnType<typeof buildConversionPreview>");
+  });
+
   it("order creation denies cross-tenant catalog IDs before inventory decrement", () => {
     const orders = api("routes/orders.ts");
     expect(orders).toContain("One or more catalog items were not found for this tenant");
