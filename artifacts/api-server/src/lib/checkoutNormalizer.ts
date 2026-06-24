@@ -92,12 +92,20 @@ export async function getCheckoutTaxSettings(tenantId?: number): Promise<{ taxMo
 export class CheckoutMappingError extends Error {
   public readonly catalogItemId: number;
   public readonly reason: string;
-  constructor(catalogItemId: number, reason: string, message?: string) {
+  public readonly missingSafeFields?: string[];
+  constructor(catalogItemId: number, reason: string, message?: string, missingSafeFields?: string[]) {
     super(message ?? `Catalog item ${catalogItemId} cannot be mapped to a Lucifer Cruz merchant line: ${reason}`);
     this.name = "CheckoutMappingError";
     this.catalogItemId = catalogItemId;
     this.reason = reason;
+    this.missingSafeFields = missingSafeFields;
   }
+}
+
+function missingSafeFieldNames(fields: Record<string, string | null>): string[] {
+  return Object.entries(fields)
+    .filter(([, value]) => !value?.trim())
+    .map(([field]) => field);
 }
 
 function inferMerchantBrand(ci: typeof catalogItemsTable.$inferSelect): "alavont" | "lucifer_cruz" {
@@ -170,15 +178,6 @@ export async function normalizeCheckoutCart(
           throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
             `Alavont catalog item ${line.catalogItemId} has no merchant_sku — Lucifer Cruz mapping is incomplete.`);
         }
-        if (requireCompleteSafeFields && !ci.luciferCruzImageUrl) {
-          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_image", `Alavont catalog item ${line.catalogItemId} has no safe image.`);
-        }
-        if (requireCompleteSafeFields && !ci.luciferCruzDescription) {
-          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_description", `Alavont catalog item ${line.catalogItemId} has no safe description.`);
-        }
-        if (requireCompleteSafeFields && !ci.luciferCruzCategory) {
-          throw new CheckoutMappingError(line.catalogItemId, "missing_safe_category", `Alavont catalog item ${line.catalogItemId} has no safe category.`);
-        }
         if (
           (ci.alavontId && ci.merchantSku === ci.alavontId) ||
           /^(?:ALV|ALAVONT)[-_]/i.test(ci.merchantSku)
@@ -238,10 +237,24 @@ export async function normalizeCheckoutCart(
       ci.luciferCruzDescription,
       "Converted into a customer-ready branded checkout presentation.",
     ) ?? "Converted into a customer-ready branded checkout presentation.";
-    const customer_safe_name = firstNonEmpty(ci.customerSafeName, ci.displayName, ci.luciferCruzName);
-    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription, ci.displayDescription, ci.luciferCruzDescription);
-    const customer_safe_category = firstNonEmpty(ci.luciferCruzCategory, ci.merchantCategory);
-    const customer_safe_image = firstNonEmpty(ci.luciferCruzImageUrl, ci.merchantImage);
+    const customer_safe_name = firstNonEmpty(ci.customerSafeName);
+    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription);
+    const customer_safe_category = firstNonEmpty(ci.merchantCategory, ci.luciferCruzCategory, ci.displayCategory, ci.category);
+    const customer_safe_image = firstNonEmpty(ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
+    if (requireCompleteSafeFields) {
+      const missingSafeFields = missingSafeFieldNames({
+        customer_safe_category,
+        customer_safe_image,
+      });
+      if (missingSafeFields.length > 0) {
+        throw new CheckoutMappingError(
+          line.catalogItemId,
+          "missing_safe_fields",
+          `Catalog item ${line.catalogItemId} is missing safe checkout fields: ${missingSafeFields.join(", ")}.`,
+          missingSafeFields,
+        );
+      }
+    }
     const unit_price = parseFloat(ci.price as string);
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 

@@ -415,7 +415,15 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
     res.json({ ...preview, ...token, conversionToken });
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
-      res.status(422).json({ error: "Item not available for branded checkout conversion", catalogItemId: normErr.catalogItemId, reason: normErr.reason });
+      const missingSafeFieldMessage = normErr.missingSafeFields?.length
+        ? `Missing safe checkout fields: ${normErr.missingSafeFields.join(", ")}`
+        : null;
+      res.status(422).json({
+        error: missingSafeFieldMessage ?? "Item not available for branded checkout conversion",
+        catalogItemId: normErr.catalogItemId,
+        reason: normErr.reason,
+        ...(normErr.missingSafeFields ? { missingSafeFields: normErr.missingSafeFields } : {}),
+      });
       return;
     }
     res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
