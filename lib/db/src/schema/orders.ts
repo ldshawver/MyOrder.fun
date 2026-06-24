@@ -81,6 +81,7 @@ export const ordersTable = pgTable("orders", {
   legalDisclaimerAccepted: boolean("legal_disclaimer_accepted").notNull().default(false),
   legalDisclaimerText: text("legal_disclaimer_text"),
   checkoutConversionSnapshot: jsonb("checkout_conversion_snapshot"),
+  checkoutConversionExpiresAt: timestamp("checkout_conversion_expires_at", { withTimezone: true }),
   selectedPaymentMethod: text("selected_payment_method"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

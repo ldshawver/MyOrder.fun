@@ -12,13 +12,14 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog 
 import { logger } from "../lib/logger";
 import {
   normalizeCheckoutCart,
-  buildMerchantPayloadLines,
   computeCheckoutTotals,
   CheckoutMappingError,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
 import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/stripePayload";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
+import { requireOrderHasVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
+import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
 import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
@@ -157,6 +158,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
 
   // Re-normalize cart from order items so the LC-only Stripe payload is built
   // from the SAME conversion path used at /orders. If the conversion fails
@@ -207,7 +209,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
       );
     }
     logger.info(
-      { orderId: order.id, merchantLines: buildMerchantPayloadLines(normalizedLines), actorId: actor.id, serverAmount },
+      { orderId: order.id, merchantLines: buildSafeMerchantPayloadLines(normalizedLines), actorId: actor.id, serverAmount },
       "MERCHANT_PAYLOAD_AUDIT: Stripe tokenize — LC names for processor (no Alavont names)"
     );
   }
@@ -233,6 +235,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     res.status(500).json({ error: "Payment processor payload validation failed." });
     return;
   }
+
 
   const stripe = getStripeClient();
 
@@ -315,6 +318,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
   if (order.paymentStatus === "paid") {
     res.status(409).json({ error: "Order is already paid" });
     return;
@@ -418,6 +422,8 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+
+  try { await requireOrderHasVerifiedCheckoutConversion(order.id); } catch (err) { if (err instanceof CheckoutConversionRequiredError) { sendCheckoutConversionRequired(res); return; } throw err; }
 
   const stripe = getStripeClient();
   const isSandbox = !stripe || body.data.paymentIntentId.includes("sandbox");

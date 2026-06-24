@@ -35,7 +35,7 @@ export const STRIPE_DESCRIPTION_MAX = 500;
 export const STRIPE_METADATA_VALUE_MAX = 490;
 
 function summarizeMerchantLines(lines: NormalizedCartLine[]): string {
-  return lines.map(l => `${l.merchant_name} x${l.quantity}`).join(", ");
+  return lines.map(l => `${l.customer_safe_name} x${l.quantity}`).join(", ");
 }
 
 // SKUs that look like Alavont identifiers (the well-known ALV-/ALAVONT-
@@ -63,7 +63,7 @@ export function buildStripeIntentPayload(input: StripeIntentPayloadInput): Strip
   const skuSummary = summarizeMerchantSkus(input.lines);
 
   // Description shows up on the Stripe Dashboard line — LC names only.
-  const description = `Lucifer Cruz Order #${input.orderId}${linesSummary ? ` — ${linesSummary}` : ""}`
+  const description = `Safe Checkout Order #${input.orderId}${linesSummary ? ` — ${linesSummary}` : ""}`
     .slice(0, STRIPE_DESCRIPTION_MAX);
 
   // Metadata is preserved on the PaymentIntent forever. Keep it merchant-safe.
