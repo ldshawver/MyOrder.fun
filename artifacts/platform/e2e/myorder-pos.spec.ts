@@ -28,7 +28,7 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
     if (path === "/api/catalog" || path === "/api/catalog/items") return json({ items: catalog, catalog });
     if (path === "/api/current-user") return json({ id: 1, role: "csr", email: "csr@example.com", status: "approved", isActive: true });
     if (path === "/api/admin/settings") return json({ enabledProcessors: processors });
-    if (path === "/api/orders/preview-conversion" && method === "POST") {
+    if (path === "/api/cart/convert" && method === "POST") {
       return json({
         conversionToken: "signed-conversion-token",
         checkoutConversionToken: "signed-conversion-token",
@@ -129,6 +129,8 @@ test.describe("MyOrder.fun POS browser verification", () => {
       paymentMethod: "cash",
     });
     expect(orderRequests[0]).toHaveProperty("checkoutConversionSnapshot");
+    expect(orderRequests[0]).not.toHaveProperty("checkoutConversionSnapshot.conversionToken");
+    expect(orderRequests[0]).not.toHaveProperty("checkoutConversionSnapshot.checkoutConversionToken");
     await expect(page).toHaveURL(/\/orders\/9001$/);
     await expect(page.getByTestId("button-pay")).toBeVisible();
 
