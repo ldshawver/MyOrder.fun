@@ -578,6 +578,9 @@ export interface CreateOrderBody {
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
   checkoutConversionToken?: string;
+  checkoutConversionSnapshot?: unknown;
+  selectedPaymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
+  paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
   csrDeliveryDistanceMiles?: number | null;
 }
 

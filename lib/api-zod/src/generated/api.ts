@@ -669,6 +669,9 @@ export const CreateOrderBody = zod.object({
 }).optional(),
   "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
   "checkoutConversionToken": zod.string().optional(),
+  "checkoutConversionSnapshot": zod.unknown().optional(),
+  "selectedPaymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
   "csrDeliveryDistanceMiles": zod.number().min(0).nullish()
 })
 

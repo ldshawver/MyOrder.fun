@@ -98,6 +98,44 @@ test.describe("MyOrder.fun POS browser verification", () => {
     await expect(page.getByTestId("button-cashapp")).toHaveCount(0);
   });
 
+
+  test("converted cart cash payment creates order and clears cart", async ({ page }) => {
+    const orderRequests: unknown[] = [];
+    await mockPosApi(page, { processors: ["cash"] });
+    page.on("request", request => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/orders" && request.method() === "POST") {
+        orderRequests.push(request.postDataJSON());
+      }
+    });
+
+    await page.goto("/catalog");
+    await expect(page.getByText("Calm Drops")).toBeVisible();
+    await page.getByTestId("link-buy-now-354").click();
+    await page.goto("/new-order");
+    await expect(page.getByTestId("cart-item-354")).toBeVisible();
+    await page.getByTestId("checkbox-all-sales-final").check();
+    await page.getByTestId("button-preview-conversion").click();
+    await expect(page.getByTestId("conversion-ready")).toBeVisible();
+
+    await page.getByTestId("payment-method-cash").click();
+
+    await expect.poll(() => orderRequests.length).toBe(1);
+    expect(orderRequests[0]).toMatchObject({
+      items: [{ catalogItemId: 354, quantity: 1 }],
+      checkoutConversionToken: "signed-conversion-token",
+      checkoutConfirmation: { paymentMethod: "cash", acceptedAllSalesFinal: true },
+      selectedPaymentMethod: "cash",
+      paymentMethod: "cash",
+    });
+    expect(orderRequests[0]).toHaveProperty("checkoutConversionSnapshot");
+    await expect(page).toHaveURL(/\/orders\/9001$/);
+    await expect(page.getByTestId("button-pay")).toBeVisible();
+
+    await page.goto("/new-order");
+    await expect(page.getByText("Cart is empty")).toBeVisible();
+  });
+
   test.describe("staff dashboard", () => {
     test.use({ storageState: "playwright/.auth/csr.json" });
 
