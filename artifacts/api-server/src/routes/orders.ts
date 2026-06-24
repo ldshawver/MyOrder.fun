@@ -165,8 +165,8 @@ function cartItemKey(items: Array<{ catalogItemId: number; quantity: number }>):
 function createConversionToken(): string {
   return `cc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
 }
-function storeConversionSnapshot(tenantId: number, userId: number, items: Array<{ catalogItemId: number; quantity: number }>, snapshot: unknown): string {
-  const token = createConversionToken();
+function storeConversionSnapshot(tenantId: number, userId: number, items: Array<{ catalogItemId: number; quantity: number }>, snapshot: unknown, existingToken?: string): string {
+  const token = existingToken ?? createConversionToken();
   conversionSnapshots.set(token, { tenantId, userId, itemKey: cartItemKey(items), snapshot, createdAt: Date.now() });
   return token;
 }
@@ -276,6 +276,13 @@ const DeliveryQuoteCartLineInput = z.object({
 const DeliveryQuoteBody = z.object({
   items: z.array(DeliveryQuoteCartLineInput).min(1),
   dropoffAddress: z.string().min(8).max(1000),
+  checkoutConversionToken: z.string().optional(),
+  checkoutConversionSnapshot: z.unknown().optional(),
+  checkoutConfirmation: z.object({
+    acceptedAllSalesFinal: z.literal(true),
+    confirmedAt: z.string().datetime().optional(),
+    legalDisclaimerText: z.string().min(1).max(1000),
+  }).optional(),
 }).strict();
 
 function parseFirstPickupAddressFromSettings(raw: string | null | undefined): string | null {
@@ -303,13 +310,14 @@ async function resolveUberPickupAddress(): Promise<string | null> {
 }
 
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
+  buildSafeMerchantPayloadLines(lines);
   return lines.map(line => ({
-    name: line.merchant_name || line.display_name || line.catalog_display_name,
+    name: line.customer_safe_name,
     quantity: line.quantity,
     price: Math.max(0, Math.round(line.unit_price * 100)),
     size: "small",
     replacement_type: "contact_customer",
-    sku: line.merchant_sku ?? line.woo_product_id ?? String(line.catalog_item_id),
+    special_instructions: line.customer_safe_category,
   }));
 }
 
@@ -358,8 +366,10 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
-  const token = await createVerifiedCheckoutConversionToken({ tenantId: actor.tenantId ?? await getHouseTenantId(), userId: actor.id, items: body.data.items, snapshot: preview });
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
+  const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
+  const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview, token.checkoutConversionToken);
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -375,9 +385,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     ipAddress: req.ip,
   });
 
-  res.json({ ...preview, ...token });
-  const conversionToken = storeConversionSnapshot(actor.tenantId ?? await getHouseTenantId(), actor.id, body.data.items, preview);
-  res.json({ ...preview, conversionToken });
+  res.json({ ...preview, ...token, conversionToken });
 });
 
 // POST /api/cart/convert
@@ -392,7 +400,8 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
   try {
     const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
     const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
-    const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview);
+    const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
+    const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview, token.checkoutConversionToken);
     await writeAuditLog({
       actorId: actor.id,
       actorEmail: actor.email,
@@ -402,7 +411,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
       metadata: { itemCount: normalizedLines.length, total: preview.pricingSnapshot.total },
       ipAddress: req.ip,
     });
-    res.json({ ...preview, conversionToken });
+    res.json({ ...preview, ...token, conversionToken });
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       res.status(422).json({ error: "Item not available for branded checkout conversion", catalogItemId: normErr.catalogItemId, reason: normErr.reason });
@@ -423,14 +432,18 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message, details: body.error.issues });
     return;
   }
-  if (!hasUberDirectConfig()) {
-    res.status(503).json({ error: "Uber Courier is not configured." });
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const conversionCheck = verifyConversionSnapshot(body.data.checkoutConversionToken, tenantId, actor.id, body.data.items);
+  if (!conversionCheck.ok) {
+    res.status(422).json({ error: conversionCheck.error });
     return;
   }
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, actor.tenantId ?? await getHouseTenantId());
+    const confirmation = body.data.checkoutConfirmation ?? (conversionCheck.snapshot as { confirmation?: { acceptedAllSalesFinal?: boolean; confirmedAt?: string } } | undefined)?.confirmation;
+    const verified = await requireVerifiedCheckoutConversion({ tenantId, userId: actor.id, checkoutConversionToken: body.data.checkoutConversionToken, requestedItems: body.data.items, legalDisclaimerAccepted: confirmation?.acceptedAllSalesFinal, finalConfirmationAt: confirmation?.confirmedAt, snapshot: body.data.checkoutConversionSnapshot ?? conversionCheck.snapshot });
+    normalizedLines = verified.lines;
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       res.status(422).json({
@@ -440,6 +453,11 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       return;
     }
     res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
+    return;
+  }
+
+  if (!hasUberDirectConfig()) {
+    res.status(503).json({ error: "Uber Courier is not configured." });
     return;
   }
 
@@ -809,6 +827,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         quantity: l.quantity,
         unitPrice: l.unit_price,
       }));
+      const checkoutConversionSnapshot = conversionSnapshot ?? await buildConversionPreview(normalizedLines, {
+        acceptedAllSalesFinal: true,
+        confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+        legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+      }, houseTenantId);
+      const conversionSnapshotForOrder = checkoutConversionSnapshot as Awaited<ReturnType<typeof buildConversionPreview>>;
       const conversionSnapshotForOrder = isConversionPreviewSnapshot(conversionSnapshot)
         ? conversionSnapshot
         : await buildConversionPreview(normalizedLines, {

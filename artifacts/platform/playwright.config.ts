@@ -9,6 +9,9 @@ export default defineConfig({
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4173",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+      : undefined,
   },
   webServer: process.env.PLAYWRIGHT_BASE_URL ? undefined : {
     command: "pnpm run build && PORT=4173 pnpm exec vite preview --config vite.config.ts --host 127.0.0.1",

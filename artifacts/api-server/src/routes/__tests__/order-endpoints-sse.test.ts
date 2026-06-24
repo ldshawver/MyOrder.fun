@@ -68,6 +68,22 @@ vi.mock("../../lib/auth", () => ({
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
+const uberQuoteCalls: Array<{ manifestItems: unknown[] }> = [];
+vi.mock("../../lib/uberDirect", () => {
+  class UberDirectConfigError extends Error {}
+  class UberDirectApiError extends Error { status = 422; }
+  return {
+    hasUberDirectConfig: () => true,
+    getConfiguredPickupAddress: () => "123 Pickup St, Test City, CA",
+    getUberPickupAction: () => "default",
+    createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
+      uberQuoteCalls.push({ manifestItems: input.manifestItems });
+      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default" };
+    },
+    UberDirectConfigError,
+    UberDirectApiError,
+  };
+});
 vi.mock("../../lib/checkoutNormalizer", async () => {
   const { z } = await import("zod");
   class CheckoutMappingError extends Error {
@@ -86,15 +102,28 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       .object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })
       .strict(),
     CHECKOUT_TAX_RATE: 0.08,
+    getCheckoutTaxSettings: async () => ({ taxRate: 0.08 }),
     normalizeCheckoutCart: async () => ([
       {
         catalog_item_id: 1,
         source_type: "local_mapped",
         merchant_brand: "alavont",
-        catalog_display_name: "Test",
+        catalog_display_name: "Alavont Internal",
         merchant_name: "Test LC",
         merchant_sku: "LC-TEST",
-        receipt_alavont_name: "Test",
+        display_name: "Safe Item",
+        display_description: "Safe description",
+        display_category: "Safe category",
+        display_image: "safe.png",
+        merchant_brand_name: "Safe Brand",
+        marketing_copy: "Safe copy",
+        customer_safe_name: "Safe Item",
+        customer_safe_description: "Safe description",
+        customer_safe_category: "Safe category",
+        customer_safe_image: "safe.png",
+        upsell_copy: null,
+        promo_badges: [],
+        receipt_alavont_name: "Alavont Internal",
         receipt_lucifer_name: "Test LC",
         merchant_image_url: null,
         unit_price: 10,
@@ -338,12 +367,65 @@ beforeEach(() => {
     id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1,
   }];
   dbState.tenants = [{ id: 1 }];
-  dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
+  dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
+  uberQuoteCalls.length = 0;
   _resetBus();
+});
+
+describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("POST /api/orders rejects unconverted carts with 422", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({
+        items: [{ catalogItemId: 1, quantity: 1 }],
+        checkoutConfirmation: { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final.", paymentMethod: "cash" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+  });
+
+  it("POST /api/orders/delivery-quote rejects unconverted provider payloads with 422", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders/delivery-quote")
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+    expect(uberQuoteCalls).toHaveLength(0);
+  });
+
+  it("POST /api/orders/delivery-quote accepts converted carts and sends Safe provider payload fields only", async () => {
+    mockActor = dbState.users[0]!;
+    const items = [{ catalogItemId: 1, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true as const, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final." };
+    const preview = await supertest(buildApp()).post("/api/orders/preview-conversion").send({ items, confirmation });
+    expect(preview.status).toBe(200);
+
+    const res = await supertest(buildApp())
+      .post("/api/orders/delivery-quote")
+      .send({
+        items,
+        dropoffAddress: "456 Dropoff St, Test City, CA",
+        checkoutConversionToken: preview.body.checkoutConversionToken,
+        checkoutConversionSnapshot: preview.body,
+        checkoutConfirmation: confirmation,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.provider).toBe("uber_direct");
+    expect(uberQuoteCalls).toHaveLength(1);
+    expect(uberQuoteCalls[0].manifestItems).toEqual([expect.objectContaining({ name: "Safe Item", special_instructions: "Safe category", quantity: 1, price: 1000 })]);
+    const payloadText = JSON.stringify(uberQuoteCalls[0].manifestItems);
+    expect(payloadText).not.toContain("Test LC");
+    expect(payloadText).not.toContain("LC-TEST");
+  });
 });
 
 describe("POST /api/orders — customer hourglass default 30 min", () => {

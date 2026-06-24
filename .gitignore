@@ -63,3 +63,8 @@ client_secret*.json
 *.env
 .env.*
 .deployed-sha
+
+# Generated Playwright proof artifacts (uploaded by CI, not committed)
+artifacts/checkout-conversion-proof/*.png
+artifacts/platform/test-results/
+artifacts/platform/playwright-report/
