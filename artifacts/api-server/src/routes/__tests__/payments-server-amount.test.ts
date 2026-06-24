@@ -38,6 +38,10 @@ vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock("../../lib/merchantPayloadValidator", () => ({
+  buildSafeMerchantPayloadLines: () => [],
+}));
+
 // Critical: this mock returns a fixed normalized line whose server-recomputed
 // total is exactly $43.20 (= 2 × $20 + 8% tax). The test below sends a
 // client-supplied amount of $0.01 and proves the Stripe path uses $43.20.
@@ -168,6 +172,21 @@ vi.mock("@workspace/db", () => {
 
 import paymentsRouter from "../payments";
 
+
+function convertedCheckoutFields() {
+  return {
+    checkoutConversionSnapshot: {
+      confirmation: { acceptedAllSalesFinal: true, confirmedAt: "2026-06-24T00:00:00.000Z", legalDisclaimerText: "All sales are final." },
+      cartSnapshot: [{ catalogItemId: 50, quantity: 2, unitPrice: 20, lineSubtotal: 40 }],
+      pricingSnapshot: { subtotal: 40, tax: 3.2, total: 43.2, taxRate: 0.08 },
+      converted: { stage: "customer_facing_product_conversion" },
+    },
+    checkoutConversionExpiresAt: new Date(Date.now() + 15 * 60_000),
+    legalDisclaimerAccepted: true,
+    finalConfirmationAt: new Date("2026-06-24T00:00:00.000Z"),
+  };
+}
+
 function makeApp() {
   const app = express();
   app.use(express.json());
@@ -195,7 +214,7 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       total: "43.20",
       subtotal: "40.00",
       tax: "3.20",
-      ...verifiedConversionFields,
+      ...convertedCheckoutFields(),
     });
     dbState.orderItems.push({ orderId: 555, catalogItemId: 50, quantity: 2 });
 
@@ -259,7 +278,7 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       status: "pending",
       paymentStatus: "unpaid",
       total: "100.00",
-      ...verifiedConversionFields,
+      ...convertedCheckoutFields(),
     });
     // No order_items rows.
 

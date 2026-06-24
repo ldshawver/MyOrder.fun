@@ -256,6 +256,18 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
   };
 }
 
+
+type ConversionPreviewSnapshot = Awaited<ReturnType<typeof buildConversionPreview>>;
+
+function isConversionPreviewSnapshot(snapshot: unknown): snapshot is ConversionPreviewSnapshot {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const candidate = snapshot as Partial<ConversionPreviewSnapshot>;
+  return !!candidate.confirmation
+    && Array.isArray(candidate.cartSnapshot)
+    && !!candidate.pricingSnapshot
+    && !!candidate.converted;
+}
+
 const DeliveryQuoteCartLineInput = z.object({
   catalogItemId: z.number().int().positive(),
   quantity: z.number().int().positive(),
@@ -821,6 +833,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
       }, houseTenantId);
       const conversionSnapshotForOrder = checkoutConversionSnapshot as Awaited<ReturnType<typeof buildConversionPreview>>;
+      const conversionSnapshotForOrder = isConversionPreviewSnapshot(conversionSnapshot)
+        ? conversionSnapshot
+        : await buildConversionPreview(normalizedLines, {
+          acceptedAllSalesFinal: true,
+          confirmedAt: checkoutConfirmation?.confirmedAt ?? new Date().toISOString(),
+          legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? "Order confirmed before payment.",
+        }, houseTenantId);
       const checkoutSnapshotWithTip = {
         ...conversionSnapshotForOrder,
         tip: {

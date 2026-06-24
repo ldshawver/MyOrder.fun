@@ -142,6 +142,7 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
       return { subtotal, tax, total: subtotal + tax, taxRate: 0.08 };
     },
+    getCheckoutTaxSettings: async () => ({ rate: 0.08 }),
     buildMerchantPayloadLines: () => [],
     buildReceiptLines: () => [],
   };
@@ -149,6 +150,19 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
+
+vi.mock("../../lib/checkoutConversionGate", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/checkoutConversionGate")>("../../lib/checkoutConversionGate");
+  return {
+    ...actual,
+    requireVerifiedCheckoutConversion: vi.fn(async (input: { checkoutConversionToken?: unknown; snapshot?: unknown }) => {
+      if (!input.checkoutConversionToken || !input.snapshot) throw new actual.CheckoutConversionRequiredError();
+      const lines = await import("../../lib/checkoutNormalizer").then((m) => m.normalizeCheckoutCart([]));
+      const totals = await import("../../lib/checkoutNormalizer").then((m) => m.computeCheckoutTotals(lines));
+      return { lines, totals, conversionExpiresAt: new Date(Date.now() + 15 * 60_000), snapshot: input.snapshot };
+    }),
+  };
+});
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
@@ -295,30 +309,35 @@ function buildApp() {
   return app;
 }
 
-async function createConvertedOrder(app = buildApp()) {
-  const items = [{ catalogItemId: 1, quantity: 1 }];
-  const confirmation = {
-    acceptedAllSalesFinal: true as const,
-    confirmedAt: new Date().toISOString(),
-    legalDisclaimerText: "All sales are final.",
-    paymentMethod: "cash" as const,
+
+const convertedItems = [{ catalogItemId: 1, quantity: 1 }];
+const checkoutConfirmation = {
+  acceptedAllSalesFinal: true,
+  confirmedAt: "2026-06-24T00:00:00.000Z",
+  legalDisclaimerText: "All sales are final.",
+};
+
+async function convertedCheckoutPayload(app = buildApp()) {
+  const converted = await supertest(app)
+    .post("/api/cart/convert")
+    .send({ items: convertedItems, confirmation: checkoutConfirmation });
+  expect(converted.status).toBe(200);
+  const { conversionToken, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
+  return {
+    items: convertedItems,
+    checkoutConfirmation,
+    checkoutConversionToken: conversionToken,
+    checkoutConversionSnapshot,
   };
-  const preview = await supertest(app)
-    .post("/api/orders/preview-conversion")
-    .send({ items, confirmation });
-  expect(preview.status).toBe(200);
+}
+
+async function createConvertedOrder(app = buildApp()) {
+  const payload = await convertedCheckoutPayload(app);
   const res = await supertest(app)
     .post("/api/orders")
-    .send({
-      items,
-      shippingAddress: "x",
-      notes: "",
-      checkoutConfirmation: confirmation,
-      checkoutConversionToken: preview.body.checkoutConversionToken,
-      checkoutConversionSnapshot: preview.body,
-    });
-  expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-  return res;
+    .send({ ...payload, shippingAddress: "x", notes: "" });
+  expect([200, 201]).toContain(res.status);
+  return dbState.orders[0]!;
 }
 
 function captureEvents(role: string, userId: number): { received: OrderEvent[]; teardown: () => void } {
@@ -413,7 +432,12 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
   it("stamps a 30-minute estimatedReadyAt and promisedMinutes=30 from defaults", async () => {
     mockActor = dbState.users[0]!; // customer
     const before = Date.now();
-    await createConvertedOrder();
+    const app = buildApp();
+    const payload = await convertedCheckoutPayload(app);
+    const res = await supertest(app)
+      .post("/api/orders")
+      .send({ ...payload, shippingAddress: "x", notes: "" });
+    expect([200, 201]).toContain(res.status);
     const inserted = dbState.orders[0]!;
     expect(inserted.promisedMinutes).toBe(30);
     const eta = new Date(inserted.estimatedReadyAt as Date).getTime();
@@ -425,8 +449,7 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
 describe("PATCH /api/orders/:id/eta — admin extends the hourglass", () => {
   it("updates promisedMinutes, recomputes estimatedReadyAt, and flags etaAdjustedBySupervisor", async () => {
     mockActor = dbState.users[0]!;
-    await createConvertedOrder();
-    const orderId = dbState.orders[0]!.id as number;
+    const orderId = (await createConvertedOrder()).id as number;
 
     mockActor = dbState.users[2]!; // admin
     const before = Date.now();
@@ -446,8 +469,7 @@ describe("PATCH /api/orders/:id/eta — admin extends the hourglass", () => {
 describe("SSE event emission via the live route handlers", () => {
   it("POST /api/orders/:id/accept emits order.updated with reason='accepted' to admin subscribers", async () => {
     mockActor = dbState.users[0]!;
-    await createConvertedOrder();
-    const orderId = dbState.orders[0]!.id as number;
+    const orderId = (await createConvertedOrder()).id as number;
 
     const adminCapture = captureEvents("admin", 999);
     dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
@@ -465,8 +487,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/mark-ready emits an order.ready SSE event", async () => {
     mockActor = dbState.users[0]!;
-    await createConvertedOrder();
-    const orderId = dbState.orders[0]!.id as number;
+    const orderId = (await createConvertedOrder()).id as number;
 
     const adminCapture = captureEvents("admin", 999);
     mockActor = dbState.users[2]!; // admin
@@ -482,8 +503,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/accept rejects orders not in submitted state with 409", async () => {
     mockActor = dbState.users[0]!;
-    await createConvertedOrder();
-    const orderId = dbState.orders[0]!.id as number;
+    const orderId = (await createConvertedOrder()).id as number;
     dbState.orders[0]!.fulfillmentStatus = "preparing";
     dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
     mockActor = dbState.users[1]!;
@@ -495,8 +515,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/mark-ready is forbidden for CSRs", async () => {
     mockActor = dbState.users[0]!;
-    await createConvertedOrder();
-    const orderId = dbState.orders[0]!.id as number;
+    const orderId = (await createConvertedOrder()).id as number;
 
     mockActor = dbState.users[1]!; // CSR
     const res = await supertest(buildApp())
