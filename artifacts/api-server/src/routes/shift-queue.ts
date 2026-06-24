@@ -8,6 +8,39 @@ import { getHouseTenantId } from "../lib/singleTenant";
 const router: IRouter = Router();
 const QUEUE_ORDER_STATUSES = ["pending", "processing", "ready", "completed"];
 
+let orderLifecycleSchemaEnsured = false;
+
+async function ensureOrderLifecycleSchema(): Promise<void> {
+  if (orderLifecycleSchemaEnsured) return;
+  const statements = [
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "archived_at" timestamptz`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer REFERENCES "users"("id")`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "voided_at" timestamptz`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "voided_by_user_id" integer REFERENCES "users"("id")`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_at" timestamptz`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_by_user_id" integer REFERENCES "users"("id")`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_by_user_id" integer REFERENCES "users"("id")`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_archived_at_idx" ON "orders" ("archived_at")`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_voided_at_idx" ON "orders" ("voided_at")`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_cancelled_at_idx" ON "orders" ("cancelled_at")`,
+    sql`CREATE INDEX IF NOT EXISTS "orders_completed_at_idx" ON "orders" ("completed_at")`,
+  ];
+  for (const statement of statements) {
+    await db.execute(statement);
+  }
+  orderLifecycleSchemaEnsured = true;
+}
+
+router.use(async (_req, res, next) => {
+  try {
+    await ensureOrderLifecycleSchema();
+    next();
+  } catch {
+    res.status(500).json({ error: "Could not prepare order lifecycle schema" });
+  }
+});
+
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("csr", "supervisor", "admin", "global_admin"));
 
 async function activeCsrShifts(tenantId: number) {

@@ -251,6 +251,42 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(migration.replace(/^--.*$/gm, "")).not.toMatch(/\b(UPDATE|DELETE|TRUNCATE|DROP)\b/i);
   });
 
+  it("repairs orders lifecycle schema drift before shift current and clock-in can query orders", () => {
+    const shifts = api("routes/shifts.ts");
+    expect(shifts).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "archived_at" timestamptz');
+    expect(shifts).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "voided_at" timestamptz');
+    expect(shifts).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_at" timestamptz');
+    expect(shifts).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz');
+    expect(shifts).toContain('CREATE INDEX IF NOT EXISTS "orders_archived_at_idx"');
+    expect(shifts).toContain('CREATE INDEX IF NOT EXISTS "orders_voided_at_idx"');
+    expect(shifts).toContain('CREATE INDEX IF NOT EXISTS "orders_cancelled_at_idx"');
+    expect(shifts).toContain('CREATE INDEX IF NOT EXISTS "orders_completed_at_idx"');
+    expect(shifts).toContain('"/shifts/current"');
+    expect(shifts).toContain('"/shifts/clock-in"');
+  });
+
+  it("repairs orders lifecycle schema drift before shift queue orders can query orders", () => {
+    const queue = api("routes/shift-queue.ts");
+    expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "archived_at" timestamptz');
+    expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "voided_at" timestamptz');
+    expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_at" timestamptz');
+    expect(queue).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz');
+    expect(queue).toContain('CREATE INDEX IF NOT EXISTS "orders_archived_at_idx"');
+    expect(queue).toContain('router.get("/shift-queue/orders"');
+  });
+
+  it("includes an idempotent non-destructive migration for orders lifecycle columns", () => {
+    const migration = src("lib/db/drizzle/0028_orders_lifecycle_schema_drift.sql");
+    for (const column of ["archived_at", "archived_by_user_id", "voided_at", "voided_by_user_id", "cancelled_at", "cancelled_by_user_id", "completed_at", "completed_by_user_id"]) {
+      expect(migration).toContain(`ADD COLUMN IF NOT EXISTS "${column}"`);
+    }
+    for (const indexName of ["orders_archived_at_idx", "orders_voided_at_idx", "orders_cancelled_at_idx", "orders_completed_at_idx"]) {
+      expect(migration).toContain(`CREATE INDEX IF NOT EXISTS "${indexName}"`);
+    }
+    expect(migration).toContain("Rollback notes only");
+    expect(migration.replace(/^--.*$/gm, "")).not.toMatch(/\b(UPDATE|DELETE|TRUNCATE|DROP)\b/i);
+  });
+
   it("requires explicit CSR setup acknowledgements before clock-in", () => {
     const shifts = api("routes/shifts.ts");
     const staff = platform("pages/staff.tsx");
