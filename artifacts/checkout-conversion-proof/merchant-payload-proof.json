@@ -1,0 +1,22 @@
+{
+  "route": "POST /api/orders/delivery-quote",
+  "result": 200,
+  "manifestItems": [
+    {
+      "name": "Safe Item",
+      "special_instructions": "Safe category",
+      "quantity": 1,
+      "price": 1000,
+      "size": "small",
+      "replacement_type": "contact_customer"
+    }
+  ],
+  "forbiddenInternalValuesAbsent": [
+    "Alavont Internal",
+    "Test LC",
+    "LC-TEST",
+    "merchant_sku",
+    "supplier",
+    "margin"
+  ]
+}

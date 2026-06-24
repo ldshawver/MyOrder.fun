@@ -68,6 +68,22 @@ vi.mock("../../lib/auth", () => ({
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
+const uberQuoteCalls: Array<{ manifestItems: unknown[] }> = [];
+vi.mock("../../lib/uberDirect", () => {
+  class UberDirectConfigError extends Error {}
+  class UberDirectApiError extends Error { status = 422; }
+  return {
+    hasUberDirectConfig: () => true,
+    getConfiguredPickupAddress: () => "123 Pickup St, Test City, CA",
+    getUberPickupAction: () => "default",
+    createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
+      uberQuoteCalls.push({ manifestItems: input.manifestItems });
+      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default" };
+    },
+    UberDirectConfigError,
+    UberDirectApiError,
+  };
+});
 vi.mock("../../lib/checkoutNormalizer", async () => {
   const { z } = await import("zod");
   class CheckoutMappingError extends Error {
@@ -86,15 +102,28 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       .object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })
       .strict(),
     CHECKOUT_TAX_RATE: 0.08,
+    getCheckoutTaxSettings: async () => ({ taxRate: 0.08 }),
     normalizeCheckoutCart: async () => ([
       {
         catalog_item_id: 1,
         source_type: "local_mapped",
         merchant_brand: "alavont",
-        catalog_display_name: "Test",
+        catalog_display_name: "Alavont Internal",
         merchant_name: "Test LC",
         merchant_sku: "LC-TEST",
-        receipt_alavont_name: "Test",
+        display_name: "Safe Item",
+        display_description: "Safe description",
+        display_category: "Safe category",
+        display_image: "safe.png",
+        merchant_brand_name: "Safe Brand",
+        marketing_copy: "Safe copy",
+        customer_safe_name: "Safe Item",
+        customer_safe_description: "Safe description",
+        customer_safe_category: "Safe category",
+        customer_safe_image: "safe.png",
+        upsell_copy: null,
+        promo_badges: [],
+        receipt_alavont_name: "Alavont Internal",
         receipt_lucifer_name: "Test LC",
         merchant_image_url: null,
         unit_price: 10,
@@ -266,6 +295,32 @@ function buildApp() {
   return app;
 }
 
+async function createConvertedOrder(app = buildApp()) {
+  const items = [{ catalogItemId: 1, quantity: 1 }];
+  const confirmation = {
+    acceptedAllSalesFinal: true as const,
+    confirmedAt: new Date().toISOString(),
+    legalDisclaimerText: "All sales are final.",
+    paymentMethod: "cash" as const,
+  };
+  const preview = await supertest(app)
+    .post("/api/orders/preview-conversion")
+    .send({ items, confirmation });
+  expect(preview.status).toBe(200);
+  const res = await supertest(app)
+    .post("/api/orders")
+    .send({
+      items,
+      shippingAddress: "x",
+      notes: "",
+      checkoutConfirmation: confirmation,
+      checkoutConversionToken: preview.body.checkoutConversionToken,
+      checkoutConversionSnapshot: preview.body,
+    });
+  expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+  return res;
+}
+
 function captureEvents(role: string, userId: number): { received: OrderEvent[]; teardown: () => void } {
   const received: OrderEvent[] = [];
   const fakeRes = {
@@ -293,22 +348,72 @@ beforeEach(() => {
     id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1,
   }];
   dbState.tenants = [{ id: 1 }];
-  dbState.catalog = [{ id: 1, name: "Test", price: "10.00", isAvailable: true, tenantId: 1 }];
+  dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
+  uberQuoteCalls.length = 0;
   _resetBus();
+});
+
+describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("POST /api/orders rejects unconverted carts with 422", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders")
+      .send({
+        items: [{ catalogItemId: 1, quantity: 1 }],
+        checkoutConfirmation: { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final.", paymentMethod: "cash" },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+  });
+
+  it("POST /api/orders/delivery-quote rejects unconverted provider payloads with 422", async () => {
+    mockActor = dbState.users[0]!;
+    const res = await supertest(buildApp())
+      .post("/api/orders/delivery-quote")
+      .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+    expect(uberQuoteCalls).toHaveLength(0);
+  });
+
+  it("POST /api/orders/delivery-quote accepts converted carts and sends Safe provider payload fields only", async () => {
+    mockActor = dbState.users[0]!;
+    const items = [{ catalogItemId: 1, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true as const, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final." };
+    const preview = await supertest(buildApp()).post("/api/orders/preview-conversion").send({ items, confirmation });
+    expect(preview.status).toBe(200);
+
+    const res = await supertest(buildApp())
+      .post("/api/orders/delivery-quote")
+      .send({
+        items,
+        dropoffAddress: "456 Dropoff St, Test City, CA",
+        checkoutConversionToken: preview.body.checkoutConversionToken,
+        checkoutConversionSnapshot: preview.body,
+        checkoutConfirmation: confirmation,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.provider).toBe("uber_direct");
+    expect(uberQuoteCalls).toHaveLength(1);
+    expect(uberQuoteCalls[0].manifestItems).toEqual([expect.objectContaining({ name: "Safe Item", special_instructions: "Safe category", quantity: 1, price: 1000 })]);
+    const payloadText = JSON.stringify(uberQuoteCalls[0].manifestItems);
+    expect(payloadText).not.toContain("Test LC");
+    expect(payloadText).not.toContain("LC-TEST");
+  });
 });
 
 describe("POST /api/orders — customer hourglass default 30 min", () => {
   it("stamps a 30-minute estimatedReadyAt and promisedMinutes=30 from defaults", async () => {
     mockActor = dbState.users[0]!; // customer
     const before = Date.now();
-    const res = await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
-    expect([200, 201]).toContain(res.status);
+    await createConvertedOrder();
     const inserted = dbState.orders[0]!;
     expect(inserted.promisedMinutes).toBe(30);
     const eta = new Date(inserted.estimatedReadyAt as Date).getTime();
@@ -320,9 +425,7 @@ describe("POST /api/orders — customer hourglass default 30 min", () => {
 describe("PATCH /api/orders/:id/eta — admin extends the hourglass", () => {
   it("updates promisedMinutes, recomputes estimatedReadyAt, and flags etaAdjustedBySupervisor", async () => {
     mockActor = dbState.users[0]!;
-    await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+    await createConvertedOrder();
     const orderId = dbState.orders[0]!.id as number;
 
     mockActor = dbState.users[2]!; // admin
@@ -343,9 +446,7 @@ describe("PATCH /api/orders/:id/eta — admin extends the hourglass", () => {
 describe("SSE event emission via the live route handlers", () => {
   it("POST /api/orders/:id/accept emits order.updated with reason='accepted' to admin subscribers", async () => {
     mockActor = dbState.users[0]!;
-    await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+    await createConvertedOrder();
     const orderId = dbState.orders[0]!.id as number;
 
     const adminCapture = captureEvents("admin", 999);
@@ -364,9 +465,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/mark-ready emits an order.ready SSE event", async () => {
     mockActor = dbState.users[0]!;
-    await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+    await createConvertedOrder();
     const orderId = dbState.orders[0]!.id as number;
 
     const adminCapture = captureEvents("admin", 999);
@@ -383,9 +482,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/accept rejects orders not in submitted state with 409", async () => {
     mockActor = dbState.users[0]!;
-    await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+    await createConvertedOrder();
     const orderId = dbState.orders[0]!.id as number;
     dbState.orders[0]!.fulfillmentStatus = "preparing";
     dbState.shifts = [{ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
@@ -398,9 +495,7 @@ describe("SSE event emission via the live route handlers", () => {
 
   it("POST /api/orders/:id/mark-ready is forbidden for CSRs", async () => {
     mockActor = dbState.users[0]!;
-    await supertest(buildApp())
-      .post("/api/orders")
-      .send({ items: [{ catalogItemId: 1, quantity: 1 }], shippingAddress: "x", notes: "" });
+    await createConvertedOrder();
     const orderId = dbState.orders[0]!.id as number;
 
     mockActor = dbState.users[1]!; // CSR

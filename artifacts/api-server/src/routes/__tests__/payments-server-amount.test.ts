@@ -65,6 +65,18 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
         catalog_display_name: "Alavont Tee",
         merchant_name: "LC Tee",
         merchant_sku: "LC-TEE-1",
+        display_name: "Safe Tee",
+        display_description: "Safe tee description",
+        display_category: "Safe category",
+        display_image: "safe-tee.png",
+        merchant_brand_name: "Safe Brand",
+        marketing_copy: "Safe copy",
+        customer_safe_name: "Safe Tee",
+        customer_safe_description: "Safe tee description",
+        customer_safe_category: "Safe category",
+        customer_safe_image: "safe-tee.png",
+        upsell_copy: null,
+        promo_badges: [],
         receipt_alavont_name: "Alavont Tee",
         receipt_lucifer_name: "LC Tee",
         merchant_image_url: null,
@@ -83,11 +95,19 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
     buildMerchantPayloadLines: () => [],
     buildReceiptLines: () => [],
   };
+
+
 });
 
 // Capture the args passed to buildStripeIntentPayload so the test can assert
 // that the server amount — not the client amount — was forwarded to Stripe.
 const stripePayloadCalls: Array<{ amount: number; lines: unknown[] }> = [];
+const verifiedConversionFields = {
+  legalDisclaimerAccepted: true,
+  finalConfirmationAt: new Date(Date.now() + 60_000),
+  checkoutConversionSnapshot: { converted: true },
+  checkoutConversionExpiresAt: new Date(Date.now() + 15 * 60_000),
+};
 vi.mock("../../lib/stripePayload", () => ({
   LUCIFER_CRUZ_STATEMENT_SUFFIX: "LCRUZ ORDER",
   buildStripeIntentPayload: (input: { orderId: number; amount: number; currency: string; lines: unknown[] }) => {
@@ -175,6 +195,7 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       total: "43.20",
       subtotal: "40.00",
       tax: "3.20",
+      ...verifiedConversionFields,
     });
     dbState.orderItems.push({ orderId: 555, catalogItemId: 50, quantity: 2 });
 
@@ -188,6 +209,49 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
     expect(stripePayloadCalls[0].amount).toBeCloseTo(43.2, 2);
   });
 
+    it("rejects unconverted tokenization requests with 422", async () => {
+    dbState.orders.push({
+      id: 557,
+      customerId: 1,
+      status: "pending",
+      paymentStatus: "unpaid",
+      total: "43.20",
+      subtotal: "40.00",
+      tax: "3.20",
+    });
+    dbState.orderItems.push({ orderId: 557, catalogItemId: 50, quantity: 2 });
+
+    const res = await supertest(makeApp())
+      .post("/api/payments/tokenize")
+      .send({ orderId: 557, amount: 43.2 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted before checkout|converted before payment/i);
+    expect(stripePayloadCalls).toHaveLength(0);
+  });
+
+  it("rejects unconverted payment confirmation requests with 422", async () => {
+    dbState.orders.push({ id: 558, customerId: 1, status: "pending", paymentStatus: "unpaid", total: "43.20" });
+
+    const res = await supertest(makeApp())
+      .post("/api/payments/558/confirm")
+      .send({ paymentIntentId: "pi_sandbox_unconverted" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+  });
+
+  it("rejects unconverted apply-credit requests with 422", async () => {
+    dbState.orders.push({ id: 559, customerId: 1, status: "pending", paymentStatus: "unpaid", total: "43.20" });
+
+    const res = await supertest(makeApp())
+      .post("/api/payments/559/apply-credit")
+      .send({ amount: 5 });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/converted/i);
+  });
+
   it("falls back to order.total when an order has no line items", async () => {
     dbState.orders.push({
       id: 556,
@@ -195,6 +259,7 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       status: "pending",
       paymentStatus: "unpaid",
       total: "100.00",
+      ...verifiedConversionFields,
     });
     // No order_items rows.
 

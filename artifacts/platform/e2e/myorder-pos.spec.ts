@@ -30,9 +30,22 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
     if (path === "/api/admin/settings") return json({ enabledProcessors: processors });
     if (path === "/api/orders/preview-conversion" && method === "POST") {
       return json({
+        conversionToken: "signed-conversion-token",
+        checkoutConversionToken: "signed-conversion-token",
         alavontCartSnapshot: [{ catalogItemId: 354, name: "Calm Drops", category: "Wellness" }],
         luciferCheckoutSnapshot: [{ catalogItemId: 354, name: "LC Safe Item", category: "Self Care", description: "Safe merchant description" }],
         checkoutConversionSnapshot: { lines: [{ catalogItemId: 354, merchantName: "LC Safe Item" }] },
+        pricingSnapshot: { subtotal: 24, tax: 0, total: 24, taxRate: 0 },
+        converted: {
+          brandName: "Lucifer Cruz",
+          headline: "Converted checkout",
+          zappyMessage: "Safe merchant checkout ready.",
+          paymentMethods: [
+            { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
+            { id: "stripe", label: "Stripe card", promoted: false },
+          ],
+          items: [{ catalogItemId: 354, displayName: "LC Safe Item", customerSafeName: "LC Safe Item", customerSafeDescription: "Safe merchant description", customerSafeCategory: "Self Care", customerSafeImage: "/safe-calm.png", displayCategory: "Self Care", displayImage: "/safe-calm.png", merchantBrandName: "Lucifer Cruz", marketingCopy: "Safe copy", quantity: 1, unitPrice: 24, lineSubtotal: 24 }],
+        },
         totals: { subtotal: 24, tax: 0, total: 24 },
       });
     }
@@ -60,8 +73,20 @@ test.describe("MyOrder.fun POS browser verification", () => {
     await expect(page.getByText(/LC Safe Item|merchant_sku|margin|supplier|box/i)).toHaveCount(0);
     await page.getByTestId("link-buy-now-354").click();
     await page.goto("/new-order");
+    await expect(page.getByTestId("button-preview-conversion")).toBeVisible();
+    await expect(page.getByTestId("button-submit-order")).toBeDisabled();
+    await page.screenshot({ path: "test-results/before-conversion-cart.png", fullPage: true });
+    await test.info().attach("before-conversion-cart", { path: "test-results/before-conversion-cart.png", contentType: "image/png" });
+    await page.screenshot({ path: "test-results/payment-disabled-before-conversion.png", fullPage: true });
+    await test.info().attach("payment-disabled-before-conversion", { path: "test-results/payment-disabled-before-conversion.png", contentType: "image/png" });
     await page.getByTestId("button-preview-conversion").click();
     await expect(page.getByText("LC Safe Item")).toBeVisible();
+    await expect(page.getByTestId("conversion-ready")).toBeVisible();
+    await expect(page.getByTestId("button-submit-order")).toBeEnabled();
+    await page.screenshot({ path: "test-results/after-conversion-cart.png", fullPage: true });
+    await test.info().attach("after-conversion-cart", { path: "test-results/after-conversion-cart.png", contentType: "image/png" });
+    await page.screenshot({ path: "test-results/payment-enabled-after-conversion.png", fullPage: true });
+    await test.info().attach("payment-enabled-after-conversion", { path: "test-results/payment-enabled-after-conversion.png", contentType: "image/png" });
     await page.goto("/orders/9001");
     await expect(page.getByTestId("button-pay")).toBeVisible();
     await expect(page.getByTestId("button-paypal")).toHaveCount(0);

@@ -16,7 +16,16 @@ const TokenPayload = z.object({ tenantId: z.number().int().positive(), userId: z
 export type CheckoutConversionTokenPayload = z.infer<typeof TokenPayload>;
 
 function secret(): string { return process.env.CHECKOUT_CONVERSION_SECRET || process.env.SESSION_SECRET || "dev-checkout-conversion-secret"; }
-export function hashConversionSnapshot(snapshot: unknown): string { return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"); }
+function stripTransportConversionFields(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const clone = { ...(value as Record<string, unknown>) };
+  delete clone.checkoutConversionToken;
+  delete clone.conversionToken;
+  delete clone.conversionExpiresAt;
+  delete clone.snapshotHash;
+  return clone;
+}
+export function hashConversionSnapshot(snapshot: unknown): string { return crypto.createHash("sha256").update(JSON.stringify(stripTransportConversionFields(snapshot))).digest("hex"); }
 export function signCheckoutConversion(payload: CheckoutConversionTokenPayload): string { const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url"); const sig = crypto.createHmac("sha256", secret()).update(encoded).digest("base64url"); return `${encoded}.${sig}`; }
 function parseToken(token: unknown): CheckoutConversionTokenPayload { if (typeof token !== "string" || !token.includes(".")) throw new CheckoutConversionRequiredError(); const [encoded, sig] = token.split("."); const expected = crypto.createHmac("sha256", secret()).update(encoded).digest("base64url"); if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) throw new CheckoutConversionRequiredError(); const parsed = TokenPayload.safeParse(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))); if (!parsed.success) throw new CheckoutConversionRequiredError(); return parsed.data; }
 function itemsKey(items: CartLineInputType[]): string { return JSON.stringify([...items].map(i => ({ catalogItemId: i.catalogItemId, quantity: i.quantity })).sort((a,b) => a.catalogItemId - b.catalogItemId)); }

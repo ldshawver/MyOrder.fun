@@ -59,3 +59,37 @@ jobs:
       - run: pnpm lint
       - run: pnpm lint:ratchet
       - run: pnpm test
+
+
+  checkout-conversion-proof:
+    name: checkout conversion proof artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.26.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: pnpm --filter @workspace/platform exec playwright install --with-deps chromium
+      - name: Generate checkout conversion proof artifacts
+        working-directory: artifacts/platform
+        run: pnpm exec playwright test --config playwright.config.ts --no-deps e2e/checkout-conversion-proof.spec.ts --project=chromium
+      - name: Upload checkout conversion proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkout-conversion-proof
+          if-no-files-found: error
+          path: |
+            artifacts/platform/test-results/before-conversion-cart.png
+            artifacts/platform/test-results/after-conversion-cart.png
+            artifacts/platform/test-results/payment-disabled-before-conversion.png
+            artifacts/platform/test-results/payment-enabled-after-conversion.png
+            artifacts/platform/test-results/merchant-payload-proof.json
+            artifacts/platform/playwright-report/
