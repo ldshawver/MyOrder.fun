@@ -213,7 +213,7 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
 function normalizeProductName(raw: string | null | undefined): string {
   return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
-function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedSafeName: string }>): ImportDuplicateWarning[] {
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedSafeName: string; normalizedName: string }>): ImportDuplicateWarning[] {
   const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   for (const p of prepared) {
@@ -221,7 +221,9 @@ function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typ
     const name = typeof p.values.name === "string" ? p.values.name : null;
     const skuKey = String(sku ?? "").trim().toLowerCase();
     if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
-    if (p.normalizedSafeName) byName.set(p.normalizedSafeName, [...(byName.get(p.normalizedSafeName) ?? []), { row: p.row, sku, name }]);
+    for (const nameKey of Array.from(new Set([p.normalizedSafeName, p.normalizedName].filter(Boolean)))) {
+      byName.set(nameKey, [...(byName.get(nameKey) ?? []), { row: p.row, sku, name }]);
+    }
   }
   return [
     ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
@@ -326,7 +328,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedSafeName: string }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedSafeName: string; normalizedName: string }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -368,6 +370,9 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       luciferCruzImageUrl: safeImageUrl,
       sku,
       merchantSku: sku,
+      price: checkoutPrice.toFixed(2),
+      regularPrice: regularPrice.toFixed(2),
+      compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null,
       isAvailable: !complianceHold,
       inventoryAmount: totalInventory,
       stockQuantity: totalInventory,
@@ -378,7 +383,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       merchantBrand: "alavont",
       updatedAt: new Date(),
     };
-    prepared.push({ row: rowNum, rec, inventory, par, normalizedSafeName: normalizeProductName(safeName), values: importValues, updateValues });
+    prepared.push({ row: rowNum, rec, inventory, par, normalizedSafeName: normalizeProductName(safeName), normalizedName: normalizeProductName(name), values: importValues, updateValues });
   }
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
@@ -386,14 +391,16 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   const byName = new Map<string, number>();
   for (const item of allTenantCatalog) {
     const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const nameKey = normalizeProductName(item.safeName ?? item.luciferCruzName ?? item.merchantName ?? item.customerSafeName ?? item.name);
+    const nameKeys = [item.safeName, item.luciferCruzName, item.merchantName, item.customerSafeName, item.name, item.alavontName]
+      .map(normalizeProductName)
+      .filter(Boolean);
     if (skuKey && !bySku.has(skuKey)) bySku.set(skuKey, item.id);
-    if (nameKey && !byName.has(nameKey)) byName.set(nameKey, item.id);
+    for (const nameKey of nameKeys) if (!byName.has(nameKey)) byName.set(nameKey, item.id);
   }
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedSafeName || w.rows.includes(p.row)) };
+    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName) ?? null;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedSafeName || w.key === p.normalizedName || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
   if (duplicateWarnings.length) {
@@ -410,7 +417,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       let updated = 0;
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName);
+        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName);
         if (existingId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId)));
           updated++;
