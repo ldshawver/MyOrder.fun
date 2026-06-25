@@ -249,6 +249,27 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
+  it("(3d.1) strict checkout conversion does not reject rows that only need safe name and description fallbacks", async () => {
+    mockDbReturn([
+      makeAlavontItem({
+        id: 100,
+        customerSafeName: null,
+        customerSafeDescription: null,
+        merchantCategory: "Production Merchant Category",
+        merchantImage: "https://merchant.example/safe-tee.jpg",
+      }),
+    ]);
+
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true);
+
+    expect(normalized[0]).toMatchObject({
+      customer_safe_name: "LC Premium Tee",
+      customer_safe_description: "Converted into a customer-ready branded checkout presentation.",
+      customer_safe_category: "Production Merchant Category",
+      customer_safe_image: "https://merchant.example/safe-tee.jpg",
+    });
+  });
+
   it("(3e) strict checkout conversion reports exactly missing safe category and image fields", async () => {
     mockDbReturn([
       makeAlavontItem({
