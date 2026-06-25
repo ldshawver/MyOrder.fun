@@ -270,7 +270,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
-  it("(3e) strict checkout conversion reports exactly missing safe category and image fields", async () => {
+  it("(3e) strict checkout conversion reports missing safe category but allows missing safe image", async () => {
     mockDbReturn([
       makeAlavontItem({
         id: 100,
@@ -293,7 +293,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
       name: "CheckoutMappingError",
       catalogItemId: 100,
       reason: "missing_safe_fields",
-      missingSafeFields: ["customer_safe_category", "customer_safe_image"],
+      missingSafeFields: ["customer_safe_category"],
     });
   });
 
