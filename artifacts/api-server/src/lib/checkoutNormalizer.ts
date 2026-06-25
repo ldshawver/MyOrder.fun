@@ -157,9 +157,10 @@ export async function normalizeCheckoutCart(
 
     // ── Universal Alavont → Lucifer Cruz enforcement ────────────────────────
     // Every line whose persisted merchant_brand is "alavont" MUST resolve to
-    // a complete Lucifer Cruz merchant identity (BOTH the LC display name
-    // AND a true LC merchant SKU) before we allow any downstream payment
-    // payload to be built. The `merchantProcessingMode` column is free-text
+    // a true LC merchant SKU before we allow any downstream payment payload
+    // to be built. The branded display name is resolved below through the
+    // canonical Safe/LC/merchant/Alavont/name fallback ladder.
+    // The `merchantProcessingMode` column is free-text
     // and not validated by an enum, so we deliberately do NOT gate on it —
     // the reviewer pinned this as the "all alavont items convert" invariant.
     // The only supported processing modes for Alavont items today are
@@ -173,10 +174,6 @@ export async function normalizeCheckoutCart(
           throw new CheckoutMappingError(line.catalogItemId, "unsupported_processing_mode",
             `Alavont catalog item ${line.catalogItemId} has unsupported merchant_processing_mode="${mode}". ` +
             `Refusing to build a payment until this row is reclassified.`);
-        }
-        if (!ci.luciferCruzName) {
-          throw new CheckoutMappingError(line.catalogItemId, "missing_lucifer_cruz_name",
-            `Alavont catalog item ${line.catalogItemId} has no lucifer_cruz_name — cannot be processed safely.`);
         }
         if (!ci.merchantSku) {
           throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
@@ -195,9 +192,6 @@ export async function normalizeCheckoutCart(
         if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
           logger.warn({ catalogItemId: line.catalogItemId, mode }, "Alavont item has unsupported processing mode — preview will use fallback display data");
         }
-        if (!ci.luciferCruzName) {
-          logger.warn({ catalogItemId: line.catalogItemId }, "Alavont item missing lucifer_cruz_name — preview will use Alavont display name");
-        }
       }
     }
 
@@ -210,22 +204,31 @@ export async function normalizeCheckoutCart(
     }
 
     const catalog_display_name = ci.alavontName ?? ci.name;
-    // For Alavont brand, ci.luciferCruzName is guaranteed non-null by the
-    // unconditional check above — never fall back to ci.name (which can be
-    // an Alavont string and would leak into the Stripe payload).
-    const merchant_name =
-      merchantBrand === "alavont"
-        ? ci.luciferCruzName!
-        : (ci.luciferCruzName ?? ci.name);
+    const branded_name = firstNonEmpty(
+      ci.safeName,
+      ci.luciferCruzName,
+      ci.merchantName,
+      ci.alavontName,
+      ci.name,
+    );
+    if (!branded_name) {
+      throw new CheckoutMappingError(
+        line.catalogItemId,
+        "missing_branded_checkout_name",
+        `Catalog item ${line.catalogItemId} has no usable branded checkout name fallback.`,
+        ["customer_safe_name"],
+      );
+    }
+    const merchant_name = branded_name;
     const receipt_alavont_name = ci.alavontName ?? ci.name;
-    const receipt_lucifer_name = ci.luciferCruzName ?? ci.name;
+    const receipt_lucifer_name = branded_name;
     const merchant_image_url =
       source_type === "woo"
         ? (ci.luciferCruzImageUrl ?? ci.imageUrl ?? null)
         : (ci.luciferCruzImageUrl ?? null);
-    // For Alavont brand, merchant_sku is guaranteed non-null and validated
-    // above — never fall back to ci.sku/ci.wooProductId (which may carry
-    // Alavont-side identifiers for that row).
+    // For Alavont brand in strict mode, merchant_sku is guaranteed non-null
+    // and validated above — never fall back to ci.sku/ci.wooProductId (which
+    // may carry Alavont-side identifiers for that row).
     const merchant_sku =
       merchantBrand === "alavont"
         ? ci.merchantSku!
@@ -241,9 +244,19 @@ export async function normalizeCheckoutCart(
       ci.luciferCruzDescription,
       "Converted into a customer-ready branded checkout presentation.",
     ) ?? "Converted into a customer-ready branded checkout presentation.";
-    const customer_safe_name = firstNonEmpty(ci.safeName, ci.customerSafeName, ci.luciferCruzName, ci.name);
-    const customer_safe_description = firstNonEmpty(ci.safeDescription, ci.customerSafeDescription, ci.description, ci.displayDescription, "Converted into a customer-ready branded checkout presentation.");
-    const customer_safe_category = firstNonEmpty(ci.safeCategory, ci.merchantCategory, ci.luciferCruzCategory, ci.displayCategory, ci.category);
+    const customer_safe_name = branded_name;
+    const customer_safe_description = firstNonEmpty(
+      ci.safeDescription,
+      ci.luciferCruzDescription,
+      ci.merchantDescription,
+      ci.description,
+    );
+    const customer_safe_category = firstNonEmpty(
+      ci.safeCategory,
+      ci.luciferCruzCategory,
+      ci.merchantCategory,
+      ci.category,
+    );
     const customer_safe_image = firstNonEmpty(ci.safeImageUrl, ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
