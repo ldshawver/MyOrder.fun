@@ -102,7 +102,12 @@ export class CheckoutMappingError extends Error {
   }
 }
 
-function missingSafeFieldNames(fields: Record<string, string | null>): string[] {
+function missingSafeFieldNames(fields: {
+  customer_safe_name: string | null;
+  customer_safe_description: string | null;
+  customer_safe_category: string | null;
+  customer_safe_image: string | null;
+}): string[] {
   return Object.entries(fields)
     .filter(([, value]) => !value?.trim())
     .map(([field]) => field);
@@ -243,6 +248,8 @@ export async function normalizeCheckoutCart(
     const customer_safe_image = firstNonEmpty(ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
+        customer_safe_name,
+        customer_safe_description,
         customer_safe_category,
         customer_safe_image,
       });
