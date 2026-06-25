@@ -236,8 +236,8 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
         id: 100,
         safeName: "Customer Safe Tee",
         safeDescription: "Customer-safe production description",
-        merchantCategory: "Production Merchant Category",
-        merchantImage: "https://merchant.example/safe-tee.jpg",
+        safeCategory: "Production Safe Category",
+        safeImageUrl: "https://merchant.example/safe-tee.jpg",
         luciferCruzCategory: null,
         luciferCruzImageUrl: null,
         displayCategory: "Display fallback category",
@@ -250,30 +250,28 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     expect(normalized[0]).toMatchObject({
       customer_safe_name: "Customer Safe Tee",
       customer_safe_description: "Customer-safe production description",
-      customer_safe_category: "Production Merchant Category",
+      customer_safe_category: "Production Safe Category",
       customer_safe_image: "https://merchant.example/safe-tee.jpg",
     });
   });
 
-  it("(3d.1) strict checkout conversion does not reject rows that only need safe name and description fallbacks", async () => {
+  it("(3d.1) strict checkout conversion rejects rows missing canonical safe fields instead of using fallbacks", async () => {
     mockDbReturn([
       makeAlavontItem({
         id: 100,
         safeName: null,
         safeDescription: null,
-        merchantDescription: "Customer-safe merchant description",
-        merchantCategory: "Production Merchant Category",
-        merchantImage: "https://merchant.example/safe-tee.jpg",
+        safeCategory: "Production Safe Category",
       }),
     ]);
 
-    const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true);
-
-    expect(normalized[0]).toMatchObject({
-      customer_safe_name: "LC Premium Tee",
-      customer_safe_description: "Customer-safe merchant description",
-      customer_safe_category: "Production Merchant Category",
-      customer_safe_image: "https://merchant.example/safe-tee.jpg",
+    await expect(
+      normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }], undefined, true, 1, true),
+    ).rejects.toMatchObject({
+      name: "CheckoutMappingError",
+      catalogItemId: 100,
+      reason: "missing_safe_fields",
+      missingSafeFields: ["customer_safe_name", "customer_safe_description"],
     });
   });
 
@@ -283,6 +281,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
         id: 100,
         safeName: "Customer Safe Tee",
         safeDescription: "Customer-safe production description",
+        safeCategory: null,
         merchantCategory: null,
         luciferCruzCategory: null,
         displayCategory: null,
@@ -380,23 +379,20 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     expect(payload.metadata.merchantSkus).toBe("cid:88");
   });
 
-  it("(3e) Alavont row with an UNSUPPORTED merchantProcessingMode still 422s — conversion is unconditional on brand", async () => {
-    // Reviewer pin: a malicious or drifted row can carry any free-text
-    // processing mode. The normalizer must NOT silently fall through to a
-    // payment payload — Alavont brand always requires LC mapping enforcement.
+  it("(3e) Alavont row with an UNSUPPORTED merchantProcessingMode still converts from safe fields", async () => {
     mockDbReturn([
-      makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont" }),
+      makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont", safeName: "Safe Tee", safeDescription: "Safe description", safeCategory: "Safe category" }),
     ]);
-    await expect(
-      normalizeCheckoutCart([{ catalogItemId: 510, quantity: 1 }])
-    ).rejects.toMatchObject({
-      name: "CheckoutMappingError",
-      catalogItemId: 510,
-      reason: "unsupported_processing_mode",
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 510, quantity: 1 }], undefined, true, 1, true);
+    expect(normalized[0]).toMatchObject({
+      customer_safe_name: "Safe Tee",
+      customer_safe_description: "Safe description",
+      customer_safe_category: "Safe category",
+      merchant_sku: "LC-SKU-100",
     });
   });
 
-  it("(3f) Alavont row with mode='comp_only' may use branded name fallbacks but still requires merchant_sku", async () => {
+  it("(3f) Alavont row with mode='comp_only' generates a safe SKU when merchant_sku is missing", async () => {
     mockDbReturn([
       makeAlavontItem({ id: 520, merchantProcessingMode: "comp_only", luciferCruzName: null, merchantName: "Merchant Comp Fallback" }),
     ]);
@@ -406,27 +402,22 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({ id: 521, merchantProcessingMode: "comp_only", merchantSku: null }),
     ]);
-    await expect(
-      normalizeCheckoutCart([{ catalogItemId: 521, quantity: 1 }])
-    ).rejects.toMatchObject({
-      name: "CheckoutMappingError",
-      catalogItemId: 521,
-      reason: "missing_merchant_sku",
-    });
+    const missingSku = await normalizeCheckoutCart([{ catalogItemId: 521, quantity: 1 }]);
+    expect(missingSku[0].merchant_sku).toBe("LC-521");
   });
 
-  it("(3d) Alavont-shaped merchant_sku in the DB is rejected at the normalizer layer", async () => {
-    // Row was wrongly remapped — merchant_sku still carries the Alavont id.
+  it("(3d) Alavont-shaped merchant_sku in the DB converts with a generated safe merchant SKU", async () => {
     mockDbReturn([
-      makeAlavontItem({ id: 410, merchantSku: "ALV-XYZ-100" }),
+      makeAlavontItem({ id: 410, merchantSku: "ALV-XYZ-100", safeName: "Safe 410", safeDescription: "Safe description", safeCategory: "Safe category" }),
     ]);
-    await expect(
-      normalizeCheckoutCart([{ catalogItemId: 410, quantity: 1 }])
-    ).rejects.toMatchObject({
-      name: "CheckoutMappingError",
-      catalogItemId: 410,
-      reason: "alavont_shaped_merchant_sku",
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 410, quantity: 1 }], undefined, true, 1, true);
+    expect(normalized[0]).toMatchObject({
+      customer_safe_name: "Safe 410",
+      merchant_sku: "LC-410",
     });
+    const payload = buildStripeIntentPayload({ orderId: 410, amount: 20, currency: "usd", lines: normalized });
+    expect(JSON.stringify(payload)).not.toContain("ALV-XYZ-100");
+    expect(payload.metadata.merchantSkus).toBe("LC-410");
   });
 
   it("(4b) leak detector flags Alavont strings if a payload were synthesized incorrectly", () => {

@@ -103,14 +103,13 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       .strict(),
     CHECKOUT_TAX_RATE: 0.08,
     getCheckoutTaxSettings: async () => ({ taxRate: 0.08 }),
-    normalizeCheckoutCart: async () => ([
-      {
-        catalog_item_id: 1,
+    normalizeCheckoutCart: async (items: Array<{ catalogItemId: number; quantity: number }> = [{ catalogItemId: 1, quantity: 1 }]) => (items.length ? items : [{ catalogItemId: 1, quantity: 1 }]).map((item) => ({
+        catalog_item_id: item.catalogItemId,
         source_type: "local_mapped",
         merchant_brand: "alavont",
         catalog_display_name: "Alavont Internal",
         merchant_name: "Test LC",
-        merchant_sku: "LC-TEST",
+        merchant_sku: `LC-${item.catalogItemId}`,
         display_name: "Safe Item",
         display_description: "Safe description",
         display_category: "Safe category",
@@ -127,16 +126,15 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
         receipt_lucifer_name: "Test LC",
         merchant_image_url: null,
         unit_price: 10,
-        quantity: 1,
-        line_subtotal: 10,
+        quantity: item.quantity,
+        line_subtotal: 10 * item.quantity,
         alavont_id: null,
         woo_product_id: null,
         woo_variation_id: null,
         lab_name: null,
         receipt_name: null,
         label_name: null,
-      },
-    ]),
+      })),
     computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
       const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
@@ -311,6 +309,7 @@ function buildApp() {
 
 
 const convertedItems = [{ catalogItemId: 1, quantity: 1 }];
+const alavontShapedSkuRegressionItems = [{ catalogItemId: 440, quantity: 1 }];
 const checkoutConfirmation = {
   acceptedAllSalesFinal: true,
   confirmedAt: "2026-06-24T00:00:00.000Z",
@@ -402,6 +401,40 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
+    expect(dbState.orders).toHaveLength(1);
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(checkoutConversionToken).toEqual(expect.any(String));
+    expect(conversionExpiresAt).toEqual(expect.any(String));
+    expect(snapshotHash).toEqual(expect.any(String));
+  });
+
+
+  it("POST /api/cart/convert accepts catalogItemId 440 and POST /api/orders creates Cash order with safe merchant SKU", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const converted = await supertest(app)
+      .post("/api/cart/convert")
+      .send({ items: alavontShapedSkuRegressionItems, confirmation: checkoutConfirmation });
+
+    expect(converted.status).toBe(200);
+    expect(converted.body.cartSnapshot[0].merchantSku).toBe("LC-440");
+    expect(converted.body.cartSnapshot[0].merchantSku).not.toMatch(/ALV|ALAVONT/i);
+
+    const { conversionToken, checkoutConversionToken, conversionExpiresAt, snapshotHash, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
+    const order = await supertest(app)
+      .post("/api/orders")
+      .send({
+        items: alavontShapedSkuRegressionItems,
+        shippingAddress: "x",
+        notes: "",
+        paymentMethod: "cash",
+        selectedPaymentMethod: "cash",
+        checkoutConversionToken: conversionToken,
+        checkoutConversionSnapshot,
+        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+      });
+
+    expect([200, 201]).toContain(order.status);
     expect(dbState.orders).toHaveLength(1);
     expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
