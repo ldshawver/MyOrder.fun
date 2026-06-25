@@ -228,6 +228,9 @@ describe("safe catalog import/export", () => {
     expect(res.body.inserted).toBe(1);
     expect(state.catalog.filter(item => item.name === "Red Brick")).toHaveLength(2);
     expect(state.catalog).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-UNIQUE", name: "Unique" })]));
+    const { db } = await import("@workspace/db");
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(vi.mocked(db.execute).mock.calls.map(([q]) => String(q)).join("\n")).not.toMatch(/catalog_item_duplicate_(?:repair_archive|map)|DELETE FROM catalog_items/i);
   });
 
   it("does not query existing catalog rows when no valid SKU values were prepared", async () => {
