@@ -31,26 +31,6 @@ vi.mock("drizzle-orm", () => {
 
 const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[]; executeRowsObject: boolean; failBalanceInsertAt: number | null; balanceInsertAttempts: number } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [], executeRowsObject: false, failBalanceInsertAt: null, balanceInsertAttempts: 0 };
 
-function repairMockCatalogDuplicates() {
-  const canonicalByName = new Map<string, Record<string, unknown>>();
-  const duplicateIds = new Set<unknown>();
-  for (const item of [...state.catalog].sort((a, b) => Number(a.id) - Number(b.id))) {
-    const key = String(item.alavontName ?? item.name ?? "").trim().toLowerCase();
-    if (!key) continue;
-    const existing = canonicalByName.get(key);
-    if (!existing) canonicalByName.set(key, item);
-    else {
-      duplicateIds.add(item.id);
-      for (const balance of state.balances) {
-        if (balance.productId === item.id) balance.productId = existing.id;
-      }
-      for (const tmpl of state.inventory) {
-        if (tmpl.catalogItemId === item.id) tmpl.catalogItemId = existing.id;
-      }
-    }
-  }
-  state.catalog = state.catalog.filter(item => !duplicateIds.has(item.id));
-}
 
 vi.mock("@workspace/db", () => {
   const col = (name: string) => name;
@@ -75,7 +55,7 @@ vi.mock("@workspace/db", () => {
     then: (resolve: (v: unknown) => void) => resolve(rows),
   });
   const tableRows = (table: { _name?: string } | undefined, selection?: unknown) => {
-    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
+    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, safeName: r.safeName, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
     if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id, tenantId: r.tenantId, catalogItemId: r.catalogItemId })) : state.inventory;
     if (table?._name === "inventory_locations") return state.locations;
     if (table?._name === "inventory_balances") return selection ? state.balances.map(r => ({ id: r.id, tenantId: r.tenantId, productId: r.productId, locationId: r.locationId })) : state.balances;
@@ -105,7 +85,6 @@ vi.mock("@workspace/db", () => {
     execute: vi.fn((q: unknown) => {
       const text = String(q);
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
-      if (text.includes("catalog_item_duplicate_map")) { repairMockCatalogDuplicates(); return Promise.resolve(wrap([])); }
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
       return Promise.resolve(wrap([]));
@@ -146,12 +125,12 @@ describe("safe catalog import/export", () => {
     expect(res.body.requiresConfirmation).toBe(true);
     expect(state.catalog).toHaveLength(0);
   });
-  it("imports catalog and inventory/par together in a transaction when confirmed", async () => {
+  it("imports a new catalog product in a transaction when confirmed", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
     expect(state.catalog[0]).toMatchObject({ tenantId: 1, sku: "SKU-1", price: "9.99", regularPrice: "12.50" });
-    expect(state.balances).toEqual(expect.arrayContaining([expect.objectContaining({ productId: 1, locationId: 1, quantityOnHand: "1.000" }), expect.objectContaining({ productId: 1, locationId: 4, quantityOnHand: "9.000" })]));
+    expect(state.balances).toHaveLength(0);
     const { db } = await import("@workspace/db");
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
@@ -168,11 +147,11 @@ describe("safe catalog import/export", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
-    expect(res.body.balanceUpserts).toBe(4);
-    expect(state.balances).toHaveLength(4);
+    expect(res.body.updated).toBe(0);
+    expect(state.balances).toHaveLength(0);
   });
 
-  it("imports 30+ SKUs using inArray instead of tuple-expanded ANY SQL", async () => {
+  it("imports 30+ SKUs without tuple-expanded ANY SQL", async () => {
     state.executeRowsObject = true;
     const rows = Array.from({ length: 35 }, (_, i) => [
       "10.00", "8.00", "true", "Cat", `Name ${i}`, "https://example.com/a.jpg", "Desc", `SKU-${i}`,
@@ -182,33 +161,20 @@ describe("safe catalog import/export", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
-    expect(res.body.balanceUpserts).toBe(140);
     expect(state.catalog).toHaveLength(35);
     expect(state.catalog.every(item => Number(item.stockQuantity) === 10 && Number(item.inventoryAmount) === 10)).toBe(true);
-    expect(state.balances).toHaveLength(140);
-    expect(state.balances).toEqual(expect.arrayContaining([
-      expect.objectContaining({ locationId: 1, quantityOnHand: "1.000" }),
-      expect.objectContaining({ locationId: 2, quantityOnHand: "2.000" }),
-      expect.objectContaining({ locationId: 3, quantityOnHand: "3.000" }),
-      expect.objectContaining({ locationId: 4, quantityOnHand: "4.000" }),
-    ]));
-    expect(vi.mocked(inArray)).toHaveBeenCalledWith("sku", expect.arrayContaining(["SKU-0", "SKU-34"]));
-    const skuLookup = vi.mocked(inArray).mock.calls.find(([column, values]) => column === "sku" && Array.isArray(values) && values.length === 35);
-    expect(skuLookup?.[1]).toHaveLength(35);
+    expect(state.balances).toHaveLength(0);
     const sqlTexts = vi.mocked(sql).mock.calls.map(([strings]) => Array.from(strings as TemplateStringsArray).join(""));
     expect(sqlTexts.some(text => /ANY\s*\(\s*\(/i.test(text))).toBe(false);
     expect(sqlTexts.some(text => /sku.*ANY/i.test(text))).toBe(false);
   });
 
 
-  it("rolls back catalog and inventory changes when confirmed import fails inside the transaction", async () => {
-    state.executeRowsObject = true;
-    state.failBalanceInsertAt = 2;
+  it("does not create inventory rows during confirmed catalog import", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
 
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain("no catalog/inventory changes were committed");
-    expect(state.catalog).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(state.catalog).toHaveLength(1);
     expect(state.inventory).toHaveLength(0);
     expect(state.balances).toHaveLength(0);
   });
@@ -231,7 +197,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(0);
   });
 
-  it("repairs existing Product Master duplicates before import and still creates 140 inventory balances for 35 products", async () => {
+  it("leaves unrelated existing duplicates untouched while inserting new products", async () => {
     state.executeRowsObject = true;
     state.catalog.push({ id: 1, tenantId: 1, sku: "DUP-A", name: "Duplicate Product", alavontName: "Duplicate Product" });
     state.catalog.push({ id: 2, tenantId: 1, sku: "DUP-B", name: "Duplicate Product", alavontName: "Duplicate Product" });
@@ -245,13 +211,12 @@ describe("safe catalog import/export", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
-    expect(res.body.balanceUpserts).toBe(140);
-    expect(state.catalog.filter(item => item.name === "Duplicate Product")).toHaveLength(1);
-    expect(state.balances.filter(balance => String(balance.productId).startsWith("FRESH"))).toHaveLength(0);
-    expect(state.balances.filter(balance => balance.productId !== 1)).toHaveLength(140);
+    expect(state.catalog.filter(item => item.name === "Duplicate Product")).toHaveLength(2);
+    expect(state.balances).toEqual([expect.objectContaining({ productId: 2, quantityOnHand: "5.000" })]);
+    expect(state.catalog).toHaveLength(37);
   });
 
-  it("repairs existing catalog duplicates instead of blocking an otherwise valid import", async () => {
+  it("does not repair unrelated duplicates and still inserts an unrelated product", async () => {
     state.catalog.push({ id: 1, tenantId: 1, sku: "A", name: "Red Brick", alavontName: "Red Brick" });
     state.catalog.push({ id: 2, tenantId: 1, sku: "B", name: "Red Brick", alavontName: "Red Brick" });
     const csv = `${headers}
@@ -261,7 +226,7 @@ describe("safe catalog import/export", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
-    expect(state.catalog.filter(item => item.name === "Red Brick")).toHaveLength(1);
+    expect(state.catalog.filter(item => item.name === "Red Brick")).toHaveLength(2);
     expect(state.catalog).toEqual(expect.arrayContaining([expect.objectContaining({ sku: "SKU-UNIQUE", name: "Unique" })]));
   });
 
@@ -274,7 +239,7 @@ describe("safe catalog import/export", () => {
     expect(vi.mocked(inArray).mock.calls.some(([column]) => column === "sku")).toBe(false);
   });
 
-  it("uploading the same file twice updates the original product, PAR values, and preserves inventory rows", async () => {
+  it("uploading the same file twice updates the original product row and preserves inventory references", async () => {
     const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
     expect(first.status).toBe(200);
     const productCount = state.catalog.length;
@@ -287,10 +252,11 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.balances).toEqual(expect.arrayContaining([expect.objectContaining({ productId: 1, locationId: 1, quantityOnHand: "7.000", parLevel: "4.00" })]));
+    expect(state.catalog[0]).toMatchObject({ safeName: "Safe", safeDescription: "Safe desc", safeCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
+    expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
-  it("dry-run preview shows old and matched product ids, sku, name, PAR values, and duplicate warnings", async () => {
+  it("dry-run preview matches changed SKU by normalized product name", async () => {
     state.catalog.push({ id: 6, tenantId: 1, sku: "RB-1", name: "Red Brick", alavontName: "Red Brick" });
     const csv = `${headers}\n10.00,,false,Cat,Red Brick,https://example.com/a.jpg,Desc,RB-NEW,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,1,0,0,0,5,0,0,0\n`;
     const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
