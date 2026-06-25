@@ -120,10 +120,20 @@ function inferMerchantBrand(ci: typeof catalogItemsTable.$inferSelect): "alavont
   return ci.isWooManaged ? "lucifer_cruz" : "alavont";
 }
 
+function looksLikeAlavontSku(value: string | null | undefined, alavontId?: string | null): boolean {
+  const sku = value?.trim();
+  if (!sku) return false;
+  return (alavontId?.trim() ? sku === alavontId.trim() : false) || /^(?:ALV|ALAVONT)[-_]/i.test(sku);
+}
+
+function generatedSafeMerchantSku(catalogItemId: number): string {
+  return `LC-${catalogItemId}`;
+}
+
 export async function normalizeCheckoutCart(
   rawLines: CartLineInputType[],
   receiptMode?: string,
-  strictMode = true,
+  _strictMode = true,
   tenantId?: number,
   requireCompleteSafeFields = false,
 ): Promise<NormalizedCartLine[]> {
@@ -155,43 +165,16 @@ export async function normalizeCheckoutCart(
     const isWooManaged = ci.isWooManaged === true;
     const source_type: "local_mapped" | "woo" = isWooManaged ? "woo" : "local_mapped";
 
-    // ── Universal Alavont → Lucifer Cruz enforcement ────────────────────────
-    // Every line whose persisted merchant_brand is "alavont" MUST resolve to
-    // a true LC merchant SKU before we allow any downstream payment payload
-    // to be built. The branded display name is resolved below through the
-    // canonical Safe/LC/merchant/Alavont/name fallback ladder.
-    // The `merchantProcessingMode` column is free-text
-    // and not validated by an enum, so we deliberately do NOT gate on it —
-    // the reviewer pinned this as the "all alavont items convert" invariant.
-    // The only supported processing modes for Alavont items today are
-    // "mapped_lucifer" and "comp_only"; anything else is a config drift and
-    // is hard-failed below.
+    // ── Universal Alavont → safe checkout enforcement ───────────────────────
+    // Alavont-branded catalog rows are converted from canonical Safe fields.
+    // A merchant SKU that still looks like an Alavont identifier is data drift,
+    // but it must not block conversion when Safe fields are present; downstream
+    // payloads receive a generated LC-{catalogItemId} SKU instead.
     if (merchantBrand === "alavont") {
       const mode = ci.merchantProcessingMode ?? "mapped_lucifer";
       const SUPPORTED_ALAVONT_MODES = new Set(["mapped_lucifer", "comp_only"]);
-      if (strictMode) {
-        if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
-          throw new CheckoutMappingError(line.catalogItemId, "unsupported_processing_mode",
-            `Alavont catalog item ${line.catalogItemId} has unsupported merchant_processing_mode="${mode}". ` +
-            `Refusing to build a payment until this row is reclassified.`);
-        }
-        if (!ci.merchantSku) {
-          throw new CheckoutMappingError(line.catalogItemId, "missing_merchant_sku",
-            `Alavont catalog item ${line.catalogItemId} has no merchant_sku — Lucifer Cruz mapping is incomplete.`);
-        }
-        if (
-          (ci.alavontId && ci.merchantSku === ci.alavontId) ||
-          /^(?:ALV|ALAVONT)[-_]/i.test(ci.merchantSku)
-        ) {
-          throw new CheckoutMappingError(line.catalogItemId, "alavont_shaped_merchant_sku",
-            `Alavont catalog item ${line.catalogItemId} has merchant_sku "${ci.merchantSku}" that looks like an Alavont identifier. ` +
-            `Remap to a true Lucifer Cruz SKU before processing payments.`);
-        }
-      } else {
-        // Preview mode: log warnings but allow conversion with fallback data.
-        if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
-          logger.warn({ catalogItemId: line.catalogItemId, mode }, "Alavont item has unsupported processing mode — preview will use fallback display data");
-        }
+      if (!SUPPORTED_ALAVONT_MODES.has(mode)) {
+        logger.warn({ catalogItemId: line.catalogItemId, mode }, "Alavont item has unsupported processing mode — safe checkout conversion will use canonical Safe fields");
       }
     }
 
@@ -204,8 +187,12 @@ export async function normalizeCheckoutCart(
     }
 
     const catalog_display_name = ci.alavontName ?? ci.name;
+    const safeName = firstNonEmpty(ci.safeName);
+    const safeDescription = firstNonEmpty(ci.safeDescription);
+    const safeCategory = firstNonEmpty(ci.safeCategory);
+    const safeImageUrl = firstNonEmpty(ci.safeImageUrl);
     const branded_name = firstNonEmpty(
-      ci.safeName,
+      safeName,
       ci.luciferCruzName,
       ci.merchantName,
       ci.alavontName,
@@ -226,12 +213,14 @@ export async function normalizeCheckoutCart(
       source_type === "woo"
         ? (ci.luciferCruzImageUrl ?? ci.imageUrl ?? null)
         : (ci.luciferCruzImageUrl ?? null);
-    // For Alavont brand in strict mode, merchant_sku is guaranteed non-null
-    // and validated above — never fall back to ci.sku/ci.wooProductId (which
-    // may carry Alavont-side identifiers for that row).
+    // Never expose an Alavont-shaped SKU to merchant/provider payloads. When
+    // the persisted Alavont row has a missing or Alavont-shaped merchant SKU,
+    // synthesize a safe merchant SKU from the server-side catalog id.
     const merchant_sku =
       merchantBrand === "alavont"
-        ? ci.merchantSku!
+        ? (looksLikeAlavontSku(ci.merchantSku, ci.alavontId) || !firstNonEmpty(ci.merchantSku)
+            ? generatedSafeMerchantSku(ci.id)
+            : firstNonEmpty(ci.merchantSku))
         : (ci.merchantSku ?? ci.wooProductId ?? ci.sku ?? null);
     const display_name = firstNonEmpty(ci.alavontName, ci.displayName, ci.name) ?? ci.name;
     const display_description = firstNonEmpty(ci.alavontDescription, ci.displayDescription, ci.description) ?? "Curated by Zappy for a premium checkout experience.";
@@ -246,23 +235,23 @@ export async function normalizeCheckoutCart(
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
     const customer_safe_description = firstNonEmpty(
-      ci.safeDescription,
+      safeDescription,
       ci.luciferCruzDescription,
       ci.merchantDescription,
       ci.description,
     );
     const customer_safe_category = firstNonEmpty(
-      ci.safeCategory,
+      safeCategory,
       ci.luciferCruzCategory,
       ci.merchantCategory,
       ci.category,
     );
-    const customer_safe_image = firstNonEmpty(ci.safeImageUrl, ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
+    const customer_safe_image = firstNonEmpty(safeImageUrl, ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
-        customer_safe_name,
-        customer_safe_description,
-        customer_safe_category,
+        customer_safe_name: safeName,
+        customer_safe_description: safeDescription,
+        customer_safe_category: safeCategory,
       });
       if (missingSafeFields.length > 0) {
         throw new CheckoutMappingError(
