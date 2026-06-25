@@ -34,11 +34,11 @@ describe("checkout conversion gate unit invariants", () => {
 
 describe("safe merchant payload validator", () => {
   it("rejects missing safe fields", () => {
-    expect(() => assertSafeMerchantLines([{ ...safeLine, customer_safe_category: "", customer_safe_image: "" }])).toThrow("Missing safe merchant field: customer_safe_category, customer_safe_image");
+    expect(() => assertSafeMerchantLines([{ ...safeLine, customer_safe_category: "", customer_safe_image: "" }])).toThrow("Missing safe merchant field: customer_safe_category");
     try {
       assertSafeMerchantLines([{ ...safeLine, customer_safe_category: "", customer_safe_image: "" }]);
     } catch (error) {
-      expect(error).toMatchObject({ missingSafeFields: ["customer_safe_category", "customer_safe_image"] });
+      expect(error).toMatchObject({ missingSafeFields: ["customer_safe_category"] });
     }
   });
 
@@ -47,5 +47,11 @@ describe("safe merchant payload validator", () => {
     expect(payload[0]).toMatchObject({ name: "Safe Only", description: "Safe Description", category: "Safe Category", image_url: "safe.png" });
     expect(JSON.stringify(payload)).not.toContain("Alavont OG");
     expect(JSON.stringify(payload)).not.toContain("Alavont private");
+  });
+
+  it("allows missing safe image", () => {
+    expect(() => assertSafeMerchantLines([{ ...safeLine, customer_safe_image: null }])).not.toThrow();
+    const payload = buildSafeMerchantPayloadLines([{ ...safeLine, customer_safe_image: null }]);
+    expect(payload[0].image_url).toBeNull();
   });
 });

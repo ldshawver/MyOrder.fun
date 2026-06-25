@@ -37,7 +37,7 @@ export interface NormalizedCartLine {
   customer_safe_name: string;
   customer_safe_description: string;
   customer_safe_category: string;
-  customer_safe_image: string;
+  customer_safe_image: string | null;
   upsell_copy: string | null;
   promo_badges: string[];
   receipt_alavont_name: string;
@@ -106,7 +106,6 @@ function missingSafeFieldNames(fields: {
   customer_safe_name: string | null;
   customer_safe_description: string | null;
   customer_safe_category: string | null;
-  customer_safe_image: string | null;
 }): string[] {
   return Object.entries(fields)
     .filter(([, value]) => !value?.trim())
@@ -242,16 +241,15 @@ export async function normalizeCheckoutCart(
       ci.luciferCruzDescription,
       "Converted into a customer-ready branded checkout presentation.",
     ) ?? "Converted into a customer-ready branded checkout presentation.";
-    const customer_safe_name = firstNonEmpty(ci.customerSafeName);
-    const customer_safe_description = firstNonEmpty(ci.customerSafeDescription);
-    const customer_safe_category = firstNonEmpty(ci.merchantCategory, ci.luciferCruzCategory, ci.displayCategory, ci.category);
-    const customer_safe_image = firstNonEmpty(ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
+    const customer_safe_name = firstNonEmpty(ci.safeName, ci.customerSafeName, ci.luciferCruzName, ci.name);
+    const customer_safe_description = firstNonEmpty(ci.safeDescription, ci.customerSafeDescription, ci.description, ci.displayDescription, "Converted into a customer-ready branded checkout presentation.");
+    const customer_safe_category = firstNonEmpty(ci.safeCategory, ci.merchantCategory, ci.luciferCruzCategory, ci.displayCategory, ci.category);
+    const customer_safe_image = firstNonEmpty(ci.safeImageUrl, ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
         customer_safe_name,
         customer_safe_description,
         customer_safe_category,
-        customer_safe_image,
       });
       if (missingSafeFields.length > 0) {
         throw new CheckoutMappingError(
@@ -279,9 +277,9 @@ export async function normalizeCheckoutCart(
       merchant_brand_name,
       marketing_copy,
       customer_safe_name: customer_safe_name ?? merchant_name,
-      customer_safe_description: customer_safe_description ?? (ci.luciferCruzDescription ?? marketing_copy),
-      customer_safe_category: customer_safe_category ?? (ci.luciferCruzCategory ?? "Safe Checkout"),
-      customer_safe_image: customer_safe_image ?? (ci.luciferCruzImageUrl ?? "safe-checkout.png"),
+      customer_safe_description: customer_safe_description ?? marketing_copy,
+      customer_safe_category: customer_safe_category ?? "Safe Checkout",
+      customer_safe_image,
       upsell_copy: firstNonEmpty(ci.upsellCopy),
       promo_badges: ci.promoBadges ?? [],
       receipt_alavont_name,

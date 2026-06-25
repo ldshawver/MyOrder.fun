@@ -20,6 +20,10 @@ type CatalogProduct = {
   luciferCruzCategory: string | null;
   luciferCruzDescription: string | null;
   luciferCruzImageUrl: string | null;
+  safeName: string | null;
+  safeDescription: string | null;
+  safeCategory: string | null;
+  safeImageUrl: string | null;
   alavontCategory: string | null;
   category: string;
   description: string | null;
@@ -53,6 +57,10 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   luciferCruzImageUrl: "",
   luciferCruzDescription: "",
   luciferCruzCategory: "",
+  safeName: "",
+  safeDescription: "",
+  safeCategory: "",
+  safeImageUrl: "",
   labName: "",
   isAvailable: true,
   isWooManaged: false,
@@ -93,6 +101,10 @@ function EditDialog({
     imageUrl: fieldVal(item?.imageUrl),
     alavontImageUrl: fieldVal(item?.alavontImageUrl),
     luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
+    safeName: fieldVal(item?.safeName),
+    safeDescription: fieldVal(item?.safeDescription),
+    safeCategory: fieldVal(item?.safeCategory),
+    safeImageUrl: fieldVal(item?.safeImageUrl),
     labName: fieldVal(item?.labName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
@@ -109,6 +121,10 @@ function EditDialog({
       luciferCruzCategory: form.luciferCruzCategory || null,
       luciferCruzDescription: form.luciferCruzDescription || null,
       luciferCruzImageUrl: form.luciferCruzImageUrl || null,
+      safeName: form.safeName || null,
+      safeDescription: form.safeDescription || null,
+      safeCategory: form.safeCategory || null,
+      safeImageUrl: form.safeImageUrl || null,
       category: form.category || form.alavontCategory || "General",
       alavontCategory: form.alavontCategory || null,
       description: form.description || null,
@@ -193,6 +209,31 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.luciferCruzDescription)}
                 onChange={(e) => setForm(f => ({ ...f, luciferCruzDescription: e.target.value }))}
+                disabled={isSaving}
+                rows={2}
+                className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
+              />
+            </label>
+          </div>
+
+
+
+          {/* Canonical safe checkout fields */}
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest mb-3 flex items-center gap-1.5 text-emerald-500">
+              <CheckCircle size={11} /> Safe Checkout Presentation
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {input("Safe Name", "safeName")}
+              {input("Safe Category", "safeCategory")}
+              {input("Safe Image URL (optional)", "safeImageUrl")}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">Safe image is optional.</p>
+            <label className="flex flex-col gap-1 mt-3">
+              <span className="text-xs text-muted-foreground font-medium">Safe Description</span>
+              <textarea
+                value={fieldVal(form.safeDescription)}
+                onChange={(e) => setForm(f => ({ ...f, safeDescription: e.target.value }))}
                 disabled={isSaving}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
