@@ -3,7 +3,6 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, inventoryLocationsTable, inventoryBalancesTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { ensureStandardLocations, ensureAllInventoryBalances } from "../lib/inventoryBalances";
 import { logger } from "../lib/logger";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -120,50 +119,12 @@ type ImportDuplicateWarning = {
   name: string | null;
 };
 
-type ImportDbClient = Pick<typeof db, "select" | "insert" | "update" | "delete" | "execute">;
+type CatalogImportUpsertValues = typeof catalogItemsTable.$inferInsert;
 
 function executeRows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown[] }).rows)) return (result as { rows: T[] }).rows;
   return [];
-}
-
-
-const IMPORT_LOCATION_ALIASES: Record<string, string[]> = {
-  "Box 1": ["CSR Sales Box 1", "Box 1"],
-  "Box 2": ["CSR Sales Box 2", "Box 2"],
-  Storefront: ["Storefront"],
-  Backstock: ["Backstock"],
-};
-const IMPORT_LOCATION_META: Record<string, { type: string; displayOrder: number; canonicalName: string }> = {
-  "Box 1": { type: "csr_box", displayOrder: 3, canonicalName: "CSR Sales Box 1" },
-  "Box 2": { type: "csr_box", displayOrder: 4, canonicalName: "CSR Sales Box 2" },
-  Storefront: { type: "storefront", displayOrder: 2, canonicalName: "Storefront" },
-  Backstock: { type: "backstock", displayOrder: 1, canonicalName: "Backstock" },
-};
-
-async function ensureImportLocationMap(client: ImportDbClient, tenantId: number): Promise<Record<string, typeof inventoryLocationsTable.$inferSelect>> {
-  const locations = await client.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))) as Array<typeof inventoryLocationsTable.$inferSelect>;
-  const byCanonical: Record<string, typeof inventoryLocationsTable.$inferSelect> = {};
-  for (const [canonical, aliases] of Object.entries(IMPORT_LOCATION_ALIASES)) {
-    const meta = IMPORT_LOCATION_META[canonical];
-    const csrBoxId = null;
-    let loc = locations.find(l => l.type === meta.type && l.name === meta.canonicalName);
-    loc ??= locations.find(l => aliases.includes(l.name));
-    if (!loc) {
-      const [created] = await client.insert(inventoryLocationsTable).values({ tenantId, type: meta.type, csrBoxId, name: meta.canonicalName, isActive: true, displayOrder: meta.displayOrder }).returning();
-      loc = created;
-      locations.push(created);
-    } else if ((loc.name !== meta.canonicalName || loc.csrBoxId !== csrBoxId) && meta.type !== "csr_box" && loc.type) {
-      const [updated] = await client.update(inventoryLocationsTable).set({ name: meta.canonicalName, type: meta.type, csrBoxId, isActive: true, displayOrder: meta.displayOrder }).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, loc.id))).returning();
-      loc = updated ?? loc;
-      const idx = locations.findIndex(l => l.id === loc!.id);
-      if (idx >= 0) locations[idx] = loc;
-    }
-    if (!loc) throw new Error(`Could not resolve import inventory location ${canonical}`);
-    byCanonical[canonical] = loc;
-  }
-  return byCanonical;
 }
 
 type SnapshotPayload = {
@@ -252,7 +213,7 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
 function normalizeProductName(raw: string | null | undefined): string {
   return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
-function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedName: string }>): ImportDuplicateWarning[] {
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedSafeName: string }>): ImportDuplicateWarning[] {
   const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   for (const p of prepared) {
@@ -260,25 +221,11 @@ function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typ
     const name = typeof p.values.name === "string" ? p.values.name : null;
     const skuKey = String(sku ?? "").trim().toLowerCase();
     if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
-    if (p.normalizedName) byName.set(p.normalizedName, [...(byName.get(p.normalizedName) ?? []), { row: p.row, sku, name }]);
+    if (p.normalizedSafeName) byName.set(p.normalizedSafeName, [...(byName.get(p.normalizedSafeName) ?? []), { row: p.row, sku, name }]);
   }
   return [
     ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
     ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_name" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
-  ];
-}
-function buildDbDuplicateWarnings(items: Array<typeof catalogItemsTable.$inferSelect>): ImportDuplicateWarning[] {
-  const bySku = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
-  const byName = new Map<string, Array<typeof catalogItemsTable.$inferSelect>>();
-  for (const item of items) {
-    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const nameKey = normalizeProductName(item.alavontName ?? item.name);
-    if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), item]);
-    if (nameKey) byName.set(nameKey, [...(byName.get(nameKey) ?? []), item]);
-  }
-  return [
-    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_sku" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
-    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "db_duplicate_name" as const, key, rows: [], sku: rows[0]?.sku ?? rows[0]?.alavontId ?? rows[0]?.merchantSku ?? null, name: rows[0]?.alavontName ?? rows[0]?.name ?? null })),
   ];
 }
 function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string {
@@ -290,131 +237,6 @@ function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string
 }
 
 
-async function repairTenantCatalogDuplicatesBeforeImport(tenantId: number): Promise<void> {
-  // Product Master imports must not be blocked by historical duplicate catalog rows.
-  // This mirrors migration 0026 for the active tenant and is intentionally
-  // conservative: archive duplicate rows, move references, merge balances, then
-  // delete only the duplicate catalog rows. Existing order/shift history is kept.
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS catalog_item_duplicate_repair_archive (
-      id serial PRIMARY KEY,
-      tenant_id integer NOT NULL REFERENCES tenants(id),
-      canonical_catalog_item_id integer NOT NULL REFERENCES catalog_items(id),
-      duplicate_catalog_item_id integer NOT NULL,
-      match_strategy text NOT NULL,
-      match_key text NOT NULL,
-      duplicate_row jsonb NOT NULL,
-      archived_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (duplicate_catalog_item_id)
-    );
-
-    DROP TABLE IF EXISTS catalog_item_duplicate_map;
-    CREATE TEMP TABLE catalog_item_duplicate_map AS
-    WITH usage AS (
-      SELECT
-        ci.id,
-        ci.tenant_id,
-        NULLIF(lower(trim(COALESCE(ci.sku, ci.alavont_id, ci.merchant_sku, ''))), '') AS sku_key,
-        NULLIF(lower(regexp_replace(trim(COALESCE(ci.alavont_name, ci.name, '')), '[^a-z0-9]+', ' ', 'g')), '') AS name_key,
-        EXISTS (SELECT 1 FROM order_items oi WHERE oi.catalog_item_id = ci.id) AS has_order_items,
-        EXISTS (SELECT 1 FROM shift_inventory_items sii WHERE sii.catalog_item_id = ci.id) AS has_shift_inventory_items,
-        EXISTS (SELECT 1 FROM inventory_balances ib WHERE ib.product_id = ci.id) AS has_inventory_balances
-      FROM catalog_items ci
-      WHERE ci.tenant_id = ${tenantId}
-    ), duplicate_groups AS (
-      SELECT id, tenant_id, 'sku'::text AS match_strategy, sku_key AS match_key, has_order_items, has_shift_inventory_items, has_inventory_balances
-      FROM usage WHERE sku_key IS NOT NULL
-      UNION ALL
-      SELECT id, tenant_id, 'normalized_name'::text AS match_strategy, name_key AS match_key, has_order_items, has_shift_inventory_items, has_inventory_balances
-      FROM usage WHERE name_key IS NOT NULL
-    ), ranked AS (
-      SELECT
-        id,
-        tenant_id,
-        match_strategy,
-        match_key,
-        first_value(id) OVER (
-          PARTITION BY tenant_id, match_strategy, match_key
-          ORDER BY has_order_items DESC, has_shift_inventory_items DESC, has_inventory_balances DESC, id ASC
-        ) AS canonical_id,
-        count(*) OVER (PARTITION BY tenant_id, match_strategy, match_key) AS group_count
-      FROM duplicate_groups
-    )
-    SELECT DISTINCT ON (id)
-      id AS duplicate_id,
-      canonical_id,
-      match_strategy,
-      match_key
-    FROM ranked
-    WHERE group_count > 1 AND id <> canonical_id
-    ORDER BY id, match_strategy;
-
-    INSERT INTO catalog_item_duplicate_repair_archive (
-      tenant_id,
-      canonical_catalog_item_id,
-      duplicate_catalog_item_id,
-      match_strategy,
-      match_key,
-      duplicate_row
-    )
-    SELECT
-      dup.tenant_id,
-      m.canonical_id,
-      m.duplicate_id,
-      m.match_strategy,
-      m.match_key,
-      to_jsonb(dup)
-    FROM catalog_item_duplicate_map m
-    JOIN catalog_items dup ON dup.id = m.duplicate_id AND dup.tenant_id = ${tenantId}
-    ON CONFLICT (duplicate_catalog_item_id) DO NOTHING;
-
-    UPDATE order_items oi
-    SET catalog_item_id = m.canonical_id
-    FROM catalog_item_duplicate_map m
-    WHERE oi.catalog_item_id = m.duplicate_id;
-
-    UPDATE inventory_templates it
-    SET catalog_item_id = m.canonical_id
-    FROM catalog_item_duplicate_map m
-    WHERE it.tenant_id = ${tenantId} AND it.catalog_item_id = m.duplicate_id;
-
-    UPDATE shift_inventory_items sii
-    SET catalog_item_id = m.canonical_id
-    FROM catalog_item_duplicate_map m
-    WHERE sii.catalog_item_id = m.duplicate_id;
-
-    WITH moved AS (
-      SELECT ib.*, m.canonical_id
-      FROM inventory_balances ib
-      JOIN catalog_item_duplicate_map m ON m.duplicate_id = ib.product_id
-      WHERE ib.tenant_id = ${tenantId}
-    ), merged AS (
-      UPDATE inventory_balances keep
-      SET quantity_on_hand = COALESCE(keep.quantity_on_hand, 0) + COALESCE(moved.quantity_on_hand, 0),
-          par_level = GREATEST(COALESCE(keep.par_level, 0), COALESCE(moved.par_level, 0)),
-          updated_at = now()
-      FROM moved
-      WHERE keep.tenant_id = moved.tenant_id
-        AND keep.product_id = moved.canonical_id
-        AND keep.location_id = moved.location_id
-      RETURNING moved.id
-    )
-    UPDATE inventory_balances ib
-    SET product_id = moved.canonical_id,
-        updated_at = now()
-    FROM moved
-    WHERE ib.id = moved.id
-      AND NOT EXISTS (SELECT 1 FROM merged m WHERE m.id = moved.id);
-
-    DELETE FROM inventory_balances ib
-    USING catalog_item_duplicate_map m
-    WHERE ib.tenant_id = ${tenantId} AND ib.product_id = m.duplicate_id;
-
-    DELETE FROM catalog_items ci
-    USING catalog_item_duplicate_map m
-    WHERE ci.tenant_id = ${tenantId} AND ci.id = m.duplicate_id;
-  `);
-}
 async function ensureSnapshotSchema(): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_snapshots (
     id serial PRIMARY KEY,
@@ -430,16 +252,6 @@ async function ensureSnapshotSchema(): Promise<void> {
 async function audit(req: import("express").Request, action: string, tenantId: number, metadata: Record<string, unknown>, resourceId?: string) {
   const actor = req.dbUser!;
   await db.insert(auditLogsTable).values({ actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId, action, resourceType: "catalog_import", resourceId, metadata, ipAddress: req.ip ?? undefined });
-}
-async function snapshotTenant(client: ImportDbClient, tenantId: number, touchedSkus: string[], fileName: string | undefined, actorId: number): Promise<number | null> {
-  const uniqueTouchedSkus = Array.from(new Set(touchedSkus.filter(Boolean)));
-  const catalog = uniqueTouchedSkus.length
-    ? await client.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.sku, uniqueTouchedSkus)))
-    : [];
-  const catalogIds = Array.from(new Set(catalog.map((r: typeof catalogItemsTable.$inferSelect) => r.id)));
-  const inventoryTemplates = (catalogIds.length ? await client.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), inArray(inventoryTemplatesTable.catalogItemId, catalogIds))) : []) as Array<typeof inventoryTemplatesTable.$inferSelect>;
-  const snapshotRows = executeRows<{ id: number }>(await client.execute(sql`INSERT INTO catalog_import_snapshots (tenant_id, actor_id, file_name, snapshot) VALUES (${tenantId}, ${actorId}, ${fileName ?? null}, ${JSON.stringify({ catalog, inventoryTemplates, touchedSkus: uniqueTouchedSkus, insertedCatalogIds: [], insertedInventoryTemplateIds: [] } satisfies SnapshotPayload)}::jsonb) RETURNING id`));
-  return snapshotRows[0]?.id ?? null;
 }
 
 router.get("/admin/products/import-template", requireRole("global_admin", "admin"), async (_req, res) => {
@@ -514,7 +326,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; rec: ImportRow; values: typeof catalogItemsTable.$inferInsert; inventory: Record<string, number>; par: Record<string, number>; normalizedName: string }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedSafeName: string }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -543,27 +355,45 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const safeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
     const safeCategoryLower = `${name} ${category} ${rec["Alavont Description"]}`.toLowerCase();
     const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(safeCategoryLower);
-    prepared.push({ row: rowNum, rec, inventory, par, normalizedName: normalizeProductName(name), values: { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), stockQuantity: String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2)), isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } } });
+    const totalInventory = String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2));
+    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, safeName, safeDescription, safeCategory, safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } };
+    const updateValues: Partial<CatalogImportUpsertValues> = {
+      safeName,
+      safeDescription,
+      safeCategory,
+      safeImageUrl,
+      luciferCruzName: safeName,
+      luciferCruzDescription: safeDescription,
+      luciferCruzCategory: safeCategory,
+      luciferCruzImageUrl: safeImageUrl,
+      sku,
+      merchantSku: sku,
+      isAvailable: !complianceHold,
+      inventoryAmount: totalInventory,
+      stockQuantity: totalInventory,
+      merchantName: safeName,
+      merchantDescription: safeDescription,
+      merchantCategory: safeCategory,
+      merchantImage: safeImageUrl,
+      merchantBrand: "alavont",
+      updatedAt: new Date(),
+    };
+    prepared.push({ row: rowNum, rec, inventory, par, normalizedSafeName: normalizeProductName(safeName), values: importValues, updateValues });
   }
-  const skus = Array.from(new Set(prepared.map(p => p.values.sku).filter((sku): sku is string => typeof sku === "string" && sku.length > 0)));
-  await repairTenantCatalogDuplicatesBeforeImport(tenantId);
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
-  const duplicateWarnings = [
-    ...buildUploadDuplicateWarnings(prepared),
-    ...buildDbDuplicateWarnings(allTenantCatalog),
-  ];
+  const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
   const bySku = new Map<string, number>();
   const byName = new Map<string, number>();
   for (const item of allTenantCatalog) {
     const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const nameKey = normalizeProductName(item.alavontName ?? item.name);
+    const nameKey = normalizeProductName(item.safeName ?? item.luciferCruzName ?? item.merchantName ?? item.customerSafeName ?? item.name);
     if (skuKey && !bySku.has(skuKey)) bySku.set(skuKey, item.id);
     if (nameKey && !byName.has(nameKey)) byName.set(nameKey, item.id);
   }
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedName) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedName || w.rows.includes(p.row)) };
+    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? null;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedSafeName || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
   if (duplicateWarnings.length) {
@@ -574,58 +404,26 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if ((matchedIds.size || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, preview, wouldInsert: prepared.length - matchedIds.size, wouldUpdate: matchedIds.size }); return; }
   if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - matchedIds.size), updated: matchedIds.size, skipped: 0, errors, total: prepared.length, warnings: matchedIds.size ? [`${matchedIds.size} existing products would be updated.`] : [], duplicateWarnings, preview }); return; }
 
-  let snapshotId: number | null = null;
   try {
-    await ensureSnapshotSchema();
-    await ensureStandardLocations(tenantId);
-    const importResult = await db.transaction(async (tx) => {
+    const importResult = await db.transaction(async (tx: typeof db) => {
       let inserted = 0;
       let updated = 0;
-      let balanceUpserts = 0;
-      const insertedIds: number[] = [];
-      const insertedInventoryTemplateIds: number[] = [];
-      const createdSnapshotId = await snapshotTenant(tx, tenantId, skus, uploadedFileName, actor.id);
-      const importLocations = await ensureImportLocationMap(tx, tenantId);
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedName);
-        let catalogId = existingId;
-        if (existingId) { await tx.update(catalogItemsTable).set(p.values).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId))); updated++; }
-        else { const [created] = await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id }); catalogId = created.id; insertedIds.push(created.id); inserted++; }
-        const [tmpl] = await tx.select({ id: inventoryTemplatesTable.id }).from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogId!))).limit(1);
-        const totalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0);
-        const patch = { itemName: p.values.name, sectionName: "Backstock", unitType: p.values.stockUnit ?? "#", startingQuantityDefault: totalQty.toFixed(3), currentStock: totalQty.toFixed(3), menuPrice: p.values.price, payoutPrice: p.values.price, isActive: p.values.isAvailable, catalogItemId: catalogId!, alavontId: p.values.alavontId, deductionQuantityPerSale: "1", parLevel: String(Object.values(p.par).reduce((a, b) => a + b, 0).toFixed(2)) };
-        if (tmpl) await tx.update(inventoryTemplatesTable).set(patch).where(and(eq(inventoryTemplatesTable.id, tmpl.id), eq(inventoryTemplatesTable.tenantId, tenantId)));
-        else { const [createdTemplate] = await tx.insert(inventoryTemplatesTable).values({ tenantId, displayOrder: 0, ...patch }).returning({ id: inventoryTemplatesTable.id }); insertedInventoryTemplateIds.push(createdTemplate.id); }
-
-        for (const [canonicalName, qty] of Object.entries(p.inventory)) {
-          const loc = importLocations[canonicalName];
-          const [bal] = await tx.select({ id: inventoryBalancesTable.id }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, catalogId!), eq(inventoryBalancesTable.locationId, loc.id))).limit(1);
-          const complianceHold = p.values.isAvailable === false;
-          const balancePatch = {
-            quantityOnHand: qty.toFixed(3),
-            parLevel: (p.par[canonicalName] ?? 0).toFixed(2),
-            inventoryKind: "sellable_catalog",
-            isSellable: !complianceHold,
-            quarantinedAt: complianceHold ? new Date() : null,
-            quarantinedByUserId: complianceHold ? actor.id : null,
-            quarantineReason: complianceHold ? "Compliance hold from catalog import" : null,
-          };
-          if (bal) await tx.update(inventoryBalancesTable).set(balancePatch).where(and(eq(inventoryBalancesTable.id, bal.id), eq(inventoryBalancesTable.tenantId, tenantId)));
-          else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogId!, locationId: loc.id, ...balancePatch });
-          balanceUpserts++;
+        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName);
+        if (existingId) {
+          await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId)));
+          updated++;
+        } else {
+          await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id });
+          inserted++;
         }
-        const importedTotalQty = Object.values(p.inventory).reduce((a, b) => a + b, 0).toFixed(3);
-        await tx.update(catalogItemsTable).set({ stockQuantity: importedTotalQty, inventoryAmount: importedTotalQty }).where(and(eq(catalogItemsTable.id, catalogId!), eq(catalogItemsTable.tenantId, tenantId)));
       }
-      await tx.execute(sql`UPDATE catalog_import_snapshots SET snapshot = jsonb_set(jsonb_set(snapshot, '{insertedCatalogIds}', ${JSON.stringify(insertedIds)}::jsonb), '{insertedInventoryTemplateIds}', ${JSON.stringify(insertedInventoryTemplateIds)}::jsonb) WHERE id = ${createdSnapshotId}`);
-      return { inserted, updated, balanceUpserts, snapshotId: createdSnapshotId };
+      return { inserted, updated };
     });
-    snapshotId = importResult.snapshotId;
-    await ensureStandardLocations(tenantId); const inventoryBalances = await ensureAllInventoryBalances(tenantId);
-    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, balanceUpserts: importResult.balanceUpserts, snapshotId, total: prepared.length });
-    res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [], snapshotId, balanceUpserts: importResult.balanceUpserts, inventoryBalances });
-  } catch (e) { res.status(500).json({ error: `Import failed before completion and no catalog/inventory changes were committed: ${(e as Error).message}`, snapshotId }); }
+    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, total: prepared.length });
+    res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [] });
+  } catch (e) { res.status(500).json({ error: `Import failed before completion and no catalog changes were committed: ${(e as Error).message}` }); }
 });
 
 router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
