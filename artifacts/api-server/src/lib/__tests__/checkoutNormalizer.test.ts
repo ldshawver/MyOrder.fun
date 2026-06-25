@@ -143,10 +143,16 @@ describe("checkoutNormalizer", () => {
       expect(line.display_category).toBe("Customer category");
       expect(buildMerchantPayloadLines([line])[0].name).toBe("Safe Merchant");
     });
-    it("throws when local_mapped item has no lucifer_cruz_name", async () => {
-      makeDbMock(makeSampleLocalMappedItem({ luciferCruzName: null }));
+    it("uses branded name fallbacks when local_mapped item has no lucifer_cruz_name", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ luciferCruzName: null, merchantName: "Merchant Fallback Name" }));
+      const [line] = await normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }]);
+      expect(line.merchant_name).toBe("Merchant Fallback Name");
+    });
+
+    it("throws when all branded checkout name fallbacks are empty", async () => {
+      makeDbMock(makeSampleLocalMappedItem({ safeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
-        /lucifer_cruz_name/
+        /branded checkout name/
       );
     });
 

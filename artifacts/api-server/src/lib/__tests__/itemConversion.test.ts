@@ -73,6 +73,7 @@ function makeAlavontItem(overrides: Record<string, unknown> = {}) {
     alavontId: "ALV-XYZ-100",
     luciferCruzName: "LC Premium Tee",
     luciferCruzImageUrl: "https://lucifercruz.com/img/tee.jpg",
+    merchantDescription: "Customer-safe merchant description",
     merchantSku: "LC-SKU-100",
     labName: "Lab A",
     receiptName: null,
@@ -93,6 +94,7 @@ const previewFields = {
   marketing_copy: "Premium branded checkout copy.",
   customer_safe_name: "LC Premium Tee",
   customer_safe_description: "Customer-safe description",
+  customer_safe_category: "Premium Goods",
   upsell_copy: null,
   promo_badges: [],
 };
@@ -189,15 +191,19 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     expect(totals.total).toBeCloseTo(60 + 60 * CHECKOUT_TAX_RATE, 2);
   });
 
-  it("(3) missing Alavont→LC mapping throws CheckoutMappingError with offending catalogItemId", async () => {
-    mockDbReturn([makeAlavontItem({ id: 100, luciferCruzName: null })]);
+  it("(3) falls back when lucifer_cruz_name is null and only throws when all branded names are empty", async () => {
+    mockDbReturn([makeAlavontItem({ id: 100, luciferCruzName: null, merchantName: "Merchant Fallback Tee" })]);
 
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }]);
+    expect(normalized[0].merchant_name).toBe("Merchant Fallback Tee");
+
+    mockDbReturn([makeAlavontItem({ id: 101, safeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " })]);
     await expect(
-      normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }])
+      normalizeCheckoutCart([{ catalogItemId: 101, quantity: 1 }])
     ).rejects.toMatchObject({
       name: "CheckoutMappingError",
-      catalogItemId: 100,
-      reason: "missing_lucifer_cruz_name",
+      catalogItemId: 101,
+      reason: "missing_branded_checkout_name",
     });
   });
 
@@ -228,8 +234,8 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        customerSafeName: "Customer Safe Tee",
-        customerSafeDescription: "Customer-safe production description",
+        safeName: "Customer Safe Tee",
+        safeDescription: "Customer-safe production description",
         merchantCategory: "Production Merchant Category",
         merchantImage: "https://merchant.example/safe-tee.jpg",
         luciferCruzCategory: null,
@@ -253,8 +259,9 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        customerSafeName: null,
-        customerSafeDescription: null,
+        safeName: null,
+        safeDescription: null,
+        merchantDescription: "Customer-safe merchant description",
         merchantCategory: "Production Merchant Category",
         merchantImage: "https://merchant.example/safe-tee.jpg",
       }),
@@ -264,7 +271,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
 
     expect(normalized[0]).toMatchObject({
       customer_safe_name: "LC Premium Tee",
-      customer_safe_description: "Converted into a customer-ready branded checkout presentation.",
+      customer_safe_description: "Customer-safe merchant description",
       customer_safe_category: "Production Merchant Category",
       customer_safe_image: "https://merchant.example/safe-tee.jpg",
     });
@@ -274,8 +281,8 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        customerSafeName: "Customer Safe Tee",
-        customerSafeDescription: "Customer-safe production description",
+        safeName: "Customer Safe Tee",
+        safeDescription: "Customer-safe production description",
         merchantCategory: null,
         luciferCruzCategory: null,
         displayCategory: null,
@@ -389,19 +396,12 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
-  it("(3f) Alavont row with mode='comp_only' but missing LC mapping still 422s — LC checks are universal", async () => {
-    // The supported-modes allowlist passes "comp_only", but LC name +
-    // merchant_sku checks must still run for every Alavont row.
+  it("(3f) Alavont row with mode='comp_only' may use branded name fallbacks but still requires merchant_sku", async () => {
     mockDbReturn([
-      makeAlavontItem({ id: 520, merchantProcessingMode: "comp_only", luciferCruzName: null }),
+      makeAlavontItem({ id: 520, merchantProcessingMode: "comp_only", luciferCruzName: null, merchantName: "Merchant Comp Fallback" }),
     ]);
-    await expect(
-      normalizeCheckoutCart([{ catalogItemId: 520, quantity: 1 }])
-    ).rejects.toMatchObject({
-      name: "CheckoutMappingError",
-      catalogItemId: 520,
-      reason: "missing_lucifer_cruz_name",
-    });
+    const normalized = await normalizeCheckoutCart([{ catalogItemId: 520, quantity: 1 }]);
+    expect(normalized[0].merchant_name).toBe("Merchant Comp Fallback");
 
     mockDbReturn([
       makeAlavontItem({ id: 521, merchantProcessingMode: "comp_only", merchantSku: null }),
