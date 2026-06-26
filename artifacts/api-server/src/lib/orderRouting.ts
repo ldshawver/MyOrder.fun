@@ -52,6 +52,25 @@ export type RoutingDecision = {
 
 const ROUTING_ROLES = ["csr"] as const;
 
+let shiftRoutingConfigSchemaEnsured = false;
+
+export async function ensureShiftRoutingConfigSchema(): Promise<void> {
+  if (shiftRoutingConfigSchemaEnsured) return;
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "shift_routing_config" (
+    "id" serial PRIMARY KEY,
+    "tenant_id" integer NOT NULL REFERENCES "tenants"("id"),
+    "allow_multiple_active_shifts" boolean NOT NULL DEFAULT false,
+    "routing_strategy" text NOT NULL DEFAULT 'round_robin',
+    "approved_by_user_id" integer REFERENCES "users"("id"),
+    "approved_at" timestamp with time zone,
+    "reason" text DEFAULT 'default system fallback',
+    "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT now()
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "shift_routing_config_tenant_idx" ON "shift_routing_config" ("tenant_id")`);
+  shiftRoutingConfigSchemaEnsured = true;
+}
+
 async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinutes: number }> {
   const [s] = await db.select().from(adminSettingsTable).limit(1);
   const rule = (s?.orderRoutingRule as RoutingRule | undefined) ?? "round_robin";
@@ -60,6 +79,7 @@ async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinu
 }
 
 export async function getApprovedMultiShiftConfig(tenantId: number) {
+  await ensureShiftRoutingConfigSchema();
   const [config] = await db.select().from(shiftRoutingConfigTable)
     .where(eq(shiftRoutingConfigTable.tenantId, tenantId))
     .orderBy(sql`${shiftRoutingConfigTable.approvedAt} DESC NULLS LAST`, sql`${shiftRoutingConfigTable.createdAt} DESC`)

@@ -285,6 +285,33 @@ describe("admin/POS/security cleanup regressions", () => {
     expect(queue).toContain('router.get("/shift-queue/orders"');
   });
 
+  it("repairs missing shift_routing_config and falls back when tenant row is absent", () => {
+    const migration = src("lib/db/drizzle/0029_shift_routing_config_repair.sql");
+    const orderRouting = api("lib/orderRouting.ts");
+    const shifts = api("routes/shifts.ts");
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "shift_routing_config"');
+    for (const column of ["id", "tenant_id", "allow_multiple_active_shifts", "routing_strategy", "approved_by_user_id", "approved_at", "reason", "created_at", "updated_at"]) {
+      expect(migration).toContain(`"${column}"`);
+    }
+    expect(migration).toContain("DEFAULT 'round_robin'");
+    expect(migration).toContain("default system fallback");
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS "shift_routing_config_tenant_idx"');
+    expect(orderRouting).toContain("ensureShiftRoutingConfigSchema");
+    expect(orderRouting).toContain("approved ?? ({ routingStrategy: rule === ");
+    expect(shifts).toContain('CREATE TABLE IF NOT EXISTS "shift_routing_config"');
+    expect(migration.replace(/^--.*$/gm, "")).not.toMatch(/\b(UPDATE|DELETE|TRUNCATE|DROP)\b/i);
+  });
+
+  it("separates admin conversion preview from customer-safe receipt copy", () => {
+    const orders = api("routes/orders.ts");
+    const newOrder = platform("pages/new-order.tsx");
+    expect(orders).toContain("originalInternalName: line.catalog_display_name");
+    expect(newOrder).toContain(">Before<");
+    expect(newOrder).toContain(">After<");
+    expect(newOrder).toContain("converted?.customerSafeName ?? converted?.displayName ?? item.name");
+    expect(newOrder).not.toContain("Safe Category:");
+  });
+
   it("includes an idempotent non-destructive migration for orders lifecycle columns", () => {
     const migration = src("lib/db/drizzle/0028_orders_lifecycle_schema_drift.sql");
     for (const column of ["archived_at", "archived_by_user_id", "voided_at", "voided_by_user_id", "cancelled_at", "cancelled_by_user_id", "completed_at", "completed_by_user_id"]) {
