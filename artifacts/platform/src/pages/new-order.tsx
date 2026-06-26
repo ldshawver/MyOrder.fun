@@ -64,6 +64,9 @@ type ConversionPreview = {
       displayImage: string | null;
       customerSafeName?: string;
       customerSafeDescription?: string;
+      originalInternalName?: string;
+      originalInternalDescription?: string | null;
+      originalInternalCategory?: string | null;
       merchantBrandName: string;
       marketingCopy: string;
       upsellCopy: string | null;
@@ -442,7 +445,7 @@ export default function NewOrder() {
                     {converted?.displayImage && <img src={converted.displayImage} alt="" className="h-12 w-12 rounded-sm object-cover border border-border/50" />}
                     <div className="flex-1 min-w-0">
                         <div className="font-semibold text-sm leading-tight pr-4">{converted?.customerSafeName ?? converted?.displayName ?? item.name}</div>
-                      {converted && <div className="text-[10px] uppercase tracking-widest text-primary mt-0.5">Safe Category: {converted.displayCategory}</div>}
+                      {converted && <div className="text-[10px] uppercase tracking-widest text-primary mt-0.5">{converted.displayCategory}</div>}
                       {converted && <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{converted.customerSafeDescription ?? converted.displayDescription}</div>}
                       <div className="text-xs text-muted-foreground font-mono mt-0.5">${item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                     </div>
@@ -780,14 +783,24 @@ export default function NewOrder() {
                         </div>
                       )}
                       <div className="p-3 space-y-2">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <div className="text-[10px] uppercase tracking-widest text-primary">{item.displayCategory}</div>
-                            <div className="font-semibold text-sm leading-tight">{item.displayName}</div>
+                        <div className="grid gap-3 md:grid-cols-[1fr_auto_1.15fr] md:items-stretch">
+                          <div className="rounded-sm border border-amber-500/20 bg-amber-500/5 p-3">
+                            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300">Before</div>
+                            <div className="font-semibold text-sm leading-tight text-muted-foreground">{item.originalInternalName ?? item.displayName}</div>
+                            <div className="mt-1 text-xs font-mono text-muted-foreground">${item.unitPrice.toFixed(2)}</div>
+                            {item.originalInternalDescription && (
+                              <p className="mt-2 text-xs leading-relaxed text-muted-foreground line-clamp-4">{item.originalInternalDescription}</p>
+                            )}
                           </div>
-                          <div className="font-mono text-xs">${item.lineSubtotal.toFixed(2)}</div>
+                          <div className="hidden items-center text-primary md:flex" aria-hidden="true">→</div>
+                          <div className="rounded-sm border border-emerald-500/25 bg-emerald-500/5 p-3">
+                            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-emerald-700 dark:text-emerald-300">After</div>
+                            <div className="text-[10px] uppercase tracking-widest text-primary">{item.displayCategory}</div>
+                            <div className="font-semibold text-sm leading-tight">{item.customerSafeName ?? item.displayName}</div>
+                            <p className="mt-2 text-xs text-muted-foreground leading-relaxed">{item.customerSafeDescription ?? item.displayDescription}</p>
+                            <div className="mt-2 font-mono text-xs">${item.lineSubtotal.toFixed(2)}</div>
+                          </div>
                         </div>
-                        <p className="text-xs text-muted-foreground leading-relaxed">{item.displayDescription}</p>
                         <p className="text-xs text-primary/90 leading-relaxed">{item.marketingCopy}</p>
                         {item.promoBadges.length > 0 && (
                           <div className="flex flex-wrap gap-1">

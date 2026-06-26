@@ -63,6 +63,25 @@ async function activeCsrShifts(tenantId: number) {
 }
 
 async function latestRoutingConfig(tenantId: number) {
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "shift_routing_config" (
+    "id" serial PRIMARY KEY,
+    "tenant_id" integer NOT NULL REFERENCES "tenants"("id"),
+    "allow_multiple_active_shifts" boolean NOT NULL DEFAULT false,
+    "routing_strategy" text NOT NULL DEFAULT 'round_robin',
+    "approved_by_user_id" integer REFERENCES "users"("id"),
+    "approved_at" timestamp with time zone,
+    "reason" text DEFAULT 'default system fallback',
+    "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+    "updated_at" timestamp with time zone NOT NULL DEFAULT now()
+  )`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "allow_multiple_active_shifts" boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "routing_strategy" text NOT NULL DEFAULT 'round_robin'`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "approved_by_user_id" integer REFERENCES "users"("id")`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "approved_at" timestamp with time zone`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "reason" text DEFAULT 'default system fallback'`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone NOT NULL DEFAULT now()`);
+  await db.execute(sql`ALTER TABLE "shift_routing_config" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone NOT NULL DEFAULT now()`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS "shift_routing_config_tenant_idx" ON "shift_routing_config" ("tenant_id")`);
   const [config] = await db.select().from(shiftRoutingConfigTable)
     .where(eq(shiftRoutingConfigTable.tenantId, tenantId))
     .orderBy(sql`${shiftRoutingConfigTable.approvedAt} DESC NULLS LAST`, desc(shiftRoutingConfigTable.createdAt))
