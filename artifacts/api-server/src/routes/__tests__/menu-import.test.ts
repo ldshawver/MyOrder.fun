@@ -130,7 +130,10 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
     expect(state.catalog[0]).toMatchObject({ tenantId: 1, sku: "SKU-1", price: "9.99", regularPrice: "12.50" });
-    expect(state.balances).toHaveLength(0);
+    expect(state.balances).toHaveLength(4);
+    expect(state.balances.map(b => b.productId)).toEqual([1, 1, 1, 1]);
+    expect(state.inventory).toHaveLength(1);
+    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "15", parLevel: "16" });
     const { db } = await import("@workspace/db");
     expect(db.transaction).toHaveBeenCalledTimes(1);
   });
@@ -148,7 +151,7 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
     expect(res.body.updated).toBe(0);
-    expect(state.balances).toHaveLength(0);
+    expect(state.balances).toHaveLength(4);
   });
 
   it("imports 30+ SKUs without tuple-expanded ANY SQL", async () => {
@@ -163,20 +166,23 @@ describe("safe catalog import/export", () => {
     expect(res.body.inserted).toBe(35);
     expect(state.catalog).toHaveLength(35);
     expect(state.catalog.every(item => Number(item.stockQuantity) === 10 && Number(item.inventoryAmount) === 10)).toBe(true);
-    expect(state.balances).toHaveLength(0);
+    expect(state.balances).toHaveLength(140);
+    expect(new Set(state.balances.map(b => b.productId)).size).toBe(35);
     const sqlTexts = vi.mocked(sql).mock.calls.map(([strings]) => Array.from(strings as TemplateStringsArray).join(""));
     expect(sqlTexts.some(text => /ANY\s*\(\s*\(/i.test(text))).toBe(false);
     expect(sqlTexts.some(text => /sku.*ANY/i.test(text))).toBe(false);
   });
 
 
-  it("does not create inventory rows during confirmed catalog import", async () => {
+  it("creates inventory rows tied to the imported catalog item during confirmed catalog import", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
 
     expect(res.status).toBe(200);
     expect(state.catalog).toHaveLength(1);
-    expect(state.inventory).toHaveLength(0);
-    expect(state.balances).toHaveLength(0);
+    expect(state.inventory).toHaveLength(1);
+    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1 });
+    expect(state.balances).toHaveLength(4);
+    expect(state.balances.every(balance => balance.productId === 1)).toBe(true);
   });
 
   it("blocks imports when the upload contains duplicate SKUs and returns structured row diagnostics", async () => {
@@ -212,7 +218,8 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
     expect(state.catalog.filter(item => item.name === "Duplicate Product")).toHaveLength(2);
-    expect(state.balances).toEqual([expect.objectContaining({ productId: 2, quantityOnHand: "5.000" })]);
+    expect(state.balances).toEqual(expect.arrayContaining([expect.objectContaining({ productId: 2, quantityOnHand: "5.000" })]));
+    expect(state.balances.filter(balance => balance.productId === 3)).toHaveLength(4);
     expect(state.catalog).toHaveLength(37);
   });
 

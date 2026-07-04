@@ -207,6 +207,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
       legalDisclaimerText: confirmation.legalDisclaimerText,
     },
     cartSnapshot: lines.map(line => ({
+      originalCatalogItemId: line.original_catalog_item_id ?? line.catalog_item_id,
       catalogItemId: line.catalog_item_id,
       internalName: line.catalog_display_name,
       merchantSku: line.merchant_sku,
@@ -235,6 +236,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
         { id: "manual", label: "Other/manual", promoted: false },
       ],
       items: lines.map(line => ({
+        originalCatalogItemId: line.original_catalog_item_id ?? line.catalog_item_id,
         catalogItemId: line.catalog_item_id,
         displayName: line.display_name,
         customerSafeName: line.customer_safe_name,
@@ -825,12 +827,14 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }).returning();
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
+        originalCatalogItemId: l.original_catalog_item_id ?? l.catalog_item_id,
         catalogItemId: l.catalog_item_id,
         alavontName: l.receipt_alavont_name,
         quantity: l.quantity,
         unitPrice: l.unit_price,
       }));
       const luciferCheckoutSnapshot = normalizedLines.map(l => ({
+        originalCatalogItemId: l.original_catalog_item_id ?? l.catalog_item_id,
         catalogItemId: l.catalog_item_id,
         luciferCruzName: l.merchant_name,
         sourceType: l.source_type,

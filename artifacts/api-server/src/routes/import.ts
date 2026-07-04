@@ -4,6 +4,7 @@ import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, invento
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
+import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -251,6 +252,31 @@ async function ensureSnapshotSchema(): Promise<void> {
     created_at timestamptz NOT NULL DEFAULT now()
   )`);
 }
+
+async function findOrCreateImportLocation(tx: typeof db, tenantId: number, importName: string) {
+  const locationNames = importName === "Box 1" ? ["CSR Sales Box 1", "Box 1"] : importName === "Box 2" ? ["CSR Sales Box 2", "Box 2"] : [importName];
+  for (const name of locationNames) {
+    const [existing] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.name, name))).limit(1);
+    if (existing) return existing;
+  }
+  const [created] = await tx.insert(inventoryLocationsTable).values({ tenantId, name: locationNames[0], type: importName === "Backstock" ? "backstock" : importName === "Storefront" ? "storefront" : "csr_box", isActive: true }).returning();
+  return created;
+}
+
+async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number) {
+  const [existing] = await tx.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, catalogItemId), eq(inventoryBalancesTable.locationId, locationId), sellableBalanceWhere())).limit(1);
+  const values = { quantityOnHand: String(quantity), parLevel: String(parLevel), inventoryKind: "sellable_catalog", updatedAt: new Date() };
+  if (existing) await tx.update(inventoryBalancesTable).set(values).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, existing.id)));
+  else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogItemId, locationId, ...values });
+}
+
+async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: number, parLevel: number) {
+  const [existing] = await tx.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogItemId))).limit(1);
+  const values = { itemName, rowType: "item", unitType: "#", startingQuantityDefault: String(quantity), currentStock: String(quantity), parLevel: String(parLevel), isActive: true, updatedAt: new Date() };
+  if (existing) await tx.update(inventoryTemplatesTable).set(values).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.id, existing.id)));
+  else await tx.insert(inventoryTemplatesTable).values({ tenantId, catalogItemId, ...values });
+}
+
 async function audit(req: import("express").Request, action: string, tenantId: number, metadata: Record<string, unknown>, resourceId?: string) {
   const actor = req.dbUser!;
   await db.insert(auditLogsTable).values({ actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, tenantId, action, resourceType: "catalog_import", resourceId, metadata, ipAddress: req.ip ?? undefined });
@@ -418,13 +444,23 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
         const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName);
-        if (existingId) {
-          await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, existingId), eq(catalogItemsTable.tenantId, tenantId)));
+        let catalogItemId = existingId;
+        if (catalogItemId) {
+          await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
           updated++;
         } else {
-          await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id });
+          const [created] = await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id });
+          catalogItemId = created.id;
           inserted++;
         }
+        if (!catalogItemId) throw new Error("Catalog import did not return a catalog item id");
+        const resolvedCatalogItemId = catalogItemId;
+        for (const [importName, quantity] of Object.entries(p.inventory)) {
+          const location = await findOrCreateImportLocation(tx, tenantId, importName);
+          const parLevel = p.par[importName] ?? 0;
+          await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, quantity, parLevel);
+        }
+        await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.safeName), Object.values(p.inventory).reduce((sum, qty) => sum + qty, 0), Object.values(p.par).reduce((sum, qty) => sum + qty, 0));
       }
       return { inserted, updated };
     });

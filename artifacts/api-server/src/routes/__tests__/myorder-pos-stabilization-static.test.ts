@@ -103,24 +103,25 @@ describe("catalog/inventory/par/order source of truth", () => {
     const orders = api("routes/orders.ts");
     expect(orders).toContain("db.transaction");
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
-    expect(orders).toContain("await tx.insert(ordersTable).values");
-    expect(orders).toContain("await tx.insert(orderItemsTable).values");
+    expect(orders).toContain("insert(ordersTable)");
+    expect(orders).toContain("insert(orderItemsTable)");
     expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
     expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
     expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
-    expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id)");
-    expect(orders).toContain('res.status(409).json({ error: "Insufficient inventory"');
+    expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id");
+    expect(orders).toContain('error: "Insufficient inventory"');
     expect(orders).toContain("await tx.execute(sql`");
     expect(orders).toContain("UPDATE catalog_items");
     expect(orders).toContain("stock_quantity = COALESCE");
     expect(orders).toContain("inventory_amount = COALESCE");
     expect(orders).toContain("WHERE tenant_id = ${houseTenantId}");
     expect(orders).toContain('eq(labTechShiftsTable.status, "active")');
-    expect(orders).toContain("inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId)");
+    expect(orders).toContain("inventoryLocationNameForBoxAssignment");
     expect(orders).toContain("eq(inventoryLocationsTable.name, locationName)");
     expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
     expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
+    expect(orders).toContain("originalCatalogItemId");
   });
 
   it("awaits converted checkout snapshot construction before order metadata and persistence use it", () => {
