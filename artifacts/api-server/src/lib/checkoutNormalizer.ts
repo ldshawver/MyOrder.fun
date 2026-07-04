@@ -19,6 +19,8 @@ export type CartLineInputType = z.infer<typeof CartLineInput>;
 const CartInputSchema = z.array(CartLineInput).min(1);
 
 export interface NormalizedCartLine {
+  /** Original catalog_items.id; safe display fields never change inventory identity. */
+  original_catalog_item_id: number;
   catalog_item_id: number;
   source_type: "local_mapped" | "woo";
   // Discriminator from `catalog_items.merchant_brand`. Alavont lines are
@@ -266,6 +268,7 @@ export async function normalizeCheckoutCart(
     const line_subtotal = parseFloat((unit_price * line.quantity).toFixed(2));
 
     const normalizedLine: NormalizedCartLine = {
+      original_catalog_item_id: ci.id,
       catalog_item_id: ci.id,
       source_type,
       merchant_brand: merchantBrand,
