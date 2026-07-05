@@ -14,6 +14,7 @@ import {
   usersTable,
   adminSettingsTable,
   shiftRoutingConfigTable,
+  printJobsTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
@@ -29,6 +30,33 @@ const SHIFT_OPERATOR_ROLES = [
   "global_admin",
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
+
+async function createShiftReceiptPrintJob(args: {
+  shiftId: number;
+  tenantId: number | null;
+  operatorUserId: number;
+  jobType: "shift_start_receipt" | "shift_end_receipt";
+  payload: Record<string, unknown>;
+  renderedText: string;
+}): Promise<void> {
+  try {
+    await db.insert(printJobsTable).values({
+      orderId: null,
+      printerId: null,
+      operatorUserId: args.operatorUserId,
+      jobType: args.jobType,
+      status: process.env.RECEIPT_PRINT_ENABLED === "true" ? "queued" : "failed",
+      idempotencyKey: `${args.jobType}:${args.shiftId}:${Date.now()}`,
+      renderFormat: "text",
+      payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
+      renderedText: args.renderedText,
+      errorMessage: process.env.RECEIPT_PRINT_ENABLED === "true" ? null : "Printer unavailable or receipt printing disabled",
+    });
+  } catch {
+    // Receipt creation must never block shift start/end in tests or production.
+  }
+}
+
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -1262,6 +1290,21 @@ router.post(
       inventoryItemsInserted = legacyInserts.length;
     }
 
+    await createShiftReceiptPrintJob({
+      shiftId: shift.id,
+      tenantId: houseTenantId,
+      operatorUserId: tech.id,
+      jobType: "shift_start_receipt",
+      payload: {
+        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
+        box: selectedBox,
+        startingCashBank: cashBankStart ?? 0,
+        startingInventoryCount: inventoryItemsInserted,
+        timestamp: new Date().toISOString(),
+      },
+      renderedText: [`SHIFT START`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${shift.id}`, `Box: ${selectedBox}`, `Starting cash: ${cashBankStart ?? 0}`, `Inventory rows: ${inventoryItemsInserted}`, new Date().toISOString()].join("\n"),
+    });
+
     res.status(201).json({
       shift: await buildActiveShiftPayload(shift),
       _debug: {
@@ -1417,6 +1460,23 @@ router.post(
         cashDiscrepancy,
       },
       ipAddress: getClientIp(req),
+    });
+
+    await createShiftReceiptPrintJob({
+      shiftId: activeShift.id,
+      tenantId: activeShift.tenantId ?? null,
+      operatorUserId: tech.id,
+      jobType: "shift_end_receipt",
+      payload: {
+        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
+        endingInventory: inventorySummary,
+        salesSummary: stats,
+        cashTotals: { cashBankStart, cashBankEndReported: cashBankEndVal, expectedCashBank },
+        depositAmount: cashBankEndVal,
+        variance: cashDiscrepancy,
+        timestamp: summary.clockedOutAt,
+      },
+      renderedText: [`SHIFT END`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, `Cash expected: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
     });
 
     res.json({ summary, shift: updatedShift });

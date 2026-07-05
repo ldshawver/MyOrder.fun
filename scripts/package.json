@@ -6,7 +6,8 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "lint:ratchet": "tsx ./src/lint-ratchet.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "repair:duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

@@ -413,19 +413,39 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   }
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
+  const catalogIds = allTenantCatalog.map(item => item.id);
+  const inventoriedProductIds = new Set<number>();
+  if (catalogIds.length > 0) {
+    const inventoriedRows = await db
+      .select({ productId: inventoryBalancesTable.productId })
+      .from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), inArray(inventoryBalancesTable.productId, catalogIds)));
+    for (const row of inventoriedRows) inventoriedProductIds.add(row.productId);
+  }
+  const preferCanonical = (currentId: number | undefined, candidateId: number): number => {
+    if (!currentId) return candidateId;
+    const currentHasInventory = inventoriedProductIds.has(currentId);
+    const candidateHasInventory = inventoriedProductIds.has(candidateId);
+    if (candidateHasInventory !== currentHasInventory) return candidateHasInventory ? candidateId : currentId;
+    return Math.min(currentId, candidateId);
+  };
   const bySku = new Map<string, number>();
+  const byAlavontOrMerchantSku = new Map<string, number>();
   const byName = new Map<string, number>();
+  const bySafeName = new Map<string, number>();
   for (const item of allTenantCatalog) {
-    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const nameKeys = [item.safeName, item.luciferCruzName, item.merchantName, item.customerSafeName, item.name, item.alavontName]
-      .map(normalizeProductName)
-      .filter(Boolean);
-    if (skuKey && !bySku.has(skuKey)) bySku.set(skuKey, item.id);
-    for (const nameKey of nameKeys) if (!byName.has(nameKey)) byName.set(nameKey, item.id);
+    const skuKey = String(item.sku ?? "").trim().toLowerCase();
+    const merchantKey = String(item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
+    const productNameKeys = [item.name, item.alavontName].map(normalizeProductName).filter(Boolean);
+    const safeNameKeys = [item.safeName, item.luciferCruzName, item.merchantName, item.customerSafeName].map(normalizeProductName).filter(Boolean);
+    if (skuKey) bySku.set(skuKey, preferCanonical(bySku.get(skuKey), item.id));
+    if (merchantKey) byAlavontOrMerchantSku.set(merchantKey, preferCanonical(byAlavontOrMerchantSku.get(merchantKey), item.id));
+    for (const nameKey of productNameKeys) byName.set(nameKey, preferCanonical(byName.get(nameKey), item.id));
+    for (const nameKey of safeNameKeys) bySafeName.set(nameKey, preferCanonical(bySafeName.get(nameKey), item.id));
   }
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName) ?? null;
+    const matchedId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? bySafeName.get(p.normalizedSafeName) ?? null;
     return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedSafeName || w.key === p.normalizedName || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
@@ -443,7 +463,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       let updated = 0;
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName);
+        const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? bySafeName.get(p.normalizedSafeName);
         let catalogItemId = existingId;
         if (catalogItemId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
