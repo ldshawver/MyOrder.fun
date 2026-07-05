@@ -84,13 +84,9 @@ const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
   alavont_id: "Alavont SKU",
   sku: "Alavont SKU",
   "safe category": "Safe Category",
-  safe_category: "Safe Category",
   "safe name": "Safe Name",
-  safe_name: "Safe Name",
   "safe image": "Safe Image",
-  safe_image_url: "Safe Image",
   "safe description": "Safe Description",
-  safe_description: "Safe Description",
   lucifer_cruz_name: "Safe Name",
   lucifer_cruz_desc: "Safe Description",
   lucifer_cruz_category: "Safe Category",
@@ -214,7 +210,7 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
 function normalizeProductName(raw: string | null | undefined): string {
   return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
-function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedSafeName: string; normalizedName: string }>): ImportDuplicateWarning[] {
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedCustomerSafeName: string; normalizedName: string }>): ImportDuplicateWarning[] {
   const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   for (const p of prepared) {
@@ -222,7 +218,7 @@ function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typ
     const name = typeof p.values.name === "string" ? p.values.name : null;
     const skuKey = String(sku ?? "").trim().toLowerCase();
     if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
-    for (const nameKey of Array.from(new Set([p.normalizedSafeName, p.normalizedName].filter(Boolean)))) {
+    for (const nameKey of Array.from(new Set([p.normalizedCustomerSafeName, p.normalizedName].filter(Boolean)))) {
       byName.set(nameKey, [...(byName.get(nameKey) ?? []), { row: p.row, sku, name }]);
     }
   }
@@ -354,7 +350,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedSafeName: string; normalizedName: string }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedCustomerSafeName: string; normalizedName: string }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -377,23 +373,21 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       Backstock: parseNumber(rec["Backstock PAR"], "Backstock PAR", rowNum, errors, { min: 0 }) ?? 0,
     };
     if (!sku || !name || !category || regularPrice === null || checkoutPrice === null) continue;
-    const imageUrl = safeUrl(rec["Alavont Image"], "Alavont Image", rowNum, errors); const safeImageUrl = safeUrl(rec["Safe Image"], "Safe Image", rowNum, errors);
-    const safeName = safeText(rec["Safe Name"] || name, "Safe Name", rowNum, errors);
-    const safeDescription = safeText(rec["Safe Description"], "Safe Description", rowNum, errors) || null;
-    const safeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
-    const safeCategoryLower = `${name} ${category} ${rec["Alavont Description"]}`.toLowerCase();
-    const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(safeCategoryLower);
+    const imageUrl = safeUrl(rec["Alavont Image"], "Alavont Image", rowNum, errors); const customerSafeImageUrl = safeUrl(rec["Safe Image"], "Safe Image", rowNum, errors);
+    const customerSafeName = safeText(rec["Safe Name"] || name, "Safe Name", rowNum, errors);
+    const customerSafeDescription = safeText(rec["Safe Description"], "Safe Description", rowNum, errors) || null;
+    const customerSafeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
+    const customerSafeCategoryLower = `${name} ${category} ${rec["Alavont Description"]}`.toLowerCase();
+    const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(customerSafeCategoryLower);
     const totalInventory = String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2));
-    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: safeName, luciferCruzDescription: safeDescription, luciferCruzCategory: safeCategory, luciferCruzImageUrl: safeImageUrl, safeName, safeDescription, safeCategory, safeImageUrl, merchantName: safeName, merchantDescription: safeDescription, merchantCategory: safeCategory, merchantImage: safeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: safeName, labelName: safeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } };
+    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: customerSafeName, luciferCruzDescription: customerSafeDescription, luciferCruzCategory: customerSafeCategory, luciferCruzImageUrl: customerSafeImageUrl, customerSafeName: customerSafeName, customerSafeDescription: customerSafeDescription, merchantName: customerSafeName, merchantDescription: customerSafeDescription, merchantCategory: customerSafeCategory, merchantImage: customerSafeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: customerSafeName, labelName: customerSafeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } };
     const updateValues: Partial<CatalogImportUpsertValues> = {
-      safeName,
-      safeDescription,
-      safeCategory,
-      safeImageUrl,
-      luciferCruzName: safeName,
-      luciferCruzDescription: safeDescription,
-      luciferCruzCategory: safeCategory,
-      luciferCruzImageUrl: safeImageUrl,
+      customerSafeName: customerSafeName,
+      customerSafeDescription: customerSafeDescription,
+      luciferCruzName: customerSafeName,
+      luciferCruzDescription: customerSafeDescription,
+      luciferCruzCategory: customerSafeCategory,
+      luciferCruzImageUrl: customerSafeImageUrl,
       sku,
       merchantSku: sku,
       price: checkoutPrice.toFixed(2),
@@ -402,31 +396,51 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       isAvailable: !complianceHold,
       inventoryAmount: totalInventory,
       stockQuantity: totalInventory,
-      merchantName: safeName,
-      merchantDescription: safeDescription,
-      merchantCategory: safeCategory,
-      merchantImage: safeImageUrl,
+      merchantName: customerSafeName,
+      merchantDescription: customerSafeDescription,
+      merchantCategory: customerSafeCategory,
+      merchantImage: customerSafeImageUrl,
       merchantBrand: "alavont",
       updatedAt: new Date(),
     };
-    prepared.push({ row: rowNum, rec, inventory, par, normalizedSafeName: normalizeProductName(safeName), normalizedName: normalizeProductName(name), values: importValues, updateValues });
+    prepared.push({ row: rowNum, rec, inventory, par, normalizedCustomerSafeName: normalizeProductName(customerSafeName), normalizedName: normalizeProductName(name), values: importValues, updateValues });
   }
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
+  const catalogIds = allTenantCatalog.map(item => item.id);
+  const inventoriedProductIds = new Set<number>();
+  if (catalogIds.length > 0) {
+    const inventoriedRows = await db
+      .select({ productId: inventoryBalancesTable.productId })
+      .from(inventoryBalancesTable)
+      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), inArray(inventoryBalancesTable.productId, catalogIds)));
+    for (const row of inventoriedRows) inventoriedProductIds.add(row.productId);
+  }
+  const preferCanonical = (currentId: number | undefined, candidateId: number): number => {
+    if (!currentId) return candidateId;
+    const currentHasInventory = inventoriedProductIds.has(currentId);
+    const candidateHasInventory = inventoriedProductIds.has(candidateId);
+    if (candidateHasInventory !== currentHasInventory) return candidateHasInventory ? candidateId : currentId;
+    return Math.min(currentId, candidateId);
+  };
   const bySku = new Map<string, number>();
+  const byAlavontOrMerchantSku = new Map<string, number>();
   const byName = new Map<string, number>();
+  const byCustomerSafeName = new Map<string, number>();
   for (const item of allTenantCatalog) {
-    const skuKey = String(item.sku ?? item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const nameKeys = [item.safeName, item.luciferCruzName, item.merchantName, item.customerSafeName, item.name, item.alavontName]
-      .map(normalizeProductName)
-      .filter(Boolean);
-    if (skuKey && !bySku.has(skuKey)) bySku.set(skuKey, item.id);
-    for (const nameKey of nameKeys) if (!byName.has(nameKey)) byName.set(nameKey, item.id);
+    const skuKey = String(item.sku ?? "").trim().toLowerCase();
+    const merchantKey = String(item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
+    const productNameKeys = [item.name, item.alavontName].map(normalizeProductName).filter(Boolean);
+    const customerSafeNameKeys = [item.customerSafeName, item.luciferCruzName, item.merchantName].map(normalizeProductName).filter(Boolean);
+    if (skuKey) bySku.set(skuKey, preferCanonical(bySku.get(skuKey), item.id));
+    if (merchantKey) byAlavontOrMerchantSku.set(merchantKey, preferCanonical(byAlavontOrMerchantSku.get(merchantKey), item.id));
+    for (const nameKey of productNameKeys) byName.set(nameKey, preferCanonical(byName.get(nameKey), item.id));
+    for (const nameKey of customerSafeNameKeys) byCustomerSafeName.set(nameKey, preferCanonical(byCustomerSafeName.get(nameKey), item.id));
   }
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-    const matchedId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedSafeName || w.key === p.normalizedName || w.rows.includes(p.row)) };
+    const matchedId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? byCustomerSafeName.get(p.normalizedCustomerSafeName) ?? null;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedCustomerSafeName || w.key === p.normalizedName || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
   if (duplicateWarnings.length) {
@@ -443,7 +457,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       let updated = 0;
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-        const existingId = bySku.get(skuKey) ?? byName.get(p.normalizedSafeName) ?? byName.get(p.normalizedName);
+        const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? byCustomerSafeName.get(p.normalizedCustomerSafeName);
         let catalogItemId = existingId;
         if (catalogItemId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
@@ -460,7 +474,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
           const parLevel = p.par[importName] ?? 0;
           await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, quantity, parLevel);
         }
-        await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.safeName), Object.values(p.inventory).reduce((sum, qty) => sum + qty, 0), Object.values(p.par).reduce((sum, qty) => sum + qty, 0));
+        await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.customerSafeName), Object.values(p.inventory).reduce((sum, qty) => sum + qty, 0), Object.values(p.par).reduce((sum, qty) => sum + qty, 0));
       }
       return { inserted, updated };
     });

@@ -150,7 +150,7 @@ describe("checkoutNormalizer", () => {
     });
 
     it("throws when all branded checkout name fallbacks are empty", async () => {
-      makeDbMock(makeSampleLocalMappedItem({ safeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " }));
+      makeDbMock(makeSampleLocalMappedItem({ customerSafeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " }));
       await expect(normalizeCheckoutCart([{ catalogItemId: 1, quantity: 1 }])).rejects.toThrow(
         /branded checkout name/
       );

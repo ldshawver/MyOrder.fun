@@ -199,6 +199,7 @@ export interface CatalogInventorySnapshotItem {
   name: string;
   alavontName: string | null;
   luciferCruzName: string | null;
+  customerSafeName: string | null;
   category: string | null;
   price: number;
   regularPrice: number | null;
@@ -258,7 +259,9 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
   items: CatalogInventorySnapshotItem[];
   locations: Array<{ id: number; name: string; type: string; csrBoxId: number | null; displayOrder: number | null }>;
 }> {
-  await ensureAllInventoryBalances(tenantId);
+  // Inventory/PAR must show only real catalog identities that already have
+  // inventory rows. Safe presentation fields must never synthesize products.
+  await ensureStandardLocations(tenantId);
   const [products, locations, balances] = await Promise.all([
     db.select({
       id: catalogItemsTable.id,
@@ -268,6 +271,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       isAvailable: catalogItemsTable.isAvailable,
       alavontName: catalogItemsTable.alavontName,
       luciferCruzName: catalogItemsTable.luciferCruzName,
+      customerSafeName: catalogItemsTable.customerSafeName,
       alavontCategory: catalogItemsTable.alavontCategory,
       regularPrice: catalogItemsTable.regularPrice,
       stockUnit: catalogItemsTable.stockUnit,
@@ -280,7 +284,12 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
         sql`coalesce(${catalogItemsTable.isLocalAlavont}, true) = true`,
         eq(catalogItemsTable.isAvailable, true),
         sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`,
-        sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`
+        sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`,
+        sql`EXISTS (
+          SELECT 1 FROM inventory_balances ib
+          WHERE ib.tenant_id = ${tenantId}
+            AND ib.product_id = ${catalogItemsTable.id}
+        )`
       ))
       .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
     db.select().from(inventoryLocationsTable)
@@ -318,6 +327,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       name: item.name,
       alavontName: item.alavontName ?? null,
       luciferCruzName: item.luciferCruzName ?? null,
+      customerSafeName: item.customerSafeName ?? item.luciferCruzName ?? null,
       category: item.alavontCategory ?? item.category,
       price: parseFloat(String(item.price)),
       regularPrice: item.regularPrice ? parseFloat(String(item.regularPrice)) : null,

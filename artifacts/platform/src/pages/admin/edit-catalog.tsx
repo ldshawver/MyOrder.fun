@@ -20,10 +20,8 @@ type CatalogProduct = {
   luciferCruzCategory: string | null;
   luciferCruzDescription: string | null;
   luciferCruzImageUrl: string | null;
-  safeName: string | null;
-  safeDescription: string | null;
-  safeCategory: string | null;
-  safeImageUrl: string | null;
+  customerSafeName: string | null;
+  customerSafeDescription: string | null;
   alavontCategory: string | null;
   category: string;
   description: string | null;
@@ -57,10 +55,8 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   luciferCruzImageUrl: "",
   luciferCruzDescription: "",
   luciferCruzCategory: "",
-  safeName: "",
-  safeDescription: "",
-  safeCategory: "",
-  safeImageUrl: "",
+  customerSafeName: "",
+  customerSafeDescription: "",
   labName: "",
   isAvailable: true,
   isWooManaged: false,
@@ -101,10 +97,8 @@ function EditDialog({
     imageUrl: fieldVal(item?.imageUrl),
     alavontImageUrl: fieldVal(item?.alavontImageUrl),
     luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
-    safeName: fieldVal(item?.safeName),
-    safeDescription: fieldVal(item?.safeDescription),
-    safeCategory: fieldVal(item?.safeCategory),
-    safeImageUrl: fieldVal(item?.safeImageUrl),
+    customerSafeName: fieldVal(item?.customerSafeName),
+    customerSafeDescription: fieldVal(item?.customerSafeDescription),
     labName: fieldVal(item?.labName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
@@ -121,10 +115,8 @@ function EditDialog({
       luciferCruzCategory: form.luciferCruzCategory || null,
       luciferCruzDescription: form.luciferCruzDescription || null,
       luciferCruzImageUrl: form.luciferCruzImageUrl || null,
-      safeName: form.safeName || null,
-      safeDescription: form.safeDescription || null,
-      safeCategory: form.safeCategory || null,
-      safeImageUrl: form.safeImageUrl || null,
+      customerSafeName: form.customerSafeName || null,
+      customerSafeDescription: form.customerSafeDescription || null,
       category: form.category || form.alavontCategory || "General",
       alavontCategory: form.alavontCategory || null,
       description: form.description || null,
@@ -224,16 +216,16 @@ function EditDialog({
               <CheckCircle size={11} /> Safe Checkout Presentation
             </div>
             <div className="grid grid-cols-2 gap-3">
-              {input("Safe Name", "safeName")}
-              {input("Safe Category", "safeCategory")}
-              {input("Safe Image URL (optional)", "safeImageUrl")}
+              {input("Customer Safe Name", "customerSafeName")}
+              {input("Lucifer Cruz Category", "luciferCruzCategory")}
+              {input("Lucifer Cruz Image URL (optional)", "luciferCruzImageUrl")}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">Safe image is optional.</p>
             <label className="flex flex-col gap-1 mt-3">
-              <span className="text-xs text-muted-foreground font-medium">Safe Description</span>
+              <span className="text-xs text-muted-foreground font-medium">Customer Safe Description</span>
               <textarea
-                value={fieldVal(form.safeDescription)}
-                onChange={(e) => setForm(f => ({ ...f, safeDescription: e.target.value }))}
+                value={fieldVal(form.customerSafeDescription)}
+                onChange={(e) => setForm(f => ({ ...f, customerSafeDescription: e.target.value }))}
                 disabled={isSaving}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"

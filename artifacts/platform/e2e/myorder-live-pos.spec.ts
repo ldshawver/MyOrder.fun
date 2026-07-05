@@ -23,7 +23,7 @@ async function apiJson(api: APIRequestContext, path: string) {
 
 async function assertNoPrivateFields(payload: unknown) {
   const serialized = JSON.stringify(payload);
-  expect(serialized).not.toMatch(/"(safeName|safeDescription|luciferCruzName|luciferCruzDescription|merchantSku|supplier|cost|margin|boxAssignmentId|quantityOnHand|parLevel|complianceHold|quarantineReason)"/i);
+  expect(serialized).not.toMatch(/"(customerSafeName|customerSafeDescription|luciferCruzName|luciferCruzDescription|merchantSku|supplier|cost|margin|boxAssignmentId|quantityOnHand|parLevel|complianceHold|quarantineReason)"/i);
 }
 
 async function sqlScalar(query: string) {
@@ -80,7 +80,7 @@ test.describe("LIVE MyOrder.fun POS verification with Clerk sessions", () => {
 
     await page.goto(`${baseURL}/catalog`, { waitUntil: "domcontentloaded" });
     await testInfo.attach("customer-catalog", { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
-    await expect(page.locator("body")).not.toContainText(/safeName|merchantSku|supplier|margin|quantityOnHand/i);
+    await expect(page.locator("body")).not.toContainText(/customerSafeName|merchantSku|supplier|margin|quantityOnHand/i);
 
     await clickFirstVisible(page, ['[data-testid^="link-buy-now-"]', 'button:has-text("Add to Cart")', 'text=/Add to Cart/i']);
     await page.goto(`${baseURL}/new-order`, { waitUntil: "domcontentloaded" });

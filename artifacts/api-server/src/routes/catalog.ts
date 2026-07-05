@@ -58,9 +58,9 @@ async function archiveSafeDuplicateRows(tenantId: number, actor: { id: number; e
     const looksSafeOnly = candidate.isLocalAlavont === false || candidate.merchantBrand === "lucifer_cruz" || (metadata.safeOnly === true) || (!hasAlavontIdentity && Boolean(candidate.luciferCruzName?.trim() || candidate.merchantName?.trim()));
     if (!looksSafeOnly) continue;
 
-    const safeName = (candidate.luciferCruzName || candidate.merchantName || candidate.customerSafeName || candidate.name || "").trim().toLowerCase();
-    if (!safeName) continue;
-    const parent = activeParents.find(row => row.id !== candidate.id && [row.luciferCruzName, row.merchantName, row.customerSafeName].some(value => value?.trim().toLowerCase() === safeName));
+    const customerSafeName = (candidate.luciferCruzName || candidate.merchantName || candidate.customerSafeName || candidate.name || "").trim().toLowerCase();
+    if (!customerSafeName) continue;
+    const parent = activeParents.find(row => row.id !== candidate.id && [row.luciferCruzName, row.merchantName, row.customerSafeName].some(value => value?.trim().toLowerCase() === customerSafeName));
     if (!parent) continue;
 
     const parentMetadata = parent.metadata && typeof parent.metadata === "object" && !Array.isArray(parent.metadata) ? parent.metadata as Record<string, unknown> : {};
@@ -149,10 +149,6 @@ async function ensureCatalogRouteSchema(): Promise<void> {
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "marketing_copy" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_name" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_image_url" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "upsell_copy" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "promo_badges" text[] DEFAULT ARRAY[]::text[]`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_processing_mode" text DEFAULT 'mapped_lucifer'`,
@@ -281,10 +277,6 @@ function mapItem(
     marketingCopy: alavontOnly ? null : (i.marketingCopy ?? null),
     customerSafeName: alavontOnly ? null : (i.customerSafeName ?? null),
     customerSafeDescription: alavontOnly ? null : (i.customerSafeDescription ?? null),
-    safeName: alavontOnly ? null : (i.safeName ?? null),
-    safeDescription: alavontOnly ? null : (i.safeDescription ?? null),
-    safeCategory: alavontOnly ? null : (i.safeCategory ?? null),
-    safeImageUrl: alavontOnly ? null : (i.safeImageUrl ?? null),
     upsellCopy: alavontOnly ? null : (i.upsellCopy ?? null),
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,

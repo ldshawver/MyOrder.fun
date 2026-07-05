@@ -55,7 +55,7 @@ vi.mock("@workspace/db", () => {
     then: (resolve: (v: unknown) => void) => resolve(rows),
   });
   const tableRows = (table: { _name?: string } | undefined, selection?: unknown) => {
-    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, safeName: r.safeName, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
+    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
     if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id, tenantId: r.tenantId, catalogItemId: r.catalogItemId })) : state.inventory;
     if (table?._name === "inventory_locations") return state.locations;
     if (table?._name === "inventory_balances") return selection ? state.balances.map(r => ({ id: r.id, tenantId: r.tenantId, productId: r.productId, locationId: r.locationId })) : state.balances;
@@ -101,8 +101,6 @@ const importRouter = (await import("../import")).default;
 function buildApp() { const app = express(); app.use(express.json()); app.use("/api", importRouter); return app; }
 const headers = "Regular Price,Sale Price,Active Sale,Alavont Category,Alavont Name,Alavont Image,Alavont Description,Alavont SKU,Safe Category,Safe Name,Safe Image,Safe Description,Box 1 Inventory,Box 2 Inventory,Storefront Inventory,Backstock Inventory,Box 1 PAR,Box 2 PAR,Storefront PAR,Backstock PAR";
 const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,1,2,3,9,2,2,3,9\n`;
-const oldHeaders = "sku,name,description,category,brand,price,unit,quantity_size,active,image_url,safe_name,safe_description,safe_category,safe_image_url,inventory_location,current_inventory,par_level,reorder_threshold,sort_order";
-const oldCsv = `${oldHeaders}\nSKU-OLD,Old Name,Desc,Cat,alavont,12.50,ml,10,true,https://example.com/a.jpg,Safe,Safe desc,Safe cat,https://example.com/s.jpg,Back,9,3,2,1\n`;
 
 beforeEach(() => { vi.clearAllMocks(); state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; state.executeRowsObject = false; state.failBalanceInsertAt = null; state.balanceInsertAttempts = 0; });
 
@@ -262,7 +260,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.catalog[0]).toMatchObject({ safeName: "Safe", safeDescription: "Safe desc", safeCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
+    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
@@ -305,11 +303,6 @@ describe("safe catalog import/export", () => {
     expect(exported.text.split("\n")[0]).toBe(headers);
     expect(exported.text.split("\n")[0]).not.toContain("alavont_in_stock");
     expect(exported.text.split("\n")[0]).not.toContain("quantity_size");
-  });
-  it("imports the old template during transition", async () => {
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(oldCsv), "old.csv");
-    expect(res.status).toBe(200);
-    expect(state.catalog[0]).toMatchObject({ sku: "SKU-OLD", name: "Old Name", price: "12.50" });
   });
   it("blank inactive sale uses regular price", async () => {
     const csv = `${headers}\n15.00,7.00,,Cat,Name,https://example.com/a.jpg,Desc,SKU-2,Safe cat,Safe,https://example.com/s.jpg,Safe desc,0,0,0,0\n`;
