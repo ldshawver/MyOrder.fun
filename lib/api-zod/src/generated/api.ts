@@ -553,6 +553,7 @@ export const ListOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -590,7 +591,13 @@ export const ListOrdersResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -634,6 +641,7 @@ export const ListOrdersResponse = zod.object({
 export const CreateOrderBody = zod.object({
   "shippingAddress": zod.string().optional(),
   "notes": zod.string().optional(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "items": zod.array(zod.object({
   "catalogItemId": zod.number().min(1),
   "quantity": zod.number().min(1)
@@ -745,6 +753,7 @@ export const GetOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -782,7 +791,13 @@ export const GetOrderResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -839,6 +854,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -876,7 +892,13 @@ export const UpdateOrderStatusResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -944,6 +966,7 @@ export const AcceptOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -981,7 +1004,13 @@ export const AcceptOrderResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1045,6 +1074,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -1082,7 +1112,13 @@ export const AdjustOrderEtaResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1134,6 +1170,7 @@ export const MarkOrderReadyResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -1171,7 +1208,13 @@ export const MarkOrderReadyResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1227,6 +1270,7 @@ export const ReassignOrderResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -1264,7 +1308,13 @@ export const ReassignOrderResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1345,6 +1395,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -1382,7 +1433,13 @@ export const ListDelayedOrdersResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -1439,6 +1496,7 @@ export const GetRecentOrdersResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -1476,7 +1534,13 @@ export const GetRecentOrdersResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),
@@ -2222,6 +2286,7 @@ export const ConfirmPaymentResponse = zod.object({
   "total": zod.number(),
   "shippingAddress": zod.string().optional(),
   "deliveryMethod": zod.string().nullish(),
+  "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).optional(),
   "deliveryQuoteId": zod.string().nullish(),
   "deliveryFee": zod.number().nullish(),
   "deliveryCurrency": zod.string().nullish(),
@@ -2259,7 +2324,13 @@ export const ConfirmPaymentResponse = zod.object({
   "catalogItemName": zod.string(),
   "quantity": zod.number(),
   "unitPrice": zod.number(),
-  "totalPrice": zod.number()
+  "totalPrice": zod.number(),
+  "inventoryDeductions": zod.array(zod.object({
+  "locationId": zod.number(),
+  "locationName": zod.string().nullish(),
+  "quantity": zod.number(),
+  "remainingStock": zod.number()
+})).optional()
 })),
   "assignedCsrUserId": zod.number().nullish(),
   "routeSource": zod.enum(['active_csr', 'general_account', 'supervisor_override']).nullish(),

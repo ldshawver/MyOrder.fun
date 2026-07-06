@@ -88,13 +88,14 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("deductCheckoutInventoryBackstockFirst(tx, houseTenantId, line.catalog_item_id, line.quantity)");
-    expect(api("lib/inventoryBalances.ts")).toContain("Deduction drains deterministic locations in order: Backstock, Storefront");
-    expect(api("lib/inventoryBalances.ts")).toContain("WHEN 'Backstock' THEN 0");
-    expect(api("lib/inventoryBalances.ts")).toContain("WHEN 'Storefront' THEN 1");
-    expect(api("lib/inventoryBalances.ts")).toContain("WHEN 'CSR Sales Box 1' THEN 2");
-    expect(api("lib/inventoryBalances.ts")).toContain("WHEN 'CSR Sales Box 2' THEN 3");
+    expect(orders).toContain("deductCheckoutInventoryByOrderType(tx, houseTenantId, line.catalog_item_id, line.quantity, orderType)");
+    expect(api("lib/inventoryBalances.ts")).toContain('WALK_IN: ["Storefront", "CSR Sales Box 1", "CSR Sales Box 2", "Backstock"]');
+    expect(api("lib/inventoryBalances.ts")).toContain('CSR: ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"]');
+    expect(api("lib/inventoryBalances.ts")).toContain('ONLINE: ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"]');
     expect(api("lib/inventoryBalances.ts")).toContain("[POS_INVENTORY_DEBUG] allocated inventory exceeds Backstock primary stock");
+    expect(orders).toContain('action: "INVENTORY_DEDUCTED"');
+    expect(orders).toContain("locationUsed: used.locationName");
+    expect(orders).toContain("remainingStock: used.remainingStock");
     expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
     expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id");
@@ -112,6 +113,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("originalCatalogItemId");
     expect(platform("pages/admin/inventory.tsx")).toContain("Primary Stock");
     expect(platform("pages/admin/inventory.tsx")).toContain("Allocated / Held Stock");
+    expect(platform("pages/order-detail.tsx")).toContain("Pulled from");
   });
 
   it("awaits converted checkout snapshot construction before order metadata and persistence use it", () => {

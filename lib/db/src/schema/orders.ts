@@ -26,6 +26,7 @@ export const ordersTable = pgTable("orders", {
   total: numeric("total", { precision: 10, scale: 2 }).notNull(),
   shippingAddress: text("shipping_address"),
   deliveryMethod: text("delivery_method"),
+  orderType: text("order_type").notNull().default("ONLINE"),
   deliveryQuoteId: text("delivery_quote_id"),
   deliveryQuoteSnapshot: jsonb("delivery_quote_snapshot"),
   deliveryFee: numeric("delivery_fee", { precision: 10, scale: 2 }),
@@ -104,6 +105,7 @@ export const orderItemsTable = pgTable("order_items", {
   // WooCommerce / CJ Dropshipping linkage — persisted at order time for post-payment dispatch
   wooProductId: text("woo_product_id"),
   wooVariationId: text("woo_variation_id"),
+  inventoryDeductions: jsonb("inventory_deductions").default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

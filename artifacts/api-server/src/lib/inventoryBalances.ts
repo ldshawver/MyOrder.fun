@@ -19,7 +19,13 @@ import { logger } from "./logger";
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type InventoryDeductionExecutor = typeof db | InventoryDeductionTransaction;
-const CHECKOUT_DEDUCTION_LOCATION_ORDER = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
+export const ORDER_TYPES = ["WALK_IN", "CSR", "ONLINE"] as const;
+export type InventoryOrderType = typeof ORDER_TYPES[number];
+const CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE: Record<InventoryOrderType, readonly string[]> = {
+  WALK_IN: ["Storefront", "CSR Sales Box 1", "CSR Sales Box 2", "Backstock"],
+  CSR: ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"],
+  ONLINE: ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"],
+};
 
 function inventoryDebugWarningsEnabled(): boolean {
   return process.env.POS_INVENTORY_DEBUG === "true"
@@ -213,6 +219,7 @@ export interface CheckoutInventoryLocationDeduction {
   locationId: number;
   locationName: string | null;
   quantity: number;
+  remainingStock: number;
 }
 
 export interface CheckoutInventoryDeductionResult {
@@ -230,13 +237,14 @@ export interface CheckoutInventoryDeductionResult {
  * inventory for diagnostics, but checkout success is determined by walking
  * this chain rather than treating a total as a primary stock source.
  */
-export async function deductCheckoutInventoryBackstockFirst(
+export async function deductCheckoutInventoryByOrderType(
   executor: InventoryDeductionExecutor,
   tenantId: number,
   productId: number,
   quantity: number,
+  orderType: InventoryOrderType,
 ): Promise<CheckoutInventoryDeductionResult | null> {
-  assertCatalogIdInventoryLookup(productId, "checkout.inventoryDeduction.backstockFirst");
+  assertCatalogIdInventoryLookup(productId, "checkout.inventoryDeduction.orderTypeAware");
   const requestedQuantity = Number(quantity);
   if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
     throw new Error(`Invalid checkout inventory deduction quantity for catalogItemId ${productId}`);
@@ -261,13 +269,7 @@ export async function deductCheckoutInventoryBackstockFirst(
       eq(inventoryLocationsTable.isActive, true),
     ))
     .orderBy(
-      sql`CASE ${inventoryLocationsTable.name}
-        WHEN 'Backstock' THEN 0
-        WHEN 'Storefront' THEN 1
-        WHEN 'CSR Sales Box 1' THEN 2
-        WHEN 'CSR Sales Box 2' THEN 3
-        ELSE 4
-      END`,
+      sql`array_position(${[...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]]}::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
       asc(inventoryLocationsTable.displayOrder),
       asc(inventoryLocationsTable.id),
     );
@@ -284,7 +286,8 @@ export async function deductCheckoutInventoryBackstockFirst(
         productId,
         backstockQty,
         higherAllocated,
-        checkoutDeductionOrder: CHECKOUT_DEDUCTION_LOCATION_ORDER,
+        checkoutDeductionOrder: CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType],
+        orderType,
         stack: new Error("Allocated inventory exceeds Backstock primary stock").stack,
       }, "[POS_INVENTORY_DEBUG] allocated inventory exceeds Backstock primary stock");
     }
@@ -308,10 +311,12 @@ export async function deductCheckoutInventoryBackstockFirst(
       ))
       .returning({ id: inventoryBalancesTable.id });
     if (updated.length !== 1) return null;
+    const remainingStock = availableAtLocation - deductionQuantity;
     deductions.push({
       locationId: row.locationId,
       locationName: row.locationName,
       quantity: deductionQuantity,
+      remainingStock,
     });
     remaining -= deductionQuantity;
   }
@@ -323,6 +328,15 @@ export async function deductCheckoutInventoryBackstockFirst(
     availableBeforeDeduction,
     deductions,
   };
+}
+
+export async function deductCheckoutInventoryBackstockFirst(
+  executor: InventoryDeductionExecutor,
+  tenantId: number,
+  productId: number,
+  quantity: number,
+): Promise<CheckoutInventoryDeductionResult | null> {
+  return deductCheckoutInventoryByOrderType(executor, tenantId, productId, quantity, "ONLINE");
 }
 
 

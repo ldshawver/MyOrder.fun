@@ -20,7 +20,7 @@ import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/str
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { requireOrderHasVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
-import { deductCheckoutInventoryBackstockFirst } from "../lib/inventoryBalances";
+import { deductCheckoutInventoryByOrderType, type InventoryOrderType } from "../lib/inventoryBalances";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -32,7 +32,20 @@ class PaymentInventoryError extends Error {
   }
 }
 
-async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect): Promise<void> {
+function orderTypeForPaidDeduction(order: typeof ordersTable.$inferSelect): InventoryOrderType {
+  const raw = order.orderType;
+  if (raw === "WALK_IN" || raw === "CSR" || raw === "ONLINE") return raw;
+  return order.deliveryMethod === "csr_delivery" ? "CSR" : "ONLINE";
+}
+
+type PaymentDeductionAuditContext = {
+  actorId: number;
+  actorEmail: string | null | undefined;
+  actorRole: string;
+  ipAddress?: string;
+};
+
+async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: PaymentDeductionAuditContext): Promise<void> {
   const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
   if (method === "cash") return;
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
@@ -40,11 +53,26 @@ async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect):
   if (!shift?.boxAssignmentId) return;
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
 
+  const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
   await db.transaction(async (tx) => {
     for (const item of items) {
       if (!item.catalogItemId) continue;
-      const deduction = await deductCheckoutInventoryBackstockFirst(tx, order.tenantId, item.catalogItemId, Number(item.quantity));
+      const orderType = orderTypeForPaidDeduction(order);
+      const deduction = await deductCheckoutInventoryByOrderType(tx, order.tenantId, item.catalogItemId, Number(item.quantity), orderType);
       if (!deduction) throw new PaymentInventoryError(item.catalogItemId);
+      await tx.update(orderItemsTable)
+        .set({ inventoryDeductions: deduction.deductions })
+        .where(eq(orderItemsTable.id, item.id));
+      for (const used of deduction.deductions) {
+        auditEntries.push({
+          productId: item.catalogItemId,
+          locationUsed: used.locationName,
+          locationId: used.locationId,
+          quantity: used.quantity,
+          remainingStock: used.remainingStock,
+          orderType,
+        });
+      }
       await tx.execute(sql`
         UPDATE catalog_items
         SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0),
@@ -53,6 +81,21 @@ async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect):
       `);
     }
   });
+  if (auditContext) {
+    for (const entry of auditEntries) {
+      await writeAuditLog({
+        actorId: auditContext.actorId,
+        actorEmail: auditContext.actorEmail,
+        actorRole: auditContext.actorRole,
+        action: "INVENTORY_DEDUCTED",
+        tenantId: order.tenantId,
+        resourceType: "order",
+        resourceId: String(order.id),
+        metadata: { orderId: order.id, ...entry },
+        ipAddress: auditContext.ipAddress,
+      });
+    }
+  }
 }
 
 
@@ -435,7 +478,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
       return;
     }
     try {
-      await deductPaidOrderInventory(order);
+      await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip });
     } catch (err) {
       if (err instanceof PaymentInventoryError) {
         res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
@@ -518,7 +561,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     }
 
     try {
-      await deductPaidOrderInventory(order);
+      await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip });
     } catch (err) {
       if (err instanceof PaymentInventoryError) {
         res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });

@@ -1610,6 +1610,11 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
                 {item.receiptName && (
                   <div className="text-muted-foreground/60 text-[10px]">Receipt: {item.receiptName}</div>
                 )}
+                {item.inventoryDeductions && item.inventoryDeductions.length > 0 && (
+                  <div className="text-muted-foreground/70 text-[10px] mt-0.5">
+                    Pulled from {item.inventoryDeductions.map(d => `${d.locationName ?? `location #${d.locationId}`} (${d.quantity})`).join(", ")}
+                  </div>
+                )}
               </div>
               <div className="text-right shrink-0">
                 <div className="font-mono">×{item.quantity}</div>

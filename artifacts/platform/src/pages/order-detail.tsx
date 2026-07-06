@@ -636,6 +636,11 @@ export default function OrderDetail() {
                     <div className="text-xs text-muted-foreground mt-0.5 font-mono">
                       ${item.unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })} × {item.quantity}
                     </div>
+                    {item.inventoryDeductions && item.inventoryDeductions.length > 0 && (
+                      <div className="text-[11px] text-muted-foreground mt-1">
+                        Pulled from {item.inventoryDeductions.map(d => `${d.locationName ?? `location #${d.locationId}`} (${d.quantity})`).join(", ")}
+                      </div>
+                    )}
                   </div>
                   <div className="font-semibold text-sm font-mono">
                     ${item.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}

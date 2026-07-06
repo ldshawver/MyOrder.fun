@@ -354,6 +354,12 @@ export interface OrderItem {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  inventoryDeductions?: Array<{
+    locationId: number;
+    locationName: string | null;
+    quantity: number;
+    remainingStock: number;
+  }>;
 }
 
 export type OrderStatus = typeof OrderStatus[keyof typeof OrderStatus];
@@ -504,6 +510,7 @@ export interface Order {
   total: number;
   shippingAddress?: string;
   deliveryMethod?: string | null;
+  orderType?: 'WALK_IN' | 'CSR' | 'ONLINE';
   deliveryQuoteId?: string | null;
   deliveryFee?: number | null;
   deliveryCurrency?: string | null;
@@ -572,6 +579,7 @@ export const CreateOrderBodyDeliveryMethod = {
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
+  orderType?: 'WALK_IN' | 'CSR' | 'ONLINE';
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
@@ -1249,4 +1257,3 @@ export type CompleteDeliveryHandoff200 = {
   handoffCompletedAt?: string | null;
   handoffCompletedByUserId?: number | null;
 };
-

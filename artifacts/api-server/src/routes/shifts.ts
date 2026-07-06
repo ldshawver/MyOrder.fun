@@ -426,6 +426,8 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz`,
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_by_user_id" integer REFERENCES "users"("id")`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "order_type" text NOT NULL DEFAULT 'ONLINE'`,
+    sql`ALTER TABLE "order_items" ADD COLUMN IF NOT EXISTS "inventory_deductions" jsonb NOT NULL DEFAULT '[]'::jsonb`,
     sql`CREATE INDEX IF NOT EXISTS "orders_assigned_shift_idx" ON "orders" ("assigned_shift_id")`,
     sql`CREATE INDEX IF NOT EXISTS "orders_archived_at_idx" ON "orders" ("archived_at")`,
     sql`CREATE INDEX IF NOT EXISTS "orders_voided_at_idx" ON "orders" ("voided_at")`,

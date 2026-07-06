@@ -41,7 +41,7 @@ import {
   CartLineInput,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
-import { deductCheckoutInventoryBackstockFirst } from "../lib/inventoryBalances";
+import { deductCheckoutInventoryByOrderType, type InventoryOrderType } from "../lib/inventoryBalances";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { logger } from "../lib/logger";
@@ -65,11 +65,29 @@ import {
 } from "../lib/uberDirect";
 
 const router: IRouter = Router();
+const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
 class InsufficientInventoryError extends Error {
   constructor(public readonly catalogItemId: number) {
     super(`Insufficient inventory for catalog item ${catalogItemId}`);
     this.name = "InsufficientInventoryError";
   }
+}
+
+type InventoryDeductionAuditEntry = {
+  orderId: number;
+  productId: number;
+  locationUsed: string | null;
+  locationId: number;
+  quantity: number;
+  remainingStock: number;
+  orderType: InventoryOrderType;
+};
+
+function resolveOrderType(rawOrderType: unknown, isCsrDelivery: boolean): InventoryOrderType {
+  const parsed = OrderTypeSchema.safeParse(rawOrderType);
+  if (parsed.success) return parsed.data;
+  if (isCsrDelivery) return "CSR";
+  return "ONLINE";
 }
 
 
@@ -552,6 +570,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     total: parseFloat(order.total as string),
     shippingAddress: order.shippingAddress,
     deliveryMethod: order.deliveryMethod ?? null,
+    orderType: order.orderType ?? "ONLINE",
     deliveryQuoteId: order.deliveryQuoteId ?? null,
     deliveryFee: order.deliveryFee == null ? null : parseFloat(order.deliveryFee as string),
     deliveryCurrency: order.deliveryCurrency ?? null,
@@ -569,6 +588,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
       quantity: i.quantity,
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),
+      inventoryDeductions: Array.isArray(i.inventoryDeductions) ? i.inventoryDeductions : [],
     })),
     assignedCsrUserId: order.assignedCsrUserId ?? null,
     routeSource: order.routeSource ?? null,
@@ -711,6 +731,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
   const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
+  const orderType = resolveOrderType(body.data.orderType, isCsrDelivery);
 
   const csrDeliveryDistanceMiles = Number((body.data as { csrDeliveryDistanceMiles?: unknown }).csrDeliveryDistanceMiles ?? 0);
   if (isCsrDelivery && (!Number.isFinite(csrDeliveryDistanceMiles) || csrDeliveryDistanceMiles < 0 || csrDeliveryDistanceMiles > 2)) {
@@ -824,6 +845,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
           : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+        orderType,
         deliveryQuoteId: deliveryQuote?.quoteId ?? null,
         deliveryQuoteSnapshot: deliveryQuote ?? null,
         deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
@@ -894,8 +916,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
       }).where(eq(ordersTable.id, createdOrder.id));
 
+      const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
-        await tx.insert(orderItemsTable).values({
+        const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
           catalogItemName: line.catalog_display_name,
@@ -909,12 +932,26 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           labName: line.lab_name ?? line.receipt_alavont_name,
           wooProductId: line.woo_product_id ?? null,
           wooVariationId: line.woo_variation_id ?? null,
-        });
+        }).returning({ id: orderItemsTable.id });
 
         if (shouldDeductInventory) {
-          const deduction = await deductCheckoutInventoryBackstockFirst(tx, houseTenantId, line.catalog_item_id, line.quantity);
+          const deduction = await deductCheckoutInventoryByOrderType(tx, houseTenantId, line.catalog_item_id, line.quantity, orderType);
           if (!deduction) {
             throw new InsufficientInventoryError(line.catalog_item_id);
+          }
+          await tx.update(orderItemsTable)
+            .set({ inventoryDeductions: deduction.deductions })
+            .where(eq(orderItemsTable.id, orderItem.id));
+          for (const used of deduction.deductions) {
+            inventoryDeductionAuditEntries.push({
+              orderId: createdOrder.id,
+              productId: line.catalog_item_id,
+              locationUsed: used.locationName,
+              locationId: used.locationId,
+              quantity: used.quantity,
+              remainingStock: used.remainingStock,
+              orderType,
+            });
           }
         }
 
@@ -936,6 +973,20 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             WHERE tenant_id = ${houseTenantId}
               AND id = ${line.catalog_item_id}
           `);
+      }
+
+      for (const entry of inventoryDeductionAuditEntries) {
+        await writeAuditLog({
+          actorId: actor.id,
+          actorEmail: actor.email,
+          actorRole: actor.role,
+          action: "INVENTORY_DEDUCTED",
+          tenantId: houseTenantId,
+          resourceType: "order",
+          resourceId: String(entry.orderId),
+          metadata: entry,
+          ipAddress: req.ip,
+        });
       }
 
       return createdOrder;
