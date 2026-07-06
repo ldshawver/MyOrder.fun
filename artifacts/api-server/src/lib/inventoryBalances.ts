@@ -4,6 +4,8 @@
  * the same idempotent logic runs after any operation that adds/changes
  * local Alavont products.
  */
+import { bootstrapMissingInventoryBalancesThroughAuthority } from "./inventoryAuthority";
+import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
