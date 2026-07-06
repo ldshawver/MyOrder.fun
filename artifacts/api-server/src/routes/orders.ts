@@ -791,63 +791,33 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
   // Fallback/general-account orders must remain unassigned so they do not
   // accidentally attach to a non-ready shift or mutate a CSR box.
-  const assignedTechId: number | null = routing.assignedCsrUserId;
-  const assignedShiftId: number | null = routing.assignedShiftId;
+let targetLocationId: number | null = null;
 
-  const now = new Date();
+if (assignedShiftId) {
+  const [activeShift] = await db
+    .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+    .from(labTechShiftsTable)
+    .where(eq(labTechShiftsTable.id, assignedShiftId))
+    .limit(1);
 
-targetLocationId = loc?.id ?? null;
-  if (assignedShiftId) {
-    const [activeShift] = await db
-      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, assignedShiftId))
+  const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
+  if (locationName) {
+    const [loc] = await db
+      .select({ id: inventoryLocationsTable.id })
+      .from(inventoryLocationsTable)
+      .where(and(
+        eq(inventoryLocationsTable.tenantId, houseTenantId),
+        eq(inventoryLocationsTable.name, locationName),
+      ))
       .limit(1);
 
-    const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
-    if (locationName) {
-      const [loc] = await db
-        .select({ id: inventoryLocationsTable.id })
-        .from(inventoryLocationsTable)
-        .where(and(
-          eq(inventoryLocationsTable.tenantId, houseTenantId),
-          eq(inventoryLocationsTable.name, locationName),
-        ))
-        .limit(1);
-      targetLocationId = loc?.id ?? null;
-      targetLocationName = loc ? locationName : null;
-    }
+    targetLocationId = loc?.id ?? null;
   }
-
-  const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
-  await ensureInventoryReservationsTable();
-  const shouldReserveInventory = routing.routeSource === "active_csr" && targetLocationId != null;
-  const shouldConfirmReservationImmediately = shouldReserveInventory && immediatePaymentMethod === "cash";
-
-  if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
-    const missingRows = await db
-      .select({ catalogItemId: catalogItemsTable.id })
-      .from(catalogItemsTable)
-      .leftJoin(inventoryBalancesTable, and(
-        eq(inventoryBalancesTable.tenantId, houseTenantId),
-        eq(inventoryBalancesTable.productId, catalogItemsTable.id),
-      ))
-      .where(and(
-        eq(catalogItemsTable.tenantId, houseTenantId),
-        inArray(catalogItemsTable.id, normalizedCatalogIds),
-        sql`${inventoryBalancesTable.id} IS NULL`,
-      ));
-    if (missingRows.length > 0) {
-      res.status(409).json({
-        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} in any sellable checkout location`,
-        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
-      });
-      return;
-    }
-  }
+}
 
   let order: typeof ordersTable.$inferSelect;
   try {
+
     order = await db.transaction(async (tx) => {
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
