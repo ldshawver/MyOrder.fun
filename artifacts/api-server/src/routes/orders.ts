@@ -33,7 +33,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
@@ -42,7 +41,13 @@ import {
   CartLineInput,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
-import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
+import { type InventoryOrderType } from "../lib/inventoryBalances";
+import {
+  confirmInventoryReservationsForOrder,
+  ensureInventoryReservationsTable,
+  reserveCheckoutInventoryByOrderType,
+} from "../lib/inventoryReservations";
+import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
@@ -65,6 +70,7 @@ import {
 } from "../lib/uberDirect";
 
 const router: IRouter = Router();
+const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
 class InsufficientInventoryError extends Error {
   constructor(
     public readonly catalogItemId: number,
@@ -79,6 +85,23 @@ class InsufficientInventoryError extends Error {
       : `No inventory rows exist for catalog item ${catalogItemId}`);
     this.name = "InsufficientInventoryError";
   }
+}
+
+type InventoryDeductionAuditEntry = {
+  orderId: number;
+  productId: number;
+  locationUsed: string | null;
+  locationId: number;
+  quantity: number;
+  remainingStock: number;
+  orderType: InventoryOrderType;
+};
+
+function resolveOrderType(rawOrderType: unknown, isCsrDelivery: boolean): InventoryOrderType {
+  const parsed = OrderTypeSchema.safeParse(rawOrderType);
+  if (parsed.success) return parsed.data;
+  if (isCsrDelivery) return "CSR";
+  return "ONLINE";
 }
 
 
@@ -561,6 +584,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     total: parseFloat(order.total as string),
     shippingAddress: order.shippingAddress,
     deliveryMethod: order.deliveryMethod ?? null,
+    orderType: order.orderType ?? "ONLINE",
     deliveryQuoteId: order.deliveryQuoteId ?? null,
     deliveryFee: order.deliveryFee == null ? null : parseFloat(order.deliveryFee as string),
     deliveryCurrency: order.deliveryCurrency ?? null,
@@ -578,6 +602,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
       quantity: i.quantity,
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),
+      inventoryDeductions: Array.isArray(i.inventoryDeductions) ? i.inventoryDeductions : [],
     })),
     assignedCsrUserId: order.assignedCsrUserId ?? null,
     routeSource: order.routeSource ?? null,
@@ -720,6 +745,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
   const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
+  const orderType = resolveOrderType(body.data.orderType, isCsrDelivery);
 
   const csrDeliveryDistanceMiles = Number((body.data as { csrDeliveryDistanceMiles?: unknown }).csrDeliveryDistanceMiles ?? 0);
   if (isCsrDelivery && (!Number.isFinite(csrDeliveryDistanceMiles) || csrDeliveryDistanceMiles < 0 || csrDeliveryDistanceMiles > 2)) {
@@ -795,7 +821,31 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
-  const shouldDeductInventory = routing.routeSource === "active_csr" && targetLocationId != null && immediatePaymentMethod === "cash";
+  await ensureInventoryReservationsTable();
+  const shouldReserveInventory = routing.routeSource === "active_csr" && targetLocationId != null;
+  const shouldConfirmReservationImmediately = shouldReserveInventory && immediatePaymentMethod === "cash";
+
+  if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
+    const missingRows = await db
+      .select({ catalogItemId: catalogItemsTable.id })
+      .from(catalogItemsTable)
+      .leftJoin(inventoryBalancesTable, and(
+        eq(inventoryBalancesTable.tenantId, houseTenantId),
+        eq(inventoryBalancesTable.productId, catalogItemsTable.id),
+      ))
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        inArray(catalogItemsTable.id, normalizedCatalogIds),
+        sql`${inventoryBalancesTable.id} IS NULL`,
+      ));
+    if (missingRows.length > 0) {
+      res.status(409).json({
+        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} in any sellable checkout location`,
+        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
+      });
+      return;
+    }
+  }
 
   let order: typeof ordersTable.$inferSelect;
   try {
@@ -813,6 +863,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
           : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
+        orderType,
         deliveryQuoteId: deliveryQuote?.quoteId ?? null,
         deliveryQuoteSnapshot: deliveryQuote ?? null,
         deliveryFee: deliveryFee > 0 ? String(deliveryFee.toFixed(2)) : null,
@@ -883,8 +934,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
       }).where(eq(ordersTable.id, createdOrder.id));
 
+      const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
-        await tx.insert(orderItemsTable).values({
+        const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
           catalogItemName: line.catalog_display_name,
@@ -898,46 +950,36 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           labName: line.lab_name ?? line.receipt_alavont_name,
           wooProductId: line.woo_product_id ?? null,
           wooVariationId: line.woo_variation_id ?? null,
-        });
+        }).returning({ id: orderItemsTable.id });
 
-        if (shouldDeductInventory) {
-          const decremented = await tx
-            .update(inventoryBalancesTable)
-            .set({
-              quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
-            })
-            .where(and(
-              sellableInventoryBalancePredicate(houseTenantId),
-              eq(inventoryBalancesTable.productId, line.catalog_item_id),
-              eq(inventoryBalancesTable.locationId, targetLocationId!),
-              sellableBalanceWhere(),
-              sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
-            ))
-            .returning({ id: inventoryBalancesTable.id });
-
-          if (decremented.length !== 1) {
-            const rows = await tx.select({
-              locationId: inventoryBalancesTable.locationId,
-              quantityOnHand: inventoryBalancesTable.quantityOnHand,
-              locationName: inventoryLocationsTable.name,
-            })
-              .from(inventoryBalancesTable)
-              .leftJoin(inventoryLocationsTable, eq(inventoryBalancesTable.locationId, inventoryLocationsTable.id))
-              .where(and(
-                sellableInventoryBalancePredicate(houseTenantId),
-                eq(inventoryBalancesTable.productId, line.catalog_item_id),
-                sellableBalanceWhere(),
-              ));
-            if (rows.length === 0) {
-              throw new InsufficientInventoryError(line.catalog_item_id, targetLocationName, 0, 0, 0, false);
+        if (shouldReserveInventory) {
+          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType);
+          if (!reservations) {
+            throw new InsufficientInventoryError(line.catalog_item_id);
+          }
+          await tx.update(orderItemsTable)
+            .set({ inventoryDeductions: reservations })
+            .where(eq(orderItemsTable.id, orderItem.id));
+          const deductionDetails = shouldConfirmReservationImmediately
+            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id)).filter(deduction => deduction.productId === line.catalog_item_id)
+            : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
+          if (shouldConfirmReservationImmediately) {
+            await tx.update(orderItemsTable)
+              .set({ inventoryDeductions: deductionDetails.map(({ productId: _productId, ...deduction }) => deduction) })
+              .where(eq(orderItemsTable.id, orderItem.id));
+          }
+          if (shouldConfirmReservationImmediately) {
+            for (const used of deductionDetails) {
+              inventoryDeductionAuditEntries.push({
+                orderId: createdOrder.id,
+                productId: line.catalog_item_id,
+                locationUsed: used.locationName,
+                locationId: used.locationId,
+                quantity: used.quantity,
+                remainingStock: used.remainingStock,
+                orderType,
+              });
             }
-            const qtyFor = (name: string) => rows
-              .filter(r => r.locationName === name)
-              .reduce((sum, r) => sum + parseFloat(String(r.quantityOnHand ?? "0")), 0);
-            const available = rows
-              .filter(r => r.locationId === targetLocationId)
-              .reduce((sum, r) => sum + parseFloat(String(r.quantityOnHand ?? "0")), 0);
-            throw new InsufficientInventoryError(line.catalog_item_id, targetLocationName, available, qtyFor("Backstock"), qtyFor("Storefront"), true);
           }
         }
 
@@ -959,6 +1001,20 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             WHERE tenant_id = ${houseTenantId}
               AND id = ${line.catalog_item_id}
           `);
+      }
+
+      for (const entry of inventoryDeductionAuditEntries) {
+        await writeAuditLog({
+          actorId: actor.id,
+          actorEmail: actor.email,
+          actorRole: actor.role,
+          action: "INVENTORY_DEDUCTED",
+          tenantId: houseTenantId,
+          resourceType: "order",
+          resourceId: String(entry.orderId),
+          metadata: entry,
+          ipAddress: req.ip,
+        });
       }
 
       return createdOrder;

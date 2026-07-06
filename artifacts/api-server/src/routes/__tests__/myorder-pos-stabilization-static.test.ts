@@ -63,40 +63,23 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
 });
 
 describe("catalog/inventory/par/order source of truth", () => {
-  it("inventory balance edits validate schema, check tenant ownership, and recompute catalog totals", () => {
+  it("inventory balance edit endpoints hard-error outside bootstrap/importer/checkout", () => {
     const inventory = api("routes/inventory.ts");
-    expect(inventory).toContain("inventoryBalancesTable");
-    expect(inventory).toContain(".strict().safeParse(req.body)");
-    expect(inventory).toContain('Catalog product not found for this tenant');
-    expect(inventory).toContain('Inventory location not found for this tenant');
-    expect(inventory).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
-    expect(inventory).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
-    expect(inventory).toContain("recomputeCatalogInventoryTotals(houseTenantId, productId)");
     const balances = api("lib/inventoryBalances.ts");
-    expect(balances).toContain("stockQuantity: String(totals?.qty");
-    expect(balances).toContain("inventoryAmount: String(totals?.qty");
-    expect(balances).toContain("parLevel: String(totals?.par");
+    expect(inventory).toContain("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction");
+    expect(inventory).toContain('router.patch(\n  "/admin/inventory/balance/:productId/:locationId"');
+    expect(inventory).toContain('router.post(\n  "/admin/inventory/ensure-balances"');
+    expect(balances).toContain("use ensureAllInventoryRowsExistForTenant");
   });
 
-  it("catalog stock edits mirror into inventory balances instead of trusting catalog totals", () => {
+  it("catalog and shift admin routes reject inventory balance mutation outside allowed paths", () => {
     const catalog = api("routes/catalog.ts");
-    expect(catalog).toContain("mirrorCatalogStockToBackstockAndRecompute");
-    expect(catalog).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
-    expect(catalog).toContain("quantityOnHand: String(stockQuantity)");
-    expect(catalog).toContain("inventoryAmount: String(totals?.qty");
-  });
-
-  it("legacy shift inventory balance override rejects unknown fields and is tenant scoped", () => {
     const shifts = api("routes/shifts.ts");
-    expect(shifts).toContain(".strict().safeParse(req.body)");
-    expect(shifts).toContain("Balance not found for this tenant");
-    expect(shifts).toContain("eq(inventoryBalancesTable.tenantId, houseTenantId)");
-    expect(shifts).toContain("innerJoin(catalogItemsTable, eq(inventoryBalancesTable.productId, catalogItemsTable.id))");
-    expect(shifts).toContain("innerJoin(inventoryLocationsTable, eq(inventoryBalancesTable.locationId, inventoryLocationsTable.id))");
-    expect(shifts).toContain("await db.update(inventoryBalancesTable).set(update)");
-    expect(shifts).toContain("recomputeCatalogInventoryTotals(houseTenantId, current.productId)");
-    expect(shifts).toContain("await writeAuditLog({");
-    expect(shifts).toContain('action: "INVENTORY_BALANCE_ADJUSTED"');
+    expect(catalog).toContain("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction");
+    expect(catalog).not.toContain("quantityOnHand: String(stockQuantity)");
+    expect(shifts).toContain("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction");
+    expect(shifts).toContain('router.patch(\n  "/admin/inventory-balances/:id"');
+    expect(shifts).not.toContain("await db.update(inventoryBalancesTable).set(update)");
   });
 
   it("order creation decrements inventory balances and syncs catalog inventory fields", () => {
@@ -105,8 +88,26 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
-    expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
+    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
+    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id)");
+    expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
+    expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
+    expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");
+    expect(api("lib/inventoryAuthority.ts")).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
+    expect(api("lib/inventoryAuthority.ts")).toContain("collectInventoryReconcileReport");
+    expect(api("lib/inventoryKernel.ts")).toContain("executeTransaction");
+    expect(api("lib/inventoryKernel.ts")).toContain("replayInventoryTransaction");
+    expect(api("lib/inventoryKernel.ts")).toContain("inventory_transaction_log");
+    expect(api("lib/inventoryReservations.ts")).toContain("reservationIdempotencyKey");
+    expect(api("routes/inventory.ts")).toContain('"/admin/inventory/reconcile-report"');
+    expect(api("routes/inventory.ts")).toContain('"/admin/inventory/transaction/:id"');
+    expect(api("lib/inventoryBalances.ts")).toContain('WALK_IN: ["Storefront", "CSR Sales Box 1", "CSR Sales Box 2", "Backstock"]');
+    expect(api("lib/inventoryBalances.ts")).toContain('CSR: ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"]');
+    expect(api("lib/inventoryBalances.ts")).toContain('ONLINE: ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"]');
+    expect(api("lib/inventoryBalances.ts")).toContain("[POS_INVENTORY_DEBUG] allocated inventory exceeds Backstock primary stock");
+    expect(orders).toContain('action: "INVENTORY_DEDUCTED"');
+    expect(orders).toContain("locationUsed: used.locationName");
+    expect(orders).toContain("remainingStock: used.remainingStock");
     expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
     expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id");
@@ -120,8 +121,37 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("inventoryLocationNameForBoxAssignment");
     expect(orders).toContain("eq(inventoryLocationsTable.name, locationName)");
     expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
-    expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
+    expect(api("lib/inventoryBalances.ts")).toContain("sellableInventoryBalancePredicate(tenantId)");
     expect(orders).toContain("originalCatalogItemId");
+    expect(platform("pages/admin/inventory.tsx")).toContain("Primary Stock");
+    expect(platform("pages/admin/inventory.tsx")).toContain("Allocated / Held Stock");
+    expect(platform("pages/order-detail.tsx")).toContain("Pulled from");
+  });
+
+
+
+  it("keeps inventory balance writes centralized in inventoryAuthority", () => {
+    const authority = api("lib/inventoryAuthority.ts");
+    expect(authority).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
+    expect(authority).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(authority).toContain("deductInventoryBalanceThroughAuthority");
+    expect(authority).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
+    expect(api("lib/inventoryKernel.ts")).toContain("assertKernelCatalogItemId");
+
+    const bypassPattern = /update\(inventoryBalancesTable\)|insert\(inventoryBalancesTable\)|INSERT INTO inventory_balances|UPDATE inventory_balances|DELETE FROM inventory_balances|quantityOnHand:\s*sql/;
+    for (const [label, content] of [
+      ["inventoryReservations", api("lib/inventoryReservations.ts")],
+      ["inventoryBalances", api("lib/inventoryBalances.ts")],
+      ["importRoute", api("routes/import.ts")],
+      ["bootstrapScript", src("scripts/src/bootstrap-inventory.ts")],
+      ["duplicateRepairMigration", src("lib/db/drizzle/0026_repair_duplicate_catalog_items.sql")],
+    ] as const) {
+      expect(content, `${label} must not write inventory_balances outside inventoryAuthority`).not.toMatch(bypassPattern);
+    }
+
+    expect(api("lib/inventoryReservations.ts")).toContain("deductInventoryBalanceThroughAuthority");
+    expect(api("routes/import.ts")).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(api("lib/inventoryBalances.ts")).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
   });
 
   it("awaits converted checkout snapshot construction before order metadata and persistence use it", () => {
@@ -140,7 +170,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("inArray(catalogItemsTable.id, normalizedCatalogIds)");
     expect(orders).toContain("eq(catalogItemsTable.tenantId, houseTenantId)");
   });
-  it("surfaces orphan and non-sellable inventory balances in an admin quarantine report", () => {
+  it("surfaces orphan balances but rejects quarantine/classification mutations", () => {
     const inventory = api("routes/inventory.ts");
     const balances = api("lib/inventoryBalances.ts");
     const dbSchema = src("lib/db/src/schema/shifts.ts");
@@ -151,12 +181,10 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(dbSchema).toContain('quarantinedAt: timestamp("quarantined_at"');
     expect(balances).toContain("getOrphanInventoryBalanceReport");
     expect(balances).toContain("sellableInventoryBalancePredicate");
-    expect(balances).toContain("leftJoin(catalogItemsTable");
     expect(balances).toContain("non_sellable_supply");
     expect(inventory).toContain('"/admin/inventory/orphans"');
-    expect(inventory).toContain('z.enum(["sellable_catalog", "non_sellable_supply"])');
+    expect(inventory).toContain("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction");
     expect(platformInventory).toContain("Inventory quarantine report");
-    expect(platformInventory).toContain("Mark supply");
   });
 
 });

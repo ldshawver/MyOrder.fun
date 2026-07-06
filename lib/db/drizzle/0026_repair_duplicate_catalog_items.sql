@@ -110,33 +110,10 @@ SET catalog_item_id = m.canonical_id
 FROM catalog_item_duplicate_map m
 WHERE sii.catalog_item_id = m.duplicate_id;
 
--- Merge duplicate inventory balances into canonical product by tenant/location.
--- Quantity is summed to preserve inventory. PAR uses greatest non-null PAR.
-WITH moved AS (
-  SELECT ib.*, m.canonical_id
-  FROM inventory_balances ib
-  JOIN catalog_item_duplicate_map m ON m.duplicate_id = ib.product_id
-), merged AS (
-  UPDATE inventory_balances keep
-  SET quantity_on_hand = COALESCE(keep.quantity_on_hand, 0) + COALESCE(moved.quantity_on_hand, 0),
-      par_level = GREATEST(COALESCE(keep.par_level, 0), COALESCE(moved.par_level, 0)),
-      updated_at = now()
-  FROM moved
-  WHERE keep.tenant_id = moved.tenant_id
-    AND keep.product_id = moved.canonical_id
-    AND keep.location_id = moved.location_id
-  RETURNING moved.id
-)
-UPDATE inventory_balances ib
-SET product_id = moved.canonical_id,
-    updated_at = now()
-FROM moved
-WHERE ib.id = moved.id
-  AND NOT EXISTS (SELECT 1 FROM merged m WHERE m.id = moved.id);
-
-DELETE FROM inventory_balances ib
-USING catalog_item_duplicate_map m
-WHERE ib.product_id = m.duplicate_id;
+-- Inventory balances are intentionally not mutated here.
+-- All inventory balance writes must go through inventoryAuthority.
+-- Duplicate catalog rows that still own inventory are left for the guarded
+-- repair script/manual review so reservation invariants cannot be bypassed.
 
 -- Best-effort print job JSON rewrite for common payload shapes containing catalog item ids.
 UPDATE print_jobs pj

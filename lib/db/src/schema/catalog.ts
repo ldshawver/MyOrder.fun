@@ -71,10 +71,6 @@ export const catalogItemsTable = pgTable("catalog_items", {
   marketingCopy: text("marketing_copy"),
   customerSafeName: text("customer_safe_name"),
   customerSafeDescription: text("customer_safe_description"),
-  safeName: text("safe_name"),
-  safeDescription: text("safe_description"),
-  safeCategory: text("safe_category"),
-  safeImageUrl: text("safe_image_url"),
   upsellCopy: text("upsell_copy"),
   promoBadges: text("promo_badges").array().default([]),
   // Merchant routing / dual-brand processing

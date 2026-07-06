@@ -197,7 +197,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     const normalized = await normalizeCheckoutCart([{ catalogItemId: 100, quantity: 1 }]);
     expect(normalized[0].merchant_name).toBe("Merchant Fallback Tee");
 
-    mockDbReturn([makeAlavontItem({ id: 101, safeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " })]);
+    mockDbReturn([makeAlavontItem({ id: 101, customerSafeName: null, luciferCruzName: null, merchantName: null, alavontName: null, name: " " })]);
     await expect(
       normalizeCheckoutCart([{ catalogItemId: 101, quantity: 1 }])
     ).rejects.toMatchObject({
@@ -234,12 +234,10 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        safeName: "Customer Safe Tee",
-        safeDescription: "Customer-safe production description",
-        safeCategory: "Production Safe Category",
-        safeImageUrl: "https://merchant.example/safe-tee.jpg",
-        luciferCruzCategory: null,
-        luciferCruzImageUrl: null,
+        customerSafeName: "Customer Safe Tee",
+        customerSafeDescription: "Customer-safe production description",
+        luciferCruzCategory: "Production Safe Category",
+        luciferCruzImageUrl: "https://merchant.example/safe-tee.jpg",
         displayCategory: "Display fallback category",
         displayImage: "https://display.example/fallback.jpg",
       }),
@@ -259,9 +257,9 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        safeName: null,
-        safeDescription: null,
-        safeCategory: "Production Safe Category",
+        customerSafeName: null,
+        customerSafeDescription: null,
+        luciferCruzCategory: "Production Safe Category",
       }),
     ]);
 
@@ -279,11 +277,10 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     mockDbReturn([
       makeAlavontItem({
         id: 100,
-        safeName: "Customer Safe Tee",
-        safeDescription: "Customer-safe production description",
-        safeCategory: null,
-        merchantCategory: null,
+        customerSafeName: "Customer Safe Tee",
+        customerSafeDescription: "Customer-safe production description",
         luciferCruzCategory: null,
+        merchantCategory: null,
         displayCategory: null,
         category: null,
         merchantImage: null,
@@ -381,7 +378,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
 
   it("(3e) Alavont row with an UNSUPPORTED merchantProcessingMode still converts from safe fields", async () => {
     mockDbReturn([
-      makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont", safeName: "Safe Tee", safeDescription: "Safe description", safeCategory: "Safe category" }),
+      makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont", customerSafeName: "Safe Tee", customerSafeDescription: "Safe description", luciferCruzCategory: "Safe category" }),
     ]);
     const normalized = await normalizeCheckoutCart([{ catalogItemId: 510, quantity: 1 }], undefined, true, 1, true);
     expect(normalized[0]).toMatchObject({
@@ -408,7 +405,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
 
   it("(3d) Alavont-shaped merchant_sku in the DB converts with a generated safe merchant SKU", async () => {
     mockDbReturn([
-      makeAlavontItem({ id: 410, merchantSku: "ALV-XYZ-100", safeName: "Safe 410", safeDescription: "Safe description", safeCategory: "Safe category" }),
+      makeAlavontItem({ id: 410, merchantSku: "ALV-XYZ-100", customerSafeName: "Safe 410", customerSafeDescription: "Safe description", luciferCruzCategory: "Safe category" }),
     ]);
     const normalized = await normalizeCheckoutCart([{ catalogItemId: 410, quantity: 1 }], undefined, true, 1, true);
     expect(normalized[0]).toMatchObject({

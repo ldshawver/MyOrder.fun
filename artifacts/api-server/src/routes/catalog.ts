@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql, sum } from "drizzle-orm";
+import { and, eq, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
@@ -16,7 +16,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -58,9 +57,9 @@ async function archiveSafeDuplicateRows(tenantId: number, actor: { id: number; e
     const looksSafeOnly = candidate.isLocalAlavont === false || candidate.merchantBrand === "lucifer_cruz" || (metadata.safeOnly === true) || (!hasAlavontIdentity && Boolean(candidate.luciferCruzName?.trim() || candidate.merchantName?.trim()));
     if (!looksSafeOnly) continue;
 
-    const safeName = (candidate.luciferCruzName || candidate.merchantName || candidate.customerSafeName || candidate.name || "").trim().toLowerCase();
-    if (!safeName) continue;
-    const parent = activeParents.find(row => row.id !== candidate.id && [row.luciferCruzName, row.merchantName, row.customerSafeName].some(value => value?.trim().toLowerCase() === safeName));
+    const customerSafeName = (candidate.luciferCruzName || candidate.merchantName || candidate.customerSafeName || candidate.name || "").trim().toLowerCase();
+    if (!customerSafeName) continue;
+    const parent = activeParents.find(row => row.id !== candidate.id && [row.luciferCruzName, row.merchantName, row.customerSafeName].some(value => value?.trim().toLowerCase() === customerSafeName));
     if (!parent) continue;
 
     const parentMetadata = parent.metadata && typeof parent.metadata === "object" && !Array.isArray(parent.metadata) ? parent.metadata as Record<string, unknown> : {};
@@ -149,10 +148,6 @@ async function ensureCatalogRouteSchema(): Promise<void> {
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "marketing_copy" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_name" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "customer_safe_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_name" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_description" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_category" text`,
-    sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "safe_image_url" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "upsell_copy" text`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "promo_badges" text[] DEFAULT ARRAY[]::text[]`,
     sql`ALTER TABLE "catalog_items" ADD COLUMN IF NOT EXISTS "merchant_processing_mode" text DEFAULT 'mapped_lucifer'`,
@@ -281,10 +276,6 @@ function mapItem(
     marketingCopy: alavontOnly ? null : (i.marketingCopy ?? null),
     customerSafeName: alavontOnly ? null : (i.customerSafeName ?? null),
     customerSafeDescription: alavontOnly ? null : (i.customerSafeDescription ?? null),
-    safeName: alavontOnly ? null : (i.safeName ?? null),
-    safeDescription: alavontOnly ? null : (i.safeDescription ?? null),
-    safeCategory: alavontOnly ? null : (i.safeCategory ?? null),
-    safeImageUrl: alavontOnly ? null : (i.safeImageUrl ?? null),
     upsellCopy: alavontOnly ? null : (i.upsellCopy ?? null),
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
@@ -301,62 +292,6 @@ function mapItem(
   };
 }
 
-
-async function mirrorCatalogStockToBackstockAndRecompute(tenantId: number, productId: number, stockQuantity: number | null | undefined): Promise<void> {
-  if (stockQuantity !== undefined && stockQuantity !== null) {
-    const [backstockLoc] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, tenantId),
-        eq(inventoryLocationsTable.type, "backstock"),
-      ))
-      .limit(1);
-
-    if (backstockLoc) {
-      const [balance] = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(and(
-          eq(inventoryBalancesTable.tenantId, tenantId),
-          eq(inventoryBalancesTable.productId, productId),
-          eq(inventoryBalancesTable.locationId, backstockLoc.id),
-        ))
-        .limit(1);
-
-      if (balance) {
-        await db.update(inventoryBalancesTable)
-          .set({ quantityOnHand: String(stockQuantity) })
-          .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, balance.id)));
-      } else {
-        await db.insert(inventoryBalancesTable).values({
-          tenantId,
-          productId,
-          locationId: backstockLoc.id,
-          quantityOnHand: String(stockQuantity),
-          parLevel: "0",
-        });
-      }
-    }
-  }
-
-  const [totals] = await db
-    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
-    .from(inventoryBalancesTable)
-    .where(and(
-      eq(inventoryBalancesTable.tenantId, tenantId),
-      eq(inventoryBalancesTable.productId, productId),
-      sellableBalanceWhere(),
-    ));
-
-  await db.update(catalogItemsTable)
-    .set({
-      stockQuantity: String(totals?.qty ?? "0"),
-      inventoryAmount: String(totals?.qty ?? "0"),
-      parLevel: String(totals?.par ?? "0"),
-    })
-    .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, productId)));
-}
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
   const name = String(row.alavontName ?? row.displayName ?? row.name ?? "").trim().toLowerCase();
@@ -796,10 +731,13 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   }
 
   const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, ...restBodyData } = body.data;
+  if (stockQuantity !== undefined) {
+    res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
+    return;
+  }
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
   if (price !== undefined) updateData.price = String(price);
   if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
-  if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
@@ -828,9 +766,6 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     .set(updateData)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .returning();
-  if (stockQuantity !== undefined) {
-    await mirrorCatalogStockToBackstockAndRecompute(houseTenantId, params.data.id, stockQuantity);
-  }
   const [fresh] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);

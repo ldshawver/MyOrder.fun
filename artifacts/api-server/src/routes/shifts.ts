@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { eq, and, desc, asc, sql, inArray, sum } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -61,29 +61,6 @@ async function createShiftReceiptPrintJob(args: {
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
 
-async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
-  const [totals] = await db
-    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
-    .from(inventoryBalancesTable)
-    .where(and(
-      eq(inventoryBalancesTable.tenantId, tenantId),
-      eq(inventoryBalancesTable.productId, productId),
-      sellableBalanceWhere(),
-    ));
-
-  await db
-    .update(catalogItemsTable)
-    .set({
-      stockQuantity: String(totals?.qty ?? "0"),
-      inventoryAmount: String(totals?.qty ?? "0"),
-      parLevel: String(totals?.par ?? "0"),
-    })
-    .where(and(
-      eq(catalogItemsTable.tenantId, tenantId),
-      eq(catalogItemsTable.id, productId),
-    ));
-}
-
 function logCsrShiftAuth(
   req: Request,
   gate: "approval" | "role",
@@ -118,6 +95,7 @@ function logCsrShiftAuth(
 }
 
 const router: IRouter = Router();
+const forbiddenInventoryBalanceMutationMessage = "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction";
 router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
 const RoutingStrategyBody = z.object({
   routingStrategy: z.enum(["round_robin", "geo", "pickup_delivery", "manual", "default_queue"]),
@@ -476,6 +454,8 @@ async function ensureShiftSchema(): Promise<void> {
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "cancelled_by_user_id" integer REFERENCES "users"("id")`,
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_at" timestamptz`,
     sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "completed_by_user_id" integer REFERENCES "users"("id")`,
+    sql`ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "order_type" text NOT NULL DEFAULT 'ONLINE'`,
+    sql`ALTER TABLE "order_items" ADD COLUMN IF NOT EXISTS "inventory_deductions" jsonb NOT NULL DEFAULT '[]'::jsonb`,
     sql`CREATE INDEX IF NOT EXISTS "orders_assigned_shift_idx" ON "orders" ("assigned_shift_id")`,
     sql`CREATE INDEX IF NOT EXISTS "orders_archived_at_idx" ON "orders" ("archived_at")`,
     sql`CREATE INDEX IF NOT EXISTS "orders_voided_at_idx" ON "orders" ("voided_at")`,
@@ -633,55 +613,8 @@ async function ensureInventoryLocations(houseTenantId: number): Promise<void> {
     }
   }
 
-  // Backfill inventory_balances from inventory_templates (Alavont items only)
-  const locations = await db
-    .select()
-    .from(inventoryLocationsTable)
-    .where(eq(inventoryLocationsTable.tenantId, houseTenantId));
+  // inventory_balances backfill is intentionally disabled. Use bootstrap-inventory for structure-only rows.
 
-  const backstockLoc = locations.find(l => l.type === "backstock");
-  if (!backstockLoc) return;
-
-  const templateItems = await db
-    .select()
-    .from(inventoryTemplatesTable)
-    .where(
-      and(
-        eq(inventoryTemplatesTable.tenantId, houseTenantId),
-        eq(inventoryTemplatesTable.isActive, true),
-      )
-    );
-
-  for (const tmpl of templateItems) {
-    if (!tmpl.catalogItemId) continue;
-    for (const loc of locations) {
-      // Determine starting qty: use current_stock for backstock, 0 for others
-      const qty = loc.id === backstockLoc.id
-        ? String(tmpl.currentStock ?? tmpl.startingQuantityDefault ?? "0")
-        : "0";
-      // ON CONFLICT DO NOTHING pattern via check-first
-      const exists = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(
-          and(
-            eq(inventoryBalancesTable.tenantId, houseTenantId),
-            eq(inventoryBalancesTable.productId, tmpl.catalogItemId),
-            eq(inventoryBalancesTable.locationId, loc.id),
-          )
-        )
-        .limit(1);
-      if (exists.length === 0) {
-        await db.insert(inventoryBalancesTable).values({
-          tenantId: houseTenantId,
-          productId: tmpl.catalogItemId,
-          locationId: loc.id,
-          quantityOnHand: qty,
-          parLevel: String(tmpl.parLevel ?? "0"),
-        });
-      }
-    }
-  }
 }
 
 // ─── Helper: load active boxes for a tenant ───────────────────────────────────
@@ -2023,49 +1956,12 @@ router.get(
   }
 );
 
-// PATCH /api/admin/inventory-balances/:id — manual quantity override (admin only, audit logged)
+// PATCH /api/admin/inventory-balances/:id — forbidden outside bootstrap/importer/checkout
 router.patch(
   "/admin/inventory-balances/:id",
   requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-    const parsedBody = z.object({
-      quantityOnHand: z.number().finite().min(0).max(1_000_000).optional(),
-      parLevel: z.number().finite().min(0).max(1_000_000).optional(),
-    }).strict().safeParse(req.body);
-    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
-    const { quantityOnHand, parLevel } = parsedBody.data;
-    if (quantityOnHand === undefined && parLevel === undefined) {
-      res.status(400).json({ error: "quantityOnHand or parLevel required" }); return;
-    }
-
-    const houseTenantId = await getHouseTenantId();
-    const [current] = await db.select().from(inventoryBalancesTable)
-      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
-      .limit(1);
-    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
-
-    const update: Record<string, string> = {};
-    if (quantityOnHand !== undefined) update.quantityOnHand = String(quantityOnHand);
-    if (parLevel !== undefined) update.parLevel = String(parLevel);
-
-    const [updated] = await db.update(inventoryBalancesTable).set(update)
-      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
-      .returning();
-    await recomputeCatalogInventoryTotals(houseTenantId, current.productId);
-    await writeAuditLog({
-      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-      action: "INVENTORY_BALANCE_ADJUSTED",
-      resourceType: "inventory_balance", resourceId: String(id),
-      metadata: {
-        productId: current.productId, locationId: current.locationId,
-        oldQty: current.quantityOnHand, newQty: update.quantityOnHand,
-        oldPar: current.parLevel, newPar: update.parLevel,
-      },
-    });
-    res.json({ balance: { ...updated, quantityOnHand: parseFloat(String(updated.quantityOnHand)), parLevel: parseFloat(String(updated.parLevel)) } });
+  async (_req, res): Promise<void> => {
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
   }
 );
 
@@ -2441,45 +2337,9 @@ router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "c
   res.json({ receipt });
 });
 
-const TransferInventoryBody = z.object({
-  productId: z.number().int().positive(),
-  fromLocationName: z.enum(["Backstock"]),
-  toLocationName: z.enum(["Box 1", "Box 2", "CSR Sales Box 1", "CSR Sales Box 2", "Storefront"]),
-  quantity: z.number().positive().max(1_000_000),
-  reason: z.string().trim().max(500).optional(),
-}).strict();
-
-// POST /api/admin/inventory-transfers — audited Backstock -> Box/Storefront restocking movement.
-router.post("/admin/inventory-transfers", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const parsed = TransferInventoryBody.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const { productId, fromLocationName, toLocationName, quantity, reason } = parsed.data;
-  const locations = await db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)));
-  const from = locations.find(l => l.name === fromLocationName);
-  const toAliases = toLocationName === "Box 1" ? ["Box 1", "CSR Sales Box 1"] : toLocationName === "Box 2" ? ["Box 2", "CSR Sales Box 2"] : [toLocationName];
-  const to = locations.find(l => toAliases.includes(l.name));
-  if (!from || !to) { res.status(404).json({ error: "Inventory location not found for this tenant" }); return; }
-  const result = await db.transaction(async tx => {
-    const decremented = await tx.update(inventoryBalancesTable)
-      .set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(quantity)}` })
-      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId), eq(inventoryBalancesTable.locationId, from.id), sellableBalanceWhere(), sql`${inventoryBalancesTable.quantityOnHand} >= ${String(quantity)}`))
-      .returning();
-    if (decremented.length !== 1) throw new Error("INSUFFICIENT_BACKSTOCK");
-    const [existingTo] = await tx.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, productId), eq(inventoryBalancesTable.locationId, to.id))).limit(1);
-    const updatedTo = existingTo
-      ? await tx.update(inventoryBalancesTable).set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} + ${String(quantity)}` }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, existingTo.id))).returning()
-      : await tx.insert(inventoryBalancesTable).values({ tenantId, productId, locationId: to.id, quantityOnHand: String(quantity), parLevel: "0" }).returning();
-    return { from: decremented[0], to: updatedTo[0] };
-  }).catch((err: Error) => {
-    if (err.message === "INSUFFICIENT_BACKSTOCK") return null;
-    throw err;
-  });
-  if (!result) { res.status(409).json({ error: "Insufficient Backstock inventory", productId }); return; }
-  await recomputeCatalogInventoryTotals(tenantId, productId);
-  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "inventory.restock_transfer", tenantId, resourceType: "catalog_item", resourceId: String(productId), metadata: { fromLocationName, toLocationName, quantity, reason: reason ?? null }, ipAddress: req.ip });
-  res.status(201).json({ transfer: { productId, fromLocationName, toLocationName, quantity, reason: reason ?? null }, balances: result });
+// POST /api/admin/inventory-transfers — forbidden outside bootstrap/importer/checkout
+router.post("/admin/inventory-transfers", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+  res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
 });
 
 export default router;

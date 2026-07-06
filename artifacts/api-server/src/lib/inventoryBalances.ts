@@ -4,7 +4,7 @@
  * the same idempotent logic runs after any operation that adds/changes
  * local Alavont products.
  */
-import { eq, and, asc, sql, sum } from "drizzle-orm";
+import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
   catalogItemsTable,
@@ -12,9 +12,27 @@ import {
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
-import { ensureInventoryBalanceClassificationSchema } from "./inventoryHealth";
+import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
+import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
+import { logger } from "./logger";
+import { bootstrapMissingInventoryBalancesThroughAuthority, deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 
 let inventoryTablesEnsured = false;
+type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type InventoryDeductionExecutor = typeof db | InventoryDeductionTransaction;
+export const ORDER_TYPES = ["WALK_IN", "CSR", "ONLINE"] as const;
+export type InventoryOrderType = typeof ORDER_TYPES[number];
+const CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE: Record<InventoryOrderType, readonly string[]> = {
+  WALK_IN: ["Storefront", "CSR Sales Box 1", "CSR Sales Box 2", "Backstock"],
+  CSR: ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"],
+  ONLINE: ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"],
+};
+
+function inventoryDebugWarningsEnabled(): boolean {
+  return process.env.POS_INVENTORY_DEBUG === "true"
+    || process.env.POS_INTEGRITY_DEBUG === "true"
+    || (process.env.DEBUG ?? "").split(",").some(flag => flag.trim() === "pos:inventory" || flag.trim() === "pos:*");
+}
 
 async function ensureInventoryTablesExist(): Promise<void> {
   if (inventoryTablesEnsured) return;
@@ -120,67 +138,186 @@ export async function ensureStandardLocations(tenantId: number): Promise<void> {
   }
 }
 
+const REQUIRED_BOOTSTRAP_LOCATION_NAMES = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
+
+type InventoryBootstrapCountRow = { count: number | string };
+
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return (result as { rows?: T[] }).rows ?? [];
+}
+
+export type InventoryBootstrapResult = {
+  tenantId: number;
+  rowsCreated: number;
+  rowsAlreadyExisting: number;
+  totalProductsProcessed: number;
+  requiredLocations: string[];
+};
+
+export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Promise<InventoryBootstrapResult> {
+  await ensureStandardLocations(tenantId);
+
+  const locationRows = await db
+    .select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name })
+    .from(inventoryLocationsTable)
+    .where(and(
+      eq(inventoryLocationsTable.tenantId, tenantId),
+      inArray(inventoryLocationsTable.name, [...REQUIRED_BOOTSTRAP_LOCATION_NAMES]),
+    ));
+  const missingLocationNames = REQUIRED_BOOTSTRAP_LOCATION_NAMES.filter(name => !locationRows.some(row => row.name === name));
+  if (missingLocationNames.length > 0) throw new Error(`Missing bootstrap inventory locations: ${missingLocationNames.join(", ")}`);
+
+  const productCount = Number(resultRows<InventoryBootstrapCountRow>(await db.execute(sql`
+    SELECT count(*)::int AS count FROM catalog_items WHERE tenant_id = ${tenantId}
+  `))[0]?.count ?? 0);
+
+  const rowsAlreadyExisting = Number(resultRows<InventoryBootstrapCountRow>(await db.execute(sql`
+    SELECT count(*)::int AS count
+    FROM catalog_items ci
+    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_BOOTSTRAP_LOCATION_NAMES]})
+    JOIN inventory_balances ib ON ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id AND ib.location_id = il.id
+    WHERE ci.tenant_id = ${tenantId}
+  `))[0]?.count ?? 0);
+
+  const insertedRowCount = await bootstrapMissingInventoryBalancesThroughAuthority(tenantId, REQUIRED_BOOTSTRAP_LOCATION_NAMES);
+
+  return {
+    tenantId,
+    rowsCreated: insertedRowCount,
+    rowsAlreadyExisting,
+    totalProductsProcessed: productCount,
+    requiredLocations: [...REQUIRED_BOOTSTRAP_LOCATION_NAMES],
+  };
+}
+
 /**
  * Ensure every non-WooManaged catalog product has an inventory_balances row
  * for every active location. New rows are initialised with qty=0 (Backstock
  * uses the catalog_items.stock_quantity value as a seed if present).
  * Returns the number of rows created.
  */
-export async function ensureAllInventoryBalances(tenantId: number): Promise<{ created: number }> {
-  await ensureStandardLocations(tenantId);
+export async function ensureAllInventoryBalances(_tenantId: number): Promise<{ created: number }> {
+  throw new Error("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction; use ensureAllInventoryRowsExistForTenant");
+}
 
-  const [products, locations] = await Promise.all([
-    db
-      .select({
-        id: catalogItemsTable.id,
-        stockQuantity: catalogItemsTable.stockQuantity,
-        parLevel: catalogItemsTable.parLevel,
-      })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
-        eq(catalogItemsTable.isAvailable, true),
-      )),
-    db
-      .select()
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, tenantId),
-        eq(inventoryLocationsTable.isActive, true),
-      )),
-  ]);
+export interface CheckoutInventoryLocationDeduction {
+  locationId: number;
+  locationName: string | null;
+  quantity: number;
+  remainingStock: number;
+}
 
-  const backstockLoc = locations.find(l => l.type === "backstock");
-  let created = 0;
+export interface CheckoutInventoryDeductionResult {
+  productId: number;
+  requestedQuantity: number;
+  availableBeforeDeduction: number;
+  deductions: CheckoutInventoryLocationDeduction[];
+}
 
-  for (const prod of products) {
-    for (const loc of locations) {
-      const [exists] = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(and(
-          eq(inventoryBalancesTable.tenantId, tenantId),
-          eq(inventoryBalancesTable.productId, prod.id),
-          eq(inventoryBalancesTable.locationId, loc.id),
-        ))
-        .limit(1);
-      if (!exists) {
-        const initQty = loc.id === backstockLoc?.id
-          ? String(prod.stockQuantity ?? "0")
-          : "0";
-        await db.insert(inventoryBalancesTable).values({
-          tenantId,
-          productId: prod.id,
-          locationId: loc.id,
-          quantityOnHand: initQty,
-          parLevel: String(prod.parLevel ?? "0"),
-        });
-        created++;
-      }
+/**
+ * Checkout-only inventory deduction.
+ *
+ * Deduction drains deterministic locations in order: Backstock, Storefront,
+ * CSR Sales Box 1, then CSR Sales Box 2. The helper records total available
+ * inventory for diagnostics, but checkout success is determined by walking
+ * this chain rather than treating a total as a primary stock source.
+ */
+export async function deductCheckoutInventoryByOrderType(
+  executor: InventoryDeductionExecutor,
+  tenantId: number,
+  productId: number,
+  quantity: number,
+  orderType: InventoryOrderType,
+): Promise<CheckoutInventoryDeductionResult | null> {
+  assertCatalogIdInventoryLookup(productId, "checkout.inventoryDeduction.orderTypeAware");
+  const requestedQuantity = Number(quantity);
+  if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+    throw new Error(`Invalid checkout inventory deduction quantity for catalogItemId ${productId}`);
+  }
+
+  const balances = await executor
+    .select({
+      id: inventoryBalancesTable.id,
+      locationId: inventoryBalancesTable.locationId,
+      locationName: inventoryLocationsTable.name,
+      quantityOnHand: inventoryBalancesTable.quantityOnHand,
+    })
+    .from(inventoryBalancesTable)
+    .innerJoin(inventoryLocationsTable, and(
+      eq(inventoryLocationsTable.tenantId, inventoryBalancesTable.tenantId),
+      eq(inventoryLocationsTable.id, inventoryBalancesTable.locationId),
+    ))
+    .where(and(
+      sellableInventoryBalancePredicate(tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+      sellableBalanceWhere(),
+      eq(inventoryLocationsTable.isActive, true),
+    ))
+    .orderBy(
+      sql`array_position(${[...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]]}::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
+      asc(inventoryLocationsTable.displayOrder),
+      asc(inventoryLocationsTable.id),
+    );
+
+  const availableBeforeDeduction = balances.reduce((sumQty, row) => sumQty + Number(row.quantityOnHand ?? 0), 0);
+  if (inventoryDebugWarningsEnabled()) {
+    const backstockQty = Number(balances.find(row => row.locationName === "Backstock")?.quantityOnHand ?? 0);
+    const higherAllocated = balances
+      .filter(row => row.locationName !== "Backstock" && Number(row.quantityOnHand ?? 0) > backstockQty)
+      .map(row => ({ locationId: row.locationId, locationName: row.locationName, quantityOnHand: Number(row.quantityOnHand ?? 0) }));
+    if (higherAllocated.length > 0) {
+      logger.warn({
+        tenantId,
+        productId,
+        backstockQty,
+        higherAllocated,
+        checkoutDeductionOrder: CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType],
+        orderType,
+        stack: new Error("Allocated inventory exceeds Backstock primary stock").stack,
+      }, "[POS_INVENTORY_DEBUG] allocated inventory exceeds Backstock primary stock");
     }
   }
-  return { created };
+
+  let remaining = requestedQuantity;
+  const deductions: CheckoutInventoryLocationDeduction[] = [];
+  for (const row of balances) {
+    if (remaining <= 0) break;
+    const availableAtLocation = Number(row.quantityOnHand ?? 0);
+    if (availableAtLocation <= 0) continue;
+    const deductionQuantity = Math.min(remaining, availableAtLocation);
+    const updated = await deductInventoryBalanceThroughAuthority(executor, {
+      productId,
+      locationId: row.locationId,
+      quantity: deductionQuantity,
+      context: "inventoryBalances.deductCheckoutInventoryByOrderType",
+    });
+    if (!updated) return null;
+    deductions.push({
+      locationId: row.locationId,
+      locationName: row.locationName,
+      quantity: deductionQuantity,
+      remainingStock: updated.remainingStock,
+    });
+    remaining -= deductionQuantity;
+  }
+
+  if (remaining > 0) return null;
+  return {
+    productId,
+    requestedQuantity,
+    availableBeforeDeduction,
+    deductions,
+  };
+}
+
+export async function deductCheckoutInventoryBackstockFirst(
+  executor: InventoryDeductionExecutor,
+  tenantId: number,
+  productId: number,
+  quantity: number,
+): Promise<CheckoutInventoryDeductionResult | null> {
+  return deductCheckoutInventoryByOrderType(executor, tenantId, productId, quantity, "ONLINE");
 }
 
 
@@ -199,7 +336,7 @@ export interface CatalogInventorySnapshotItem {
   name: string;
   alavontName: string | null;
   luciferCruzName: string | null;
-  safeName: string | null;
+  customerSafeName: string | null;
   category: string | null;
   price: number;
   regularPrice: number | null;
@@ -237,6 +374,7 @@ export function sellableInventoryBalancePredicate(tenantId: number) {
 }
 
 export async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
+  assertCatalogIdInventoryLookup(productId, "recomputeCatalogInventoryTotals");
   const [totals] = await db
     .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
     .from(inventoryBalancesTable)
@@ -271,7 +409,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       isAvailable: catalogItemsTable.isAvailable,
       alavontName: catalogItemsTable.alavontName,
       luciferCruzName: catalogItemsTable.luciferCruzName,
-      safeName: catalogItemsTable.safeName,
+      customerSafeName: catalogItemsTable.customerSafeName,
       alavontCategory: catalogItemsTable.alavontCategory,
       regularPrice: catalogItemsTable.regularPrice,
       stockUnit: catalogItemsTable.stockUnit,
@@ -291,7 +429,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
             AND ib.product_id = ${catalogItemsTable.id}
         )`
       ))
-      .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
+      .orderBy(asc(catalogItemsTable.id)),
     db.select().from(inventoryLocationsTable)
       .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)))
       .orderBy(asc(inventoryLocationsTable.displayOrder)),
@@ -327,7 +465,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       name: item.name,
       alavontName: item.alavontName ?? null,
       luciferCruzName: item.luciferCruzName ?? null,
-      safeName: item.safeName ?? item.luciferCruzName ?? null,
+      customerSafeName: item.customerSafeName ?? item.luciferCruzName ?? null,
       category: item.alavontCategory ?? item.category,
       price: parseFloat(String(item.price)),
       regularPrice: item.regularPrice ? parseFloat(String(item.regularPrice)) : null,

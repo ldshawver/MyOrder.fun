@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-type Product = { id: number; name: string; active: boolean; safeName: string; cost?: number; supplier?: string; merchantSku?: string };
+type Product = { id: number; name: string; active: boolean; customerSafeName: string; cost?: number; supplier?: string; merchantSku?: string };
 type Balance = { productId: number; location: string; qty: number };
 type Shift = { id: number; csrId: number; box: "CSR Sales Box 1" | "CSR Sales Box 2"; ready: boolean };
 type Order = { id: number; status: string; paymentStatus: string; assignedShiftId: number | null; routeEmail: string; lines: Array<{ productId: number; qty: number }>; inventoryDeducted: boolean };
@@ -8,7 +8,7 @@ type Order = { id: number; status: string; paymentStatus: string; assignedShiftI
 const locations = ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"] as const;
 
 function importProducts(count: number) {
-  const products: Product[] = Array.from({ length: count }, (_, i) => ({ id: 354 + i, name: `Alavont ${i + 1}`, safeName: `Safe ${i + 1}`, active: true, cost: 1, supplier: "private", merchantSku: `LC-${i + 1}` }));
+  const products: Product[] = Array.from({ length: count }, (_, i) => ({ id: 354 + i, name: `Alavont ${i + 1}`, customerSafeName: `Safe ${i + 1}`, active: true, cost: 1, supplier: "private", merchantSku: `LC-${i + 1}` }));
   const balances: Balance[] = products.flatMap(product => locations.map(location => ({ productId: product.id, location, qty: 10 })));
   return { products, balances };
 }
@@ -50,7 +50,7 @@ describe("MyOrder POS DB-backed behavior model", () => {
     expect(products).toHaveLength(35);
     expect(balances).toHaveLength(140);
     expect(publicCatalog(products)[0]).toEqual({ id: 354, name: "Alavont 1" });
-    expect(JSON.stringify(publicCatalog(products))).not.toMatch(/safeName|cost|supplier|merchantSku|CSR Sales Box/i);
+    expect(JSON.stringify(publicCatalog(products))).not.toMatch(/customerSafeName|cost|supplier|merchantSku|CSR Sales Box/i);
   });
 
   it("routes ready CSR orders to the assigned box, deducts after payment once, and blocks oversell", () => {

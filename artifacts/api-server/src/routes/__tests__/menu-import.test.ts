@@ -55,7 +55,7 @@ vi.mock("@workspace/db", () => {
     then: (resolve: (v: unknown) => void) => resolve(rows),
   });
   const tableRows = (table: { _name?: string } | undefined, selection?: unknown) => {
-    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, safeName: r.safeName, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
+    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
     if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id, tenantId: r.tenantId, catalogItemId: r.catalogItemId })) : state.inventory;
     if (table?._name === "inventory_locations") return state.locations;
     if (table?._name === "inventory_balances") return selection ? state.balances.map(r => ({ id: r.id, tenantId: r.tenantId, productId: r.productId, locationId: r.locationId })) : state.balances;
@@ -84,9 +84,37 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn((table: { _name?: string }) => ({ where: () => { if (table._name === "catalog_items") state.catalog = []; if (table._name === "inventory_templates") state.inventory = []; return Promise.resolve(); } })),
     execute: vi.fn((q: unknown) => {
       const text = String(q);
+      const values = (q as { values?: unknown[] }).values ?? [];
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
+      if (text.includes("FROM inventory_balances") && text.includes("FOR UPDATE")) {
+        if (text.includes("tenant_id")) {
+          const [tenantId, productId, locationId] = values;
+          return Promise.resolve(wrap(state.balances.filter(row => row.tenantId === tenantId && row.productId === productId && row.locationId === locationId).slice(0, 1)));
+        }
+        const [productId, locationId] = values;
+        return Promise.resolve(wrap(state.balances.filter(row => row.productId === productId && row.locationId === locationId).slice(0, 1)));
+      }
+      if (text.includes("INSERT INTO inventory_balances") && text.includes("VALUES")) {
+        const [tenantId, productId, locationId, quantityOnHand, parLevel] = values;
+        state.balanceInsertAttempts += 1;
+        if (state.failBalanceInsertAt === state.balanceInsertAttempts) throw new Error("simulated balance insert failure");
+        const row = { id: state.balances.length + 1, tenantId, productId, locationId, quantityOnHand, parLevel };
+        state.balances.push(row);
+        return Promise.resolve(wrap([row]));
+      }
+      if (text.includes("UPDATE inventory_balances")) {
+        const [first, second, third, fourth] = values;
+        if (text.includes("SET quantity_on_hand = quantity_on_hand -")) {
+          const row = state.balances.find(balance => balance.id === second);
+          if (row && Number(row.quantityOnHand ?? 0) >= Number(third)) row.quantityOnHand = String(Number(row.quantityOnHand ?? 0) - Number(first));
+          return Promise.resolve(wrap(row ? [row] : []));
+        }
+        const row = state.balances.find(balance => balance.tenantId === third && balance.id === fourth);
+        if (row) Object.assign(row, { quantityOnHand: first, parLevel: second });
+        return Promise.resolve(wrap(row ? [row] : []));
+      }
       return Promise.resolve(wrap([]));
     }),
     transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
@@ -101,8 +129,6 @@ const importRouter = (await import("../import")).default;
 function buildApp() { const app = express(); app.use(express.json()); app.use("/api", importRouter); return app; }
 const headers = "Regular Price,Sale Price,Active Sale,Alavont Category,Alavont Name,Alavont Image,Alavont Description,Alavont SKU,Safe Category,Safe Name,Safe Image,Safe Description,Box 1 Inventory,Box 2 Inventory,Storefront Inventory,Backstock Inventory,Box 1 PAR,Box 2 PAR,Storefront PAR,Backstock PAR";
 const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,1,2,3,9,2,2,3,9\n`;
-const oldHeaders = "sku,name,description,category,brand,price,unit,quantity_size,active,image_url,safe_name,safe_description,safe_category,safe_image_url,inventory_location,current_inventory,par_level,reorder_threshold,sort_order";
-const oldCsv = `${oldHeaders}\nSKU-OLD,Old Name,Desc,Cat,alavont,12.50,ml,10,true,https://example.com/a.jpg,Safe,Safe desc,Safe cat,https://example.com/s.jpg,Back,9,3,2,1\n`;
 
 beforeEach(() => { vi.clearAllMocks(); state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; state.executeRowsObject = false; state.failBalanceInsertAt = null; state.balanceInsertAttempts = 0; });
 
@@ -135,7 +161,7 @@ describe("safe catalog import/export", () => {
     expect(state.inventory).toHaveLength(1);
     expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "15", parLevel: "16" });
     const { db } = await import("@workspace/db");
-    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.transaction).toHaveBeenCalled();
   });
   it("escapes formula-like exported cells", async () => {
     state.catalog.push({ id: 1, tenantId: 1, sku: "=BAD", name: "+Name", description: "Desc", category: "Cat", price: "1.00", isAvailable: true });
@@ -262,17 +288,17 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.catalog[0]).toMatchObject({ safeName: "Safe", safeDescription: "Safe desc", safeCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
+    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
-  it("dry-run preview matches changed SKU by normalized product name", async () => {
+  it("dry-run preview does not match changed SKU by normalized product name", async () => {
     state.catalog.push({ id: 6, tenantId: 1, sku: "RB-1", name: "Red Brick", alavontName: "Red Brick" });
     const csv = `${headers}\n10.00,,false,Cat,Red Brick,https://example.com/a.jpg,Desc,RB-NEW,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,1,0,0,0,5,0,0,0\n`;
     const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
 
     expect(res.status).toBe(200);
-    expect(res.body.preview[0]).toMatchObject({ oldProductId: 6, matchedProductId: 6, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
+    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
   });
 
   it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {
@@ -305,11 +331,6 @@ describe("safe catalog import/export", () => {
     expect(exported.text.split("\n")[0]).toBe(headers);
     expect(exported.text.split("\n")[0]).not.toContain("alavont_in_stock");
     expect(exported.text.split("\n")[0]).not.toContain("quantity_size");
-  });
-  it("imports the old template during transition", async () => {
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(oldCsv), "old.csv");
-    expect(res.status).toBe(200);
-    expect(state.catalog[0]).toMatchObject({ sku: "SKU-OLD", name: "Old Name", price: "12.50" });
   });
   it("blank inactive sale uses regular price", async () => {
     const csv = `${headers}\n15.00,7.00,,Cat,Name,https://example.com/a.jpg,Desc,SKU-2,Safe cat,Safe,https://example.com/s.jpg,Safe desc,0,0,0,0\n`;
