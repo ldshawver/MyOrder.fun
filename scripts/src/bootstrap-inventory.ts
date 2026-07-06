@@ -8,7 +8,6 @@ if (!Number.isInteger(tenantId) || tenantId <= 0) throw new Error("Usage: pnpm -
 const REQUIRED_LOCATION_NAMES = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
 
 type CountRow = { count: number | string };
-type InsertRow = { id: number };
 function rowsFrom<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   return (result as { rows?: T[] }).rows ?? [];
@@ -80,20 +79,10 @@ export async function ensureAllInventoryRowsExistForTenant(inputTenantId: number
     JOIN inventory_balances ib ON ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id AND ib.location_id = il.id
     WHERE ci.tenant_id = ${inputTenantId}
   `))[0]?.count ?? 0);
-  const inserted = rowsFrom<InsertRow>(await db.execute(sql`
-    INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand, par_level, inventory_kind, is_sellable, updated_at)
-    SELECT ${inputTenantId}, ci.id, il.id, 0, 0, 'sellable_catalog', true, now()
-    FROM catalog_items ci
-    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_LOCATION_NAMES]})
-    WHERE ci.tenant_id = ${inputTenantId}
-      AND NOT EXISTS (
-        SELECT 1 FROM inventory_balances ib
-        WHERE ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id AND ib.location_id = il.id
-      )
-    ON CONFLICT DO NOTHING
-    RETURNING id
-  `));
-  return { tenantId: inputTenantId, rowsCreated: inserted.length, rowsAlreadyExisting, totalProductsProcessed, requiredLocations: [...REQUIRED_LOCATION_NAMES] };
+  const inventoryAuthorityPath = "../../artifacts/api-server/src/lib/inventoryAuthority";
+  const authority = await import(inventoryAuthorityPath) as { bootstrapMissingInventoryBalancesThroughAuthority: (tenantId: number, requiredLocationNames: readonly string[]) => Promise<number> };
+  const rowsCreated = await authority.bootstrapMissingInventoryBalancesThroughAuthority(inputTenantId, REQUIRED_LOCATION_NAMES);
+  return { tenantId: inputTenantId, rowsCreated, rowsAlreadyExisting, totalProductsProcessed, requiredLocations: [...REQUIRED_LOCATION_NAMES] };
 }
 
 console.log(JSON.stringify(await ensureAllInventoryRowsExistForTenant(tenantId), null, 2));

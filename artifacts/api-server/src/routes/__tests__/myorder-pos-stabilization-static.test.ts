@@ -93,6 +93,14 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
     expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
     expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");
+    expect(api("lib/inventoryAuthority.ts")).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
+    expect(api("lib/inventoryAuthority.ts")).toContain("collectInventoryReconcileReport");
+    expect(api("lib/inventoryKernel.ts")).toContain("executeTransaction");
+    expect(api("lib/inventoryKernel.ts")).toContain("replayInventoryTransaction");
+    expect(api("lib/inventoryKernel.ts")).toContain("inventory_transaction_log");
+    expect(api("lib/inventoryReservations.ts")).toContain("reservationIdempotencyKey");
+    expect(api("routes/inventory.ts")).toContain('"/admin/inventory/reconcile-report"');
+    expect(api("routes/inventory.ts")).toContain('"/admin/inventory/transaction/:id"');
     expect(api("lib/inventoryBalances.ts")).toContain('WALK_IN: ["Storefront", "CSR Sales Box 1", "CSR Sales Box 2", "Backstock"]');
     expect(api("lib/inventoryBalances.ts")).toContain('CSR: ["CSR Sales Box 1", "CSR Sales Box 2", "Storefront", "Backstock"]');
     expect(api("lib/inventoryBalances.ts")).toContain('ONLINE: ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"]');
@@ -118,6 +126,32 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(platform("pages/admin/inventory.tsx")).toContain("Primary Stock");
     expect(platform("pages/admin/inventory.tsx")).toContain("Allocated / Held Stock");
     expect(platform("pages/order-detail.tsx")).toContain("Pulled from");
+  });
+
+
+
+  it("keeps inventory balance writes centralized in inventoryAuthority", () => {
+    const authority = api("lib/inventoryAuthority.ts");
+    expect(authority).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
+    expect(authority).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(authority).toContain("deductInventoryBalanceThroughAuthority");
+    expect(authority).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
+    expect(api("lib/inventoryKernel.ts")).toContain("assertKernelCatalogItemId");
+
+    const bypassPattern = /update\(inventoryBalancesTable\)|insert\(inventoryBalancesTable\)|INSERT INTO inventory_balances|UPDATE inventory_balances|DELETE FROM inventory_balances|quantityOnHand:\s*sql/;
+    for (const [label, content] of [
+      ["inventoryReservations", api("lib/inventoryReservations.ts")],
+      ["inventoryBalances", api("lib/inventoryBalances.ts")],
+      ["importRoute", api("routes/import.ts")],
+      ["bootstrapScript", src("scripts/src/bootstrap-inventory.ts")],
+      ["duplicateRepairMigration", src("lib/db/drizzle/0026_repair_duplicate_catalog_items.sql")],
+    ] as const) {
+      expect(content, `${label} must not write inventory_balances outside inventoryAuthority`).not.toMatch(bypassPattern);
+    }
+
+    expect(api("lib/inventoryReservations.ts")).toContain("deductInventoryBalanceThroughAuthority");
+    expect(api("routes/import.ts")).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(api("lib/inventoryBalances.ts")).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
   });
 
   it("awaits converted checkout snapshot construction before order metadata and persistence use it", () => {

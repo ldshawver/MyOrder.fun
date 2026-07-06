@@ -21,15 +21,16 @@ describe("duplicate catalog repair migration", () => {
     expect(sql).toContain("id ASC");
   });
 
-  it("moves production references, archives duplicates, merges balances, and deletes catalog duplicates last", () => {
+  it("moves production references, archives duplicates, and leaves inventory balances to authority tooling", () => {
     expect(sql).toContain("catalog_item_duplicate_repair_archive");
     expect(sql).toContain("to_jsonb(dup)");
     expect(sql).toContain("UPDATE order_items oi");
     expect(sql).toContain("UPDATE inventory_templates it");
     expect(sql).toContain("UPDATE shift_inventory_items sii");
-    expect(sql).toContain("JOIN catalog_item_duplicate_map m ON m.duplicate_id = ib.product_id");
-    expect(sql).toContain("quantity_on_hand = COALESCE(keep.quantity_on_hand, 0) + COALESCE(moved.quantity_on_hand, 0)");
-    expect(sql).toContain("par_level = GREATEST(COALESCE(keep.par_level, 0), COALESCE(moved.par_level, 0))");
+    expect(sql).toContain("Inventory balances are intentionally not mutated here.");
+    expect(sql).toContain("inventoryAuthority");
+    expect(sql).not.toContain("UPDATE inventory_balances");
+    expect(sql).not.toContain("DELETE FROM inventory_balances");
     expect(sql.indexOf("INSERT INTO catalog_item_duplicate_repair_archive")).toBeLessThan(sql.indexOf("DELETE FROM catalog_items ci"));
   });
 });

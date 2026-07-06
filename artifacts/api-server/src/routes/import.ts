@@ -4,8 +4,8 @@ import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, invento
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
+import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -254,10 +254,14 @@ async function findOrCreateImportLocation(tx: typeof db, tenantId: number, impor
 
 async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number) {
   assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryRow");
-  const [existing] = await tx.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, catalogItemId), eq(inventoryBalancesTable.locationId, locationId), sellableBalanceWhere())).limit(1);
-  const values = { quantityOnHand: String(quantity), parLevel: String(parLevel), inventoryKind: "sellable_catalog", updatedAt: new Date() };
-  if (existing) await tx.update(inventoryBalancesTable).set(values).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, existing.id)));
-  else await tx.insert(inventoryBalancesTable).values({ tenantId, productId: catalogItemId, locationId, ...values });
+  await upsertInventoryBalanceThroughAuthority(tx, {
+    tenantId,
+    productId: catalogItemId,
+    locationId,
+    quantityOnHand: quantity,
+    parLevel,
+    context: "import.upsertImportedInventoryRow",
+  });
 }
 
 async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: number, parLevel: number) {
@@ -447,7 +451,10 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
         const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey);
-        let catalogItemId = existingId;
+       bySku.get(skuKey) ??
+       byAlavontOrMerchantSku.get(skuKey) ??
+        null;        
+       let catalogItemId = existingId;
         if (catalogItemId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
           updated++;

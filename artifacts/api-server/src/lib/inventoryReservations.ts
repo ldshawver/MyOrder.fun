@@ -1,7 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db, inventoryBalancesTable, inventoryLocationsTable, inventoryReservationsTable } from "@workspace/db";
+import { db, inventoryLocationsTable, inventoryReservationsTable } from "@workspace/db";
 import { type CheckoutInventoryLocationDeduction, type InventoryOrderType } from "./inventoryBalances";
-import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
+import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
+import { assertKernelCatalogItemId, executeTransaction, reservationIdempotencyKey } from "./inventoryKernel";
 
 type ReservationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type ReservationExecutor = typeof db | ReservationTransaction;
@@ -37,25 +38,30 @@ export async function ensureInventoryReservationsTable(): Promise<void> {
       "location_id" integer NOT NULL REFERENCES "inventory_locations"("id"),
       "quantity" integer NOT NULL,
       "status" text NOT NULL DEFAULT 'reserved',
+      "idempotency_key" text,
       "expires_at" timestamptz NOT NULL,
       "created_at" timestamptz NOT NULL DEFAULT now(),
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "inventory_reservations_order_idx" ON "inventory_reservations" ("order_id")`);
+  await db.execute(sql`ALTER TABLE "inventory_reservations" ADD COLUMN IF NOT EXISTS "idempotency_key" text`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "inventory_reservations_idempotency_key_idx" ON "inventory_reservations" ("idempotency_key") WHERE "idempotency_key" IS NOT NULL`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS "inventory_reservations_active_idx" ON "inventory_reservations" ("catalog_item_id", "location_id", "status", "expires_at")`);
 }
 
 export async function releaseExpiredInventoryReservations(executor: ReservationExecutor = db): Promise<number> {
-  const released = await executor
-    .update(inventoryReservationsTable)
-    .set({ status: "released", updatedAt: new Date() })
-    .where(and(
-      eq(inventoryReservationsTable.status, "reserved"),
-      sql`${inventoryReservationsTable.expiresAt} <= now()`,
-    ))
-    .returning({ id: inventoryReservationsTable.id });
-  return released.length;
+  return executeTransaction(executor, "inventoryReservations.releaseExpired", async tx => {
+    const released = await tx
+      .update(inventoryReservationsTable)
+      .set({ status: "released", updatedAt: new Date() })
+      .where(and(
+        eq(inventoryReservationsTable.status, "reserved"),
+        sql`${inventoryReservationsTable.expiresAt} <= now()`,
+      ))
+      .returning({ id: inventoryReservationsTable.id });
+    return released.length;
+  });
 }
 
 export async function reserveCheckoutInventoryByOrderType(
@@ -66,14 +72,26 @@ export async function reserveCheckoutInventoryByOrderType(
   quantity: number,
   orderType: InventoryOrderType,
 ): Promise<CheckoutInventoryLocationDeduction[] | null> {
-  assertCatalogIdInventoryLookup(productId, "checkout.inventoryReservation.orderTypeAware");
-  await releaseExpiredInventoryReservations(executor);
+  assertKernelCatalogItemId(productId, "checkout.inventoryReservation.orderTypeAware");
+  return executeTransaction(executor, "inventoryReservations.reserveCheckout", async tx => {
+  await releaseExpiredInventoryReservations(tx);
   const requestedQuantity = Number(quantity);
   if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
     throw new Error(`Invalid checkout inventory reservation quantity for catalogItemId ${productId}`);
   }
 
-  const balanceRows = rowsFrom<LockedBalanceRow>(await executor.execute(sql`
+  const existingReservations = await tx.select({
+    locationId: inventoryReservationsTable.locationId,
+    quantity: inventoryReservationsTable.quantity,
+  })
+    .from(inventoryReservationsTable)
+    .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId), eq(inventoryReservationsTable.status, "reserved"), sql`${inventoryReservationsTable.expiresAt} > now()`));
+  const existingQuantity = existingReservations.reduce((sum, reservation) => sum + Number(reservation.quantity ?? 0), 0);
+  if (existingQuantity >= requestedQuantity) {
+    return existingReservations.map(reservation => ({ locationId: reservation.locationId, locationName: null, quantity: Number(reservation.quantity), remainingStock: 0 }));
+  }
+
+  const balanceRows = rowsFrom<LockedBalanceRow>(await tx.execute(sql`
     SELECT
       ib.id AS "id",
       ib.location_id AS "locationId",
@@ -96,7 +114,7 @@ export async function reserveCheckoutInventoryByOrderType(
   const reservations: CheckoutInventoryLocationDeduction[] = [];
   for (const row of balanceRows) {
     if (remaining <= 0) break;
-    const [{ reservedQuantity = 0 } = { reservedQuantity: 0 }] = rowsFrom<ReservedQuantityRow>(await executor.execute(sql`
+    const [{ reservedQuantity = 0 } = { reservedQuantity: 0 }] = rowsFrom<ReservedQuantityRow>(await tx.execute(sql`
       SELECT COALESCE(SUM(quantity), 0)::int AS "reservedQuantity"
       FROM inventory_reservations
       WHERE catalog_item_id = ${productId}
@@ -107,12 +125,13 @@ export async function reserveCheckoutInventoryByOrderType(
     const available = Number(row.quantityOnHand ?? 0) - Number(reservedQuantity ?? 0);
     if (available <= 0) continue;
     const reserveQuantity = Math.min(remaining, available);
-    await executor.insert(inventoryReservationsTable).values({
+    await tx.insert(inventoryReservationsTable).values({
       orderId,
       catalogItemId: productId,
       locationId: row.locationId,
       quantity: reserveQuantity,
       status: "reserved",
+      idempotencyKey: reservationIdempotencyKey({ orderId, catalogItemId: productId, locationId: row.locationId, orderType }),
       expiresAt,
     });
     reservations.push({
@@ -125,20 +144,22 @@ export async function reserveCheckoutInventoryByOrderType(
   }
 
   if (remaining > 0) {
-    await executor.update(inventoryReservationsTable)
+    await tx.update(inventoryReservationsTable)
       .set({ status: "released", updatedAt: new Date() })
       .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId), eq(inventoryReservationsTable.status, "reserved")));
     return null;
   }
   return reservations;
+  });
 }
 
 export async function confirmInventoryReservationsForOrder(
   executor: ReservationExecutor,
   orderId: number,
 ): Promise<Array<CheckoutInventoryLocationDeduction & { productId: number }>> {
-  await releaseExpiredInventoryReservations(executor);
-  const reservations = await executor
+  return executeTransaction(executor, "inventoryReservations.confirm", async tx => {
+  await releaseExpiredInventoryReservations(tx);
+  const reservations = await tx
     .select({
       id: inventoryReservationsTable.id,
       productId: inventoryReservationsTable.catalogItemId,
@@ -150,36 +171,58 @@ export async function confirmInventoryReservationsForOrder(
     .innerJoin(inventoryLocationsTable, eq(inventoryLocationsTable.id, inventoryReservationsTable.locationId))
     .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "reserved"), sql`${inventoryReservationsTable.expiresAt} > now()`));
 
+  if (reservations.length === 0) {
+    const confirmedReservations = await tx
+      .select({
+        id: inventoryReservationsTable.id,
+        productId: inventoryReservationsTable.catalogItemId,
+        locationId: inventoryReservationsTable.locationId,
+        quantity: inventoryReservationsTable.quantity,
+        locationName: inventoryLocationsTable.name,
+      })
+      .from(inventoryReservationsTable)
+      .innerJoin(inventoryLocationsTable, eq(inventoryLocationsTable.id, inventoryReservationsTable.locationId))
+      .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "confirmed")));
+    return confirmedReservations.map(reservation => ({
+      productId: reservation.productId,
+      locationId: reservation.locationId,
+      locationName: reservation.locationName,
+      quantity: reservation.quantity,
+      remainingStock: 0,
+    }));
+  }
+
   const deductions: Array<CheckoutInventoryLocationDeduction & { productId: number }> = [];
   for (const reservation of reservations) {
-    const [updated] = await executor
-      .update(inventoryBalancesTable)
-      .set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(reservation.quantity)}` })
-      .where(and(
-        eq(inventoryBalancesTable.productId, reservation.productId),
-        eq(inventoryBalancesTable.locationId, reservation.locationId),
-        sql`${inventoryBalancesTable.quantityOnHand} >= ${String(reservation.quantity)}`,
-      ))
-      .returning({ quantityOnHand: inventoryBalancesTable.quantityOnHand });
-    if (!updated) throw new Error(`Reserved inventory could not be confirmed for catalogItemId ${reservation.productId}`);
-    await executor.update(inventoryReservationsTable)
+    await tx.update(inventoryReservationsTable)
       .set({ status: "confirmed", updatedAt: new Date() })
       .where(eq(inventoryReservationsTable.id, reservation.id));
+    const updated = await deductInventoryBalanceThroughAuthority(tx, {
+      productId: reservation.productId,
+      locationId: reservation.locationId,
+      context: "inventoryReservations.confirm",
+      quantity: reservation.quantity,
+      ignoreReservationIds: [reservation.id],
+    });
+    if (!updated) throw new Error(`Reserved inventory could not be confirmed for catalogItemId ${reservation.productId}`);
     deductions.push({
       productId: reservation.productId,
       locationId: reservation.locationId,
       locationName: reservation.locationName,
       quantity: reservation.quantity,
-      remainingStock: Number(updated.quantityOnHand ?? 0),
+      remainingStock: updated.remainingStock,
     });
   }
   return deductions;
+  });
 }
 
 export async function releaseInventoryReservationsForOrder(executor: ReservationExecutor, orderId: number): Promise<number> {
-  const released = await executor.update(inventoryReservationsTable)
-    .set({ status: "released", updatedAt: new Date() })
-    .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "reserved")))
-    .returning({ id: inventoryReservationsTable.id });
-  return released.length;
+  return executeTransaction(executor, "inventoryReservations.releaseOrder", async tx => {
+    const released = await tx.update(inventoryReservationsTable)
+      .set({ status: "released", updatedAt: new Date() })
+      .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "reserved")))
+      .returning({ id: inventoryReservationsTable.id });
+    return released.length;
+  });
 }

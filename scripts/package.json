@@ -10,7 +10,9 @@
     "repair:duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts",
     "repair-duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts",
     "bootstrap-inventory": "tsx ./src/bootstrap-inventory.ts",
-    "release-expired-inventory-reservations": "tsx ./src/release-expired-inventory-reservations.ts"
+    "release-expired-inventory-reservations": "tsx ./src/release-expired-inventory-reservations.ts",
+    "reconcile-inventory-state": "tsx ./src/reconcile-inventory-state.ts",
+    "inventory:lockdown": "tsx ./src/check-inventory-write-lockdown.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

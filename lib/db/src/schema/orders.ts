@@ -127,6 +127,7 @@ export const inventoryReservationsTable = pgTable("inventory_reservations", {
   locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
   quantity: integer("quantity").notNull(),
   status: text("status").notNull().default("reserved"),
+  idempotencyKey: text("idempotency_key"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

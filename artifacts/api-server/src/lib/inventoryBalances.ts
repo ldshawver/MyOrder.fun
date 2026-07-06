@@ -15,6 +15,7 @@ import {
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
+ç
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -139,7 +140,6 @@ export async function ensureStandardLocations(tenantId: number): Promise<void> {
 
 const REQUIRED_BOOTSTRAP_LOCATION_NAMES = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
 
-type InventoryBootstrapInsertRow = { id: number };
 type InventoryBootstrapCountRow = { count: number | string };
 
 function resultRows<T>(result: unknown): T[] {
@@ -180,25 +180,11 @@ export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Pr
     WHERE ci.tenant_id = ${tenantId}
   `))[0]?.count ?? 0);
 
-  const insertedRows = resultRows<InventoryBootstrapInsertRow>(await db.execute(sql`
-    INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand, par_level, inventory_kind, is_sellable, updated_at)
-    SELECT ${tenantId}, ci.id, il.id, 0, 0, 'sellable_catalog', true, now()
-    FROM catalog_items ci
-    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_BOOTSTRAP_LOCATION_NAMES]})
-    WHERE ci.tenant_id = ${tenantId}
-      AND NOT EXISTS (
-        SELECT 1 FROM inventory_balances ib
-        WHERE ib.tenant_id = ci.tenant_id
-          AND ib.product_id = ci.id
-          AND ib.location_id = il.id
-      )
-    ON CONFLICT DO NOTHING
-    RETURNING id
-  `));
+  const insertedRowCount = await bootstrapMissingInventoryBalancesThroughAuthority(tenantId, REQUIRED_BOOTSTRAP_LOCATION_NAMES);
 
   return {
     tenantId,
-    rowsCreated: insertedRows.length,
+    rowsCreated: insertedRowCount,
     rowsAlreadyExisting,
     totalProductsProcessed: productCount,
     requiredLocations: [...REQUIRED_BOOTSTRAP_LOCATION_NAMES],
@@ -300,23 +286,18 @@ export async function deductCheckoutInventoryByOrderType(
     const availableAtLocation = Number(row.quantityOnHand ?? 0);
     if (availableAtLocation <= 0) continue;
     const deductionQuantity = Math.min(remaining, availableAtLocation);
-    const updated = await executor
-      .update(inventoryBalancesTable)
-      .set({
-        quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(deductionQuantity)}`,
-      })
-      .where(and(
-        eq(inventoryBalancesTable.id, row.id),
-        sql`${inventoryBalancesTable.quantityOnHand} >= ${String(deductionQuantity)}`,
-      ))
-      .returning({ id: inventoryBalancesTable.id });
-    if (updated.length !== 1) return null;
-    const remainingStock = availableAtLocation - deductionQuantity;
+    const updated = await deductInventoryBalanceThroughAuthority(executor, {
+      productId,
+      locationId: row.locationId,
+      quantity: deductionQuantity,
+      context: "inventoryBalances.deductCheckoutInventoryByOrderType",
+    });
+    if (!updated) return null;
     deductions.push({
       locationId: row.locationId,
       locationName: row.locationName,
       quantity: deductionQuantity,
-      remainingStock,
+      remainingStock: updated.remainingStock,
     });
     remaining -= deductionQuantity;
   }

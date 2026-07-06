@@ -21,6 +21,8 @@ import {
   getInventoryHealthReport,
 } from "../lib/inventoryHealth";
 import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
+import { collectInventoryReconcileReport, reconcileInventoryState } from "../lib/inventoryAuthority";
+import { replayInventoryTransaction } from "../lib/inventoryKernel";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -153,6 +155,49 @@ router.get(
         return;
       }
       res.status(500).json({ error: "Could not build POS integrity report" });
+    }
+  },
+);
+
+// ─── GET /api/admin/inventory/reconcile-report ───────────────────────────────
+router.get(
+  "/admin/inventory/reconcile-report",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (_req, res): Promise<void> => {
+    try {
+      const report = await collectInventoryReconcileReport();
+      res.json({ ...report, mode: "read_only" });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : "Could not reconcile inventory state" });
+    }
+  },
+);
+
+// ─── POST /api/admin/inventory/reconcile-repair ──────────────────────────────
+router.post(
+  "/admin/inventory/reconcile-repair",
+  requireRole("global_admin", "admin"),
+  async (_req, res): Promise<void> => {
+    try {
+      const report = await reconcileInventoryState();
+      res.json({ ...report, mode: "repair" });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : "Could not repair inventory reconciliation state" });
+    }
+  },
+);
+
+// ─── GET /api/admin/inventory/transaction/:id ────────────────────────────────
+router.get(
+  "/admin/inventory/transaction/:id",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    try {
+      const transactionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const report = await replayInventoryTransaction(transactionId);
+      res.json(report);
+    } catch (err) {
+      res.status(404).json({ error: err instanceof Error ? err.message : "Inventory transaction was not found" });
     }
   },
 );
