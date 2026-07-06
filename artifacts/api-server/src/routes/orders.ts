@@ -796,8 +796,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   const now = new Date();
 
-  let targetLocationId: number | null = null;
-  let targetLocationName: string | null = null;
+targetLocationId = loc?.id ?? null;
   if (assignedShiftId) {
     const [activeShift] = await db
       .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
