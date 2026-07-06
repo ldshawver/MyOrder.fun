@@ -15,7 +15,6 @@ import {
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
-ç
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
