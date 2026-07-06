@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq, sql } from "drizzle-orm";
 import Stripe from "stripe";
-import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable, inventoryReservationsTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
@@ -20,7 +20,13 @@ import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/str
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { requireOrderHasVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
-import { deductCheckoutInventoryByOrderType, type InventoryOrderType } from "../lib/inventoryBalances";
+import { type InventoryOrderType } from "../lib/inventoryBalances";
+import {
+  confirmInventoryReservationsForOrder,
+  ensureInventoryReservationsTable,
+  reserveCheckoutInventoryByOrderType,
+  releaseInventoryReservationsForOrder,
+} from "../lib/inventoryReservations";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -49,21 +55,37 @@ async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, 
   const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
   if (method === "cash") return;
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
+  await ensureInventoryReservationsTable();
   const [shift] = await db.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
   if (!shift?.boxAssignmentId) return;
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
 
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
   await db.transaction(async (tx) => {
+    const existingReservations = await tx.select({ id: inventoryReservationsTable.id })
+      .from(inventoryReservationsTable)
+      .where(eq(inventoryReservationsTable.orderId, order.id))
+      .limit(1);
+    if (existingReservations.length === 0) {
+      for (const item of items) {
+        if (!item.catalogItemId) continue;
+        const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id, item.catalogItemId, Number(item.quantity), orderTypeForPaidDeduction(order));
+        if (!reservations) throw new PaymentInventoryError(item.catalogItemId);
+        await tx.update(orderItemsTable)
+          .set({ inventoryDeductions: reservations })
+          .where(eq(orderItemsTable.id, item.id));
+      }
+    }
+    const confirmedDeductions = await confirmInventoryReservationsForOrder(tx, order.id);
     for (const item of items) {
       if (!item.catalogItemId) continue;
       const orderType = orderTypeForPaidDeduction(order);
-      const deduction = await deductCheckoutInventoryByOrderType(tx, order.tenantId, item.catalogItemId, Number(item.quantity), orderType);
-      if (!deduction) throw new PaymentInventoryError(item.catalogItemId);
+      const deductionDetails = confirmedDeductions.filter(deduction => deduction.productId === item.catalogItemId);
+      if (deductionDetails.length === 0) throw new PaymentInventoryError(item.catalogItemId);
       await tx.update(orderItemsTable)
-        .set({ inventoryDeductions: deduction.deductions })
+        .set({ inventoryDeductions: deductionDetails.map(({ productId: _productId, ...deduction }) => deduction) })
         .where(eq(orderItemsTable.id, item.id));
-      for (const used of deduction.deductions) {
+      for (const used of deductionDetails) {
         auditEntries.push({
           productId: item.catalogItemId,
           locationUsed: used.locationName,
@@ -480,6 +502,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     try {
       await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip });
     } catch (err) {
+      await releaseInventoryReservationsForOrder(db, order.id);
       if (err instanceof PaymentInventoryError) {
         res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
         return;
@@ -551,6 +574,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     const intent = await stripe.paymentIntents.retrieve(body.data.paymentIntentId);
 
     if (intent.status !== "succeeded") {
+      await releaseInventoryReservationsForOrder(db, order.id);
       res.status(402).json({ error: `Payment not complete: ${intent.status}` });
       return;
     }
@@ -563,6 +587,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     try {
       await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip });
     } catch (err) {
+      await releaseInventoryReservationsForOrder(db, order.id);
       if (err instanceof PaymentInventoryError) {
         res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
         return;

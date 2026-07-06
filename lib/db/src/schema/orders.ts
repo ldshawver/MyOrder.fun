@@ -11,6 +11,7 @@ import {
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
+import { inventoryLocationsTable } from "./shifts";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
@@ -119,9 +120,22 @@ export const orderNotesTable = pgTable("order_notes", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const inventoryReservationsTable = pgTable("inventory_reservations", {
+  id: serial("id").primaryKey(),
+  orderId: integer("order_id").notNull().references(() => ordersTable.id),
+  catalogItemId: integer("catalog_item_id").notNull().references(() => catalogItemsTable.id),
+  locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
+  quantity: integer("quantity").notNull(),
+  status: text("status").notNull().default("reserved"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+});
+
 export type Order = typeof ordersTable.$inferSelect;
 export type InsertOrder = typeof ordersTable.$inferInsert;
 export type OrderItem = typeof orderItemsTable.$inferSelect;
 export type InsertOrderItem = typeof orderItemsTable.$inferInsert;
 export type OrderNote = typeof orderNotesTable.$inferSelect;
 export type InsertOrderNote = typeof orderNotesTable.$inferInsert;
+export type InventoryReservation = typeof inventoryReservationsTable.$inferSelect;

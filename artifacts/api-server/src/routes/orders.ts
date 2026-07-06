@@ -41,7 +41,12 @@ import {
   CartLineInput,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
-import { deductCheckoutInventoryByOrderType, type InventoryOrderType } from "../lib/inventoryBalances";
+import { type InventoryOrderType } from "../lib/inventoryBalances";
+import {
+  confirmInventoryReservationsForOrder,
+  ensureInventoryReservationsTable,
+  reserveCheckoutInventoryByOrderType,
+} from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { logger } from "../lib/logger";
@@ -805,9 +810,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
-  const shouldDeductInventory = routing.routeSource === "active_csr" && targetLocationId != null && immediatePaymentMethod === "cash";
+  await ensureInventoryReservationsTable();
+  const shouldReserveInventory = routing.routeSource === "active_csr" && targetLocationId != null;
+  const shouldConfirmReservationImmediately = shouldReserveInventory && immediatePaymentMethod === "cash";
 
-  if (POS_INTEGRITY_STRICT && shouldDeductInventory) {
+  if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
     const missingRows = await db
       .select({ catalogItemId: catalogItemsTable.id })
       .from(catalogItemsTable)
@@ -934,24 +941,34 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           wooVariationId: line.woo_variation_id ?? null,
         }).returning({ id: orderItemsTable.id });
 
-        if (shouldDeductInventory) {
-          const deduction = await deductCheckoutInventoryByOrderType(tx, houseTenantId, line.catalog_item_id, line.quantity, orderType);
-          if (!deduction) {
+        if (shouldReserveInventory) {
+          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType);
+          if (!reservations) {
             throw new InsufficientInventoryError(line.catalog_item_id);
           }
           await tx.update(orderItemsTable)
-            .set({ inventoryDeductions: deduction.deductions })
+            .set({ inventoryDeductions: reservations })
             .where(eq(orderItemsTable.id, orderItem.id));
-          for (const used of deduction.deductions) {
-            inventoryDeductionAuditEntries.push({
-              orderId: createdOrder.id,
-              productId: line.catalog_item_id,
-              locationUsed: used.locationName,
-              locationId: used.locationId,
-              quantity: used.quantity,
-              remainingStock: used.remainingStock,
-              orderType,
-            });
+          const deductionDetails = shouldConfirmReservationImmediately
+            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id)).filter(deduction => deduction.productId === line.catalog_item_id)
+            : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
+          if (shouldConfirmReservationImmediately) {
+            await tx.update(orderItemsTable)
+              .set({ inventoryDeductions: deductionDetails.map(({ productId: _productId, ...deduction }) => deduction) })
+              .where(eq(orderItemsTable.id, orderItem.id));
+          }
+          if (shouldConfirmReservationImmediately) {
+            for (const used of deductionDetails) {
+              inventoryDeductionAuditEntries.push({
+                orderId: createdOrder.id,
+                productId: line.catalog_item_id,
+                locationUsed: used.locationName,
+                locationId: used.locationId,
+                quantity: used.quantity,
+                remainingStock: used.remainingStock,
+                orderType,
+              });
+            }
           }
         }
 
