@@ -67,9 +67,10 @@ Canonical model going forward:
 2. Inventory balances identity: `inventory_balances.product_id = catalog_items.id` only.
 3. Customer-safe product name: `catalog_items.customer_safe_name`.
 4. Customer-safe product description: `catalog_items.customer_safe_description`.
-5. Customer-safe category: `catalog_items.lucifer_cruz_category` with runtime fallback to `merchant_category` / `category`.
-6. Customer-safe image: `catalog_items.lucifer_cruz_image_url` with runtime fallback to `merchant_image` / `display_image` / `image_url`.
+5. Customer-safe category: `catalog_items.lucifer_cruz_category` with runtime fallback to `merchant_category` / `category` for display only.
+6. Customer-safe image: `catalog_items.lucifer_cruz_image_url` with runtime fallback to `merchant_image` / `display_image` / `image_url` for display only.
 7. Abandoned/non-production DB names are forbidden in runtime code: `safe_name`, `safe_description`, `safe_category`, `safe_image_url`.
+8. Identity rule: inventory, checkout, order, PAR, import matching, and duplicate repair identity use only `catalog_items.id`, `inventory_balances.product_id`, SKU, `merchant_sku`, or `alavont_id`; customer/safe/merchant/display text fields are labels only and are forbidden as keys.
 
 ## F. Runtime alignment completed
 
@@ -78,7 +79,9 @@ Canonical model going forward:
 - Import maps Safe CSV headers into `customer_safe_name`, `customer_safe_description`, `lucifer_cruz_category`, and `lucifer_cruz_image_url`.
 - Checkout conversion reads `customerSafeName` / `customerSafeDescription` and no longer reads `safeName` / `safeDescription` / `safeCategory` / `safeImageUrl`.
 - Inventory/PAR exposes `customerSafeName` as secondary presentation data and never uses it as product identity.
-- Duplicate repair dry-run/confirm script matches `customer_safe_name`, not `safe_name`.
+- Duplicate repair dry-run/confirm script matches only SKU or `merchant_sku` / `alavont_id`, not names or customer-safe text fields.
+- Import matching is permanently disabled for product names, customer-safe names, merchant names, display names, and category/image fields.
+- Runtime identity guard logs stack traces and throws in development/staging/test if an inventory lookup receives a non-integer catalog id.
 - Script command compatibility added: `pnpm --filter @workspace/scripts repair-duplicate-safe-products`.
 
 ## Compatibility matrix
@@ -88,4 +91,4 @@ Canonical model going forward:
 | Production DB | Compatible | Operations confirmed no `safe_*`; checked-in VPS schema also has no `safe_*`. |
 | Migration state | Compatible | No active migration creates `safe_*`; `0012` creates `customer_safe_name` and `customer_safe_description`; the abandoned `202606250001_catalog_canonical_safe_fields.sql` migration has been removed. |
 | Drizzle | Compatible | Removed abandoned `safe*` fields from `catalogItemsTable`. |
-| Runtime code | Compatible | Non-test runtime code no longer references non-production `safe_*` catalog columns. |
+| Runtime code | Compatible | Non-test runtime code no longer references non-production `safe_*` catalog columns; inventory lookup helpers assert `catalog_items.id` identity. |

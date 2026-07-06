@@ -978,12 +978,7 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
   }
 
   const visibleItems = items.filter(it => !EXCLUDE_CATEGORIES.includes(it.category));
-  const byCategory: Record<string, InvItem[]> = {};
-  for (const item of visibleItems) {
-    if (!byCategory[item.category]) byCategory[item.category] = [];
-    byCategory[item.category].push(item);
-  }
-  const sortedCats = Object.keys(byCategory).sort((a, b) => categoryOrder(a) - categoryOrder(b));
+  const sortedItems = [...visibleItems].sort((a, b) => a.id - b.id);
   const dirtyCellCount = Object.values(cells).filter(c => c.dirty).length;
 
   if (loading) {
@@ -1092,70 +1087,55 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
             </tr>
           </thead>
           <tbody>
-            {sortedCats.map(cat => {
-              const catItems = byCategory[cat];
+            {sortedItems.map(item => {
+              const liveTotal = (item.locations ?? []).reduce((sum, locBalance) => {
+                const cell = cells[`${item.id}:${locBalance.locationId}`];
+                return sum + (cell ? (parseFloat(cell.qty) || 0) : locBalance.qty);
+              }, 0);
+              const rowDirty = locations.some(loc => cells[`${item.id}:${loc.id}`]?.dirty);
               return (
-                <>
-                  <tr key={`cat-${cat}`} className="bg-muted/10">
-                    <td
-                      colSpan={locations.length + 2}
-                      className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground border-b border-t border-border/20"
-                    >
-                      {cat.replace("Psychedelics & Hallucinogens", "Psychedelics").replace("Depressants & Precursors", "Depressants").replace("Dissociative's", "Dissociatives")}
-                    </td>
-                  </tr>
-                  {catItems.map(item => {
-                    const liveTotal = (item.locations ?? []).reduce((s, l) => {
-                      const cell = cells[`${item.id}:${l.locationId}`];
-                      return s + (cell ? (parseFloat(cell.qty) || 0) : l.qty);
-                    }, 0);
-                    const rowDirty = locations.some(l => cells[`${item.id}:${l.id}`]?.dirty);
+                <tr
+                  key={item.id}
+                  className={`border-b border-border/10 transition-colors ${rowDirty ? "bg-primary/[0.03]" : "hover:bg-muted/5"}`}
+                >
+                  <td className="px-3 py-2">
+                    <div className="font-medium text-sm leading-tight">{item.alavontName ?? item.name}</div>
+                    {item.luciferCruzName && (
+                      <div className="text-[10px] text-muted-foreground">{item.luciferCruzName}</div>
+                    )}
+                    {!item.isAvailable && (
+                      <span className="text-[9px] text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">Hidden</span>
+                    )}
+                  </td>
+                  {locations.map(loc => {
+                    const key = `${item.id}:${loc.id}`;
+                    const cell = cells[key] ?? { qty: "0", par: "0", dirty: false, saving: false };
+                    const belowPar = parseFloat(cell.qty) < parseFloat(cell.par) && parseFloat(cell.par) > 0;
                     return (
-                      <tr
-                        key={item.id}
-                        className={`border-b border-border/10 transition-colors ${rowDirty ? "bg-primary/[0.03]" : "hover:bg-muted/5"}`}
-                      >
-                        <td className="px-3 py-2">
-                          <div className="font-medium text-sm leading-tight">{item.alavontName ?? item.name}</div>
-                          {item.luciferCruzName && (
-                            <div className="text-[10px] text-muted-foreground">{item.luciferCruzName}</div>
-                          )}
-                          {!item.isAvailable && (
-                            <span className="text-[9px] text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">Hidden</span>
-                          )}
-                        </td>
-                        {locations.map(loc => {
-                          const key = `${item.id}:${loc.id}`;
-                          const cell = cells[key] ?? { qty: "0", par: "0", dirty: false, saving: false };
-                          const belowPar = parseFloat(cell.qty) < parseFloat(cell.par) && parseFloat(cell.par) > 0;
-                          return (
-                            <td key={loc.id} className={`px-2 py-1.5 ${cell.dirty ? "bg-primary/[0.05]" : ""}`}>
-                              <div className="flex flex-col gap-0.5 items-center">
-                                <Input
-                                  value={cell.qty}
-                                  onChange={e => updateCell(item.id, loc.id, "qty", e.target.value)}
-                                  onBlur={() => saveCell(item.id, loc.id)}
-                                  title="Quantity on hand"
-                                  className={`h-6 w-16 text-center text-xs font-mono rounded px-1 ${belowPar ? "border-amber-500/50 text-amber-300" : ""} ${cell.saving ? "opacity-50" : ""}`}
-                                />
-                                <Input
-                                  value={cell.par}
-                                  onChange={e => updateCell(item.id, loc.id, "par", e.target.value)}
-                                  onBlur={() => saveCell(item.id, loc.id)}
-                                  title="Par level"
-                                  className="h-5 w-16 text-center text-[10px] font-mono rounded px-1 opacity-50 border-dashed"
-                                />
-                              </div>
-                            </td>
-                          );
-                        })}
-                        <td className={`px-3 py-2 text-center font-mono font-bold text-sm ${liveTotal === 0 ? "text-muted-foreground/40" : "text-primary"}`}>
-                          {liveTotal % 1 === 0 ? liveTotal : liveTotal.toFixed(2)}
-                        </td>
-                      </tr>
+                      <td key={loc.id} className={`px-2 py-1.5 ${cell.dirty ? "bg-primary/[0.05]" : ""}`}>
+                        <div className="flex flex-col gap-0.5 items-center">
+                          <Input
+                            value={cell.qty}
+                            onChange={e => updateCell(item.id, loc.id, "qty", e.target.value)}
+                            onBlur={() => saveCell(item.id, loc.id)}
+                            title="Quantity on hand"
+                            className={`h-6 w-16 text-center text-xs font-mono rounded px-1 ${belowPar ? "border-amber-500/50 text-amber-300" : ""} ${cell.saving ? "opacity-50" : ""}`}
+                          />
+                          <Input
+                            value={cell.par}
+                            onChange={e => updateCell(item.id, loc.id, "par", e.target.value)}
+                            onBlur={() => saveCell(item.id, loc.id)}
+                            title="Par level"
+                            className="h-5 w-16 text-center text-[10px] font-mono rounded px-1 opacity-50 border-dashed"
+                          />
+                        </div>
+                      </td>
                     );
                   })}
-                </>
+                  <td className={`px-3 py-2 text-center font-mono font-bold text-sm ${liveTotal === 0 ? "text-muted-foreground/40" : "text-primary"}`}>
+                    {liveTotal % 1 === 0 ? liveTotal : liveTotal.toFixed(2)}
+                  </td>
+                </tr>
               );
             })}
           </tbody>
@@ -1449,7 +1429,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
     }
     productMap.get(b.productId)!.balances.push(b);
   }
-  const products = Array.from(productMap.entries()).sort((a, b) => a[1].name.localeCompare(b[1].name));
+  const products = Array.from(productMap.entries()).sort((a, b) => a[0] - b[0]);
 
   if (loading) return (
     <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground text-sm">

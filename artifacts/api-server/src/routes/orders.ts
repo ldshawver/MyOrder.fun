@@ -43,6 +43,7 @@ import {
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
 import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
+import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
@@ -890,6 +891,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         });
 
         if (shouldDeductInventory) {
+          assertCatalogIdInventoryLookup(line.catalog_item_id, "orders.create.inventoryDeduction");
           const decremented = await tx
             .update(inventoryBalancesTable)
             .set({

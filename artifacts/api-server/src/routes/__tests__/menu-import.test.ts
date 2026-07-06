@@ -264,13 +264,13 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
-  it("dry-run preview matches changed SKU by normalized product name", async () => {
+  it("dry-run preview does not match changed SKU by normalized product name", async () => {
     state.catalog.push({ id: 6, tenantId: 1, sku: "RB-1", name: "Red Brick", alavontName: "Red Brick" });
     const csv = `${headers}\n10.00,,false,Cat,Red Brick,https://example.com/a.jpg,Desc,RB-NEW,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,1,0,0,0,5,0,0,0\n`;
     const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
 
     expect(res.status).toBe(200);
-    expect(res.body.preview[0]).toMatchObject({ oldProductId: 6, matchedProductId: 6, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
+    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
   });
 
   it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {

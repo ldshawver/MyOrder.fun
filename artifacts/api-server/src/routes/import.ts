@@ -5,6 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } 
 import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 import { sellableBalanceWhere } from "../lib/inventoryHealth";
+import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
 import multer from "multer";
 import * as XLSX from "xlsx";
 
@@ -109,7 +110,7 @@ const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
 type ParsedFile = { headers: string[]; rawHeaders: string[]; rows: string[][] };
 type ImportRow = Record<CatalogImportHeader, string>;
 type ImportDuplicateWarning = {
-  type: "upload_duplicate_sku" | "upload_duplicate_name" | "db_duplicate_sku" | "db_duplicate_name";
+  type: "upload_duplicate_sku" | "db_duplicate_sku";
   key: string;
   rows: number[];
   sku: string | null;
@@ -207,25 +208,17 @@ function buildRecord(row: string[], headers: string[]): ImportRow {
   headers.forEach((h, i) => { if (HEADER_SET.has(h)) out[h as CatalogImportHeader] = row[i] ?? ""; });
   return out;
 }
-function normalizeProductName(raw: string | null | undefined): string {
-  return String(raw ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
-}
-function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert; normalizedCustomerSafeName: string; normalizedName: string }>): ImportDuplicateWarning[] {
+function buildUploadDuplicateWarnings(prepared: Array<{ row: number; values: typeof catalogItemsTable.$inferInsert }>): ImportDuplicateWarning[] {
   const bySku = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
-  const byName = new Map<string, Array<{ row: number; sku: string | null; name: string | null }>>();
   for (const p of prepared) {
     const sku = typeof p.values.sku === "string" ? p.values.sku : null;
     const name = typeof p.values.name === "string" ? p.values.name : null;
     const skuKey = String(sku ?? "").trim().toLowerCase();
     if (skuKey) bySku.set(skuKey, [...(bySku.get(skuKey) ?? []), { row: p.row, sku, name }]);
-    for (const nameKey of Array.from(new Set([p.normalizedCustomerSafeName, p.normalizedName].filter(Boolean)))) {
-      byName.set(nameKey, [...(byName.get(nameKey) ?? []), { row: p.row, sku, name }]);
-    }
   }
-  return [
-    ...[...bySku.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
-    ...[...byName.entries()].filter(([, rows]) => rows.length > 1).map(([key, rows]) => ({ type: "upload_duplicate_name" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null })),
-  ];
+  return [...bySku.entries()]
+    .filter(([, rows]) => rows.length > 1)
+    .map(([key, rows]) => ({ type: "upload_duplicate_sku" as const, key, rows: rows.map(r => r.row), sku: rows[0]?.sku ?? null, name: rows[0]?.name ?? null }));
 }
 function duplicateImportErrorMessage(warnings: ImportDuplicateWarning[]): string {
   const hasUpload = warnings.some(w => w.type.startsWith("upload_"));
@@ -260,6 +253,7 @@ async function findOrCreateImportLocation(tx: typeof db, tenantId: number, impor
 }
 
 async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number) {
+  assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryRow");
   const [existing] = await tx.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.productId, catalogItemId), eq(inventoryBalancesTable.locationId, locationId), sellableBalanceWhere())).limit(1);
   const values = { quantityOnHand: String(quantity), parLevel: String(parLevel), inventoryKind: "sellable_catalog", updatedAt: new Date() };
   if (existing) await tx.update(inventoryBalancesTable).set(values).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, existing.id)));
@@ -267,6 +261,7 @@ async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catal
 }
 
 async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: number, parLevel: number) {
+  assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryTemplate");
   const [existing] = await tx.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogItemId))).limit(1);
   const values = { itemName, rowType: "item", unitType: "#", startingQuantityDefault: String(quantity), currentStock: String(quantity), parLevel: String(parLevel), isActive: true, updatedAt: new Date() };
   if (existing) await tx.update(inventoryTemplatesTable).set(values).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.id, existing.id)));
@@ -350,7 +345,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; normalizedCustomerSafeName: string; normalizedName: string }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number> }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -403,7 +398,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       merchantBrand: "alavont",
       updatedAt: new Date(),
     };
-    prepared.push({ row: rowNum, rec, inventory, par, normalizedCustomerSafeName: normalizeProductName(customerSafeName), normalizedName: normalizeProductName(name), values: importValues, updateValues });
+    prepared.push({ row: rowNum, rec, inventory, par, values: importValues, updateValues });
   }
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
@@ -425,22 +420,16 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   };
   const bySku = new Map<string, number>();
   const byAlavontOrMerchantSku = new Map<string, number>();
-  const byName = new Map<string, number>();
-  const byCustomerSafeName = new Map<string, number>();
   for (const item of allTenantCatalog) {
     const skuKey = String(item.sku ?? "").trim().toLowerCase();
     const merchantKey = String(item.alavontId ?? item.merchantSku ?? "").trim().toLowerCase();
-    const productNameKeys = [item.name, item.alavontName].map(normalizeProductName).filter(Boolean);
-    const customerSafeNameKeys = [item.customerSafeName, item.luciferCruzName, item.merchantName].map(normalizeProductName).filter(Boolean);
     if (skuKey) bySku.set(skuKey, preferCanonical(bySku.get(skuKey), item.id));
     if (merchantKey) byAlavontOrMerchantSku.set(merchantKey, preferCanonical(byAlavontOrMerchantSku.get(merchantKey), item.id));
-    for (const nameKey of productNameKeys) byName.set(nameKey, preferCanonical(byName.get(nameKey), item.id));
-    for (const nameKey of customerSafeNameKeys) byCustomerSafeName.set(nameKey, preferCanonical(byCustomerSafeName.get(nameKey), item.id));
   }
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-    const matchedId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? byCustomerSafeName.get(p.normalizedCustomerSafeName) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.key === p.normalizedCustomerSafeName || w.key === p.normalizedName || w.rows.includes(p.row)) };
+    const matchedId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? null;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
   if (duplicateWarnings.length) {
@@ -457,7 +446,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       let updated = 0;
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
-        const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? byName.get(p.normalizedName) ?? byCustomerSafeName.get(p.normalizedCustomerSafeName);
+        const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey);
         let catalogItemId = existingId;
         if (catalogItemId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));

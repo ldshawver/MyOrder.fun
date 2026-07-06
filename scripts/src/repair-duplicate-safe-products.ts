@@ -22,13 +22,11 @@ WITH catalog_stats AS (
     ci.id,
     ci.tenant_id,
     ci.name,
-    ci.customer_safe_name,
     ci.sku,
     ci.merchant_sku,
     ci.alavont_id,
-    lower(regexp_replace(coalesce(nullif(ci.sku, ''), nullif(ci.merchant_sku, ''), nullif(ci.alavont_id, ''), ci.name, ci.customer_safe_name, ''), '[^a-zA-Z0-9]+', ' ', 'g')) AS sku_key,
-    lower(regexp_replace(coalesce(nullif(ci.name, ''), nullif(ci.customer_safe_name, ''), ''), '[^a-zA-Z0-9]+', ' ', 'g')) AS name_key,
-    lower(regexp_replace(coalesce(nullif(ci.customer_safe_name, ''), nullif(ci.name, ''), ''), '[^a-zA-Z0-9]+', ' ', 'g')) AS customer_key,
+    lower(regexp_replace(coalesce(nullif(ci.sku, ''), ''), '[^a-zA-Z0-9]+', ' ', 'g')) AS sku_key,
+    lower(regexp_replace(coalesce(nullif(ci.merchant_sku, ''), nullif(ci.alavont_id, ''), ''), '[^a-zA-Z0-9]+', ' ', 'g')) AS merchant_key,
     (SELECT count(*)::int FROM inventory_balances ib WHERE ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id) AS inventory_rows,
     (SELECT count(*)::int FROM order_items oi WHERE oi.catalog_item_id = ci.id) AS order_item_refs
   FROM catalog_items ci
@@ -37,7 +35,7 @@ WITH catalog_stats AS (
   SELECT a.*, b.id AS other_id, b.name AS other_name, b.inventory_rows AS other_inventory_rows, b.order_item_refs AS other_order_item_refs
   FROM catalog_stats a
   JOIN catalog_stats b ON a.tenant_id = b.tenant_id AND a.id <> b.id
-   AND (a.sku_key <> '' AND a.sku_key = b.sku_key OR a.name_key <> '' AND a.name_key = b.name_key OR a.customer_key <> '' AND a.customer_key = b.customer_key)
+   AND (a.sku_key <> '' AND a.sku_key = b.sku_key OR a.merchant_key <> '' AND a.merchant_key = b.merchant_key)
   WHERE ((a.inventory_rows = 0 AND b.inventory_rows > 0) OR (a.inventory_rows > 0 AND b.inventory_rows = 0))
 ), ranked AS (
   SELECT *,
@@ -55,7 +53,7 @@ SELECT DISTINCT
   canonical_id AS "canonicalCatalogItemId",
   CASE WHEN id = canonical_id THEN other_name ELSE name END AS "duplicateName",
   CASE WHEN id = canonical_id THEN name ELSE other_name END AS "canonicalName",
-  'same tenant and normalized sku/name/customer_safe_name; canonical prefers inventory, order refs, oldest id' AS reason,
+  'same tenant and normalized sku or merchant_sku/alavont_id; canonical prefers inventory, order refs, oldest id' AS reason,
   CASE WHEN id = canonical_id THEN other_inventory_rows ELSE inventory_rows END AS "inventoryRows",
   CASE WHEN id = canonical_id THEN other_order_item_refs ELSE order_item_refs END AS "orderItemRefs"
 FROM ranked

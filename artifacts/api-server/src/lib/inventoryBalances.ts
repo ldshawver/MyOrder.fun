@@ -13,6 +13,7 @@ import {
   csrBoxesTable,
 } from "@workspace/db";
 import { ensureInventoryBalanceClassificationSchema } from "./inventoryHealth";
+import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 
 let inventoryTablesEnsured = false;
 
@@ -155,6 +156,7 @@ export async function ensureAllInventoryBalances(tenantId: number): Promise<{ cr
   let created = 0;
 
   for (const prod of products) {
+    assertCatalogIdInventoryLookup(prod.id, "ensureAllInventoryBalances");
     for (const loc of locations) {
       const [exists] = await db
         .select({ id: inventoryBalancesTable.id })
@@ -237,6 +239,7 @@ export function sellableInventoryBalancePredicate(tenantId: number) {
 }
 
 export async function recomputeCatalogInventoryTotals(tenantId: number, productId: number): Promise<void> {
+  assertCatalogIdInventoryLookup(productId, "recomputeCatalogInventoryTotals");
   const [totals] = await db
     .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
     .from(inventoryBalancesTable)
@@ -291,7 +294,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
             AND ib.product_id = ${catalogItemsTable.id}
         )`
       ))
-      .orderBy(asc(catalogItemsTable.category), asc(catalogItemsTable.name)),
+      .orderBy(asc(catalogItemsTable.id)),
     db.select().from(inventoryLocationsTable)
       .where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true)))
       .orderBy(asc(inventoryLocationsTable.displayOrder)),
