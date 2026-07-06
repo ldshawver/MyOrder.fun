@@ -4,15 +4,13 @@ import {
   db,
   catalogItemsTable,
   adminSettingsTable,
-  inventoryBalancesTable,
   inventoryLocationsTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
   ensureStandardLocations,
-  ensureAllInventoryBalances,
   ensureAllInventoryRowsExistForTenant,
   getCatalogInventorySnapshot,
   recomputeCatalogInventoryTotals,
@@ -21,8 +19,6 @@ import {
 import {
   ensureInventoryBalanceClassificationSchema,
   getInventoryHealthReport,
-  INVENTORY_KIND_NON_SELLABLE_SUPPLY,
-  INVENTORY_KIND_SELLABLE,
 } from "../lib/inventoryHealth";
 import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
 
@@ -102,10 +98,8 @@ async function resolveInventoryTenantId(req: import("express").Request): Promise
   return actor.tenantId ?? await getHouseTenantId();
 }
 
-const balanceIdParams = z.object({ id: z.coerce.number().int().positive() }).strict();
-const quarantineBody = z.object({ reason: z.string().trim().min(1).max(500).optional() }).strict();
-const classifyBody = z.object({ inventoryKind: z.enum([INVENTORY_KIND_SELLABLE, INVENTORY_KIND_NON_SELLABLE_SUPPLY]) }).strict();
 const bootstrapInventoryBody = z.object({ acknowledgmentToken: z.string().min(1) }).strict();
+const forbiddenInventoryBalanceMutationMessage = "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction";
 
 router.use(async (_req, res, next) => {
   try {
@@ -178,33 +172,8 @@ router.get(
 router.post(
   "/admin/inventory/balances/:id/quarantine",
   requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const params = balanceIdParams.safeParse(req.params);
-    const body = quarantineBody.safeParse(req.body);
-    if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
-    if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-    const tenantId = await resolveInventoryTenantId(req);
-    const [current] = await db.select().from(inventoryBalancesTable)
-      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, params.data.id)))
-      .limit(1);
-    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
-
-    const [updated] = await db.update(inventoryBalancesTable).set({
-      isSellable: false,
-      inventoryKind: current.inventoryKind === INVENTORY_KIND_NON_SELLABLE_SUPPLY ? INVENTORY_KIND_NON_SELLABLE_SUPPLY : INVENTORY_KIND_SELLABLE,
-      quarantinedAt: new Date(),
-      quarantinedByUserId: actor.id,
-      quarantineReason: body.data.reason ?? "Quarantined from inventory health report",
-    }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, current.id))).returning();
-
-    await recomputeCatalogInventoryTotals(tenantId, current.productId);
-    await writeAuditLog({
-      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId,
-      action: "INVENTORY_BALANCE_QUARANTINED", resourceType: "inventory_balance", resourceId: String(current.id),
-      metadata: { productId: current.productId, locationId: current.locationId, reason: body.data.reason ?? null }, ipAddress: req.ip,
-    });
-    res.json({ balance: updated });
+  async (_req, res): Promise<void> => {
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
   }
 );
 
@@ -212,35 +181,8 @@ router.post(
 router.post(
   "/admin/inventory/balances/:id/classify",
   requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const params = balanceIdParams.safeParse(req.params);
-    const body = classifyBody.safeParse(req.body);
-    if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
-    if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-    const tenantId = await resolveInventoryTenantId(req);
-    const [current] = await db.select().from(inventoryBalancesTable)
-      .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, params.data.id)))
-      .limit(1);
-    if (!current) { res.status(404).json({ error: "Balance not found for this tenant" }); return; }
-
-    const isSupply = body.data.inventoryKind === INVENTORY_KIND_NON_SELLABLE_SUPPLY;
-    const [updated] = await db.update(inventoryBalancesTable).set({
-      inventoryKind: body.data.inventoryKind,
-      isSellable: !isSupply,
-      quarantinedAt: isSupply ? current.quarantinedAt : null,
-      quarantinedByUserId: isSupply ? current.quarantinedByUserId : null,
-      quarantineReason: isSupply ? current.quarantineReason : null,
-    }).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, current.id))).returning();
-
-    await recomputeCatalogInventoryTotals(tenantId, current.productId);
-    await writeAuditLog({
-      actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId,
-      action: isSupply ? "INVENTORY_BALANCE_CLASSIFIED_NON_SELLABLE" : "INVENTORY_BALANCE_RESTORED_SELLABLE",
-      resourceType: "inventory_balance", resourceId: String(current.id),
-      metadata: { productId: current.productId, locationId: current.locationId, from: current.inventoryKind, to: body.data.inventoryKind }, ipAddress: req.ip,
-    });
-    res.json({ balance: updated });
+  async (_req, res): Promise<void> => {
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
   }
 );
 
@@ -285,77 +227,11 @@ router.get(
 );
 
 // ─── PATCH /api/admin/inventory/orphans/:id ───────────────────────────────────
-// Explicitly classify a balance as sellable catalog stock or non-sellable supply,
-// and optionally quarantine it so it cannot leak into sellable inventory views.
 router.patch(
   "/admin/inventory/orphans/:id",
   requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const actor = req.dbUser!;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) { res.status(400).json({ error: "Invalid balance id" }); return; }
-
-    const parsedBody = z.object({
-      inventoryKind: z.enum(["sellable_catalog", "non_sellable_supply"]).optional(),
-      isSellable: z.boolean().optional(),
-      quarantined: z.boolean().optional(),
-      quarantineReason: z.string().trim().max(500).nullable().optional(),
-    }).strict().safeParse(req.body);
-    if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
-
-    const houseTenantId = await getHouseTenantId();
-    const [current] = await db.select().from(inventoryBalancesTable)
-      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
-      .limit(1);
-    if (!current) { res.status(404).json({ error: "Inventory balance not found for this tenant" }); return; }
-
-    const patch: Partial<typeof inventoryBalancesTable.$inferInsert> = {};
-    if (parsedBody.data.inventoryKind !== undefined) patch.inventoryKind = parsedBody.data.inventoryKind;
-    if (parsedBody.data.isSellable !== undefined) patch.isSellable = parsedBody.data.isSellable;
-    if (parsedBody.data.quarantined !== undefined) {
-      patch.quarantinedAt = parsedBody.data.quarantined ? new Date() : null;
-      patch.quarantinedByUserId = parsedBody.data.quarantined ? actor.id : null;
-    }
-    if (parsedBody.data.quarantineReason !== undefined) patch.quarantineReason = parsedBody.data.quarantineReason;
-    if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
-
-    const [updated] = await db.update(inventoryBalancesTable)
-      .set(patch)
-      .where(and(eq(inventoryBalancesTable.tenantId, houseTenantId), eq(inventoryBalancesTable.id, id)))
-      .returning();
-
-    await recomputeCatalogInventoryTotals(houseTenantId, updated?.productId ?? current.productId);
-
-    await writeAuditLog({
-      actorId: actor.id,
-      actorEmail: actor.email,
-      actorRole: actor.role,
-      action: "INVENTORY_BALANCE_CLASSIFIED",
-      tenantId: houseTenantId,
-      resourceType: "inventory_balance",
-      resourceId: String(id),
-      metadata: {
-        before: {
-          inventoryKind: current.inventoryKind,
-          isSellable: current.isSellable,
-          quarantinedAt: current.quarantinedAt ?? null,
-          quarantinedByUserId: current.quarantinedByUserId ?? null,
-          quarantineReason: current.quarantineReason ?? null,
-        },
-        after: {
-          inventoryKind: updated?.inventoryKind ?? current.inventoryKind,
-          isSellable: updated?.isSellable ?? current.isSellable,
-          quarantinedAt: updated?.quarantinedAt ?? current.quarantinedAt ?? null,
-          quarantinedByUserId: updated?.quarantinedByUserId ?? current.quarantinedByUserId ?? null,
-          quarantineReason: updated?.quarantineReason ?? current.quarantineReason ?? null,
-        },
-        productId: updated?.productId ?? current.productId,
-        locationId: updated?.locationId ?? current.locationId,
-      },
-      ipAddress: req.ip,
-    });
-
-    res.json({ item: updated });
+  async (_req, res): Promise<void> => {
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
   }
 );
 
@@ -381,115 +257,21 @@ router.post(
   "/admin/inventory/ensure-balances",
   requireRole("global_admin", "admin"),
   async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
-    const { created } = await ensureAllInventoryBalances(houseTenantId);
-    res.json({ ok: true, created });
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage, use: "/api/admin/bootstrap-inventory" });
   }
 );
 
 // ─── PATCH /api/admin/inventory/balance/:productId/:locationId ────────────────
-// Upsert qty and/or par for a specific product × location combination.
 router.patch(
   "/admin/inventory/balance/:productId/:locationId",
   requireRole("global_admin", "admin"),
-  async (req, res): Promise<void> => {
-    const productId = parseInt(String(req.params.productId), 10);
-    const locationId = parseInt(String(req.params.locationId), 10);
-    if (isNaN(productId) || isNaN(locationId)) {
-      res.status(400).json({ error: "Invalid productId or locationId" });
-      return;
-    }
-
-    const parsedBody = z.object({
-      qty: z.number().finite().min(0).max(1_000_000).optional(),
-      par: z.number().finite().min(0).max(1_000_000).optional(),
-    }).strict().safeParse(req.body);
-    if (!parsedBody.success) {
-      res.status(400).json({ error: parsedBody.error.message });
-      return;
-    }
-    const { qty, par } = parsedBody.data;
-    const houseTenantId = await getHouseTenantId();
-
-    const [product] = await db
-      .select({ id: catalogItemsTable.id })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, houseTenantId),
-        eq(catalogItemsTable.id, productId),
-      ))
-      .limit(1);
-    if (!product) {
-      res.status(404).json({ error: "Catalog product not found for this tenant" });
-      return;
-    }
-
-    const [location] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, houseTenantId),
-        eq(inventoryLocationsTable.id, locationId),
-      ))
-      .limit(1);
-    if (!location) {
-      res.status(404).json({ error: "Inventory location not found for this tenant" });
-      return;
-    }
-
-    const [existing] = await db
-      .select({ id: inventoryBalancesTable.id })
-      .from(inventoryBalancesTable)
-      .where(and(
-        eq(inventoryBalancesTable.tenantId, houseTenantId),
-        eq(inventoryBalancesTable.productId, productId),
-        eq(inventoryBalancesTable.locationId, locationId),
-      ))
-      .limit(1);
-
-    if (existing) {
-      const patch: Record<string, unknown> = {};
-      if (qty !== undefined) patch.quantityOnHand = String(qty);
-      if (par !== undefined) patch.parLevel = String(par);
-      if (Object.keys(patch).length === 0) {
-        res.status(400).json({ error: "Nothing to update" });
-        return;
-      }
-      await db.update(inventoryBalancesTable).set(patch).where(eq(inventoryBalancesTable.id, existing.id));
-    } else {
-      await db.insert(inventoryBalancesTable).values({
-        tenantId: houseTenantId,
-        productId,
-        locationId,
-        quantityOnHand: qty !== undefined ? String(qty) : "0",
-        parLevel: par !== undefined ? String(par) : "0",
-      });
-    }
-
-    const [updated] = await db
-      .select()
-      .from(inventoryBalancesTable)
-      .where(and(
-        eq(inventoryBalancesTable.tenantId, houseTenantId),
-        eq(inventoryBalancesTable.productId, productId),
-        eq(inventoryBalancesTable.locationId, locationId),
-      ))
-      .limit(1);
-
-    await recomputeCatalogInventoryTotals(houseTenantId, productId);
-
-    res.json({
-      productId,
-      locationId,
-      qty: updated ? parseFloat(String(updated.quantityOnHand)) : 0,
-      par: updated ? parseFloat(String(updated.parLevel)) : 0,
-    });
+  async (_req, res): Promise<void> => {
+    res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage });
   }
 );
 
 // ─── PATCH /api/admin/inventory/:id ───────────────────────────────────────────
-// Update catalog-level stock_quantity / stock_unit / par_level (backward compat).
-// Also upserts the Backstock inventory_balance row to stay in sync.
+// Update catalog-level stock_unit only. inventory_balances quantity/par edits are forbidden here.
 router.patch(
   "/admin/inventory/:id",
   requireRole("global_admin", "admin"),
@@ -504,11 +286,13 @@ router.patch(
     }).strict().safeParse(req.body);
     if (!parsedBody.success) { res.status(400).json({ error: parsedBody.error.message }); return; }
     const { stockQuantity, stockUnit, parLevel } = parsedBody.data;
+    if (stockQuantity !== undefined || parLevel !== undefined) {
+      res.status(409).json({ error: forbiddenInventoryBalanceMutationMessage, use: "/api/admin/bootstrap-inventory" });
+      return;
+    }
 
     const patch: Record<string, unknown> = {};
-    if (stockQuantity !== undefined) patch.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
     if (stockUnit !== undefined) patch.stockUnit = stockUnit;
-    if (parLevel !== undefined) patch.parLevel = parLevel != null ? String(parLevel) : "0";
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
 
     const houseTenantId = await getHouseTenantId();
@@ -520,44 +304,7 @@ router.patch(
 
     if (!updated) { res.status(404).json({ error: "Item not found" }); return; }
 
-    // Mirror catalog-level stock/par edits to the canonical Backstock balance.
-    // This preserves backward-compatible edit forms while keeping inventory_balances
-    // as the per-location source used by inventory, par, catalog, and order flows.
-    if ((stockQuantity !== undefined && stockQuantity !== null) || (parLevel !== undefined && parLevel !== null)) {
-      const [backstockLoc] = await db
-        .select({ id: inventoryLocationsTable.id })
-        .from(inventoryLocationsTable)
-        .where(and(
-          eq(inventoryLocationsTable.tenantId, houseTenantId),
-          eq(inventoryLocationsTable.type, "backstock"),
-        ))
-        .limit(1);
-      if (backstockLoc) {
-        const [balance] = await db
-          .select({ id: inventoryBalancesTable.id })
-          .from(inventoryBalancesTable)
-          .where(and(
-            eq(inventoryBalancesTable.tenantId, houseTenantId),
-            eq(inventoryBalancesTable.productId, id),
-            eq(inventoryBalancesTable.locationId, backstockLoc.id),
-          ))
-          .limit(1);
-        const balancePatch: Record<string, unknown> = {};
-        if (stockQuantity !== undefined && stockQuantity !== null) balancePatch.quantityOnHand = String(stockQuantity);
-        if (parLevel !== undefined && parLevel !== null) balancePatch.parLevel = String(parLevel);
-        if (balance) {
-          await db.update(inventoryBalancesTable).set(balancePatch).where(eq(inventoryBalancesTable.id, balance.id));
-        } else {
-          await db.insert(inventoryBalancesTable).values({
-            tenantId: houseTenantId,
-            productId: id,
-            locationId: backstockLoc.id,
-            quantityOnHand: String(stockQuantity ?? 0),
-            parLevel: String(parLevel ?? 0),
-          });
-        }
-      }
-    }
+    // inventory_balances edits are forbidden here; use bootstrap/importer/checkout only.
 
     await recomputeCatalogInventoryTotals(houseTenantId, id);
 

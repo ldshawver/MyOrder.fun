@@ -74,17 +74,11 @@ describe("Phase 3 POS operations Product Master integration", () => {
   });
 
   describe("/api/admin/inventory-transfers", () => {
-    it("moves Backstock to Box/Storefront with guards, audit logging, and catalog total recompute", () => {
+    it("rejects Backstock transfer mutations outside allowed inventory paths", () => {
       expect(shifts).toContain('router.post("/admin/inventory-transfers", requireRole("global_admin", "admin")');
-      expect(shifts).toContain('fromLocationName: z.enum(["Backstock"])');
-      expect(shifts).toContain('toLocationName: z.enum(["Box 1", "Box 2", "CSR Sales Box 1", "CSR Sales Box 2", "Storefront"])');
-      expect(shifts).toContain("quantity: z.number().positive().max(1_000_000)");
-      expect(shifts).toContain("eq(inventoryLocationsTable.tenantId, tenantId)");
-      expect(shifts).toContain("quantity_on_hand");
-      expect(shifts).toContain("INSUFFICIENT_BACKSTOCK");
-      expect(shifts).toContain('res.status(409).json({ error: "Insufficient Backstock inventory"');
-      expect(shifts).toContain("await recomputeCatalogInventoryTotals(tenantId, productId)");
-      expect(shifts).toContain('action: "inventory.restock_transfer"');
+      expect(shifts).toContain("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction");
+      expect(shifts).not.toContain("INSUFFICIENT_BACKSTOCK");
+      expect(shifts).not.toContain("INVENTORY_TRANSFER_RESTOCK");
     });
   });
 

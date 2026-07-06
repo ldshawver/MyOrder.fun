@@ -221,18 +221,7 @@ async function executeMerge(plan: MergePlan): Promise<MergeResult> {
     const shiftItems = rowsFrom<{ count: number }>(await tx.execute(sql`UPDATE shift_inventory_items SET catalog_item_id = ${plan.canonicalCatalogItemId} WHERE catalog_item_id = ${plan.duplicateCatalogItemId} RETURNING 1 AS count`)).length;
     const templates = rowsFrom<{ count: number }>(await tx.execute(sql`UPDATE inventory_templates SET catalog_item_id = ${plan.canonicalCatalogItemId} WHERE catalog_item_id = ${plan.duplicateCatalogItemId} RETURNING 1 AS count`)).length;
 
-    const movedInventoryRows = rowsFrom<{ id: number }>(await tx.execute(sql`
-      UPDATE inventory_balances ib
-      SET product_id = ${plan.canonicalCatalogItemId}
-      WHERE ib.product_id = ${plan.duplicateCatalogItemId}
-        AND NOT EXISTS (
-          SELECT 1 FROM inventory_balances existing
-          WHERE existing.tenant_id = ib.tenant_id
-            AND existing.location_id = ib.location_id
-            AND existing.product_id = ${plan.canonicalCatalogItemId}
-        )
-      RETURNING ib.id
-    `)).length;
+    const movedInventoryRows = 0;
     const blockedInventoryRows = rowsFrom<{ count: number }>(await tx.execute(sql`SELECT count(*)::int AS count FROM inventory_balances WHERE product_id = ${plan.duplicateCatalogItemId}`))[0]?.count ?? 0;
 
     const orderSnapshots = await rewriteJsonbColumn(tx, "orders", "id", "alavont_cart_snapshot", plan.duplicateCatalogItemId, plan.canonicalCatalogItemId)
@@ -308,7 +297,7 @@ if (dryRun) {
     deletionsEligibleNow: plans.filter(plan => plan.duplicateInventoryRows === 0 && plan.duplicateOrderItemRefs === 0).length,
     inventoryMoveSummary: {
       rowsOnDuplicateProducts: plans.reduce((sum, plan) => sum + plan.duplicateInventoryRows, 0),
-      note: "Execute mode only reassigns inventory_balances.product_id when doing so does not change quantities and does not collide with an existing canonical product/location balance.",
+      note: "Execute mode never modifies inventory_balances; duplicates with inventory rows remain blocked for manual review.",
     },
     plans,
   }, null, 2));

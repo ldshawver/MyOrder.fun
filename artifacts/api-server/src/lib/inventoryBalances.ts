@@ -195,62 +195,8 @@ export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Pr
  * uses the catalog_items.stock_quantity value as a seed if present).
  * Returns the number of rows created.
  */
-export async function ensureAllInventoryBalances(tenantId: number): Promise<{ created: number }> {
-  await ensureStandardLocations(tenantId);
-
-  const [products, locations] = await Promise.all([
-    db
-      .select({
-        id: catalogItemsTable.id,
-        stockQuantity: catalogItemsTable.stockQuantity,
-        parLevel: catalogItemsTable.parLevel,
-      })
-      .from(catalogItemsTable)
-      .where(and(
-        eq(catalogItemsTable.tenantId, tenantId),
-        sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`,
-        eq(catalogItemsTable.isAvailable, true),
-      )),
-    db
-      .select()
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, tenantId),
-        eq(inventoryLocationsTable.isActive, true),
-      )),
-  ]);
-
-  const backstockLoc = locations.find(l => l.type === "backstock");
-  let created = 0;
-
-  for (const prod of products) {
-    assertCatalogIdInventoryLookup(prod.id, "ensureAllInventoryBalances");
-    for (const loc of locations) {
-      const [exists] = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(and(
-          eq(inventoryBalancesTable.tenantId, tenantId),
-          eq(inventoryBalancesTable.productId, prod.id),
-          eq(inventoryBalancesTable.locationId, loc.id),
-        ))
-        .limit(1);
-      if (!exists) {
-        const initQty = loc.id === backstockLoc?.id
-          ? String(prod.stockQuantity ?? "0")
-          : "0";
-        await db.insert(inventoryBalancesTable).values({
-          tenantId,
-          productId: prod.id,
-          locationId: loc.id,
-          quantityOnHand: initQty,
-          parLevel: String(prod.parLevel ?? "0"),
-        });
-        created++;
-      }
-    }
-  }
-  return { created };
+export async function ensureAllInventoryBalances(_tenantId: number): Promise<{ created: number }> {
+  throw new Error("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction; use ensureAllInventoryRowsExistForTenant");
 }
 
 

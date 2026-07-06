@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql, sum } from "drizzle-orm";
+import { and, eq, asc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
@@ -16,7 +16,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -293,62 +292,6 @@ function mapItem(
   };
 }
 
-
-async function mirrorCatalogStockToBackstockAndRecompute(tenantId: number, productId: number, stockQuantity: number | null | undefined): Promise<void> {
-  if (stockQuantity !== undefined && stockQuantity !== null) {
-    const [backstockLoc] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, tenantId),
-        eq(inventoryLocationsTable.type, "backstock"),
-      ))
-      .limit(1);
-
-    if (backstockLoc) {
-      const [balance] = await db
-        .select({ id: inventoryBalancesTable.id })
-        .from(inventoryBalancesTable)
-        .where(and(
-          eq(inventoryBalancesTable.tenantId, tenantId),
-          eq(inventoryBalancesTable.productId, productId),
-          eq(inventoryBalancesTable.locationId, backstockLoc.id),
-        ))
-        .limit(1);
-
-      if (balance) {
-        await db.update(inventoryBalancesTable)
-          .set({ quantityOnHand: String(stockQuantity) })
-          .where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.id, balance.id)));
-      } else {
-        await db.insert(inventoryBalancesTable).values({
-          tenantId,
-          productId,
-          locationId: backstockLoc.id,
-          quantityOnHand: String(stockQuantity),
-          parLevel: "0",
-        });
-      }
-    }
-  }
-
-  const [totals] = await db
-    .select({ qty: sum(inventoryBalancesTable.quantityOnHand), par: sum(inventoryBalancesTable.parLevel) })
-    .from(inventoryBalancesTable)
-    .where(and(
-      eq(inventoryBalancesTable.tenantId, tenantId),
-      eq(inventoryBalancesTable.productId, productId),
-      sellableBalanceWhere(),
-    ));
-
-  await db.update(catalogItemsTable)
-    .set({
-      stockQuantity: String(totals?.qty ?? "0"),
-      inventoryAmount: String(totals?.qty ?? "0"),
-      parLevel: String(totals?.par ?? "0"),
-    })
-    .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, productId)));
-}
 
 function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): boolean {
   const name = String(row.alavontName ?? row.displayName ?? row.name ?? "").trim().toLowerCase();
@@ -788,10 +731,13 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   }
 
   const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, ...restBodyData } = body.data;
+  if (stockQuantity !== undefined) {
+    res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
+    return;
+  }
   const updateData: Partial<typeof catalogItemsTable.$inferInsert> = restBodyData as Partial<typeof catalogItemsTable.$inferInsert>;
   if (price !== undefined) updateData.price = String(price);
   if (compareAtPrice !== undefined) updateData.compareAtPrice = compareAtPrice != null ? String(compareAtPrice) : null;
-  if (stockQuantity !== undefined) updateData.stockQuantity = stockQuantity != null ? String(stockQuantity) : null;
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
@@ -820,9 +766,6 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     .set(updateData)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .returning();
-  if (stockQuantity !== undefined) {
-    await mirrorCatalogStockToBackstockAndRecompute(houseTenantId, params.data.id, stockQuantity);
-  }
   const [fresh] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);
