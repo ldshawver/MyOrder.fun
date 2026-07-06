@@ -74,11 +74,11 @@ const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
 class InsufficientInventoryError extends Error {
   constructor(
     public readonly catalogItemId: number,
-    public readonly locationName: string | null,
-    public readonly available: number,
-    public readonly backstock: number,
-    public readonly storefront: number,
-    public readonly hasInventoryRows: boolean,
+    public readonly locationName: string | null = null,
+    public readonly available: number = 0,
+    public readonly backstock: number = 0,
+    public readonly storefront: number = 0,
+    public readonly hasInventoryRows: boolean = false,
   ) {
     super(hasInventoryRows
       ? `Insufficient inventory in ${locationName ?? "assigned CSR location"}. Available: ${available}. Backstock: ${backstock}. Storefront: ${storefront}.`
@@ -791,29 +791,68 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
   // Fallback/general-account orders must remain unassigned so they do not
   // accidentally attach to a non-ready shift or mutate a CSR box.
-let targetLocationId: number | null = null;
+  const assignedTechId =
+    routing.routeSource === "active_csr"
+      ? routing.assignedCsrUserId
+      : null;
 
-if (assignedShiftId) {
-  const [activeShift] = await db
-    .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
-    .from(labTechShiftsTable)
-    .where(eq(labTechShiftsTable.id, assignedShiftId))
-    .limit(1);
+  const assignedShiftId =
+    routing.routeSource === "active_csr"
+      ? routing.assignedShiftId
+      : null;
 
-  const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
-  if (locationName) {
-    const [loc] = await db
-      .select({ id: inventoryLocationsTable.id })
-      .from(inventoryLocationsTable)
-      .where(and(
-        eq(inventoryLocationsTable.tenantId, houseTenantId),
-        eq(inventoryLocationsTable.name, locationName),
-      ))
+  const now = new Date();
+
+  let targetLocationId: number | null = null;
+
+  if (assignedShiftId != null) {
+    const [activeShift] = await db
+      .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
+      .from(labTechShiftsTable)
+      .where(eq(labTechShiftsTable.id, assignedShiftId))
       .limit(1);
 
-    targetLocationId = loc?.id ?? null;
+    const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
+    if (locationName) {
+      const [loc] = await db
+        .select({ id: inventoryLocationsTable.id })
+        .from(inventoryLocationsTable)
+        .where(and(
+          eq(inventoryLocationsTable.tenantId, houseTenantId),
+          eq(inventoryLocationsTable.name, locationName),
+        ))
+        .limit(1);
+
+      targetLocationId = loc?.id ?? null;
+    }
   }
-}
+
+  const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
+  await ensureInventoryReservationsTable();
+
+  const shouldReserveInventory =
+    routing.routeSource === "active_csr" && targetLocationId != null;
+
+  const shouldConfirmReservationImmediately =
+    shouldReserveInventory && immediatePaymentMethod === "cash";
+
+  if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
+    const missingRows = await db
+      .select({ catalogItemId: catalogItemsTable.id })
+      .from(catalogItemsTable)
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        inArray(catalogItemsTable.id, normalizedCatalogIds),
+      ));
+
+    if (missingRows.length !== normalizedCatalogIds.length) {
+      res.status(409).json({
+        error: "Inventory integrity check failed",
+        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
+      });
+      return;
+    }
+  }
 
   let order: typeof ordersTable.$inferSelect;
   try {
@@ -854,7 +893,7 @@ if (assignedShiftId) {
         legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      checkoutConversionExpiresAt: conversionExpiresAt,
+        checkoutConversionExpiresAt: conversionExpiresAt,
       }).returning();
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
