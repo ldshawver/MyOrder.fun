@@ -44,6 +44,7 @@ import {
 } from "../lib/checkoutNormalizer";
 import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
 import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
+import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
@@ -786,6 +787,29 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
   const shouldDeductInventory = routing.routeSource === "active_csr" && targetLocationId != null && immediatePaymentMethod === "cash";
+
+  if (POS_INTEGRITY_STRICT && shouldDeductInventory && targetLocationId != null) {
+    const missingRows = await db
+      .select({ catalogItemId: catalogItemsTable.id })
+      .from(catalogItemsTable)
+      .leftJoin(inventoryBalancesTable, and(
+        eq(inventoryBalancesTable.tenantId, houseTenantId),
+        eq(inventoryBalancesTable.productId, catalogItemsTable.id),
+        eq(inventoryBalancesTable.locationId, targetLocationId),
+      ))
+      .where(and(
+        eq(catalogItemsTable.tenantId, houseTenantId),
+        inArray(catalogItemsTable.id, normalizedCatalogIds),
+        sql`${inventoryBalancesTable.id} IS NULL`,
+      ));
+    if (missingRows.length > 0) {
+      res.status(409).json({
+        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} at locationId ${targetLocationId}`,
+        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: targetLocationId })),
+      });
+      return;
+    }
+  }
 
   let order: typeof ordersTable.$inferSelect;
   try {

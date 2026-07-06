@@ -23,6 +23,7 @@ import {
   INVENTORY_KIND_NON_SELLABLE_SUPPLY,
   INVENTORY_KIND_SELLABLE,
 } from "../lib/inventoryHealth";
+import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -112,6 +113,27 @@ router.use(async (_req, res, next) => {
     res.status(500).json({ error: "Could not prepare inventory schema" });
   }
 });
+
+
+// ─── GET /api/admin/pos-integrity-report ─────────────────────────────────────
+router.get(
+  "/admin/pos-integrity-report",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    try {
+      const tenantId = await resolveInventoryTenantId(req);
+      const report = await collectPosIntegrityReport(tenantId);
+      assertPosIntegrityReport(report);
+      res.json(report);
+    } catch (err) {
+      if (err instanceof PosIntegrityError) {
+        res.status(err.status).json({ error: err.message, ...err.report });
+        return;
+      }
+      res.status(500).json({ error: "Could not build POS integrity report" });
+    }
+  },
+);
 
 // ─── GET /api/admin/inventory/health ─────────────────────────────────────────
 router.get(

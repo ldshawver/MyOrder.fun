@@ -263,6 +263,39 @@ async function executeMerge(plan: MergePlan): Promise<MergeResult> {
   });
 }
 
+
+async function getInventoryQuantityFingerprint(): Promise<string> {
+  const row = rowsFrom<{ total: string | null }>(await db.execute(sql`SELECT COALESCE(SUM(quantity_on_hand), 0)::text AS total FROM inventory_balances`))[0];
+  return row?.total ?? "0";
+}
+
+async function collectPostRepairViolations(): Promise<Record<string, unknown>> {
+  const duplicateCatalogRows = rowsFrom<{ count: number }>(await db.execute(sql`
+    WITH keys AS (
+      SELECT ci.id, ci.tenant_id, 'name' AS key_type, lower(regexp_replace(trim(ci.name), '[^a-zA-Z0-9]+', ' ', 'g')) AS key_value FROM catalog_items ci WHERE nullif(trim(ci.name), '') IS NOT NULL
+      UNION ALL
+      SELECT ci.id, ci.tenant_id, 'sku', lower(regexp_replace(trim(ci.sku), '[^a-zA-Z0-9]+', ' ', 'g')) FROM catalog_items ci WHERE nullif(trim(ci.sku), '') IS NOT NULL
+      UNION ALL
+      SELECT ci.id, ci.tenant_id, 'merchant_sku', lower(regexp_replace(trim(ci.merchant_sku), '[^a-zA-Z0-9]+', ' ', 'g')) FROM catalog_items ci WHERE nullif(trim(ci.merchant_sku), '') IS NOT NULL
+      UNION ALL
+      SELECT ci.id, ci.tenant_id, 'alavont_id', lower(regexp_replace(trim(ci.alavont_id), '[^a-zA-Z0-9]+', ' ', 'g')) FROM catalog_items ci WHERE nullif(trim(ci.alavont_id), '') IS NOT NULL
+    ), duplicate_keys AS (
+      SELECT tenant_id, key_type, key_value FROM keys GROUP BY tenant_id, key_type, key_value HAVING count(*) > 1
+    )
+    SELECT count(DISTINCT k.id)::int AS count FROM keys k JOIN duplicate_keys dk ON dk.tenant_id = k.tenant_id AND dk.key_type = k.key_type AND dk.key_value = k.key_value
+  `))[0]?.count ?? 0;
+  const orphanInventoryRows = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM inventory_balances ib LEFT JOIN catalog_items ci ON ci.id = ib.product_id AND ci.tenant_id = ib.tenant_id WHERE ci.id IS NULL`))[0]?.count ?? 0;
+  const duplicateInventoryRows = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM (SELECT tenant_id, product_id, location_id FROM inventory_balances GROUP BY tenant_id, product_id, location_id HAVING count(*) > 1) d`))[0]?.count ?? 0;
+  const orphanOrderItems = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM order_items oi LEFT JOIN catalog_items ci ON ci.id = oi.catalog_item_id WHERE ci.id IS NULL`))[0]?.count ?? 0;
+  const orphanShiftItems = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM shift_inventory_items sii LEFT JOIN catalog_items ci ON ci.id = sii.catalog_item_id WHERE sii.catalog_item_id IS NOT NULL AND ci.id IS NULL`))[0]?.count ?? 0;
+  const orphanTemplates = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM inventory_templates it LEFT JOIN catalog_items ci ON ci.id = it.catalog_item_id WHERE it.catalog_item_id IS NOT NULL AND ci.id IS NULL`))[0]?.count ?? 0;
+  return { duplicateCatalogRows, orphanInventoryRows, duplicateInventoryRows, orphanOrderItems, orphanShiftItems, orphanTemplates };
+}
+
+function hasPostRepairViolations(violations: Record<string, unknown>): boolean {
+  return Object.values(violations).some(value => Number(value) > 0);
+}
+
 const stats = await getCatalogStats();
 const plans = buildMergePlan(stats);
 
@@ -282,8 +315,22 @@ if (dryRun) {
   process.exit(0);
 }
 
+const inventoryQuantityBefore = await getInventoryQuantityFingerprint();
 const results: MergeResult[] = [];
 for (const plan of plans) results.push(await executeMerge(plan));
+const inventoryQuantityAfter = await getInventoryQuantityFingerprint();
+const postRepairViolations = await collectPostRepairViolations();
+if (inventoryQuantityBefore !== inventoryQuantityAfter || hasPostRepairViolations(postRepairViolations)) {
+  console.error(JSON.stringify({
+    mode: "execute",
+    error: "Post-repair integrity validation failed",
+    inventoryQuantityBefore,
+    inventoryQuantityAfter,
+    postRepairViolations,
+    results,
+  }, null, 2));
+  process.exit(1);
+}
 
 console.log(JSON.stringify({
   mode: "execute",
@@ -294,6 +341,9 @@ console.log(JSON.stringify({
     rowsMoved: results.reduce((sum, result) => sum + result.inventoryRowsMoved, 0),
     rowsBlockedByConflict: results.reduce((sum, result) => sum + result.inventoryRowsBlockedByConflict, 0),
     quantitiesModified: false,
+    inventoryQuantityBefore,
+    inventoryQuantityAfter,
   },
+  postRepairViolations,
   results,
 }, null, 2));
