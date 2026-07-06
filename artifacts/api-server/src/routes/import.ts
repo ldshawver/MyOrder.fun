@@ -451,7 +451,10 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       for (const p of prepared) {
         const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
         const existingId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey);
-        let catalogItemId = existingId;
+       bySku.get(skuKey) ??
+       byAlavontOrMerchantSku.get(skuKey) ??
+        null;        
+       let catalogItemId = existingId;
         if (catalogItemId) {
           await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
           updated++;

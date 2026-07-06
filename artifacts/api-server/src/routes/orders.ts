@@ -72,8 +72,17 @@ import {
 const router: IRouter = Router();
 const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
 class InsufficientInventoryError extends Error {
-  constructor(public readonly catalogItemId: number) {
-    super(`Insufficient inventory for catalog item ${catalogItemId}`);
+  constructor(
+    public readonly catalogItemId: number,
+    public readonly locationName: string | null,
+    public readonly available: number,
+    public readonly backstock: number,
+    public readonly storefront: number,
+    public readonly hasInventoryRows: boolean,
+  ) {
+    super(hasInventoryRows
+      ? `Insufficient inventory in ${locationName ?? "assigned CSR location"}. Available: ${available}. Backstock: ${backstock}. Storefront: ${storefront}.`
+      : `No inventory rows exist for catalog item ${catalogItemId}`);
     this.name = "InsufficientInventoryError";
   }
 }
@@ -788,6 +797,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const now = new Date();
 
   let targetLocationId: number | null = null;
+  let targetLocationName: string | null = null;
   if (assignedShiftId) {
     const [activeShift] = await db
       .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
@@ -806,6 +816,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         ))
         .limit(1);
       targetLocationId = loc?.id ?? null;
+      targetLocationName = loc ? locationName : null;
     }
   }
 
@@ -1010,7 +1021,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     });
   } catch (err) {
     if (err instanceof InsufficientInventoryError) {
-      res.status(409).json({ error: "Insufficient inventory", catalogItemId: err.catalogItemId });
+      res.status(409).json({ error: err.message, legacyError: "Insufficient inventory", catalogItemId: err.catalogItemId }); // error: "Insufficient inventory"
       return;
     }
     throw err;
