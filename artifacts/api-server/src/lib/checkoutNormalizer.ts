@@ -189,12 +189,10 @@ export async function normalizeCheckoutCart(
     }
 
     const catalog_display_name = ci.alavontName ?? ci.name;
-    const safeName = firstNonEmpty(ci.safeName);
-    const safeDescription = firstNonEmpty(ci.safeDescription);
-    const safeCategory = firstNonEmpty(ci.safeCategory);
-    const safeImageUrl = firstNonEmpty(ci.safeImageUrl);
+    const customerSafeName = firstNonEmpty(ci.customerSafeName);
+    const customerSafeDescription = firstNonEmpty(ci.customerSafeDescription);
     const branded_name = firstNonEmpty(
-      safeName,
+      customerSafeName,
       ci.luciferCruzName,
       ci.merchantName,
       ci.alavontName,
@@ -237,23 +235,22 @@ export async function normalizeCheckoutCart(
     ) ?? "Converted into a customer-ready branded checkout presentation.";
     const customer_safe_name = branded_name;
     const customer_safe_description = firstNonEmpty(
-      safeDescription,
+      customerSafeDescription,
       ci.luciferCruzDescription,
       ci.merchantDescription,
       ci.description,
     );
     const customer_safe_category = firstNonEmpty(
-      safeCategory,
       ci.luciferCruzCategory,
       ci.merchantCategory,
       ci.category,
     );
-    const customer_safe_image = firstNonEmpty(safeImageUrl, ci.merchantImage, ci.luciferCruzImageUrl, ci.displayImage, ci.imageUrl);
+    const customer_safe_image = firstNonEmpty(ci.luciferCruzImageUrl, ci.merchantImage, ci.displayImage, ci.imageUrl);
     if (requireCompleteSafeFields) {
       const missingSafeFields = missingSafeFieldNames({
-        customer_safe_name: safeName,
-        customer_safe_description: safeDescription,
-        customer_safe_category: safeCategory,
+        customer_safe_name: customerSafeName,
+        customer_safe_description: customerSafeDescription,
+        customer_safe_category,
       });
       if (missingSafeFields.length > 0) {
         throw new CheckoutMappingError(
