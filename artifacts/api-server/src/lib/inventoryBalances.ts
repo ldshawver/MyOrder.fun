@@ -12,10 +12,12 @@ import {
   inventoryLocationsTable,
   csrBoxesTable,
 } from "@workspace/db";
-import { ensureInventoryBalanceClassificationSchema } from "./inventoryHealth";
+import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 
 let inventoryTablesEnsured = false;
+type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type InventoryDeductionExecutor = typeof db | InventoryDeductionTransaction;
 
 async function ensureInventoryTablesExist(): Promise<void> {
   if (inventoryTablesEnsured) return;
@@ -197,6 +199,102 @@ export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Pr
  */
 export async function ensureAllInventoryBalances(_tenantId: number): Promise<{ created: number }> {
   throw new Error("inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction; use ensureAllInventoryRowsExistForTenant");
+}
+
+export interface CheckoutInventoryLocationDeduction {
+  locationId: number;
+  locationName: string | null;
+  quantity: number;
+}
+
+export interface CheckoutInventoryDeductionResult {
+  productId: number;
+  requestedQuantity: number;
+  availableBeforeDeduction: number;
+  deductions: CheckoutInventoryLocationDeduction[];
+}
+
+/**
+ * Checkout-only inventory deduction.
+ *
+ * Availability is the SUM of all sellable locations for the catalog item, and
+ * deduction drains Backstock first before any other sellable location. This
+ * prevents a false checkout 409 when all stock is still in Backstock.
+ */
+export async function deductCheckoutInventoryBackstockFirst(
+  executor: InventoryDeductionExecutor,
+  tenantId: number,
+  productId: number,
+  quantity: number,
+): Promise<CheckoutInventoryDeductionResult | null> {
+  assertCatalogIdInventoryLookup(productId, "checkout.inventoryDeduction.backstockFirst");
+  const requestedQuantity = Number(quantity);
+  if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+    throw new Error(`Invalid checkout inventory deduction quantity for catalogItemId ${productId}`);
+  }
+
+  const balances = await executor
+    .select({
+      id: inventoryBalancesTable.id,
+      locationId: inventoryBalancesTable.locationId,
+      locationName: inventoryLocationsTable.name,
+      quantityOnHand: inventoryBalancesTable.quantityOnHand,
+    })
+    .from(inventoryBalancesTable)
+    .innerJoin(inventoryLocationsTable, and(
+      eq(inventoryLocationsTable.tenantId, inventoryBalancesTable.tenantId),
+      eq(inventoryLocationsTable.id, inventoryBalancesTable.locationId),
+    ))
+    .where(and(
+      sellableInventoryBalancePredicate(tenantId),
+      eq(inventoryBalancesTable.productId, productId),
+      sellableBalanceWhere(),
+      eq(inventoryLocationsTable.isActive, true),
+    ))
+    .orderBy(
+      sql`CASE WHEN ${inventoryLocationsTable.name} = 'Backstock' THEN 0 ELSE 1 END`,
+      asc(inventoryLocationsTable.displayOrder),
+      asc(inventoryLocationsTable.id),
+    );
+
+  const availableBeforeDeduction = balances.reduce((sumQty, row) => sumQty + Number(row.quantityOnHand ?? 0), 0);
+  if (availableBeforeDeduction < requestedQuantity) {
+    return null;
+  }
+
+  let remaining = requestedQuantity;
+  const deductions: CheckoutInventoryLocationDeduction[] = [];
+  for (const row of balances) {
+    if (remaining <= 0) break;
+    const availableAtLocation = Number(row.quantityOnHand ?? 0);
+    if (availableAtLocation <= 0) continue;
+    const deductionQuantity = Math.min(remaining, availableAtLocation);
+    const updated = await executor
+      .update(inventoryBalancesTable)
+      .set({
+        quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(deductionQuantity)}`,
+      })
+      .where(and(
+        eq(inventoryBalancesTable.id, row.id),
+        sql`${inventoryBalancesTable.quantityOnHand} >= ${String(deductionQuantity)}`,
+      ))
+      .returning({ id: inventoryBalancesTable.id });
+    if (updated.length !== 1) return null;
+    deductions.push({
+      locationId: row.locationId,
+      locationName: row.locationName,
+      quantity: deductionQuantity,
+    });
+    remaining -= deductionQuantity;
+  }
+
+  if (remaining > 0) return null;
+  return {
+    productId,
+    requestedQuantity,
+    availableBeforeDeduction,
+    deductions,
+  };
 }
 
 

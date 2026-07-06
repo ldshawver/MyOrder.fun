@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import Stripe from "stripe";
-import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable } from "@workspace/db";
+import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable } from "@workspace/db";
 import {
   TokenizePaymentBody,
   TokenizePaymentResponse,
@@ -20,8 +20,7 @@ import { buildStripeIntentPayload, payloadContainsAlavontLeak } from "../lib/str
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { requireOrderHasVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
-import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
+import { deductCheckoutInventoryBackstockFirst } from "../lib/inventoryBalances";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -39,26 +38,13 @@ async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect):
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
   const [shift] = await db.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
   if (!shift?.boxAssignmentId) return;
-  const [box] = await db.select({ id: csrBoxesTable.id }).from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, order.tenantId), eq(csrBoxesTable.slug, shift.boxAssignmentId))).limit(1);
-  if (!box) return;
-  const [loc] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, order.tenantId), eq(inventoryLocationsTable.csrBoxId, box.id))).limit(1);
-  if (!loc) return;
   const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
 
   await db.transaction(async (tx) => {
     for (const item of items) {
       if (!item.catalogItemId) continue;
-      const decremented = await tx.update(inventoryBalancesTable)
-        .set({ quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(item.quantity)}` })
-        .where(and(
-          sellableInventoryBalancePredicate(order.tenantId),
-          eq(inventoryBalancesTable.productId, item.catalogItemId),
-          eq(inventoryBalancesTable.locationId, loc.id),
-          sellableBalanceWhere(),
-          sql`${inventoryBalancesTable.quantityOnHand} >= ${String(item.quantity)}`,
-        ))
-        .returning({ id: inventoryBalancesTable.id });
-      if (decremented.length !== 1) throw new PaymentInventoryError(item.catalogItemId);
+      const deduction = await deductCheckoutInventoryBackstockFirst(tx, order.tenantId, item.catalogItemId, Number(item.quantity));
+      if (!deduction) throw new PaymentInventoryError(item.catalogItemId);
       await tx.execute(sql`
         UPDATE catalog_items
         SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0),

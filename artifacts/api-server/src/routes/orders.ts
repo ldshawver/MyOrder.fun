@@ -33,7 +33,6 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { sellableBalanceWhere } from "../lib/inventoryHealth";
 import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
@@ -42,8 +41,7 @@ import {
   CartLineInput,
   type NormalizedCartLine,
 } from "../lib/checkoutNormalizer";
-import { sellableInventoryBalancePredicate } from "../lib/inventoryBalances";
-import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
+import { deductCheckoutInventoryBackstockFirst } from "../lib/inventoryBalances";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { logger } from "../lib/logger";
@@ -788,14 +786,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
   const shouldDeductInventory = routing.routeSource === "active_csr" && targetLocationId != null && immediatePaymentMethod === "cash";
 
-  if (POS_INTEGRITY_STRICT && shouldDeductInventory && targetLocationId != null) {
+  if (POS_INTEGRITY_STRICT && shouldDeductInventory) {
     const missingRows = await db
       .select({ catalogItemId: catalogItemsTable.id })
       .from(catalogItemsTable)
       .leftJoin(inventoryBalancesTable, and(
         eq(inventoryBalancesTable.tenantId, houseTenantId),
         eq(inventoryBalancesTable.productId, catalogItemsTable.id),
-        eq(inventoryBalancesTable.locationId, targetLocationId),
       ))
       .where(and(
         eq(catalogItemsTable.tenantId, houseTenantId),
@@ -804,8 +801,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       ));
     if (missingRows.length > 0) {
       res.status(409).json({
-        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} at locationId ${targetLocationId}`,
-        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: targetLocationId })),
+        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} in any sellable checkout location`,
+        missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
       });
       return;
     }
@@ -915,22 +912,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         });
 
         if (shouldDeductInventory) {
-          assertCatalogIdInventoryLookup(line.catalog_item_id, "orders.create.inventoryDeduction");
-          const decremented = await tx
-            .update(inventoryBalancesTable)
-            .set({
-              quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`,
-            })
-            .where(and(
-              sellableInventoryBalancePredicate(houseTenantId),
-              eq(inventoryBalancesTable.productId, line.catalog_item_id),
-              eq(inventoryBalancesTable.locationId, targetLocationId!),
-              sellableBalanceWhere(),
-              sql`${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}`,
-            ))
-            .returning({ id: inventoryBalancesTable.id });
-
-          if (decremented.length !== 1) {
+          const deduction = await deductCheckoutInventoryBackstockFirst(tx, houseTenantId, line.catalog_item_id, line.quantity);
+          if (!deduction) {
             throw new InsufficientInventoryError(line.catalog_item_id);
           }
         }

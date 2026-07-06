@@ -88,8 +88,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("quantityOnHand: sql`${inventoryBalancesTable.quantityOnHand} - ${String(line.quantity)}`");
-    expect(orders).toContain("${inventoryBalancesTable.quantityOnHand} >= ${String(line.quantity)}");
+    expect(orders).toContain("deductCheckoutInventoryBackstockFirst(tx, houseTenantId, line.catalog_item_id, line.quantity)");
+    expect(api("lib/inventoryBalances.ts")).toContain("Availability is the SUM of all sellable locations");
+    expect(api("lib/inventoryBalances.ts")).toContain("CASE WHEN ${inventoryLocationsTable.name} = 'Backstock' THEN 0 ELSE 1 END");
     expect(orders).not.toContain("GREATEST(${inventoryBalancesTable.quantityOnHand} -");
     expect(orders).toContain("InsufficientInventoryError");
     expect(orders).toContain("throw new InsufficientInventoryError(line.catalog_item_id");
@@ -103,7 +104,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("inventoryLocationNameForBoxAssignment");
     expect(orders).toContain("eq(inventoryLocationsTable.name, locationName)");
     expect(orders).toContain("eq(inventoryLocationsTable.tenantId, houseTenantId)");
-    expect(orders).toContain("sellableInventoryBalancePredicate(houseTenantId)");
+    expect(api("lib/inventoryBalances.ts")).toContain("sellableInventoryBalancePredicate(tenantId)");
     expect(orders).toContain("originalCatalogItemId");
   });
 
