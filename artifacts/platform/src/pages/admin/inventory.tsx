@@ -64,6 +64,17 @@ type InventoryHealthResponse = {
   summary: Record<InventoryHealthRow["classification"], number>;
 };
 
+function inventoryLocationRoleLabel(location: { name: string; type: string }): string {
+  if (location.name === "Backstock" || location.type === "backstock") return "Primary Stock";
+  return "Allocated / Held Stock";
+}
+
+function inventoryLocationShortType(location: { name: string; type: string }): string {
+  if (location.name === "Backstock" || location.type === "backstock") return "Backstock";
+  if (location.type === "csr_box") return "CSR Box";
+  return location.type;
+}
+
 type OrphanBalanceItem = {
   id: number;
   tenantId: number;
@@ -1080,7 +1091,8 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
               {locations.map(loc => (
                 <th key={loc.id} className="px-2 py-2 text-center text-[10px] font-semibold uppercase tracking-widest text-muted-foreground min-w-[90px]">
                   <div>{loc.name.replace("CSR Sales ", "")}</div>
-                  <div className="text-[9px] font-normal opacity-60 normal-case">{loc.type === "csr_box" ? "CSR Box" : loc.type}</div>
+                  <div className="text-[9px] font-normal opacity-70 normal-case">{inventoryLocationRoleLabel(loc)}</div>
+                  <div className="text-[9px] font-normal opacity-50 normal-case">{inventoryLocationShortType(loc)}</div>
                 </th>
               ))}
               <th className="px-3 py-2 text-center text-[10px] font-semibold uppercase tracking-widest text-primary min-w-[60px]">Total</th>
@@ -1474,7 +1486,13 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
           <div className="grid gap-2 px-4 py-2 bg-muted/20 border-b border-border/30 text-[10px] font-bold text-muted-foreground uppercase tracking-widest"
             style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
             <div>Product</div>
-            {activeLocations.map(l => <div key={l.id} className="text-center">{l.name}<span className="block text-[9px] font-medium normal-case tracking-normal">Qty / Par</span></div>)}
+            {activeLocations.map(l => (
+              <div key={l.id} className="text-center">
+                {l.name}
+                <span className="block text-[9px] font-medium normal-case tracking-normal">{inventoryLocationRoleLabel(l)}</span>
+                <span className="block text-[9px] font-medium normal-case tracking-normal opacity-70">Qty / Par</span>
+              </div>
+            ))}
             <div className="text-center">Total</div>
           </div>
 

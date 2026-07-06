@@ -14,10 +14,18 @@ import {
 } from "@workspace/db";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
+import { logger } from "./logger";
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type InventoryDeductionExecutor = typeof db | InventoryDeductionTransaction;
+const CHECKOUT_DEDUCTION_LOCATION_ORDER = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
+
+function inventoryDebugWarningsEnabled(): boolean {
+  return process.env.POS_INVENTORY_DEBUG === "true"
+    || process.env.POS_INTEGRITY_DEBUG === "true"
+    || (process.env.DEBUG ?? "").split(",").some(flag => flag.trim() === "pos:inventory" || flag.trim() === "pos:*");
+}
 
 async function ensureInventoryTablesExist(): Promise<void> {
   if (inventoryTablesEnsured) return;
@@ -217,9 +225,10 @@ export interface CheckoutInventoryDeductionResult {
 /**
  * Checkout-only inventory deduction.
  *
- * Availability is the SUM of all sellable locations for the catalog item, and
- * deduction drains Backstock first before any other sellable location. This
- * prevents a false checkout 409 when all stock is still in Backstock.
+ * Deduction drains deterministic locations in order: Backstock, Storefront,
+ * CSR Sales Box 1, then CSR Sales Box 2. The helper records total available
+ * inventory for diagnostics, but checkout success is determined by walking
+ * this chain rather than treating a total as a primary stock source.
  */
 export async function deductCheckoutInventoryBackstockFirst(
   executor: InventoryDeductionExecutor,
@@ -252,14 +261,33 @@ export async function deductCheckoutInventoryBackstockFirst(
       eq(inventoryLocationsTable.isActive, true),
     ))
     .orderBy(
-      sql`CASE WHEN ${inventoryLocationsTable.name} = 'Backstock' THEN 0 ELSE 1 END`,
+      sql`CASE ${inventoryLocationsTable.name}
+        WHEN 'Backstock' THEN 0
+        WHEN 'Storefront' THEN 1
+        WHEN 'CSR Sales Box 1' THEN 2
+        WHEN 'CSR Sales Box 2' THEN 3
+        ELSE 4
+      END`,
       asc(inventoryLocationsTable.displayOrder),
       asc(inventoryLocationsTable.id),
     );
 
   const availableBeforeDeduction = balances.reduce((sumQty, row) => sumQty + Number(row.quantityOnHand ?? 0), 0);
-  if (availableBeforeDeduction < requestedQuantity) {
-    return null;
+  if (inventoryDebugWarningsEnabled()) {
+    const backstockQty = Number(balances.find(row => row.locationName === "Backstock")?.quantityOnHand ?? 0);
+    const higherAllocated = balances
+      .filter(row => row.locationName !== "Backstock" && Number(row.quantityOnHand ?? 0) > backstockQty)
+      .map(row => ({ locationId: row.locationId, locationName: row.locationName, quantityOnHand: Number(row.quantityOnHand ?? 0) }));
+    if (higherAllocated.length > 0) {
+      logger.warn({
+        tenantId,
+        productId,
+        backstockQty,
+        higherAllocated,
+        checkoutDeductionOrder: CHECKOUT_DEDUCTION_LOCATION_ORDER,
+        stack: new Error("Allocated inventory exceeds Backstock primary stock").stack,
+      }, "[POS_INVENTORY_DEBUG] allocated inventory exceeds Backstock primary stock");
+    }
   }
 
   let remaining = requestedQuantity;
