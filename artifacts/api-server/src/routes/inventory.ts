@@ -13,6 +13,7 @@ import { getHouseTenantId } from "../lib/singleTenant";
 import {
   ensureStandardLocations,
   ensureAllInventoryBalances,
+  ensureAllInventoryRowsExistForTenant,
   getCatalogInventorySnapshot,
   recomputeCatalogInventoryTotals,
   getOrphanInventoryBalanceReport,
@@ -104,6 +105,7 @@ async function resolveInventoryTenantId(req: import("express").Request): Promise
 const balanceIdParams = z.object({ id: z.coerce.number().int().positive() }).strict();
 const quarantineBody = z.object({ reason: z.string().trim().min(1).max(500).optional() }).strict();
 const classifyBody = z.object({ inventoryKind: z.enum([INVENTORY_KIND_SELLABLE, INVENTORY_KIND_NON_SELLABLE_SUPPLY]) }).strict();
+const bootstrapInventoryBody = z.object({ acknowledgmentToken: z.string().min(1) }).strict();
 
 router.use(async (_req, res, next) => {
   try {
@@ -114,6 +116,32 @@ router.use(async (_req, res, next) => {
   }
 });
 
+
+
+// ─── POST /api/admin/bootstrap-inventory ─────────────────────────────────────
+router.post(
+  "/admin/bootstrap-inventory",
+  requireRole("global_admin", "admin", "supervisor"),
+  async (req, res): Promise<void> => {
+    const parsed = bootstrapInventoryBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.message });
+      return;
+    }
+    const expectedToken = process.env.POS_INTEGRITY_STRICT_ACK_TOKEN ?? "POS_INTEGRITY_STRICT";
+    if (parsed.data.acknowledgmentToken !== expectedToken) {
+      res.status(403).json({ error: "POS_INTEGRITY_STRICT acknowledgment token required" });
+      return;
+    }
+    try {
+      const tenantId = await resolveInventoryTenantId(req);
+      const result = await ensureAllInventoryRowsExistForTenant(tenantId);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : "Inventory bootstrap failed" });
+    }
+  },
+);
 
 // ─── GET /api/admin/pos-integrity-report ─────────────────────────────────────
 router.get(

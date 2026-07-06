@@ -4,7 +4,7 @@
  * the same idempotent logic runs after any operation that adds/changes
  * local Alavont products.
  */
-import { eq, and, asc, sql, sum } from "drizzle-orm";
+import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
   catalogItemsTable,
@@ -119,6 +119,74 @@ export async function ensureStandardLocations(tenantId: number): Promise<void> {
       });
     }
   }
+}
+
+const REQUIRED_BOOTSTRAP_LOCATION_NAMES = ["Backstock", "Storefront", "CSR Sales Box 1", "CSR Sales Box 2"] as const;
+
+type InventoryBootstrapInsertRow = { id: number };
+type InventoryBootstrapCountRow = { count: number | string };
+
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return (result as { rows?: T[] }).rows ?? [];
+}
+
+export type InventoryBootstrapResult = {
+  tenantId: number;
+  rowsCreated: number;
+  rowsAlreadyExisting: number;
+  totalProductsProcessed: number;
+  requiredLocations: string[];
+};
+
+export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Promise<InventoryBootstrapResult> {
+  await ensureStandardLocations(tenantId);
+
+  const locationRows = await db
+    .select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name })
+    .from(inventoryLocationsTable)
+    .where(and(
+      eq(inventoryLocationsTable.tenantId, tenantId),
+      inArray(inventoryLocationsTable.name, [...REQUIRED_BOOTSTRAP_LOCATION_NAMES]),
+    ));
+  const missingLocationNames = REQUIRED_BOOTSTRAP_LOCATION_NAMES.filter(name => !locationRows.some(row => row.name === name));
+  if (missingLocationNames.length > 0) throw new Error(`Missing bootstrap inventory locations: ${missingLocationNames.join(", ")}`);
+
+  const productCount = Number(resultRows<InventoryBootstrapCountRow>(await db.execute(sql`
+    SELECT count(*)::int AS count FROM catalog_items WHERE tenant_id = ${tenantId}
+  `))[0]?.count ?? 0);
+
+  const rowsAlreadyExisting = Number(resultRows<InventoryBootstrapCountRow>(await db.execute(sql`
+    SELECT count(*)::int AS count
+    FROM catalog_items ci
+    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_BOOTSTRAP_LOCATION_NAMES]})
+    JOIN inventory_balances ib ON ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id AND ib.location_id = il.id
+    WHERE ci.tenant_id = ${tenantId}
+  `))[0]?.count ?? 0);
+
+  const insertedRows = resultRows<InventoryBootstrapInsertRow>(await db.execute(sql`
+    INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand, par_level, inventory_kind, is_sellable, updated_at)
+    SELECT ${tenantId}, ci.id, il.id, 0, 0, 'sellable_catalog', true, now()
+    FROM catalog_items ci
+    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_BOOTSTRAP_LOCATION_NAMES]})
+    WHERE ci.tenant_id = ${tenantId}
+      AND NOT EXISTS (
+        SELECT 1 FROM inventory_balances ib
+        WHERE ib.tenant_id = ci.tenant_id
+          AND ib.product_id = ci.id
+          AND ib.location_id = il.id
+      )
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `));
+
+  return {
+    tenantId,
+    rowsCreated: insertedRows.length,
+    rowsAlreadyExisting,
+    totalProductsProcessed: productCount,
+    requiredLocations: [...REQUIRED_BOOTSTRAP_LOCATION_NAMES],
+  };
 }
 
 /**

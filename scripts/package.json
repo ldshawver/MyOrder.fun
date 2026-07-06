@@ -8,7 +8,8 @@
     "lint:ratchet": "tsx ./src/lint-ratchet.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "repair:duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts",
-    "repair-duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts"
+    "repair-duplicate-safe-products": "tsx ./src/repair-duplicate-safe-products.ts",
+    "bootstrap-inventory": "tsx ./src/bootstrap-inventory.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",
