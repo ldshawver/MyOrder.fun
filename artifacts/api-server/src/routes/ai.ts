@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { and, asc, or, like, eq, sql } from "drizzle-orm";
+import { and, asc, or, like, eq, sql, inArray } from "drizzle-orm";
 import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import {
   AiConciergeChatBody,
@@ -217,7 +217,7 @@ router.patch("/admin/ai/product-master-config", async (req, res): Promise<void> 
   }).strict().safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
   const ids = [body.data.catalogItemId, ...(body.data.aiUpsellIds ?? []), ...(body.data.packageIds ?? []), ...(body.data.bundleIds ?? [])];
-  const validRows = ids.length ? await db.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`${catalogItemsTable.id} = ANY(${ids})`)) : [];
+  const validRows = ids.length ? await db.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.id, ids))) : [];
   const validIds = new Set(validRows.map(r => r.id));
   if (ids.some(id => !validIds.has(id))) { res.status(400).json({ error: "All AI/package/bundle product IDs must belong to this tenant catalog" }); return; }
   const [item] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, body.data.catalogItemId))).limit(1);

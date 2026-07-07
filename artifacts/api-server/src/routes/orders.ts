@@ -10,7 +10,6 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
-  inventoryBalancesTable,
   inventoryLocationsTable,
   catalogItemsTable,
 } from "@workspace/db";
@@ -1411,7 +1410,7 @@ router.get("/orders/active-csrs", requireRole("global_admin", "admin", "supervis
     lastName: usersTable.lastName,
     email: usersTable.email,
     role: usersTable.role,
-  }).from(usersTable).where(sql`${usersTable.id} = ANY(${ids})`);
+  }).from(usersTable).where(inArray(usersTable.id, ids));
   const byId = new Map(users.map(u => [u.id, u]));
   res.json({
     csrs: active.map(a => {
