@@ -255,7 +255,7 @@ export async function deductCheckoutInventoryByOrderType(
       eq(inventoryLocationsTable.isActive, true),
     ))
     .orderBy(
-      sql`array_position(${[...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]]}::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
+      sql`array_position(ARRAY[${sql.join([...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]], sql`, `)}]::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
       asc(inventoryLocationsTable.displayOrder),
       asc(inventoryLocationsTable.id),
     );
