@@ -456,6 +456,28 @@ export async function enqueueOrderPrintJobs(order: {
   // ── Receipt ───────────────────────────────────────────────────────────────
   const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
 
+  if ((settings.autoPrintReceipts || settings.autoPrintOrders) && !receiptPrinter) {
+    const renderedText = renderCustomerReceipt(printOrder);
+    const key = `order:${order.id}:receipt:no-printer`;
+    const existing = await db.select().from(printJobsTable)
+      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
+    if (!existing.length) {
+      await db.insert(printJobsTable).values({
+        orderId: order.id,
+        printerId: null,
+        jobType: "receipt",
+        status: "failed",
+        idempotencyKey: key,
+        renderFormat: "text",
+        payloadJson: printOrder,
+        renderedText,
+        operatorUserId: operator?.userId ?? null,
+        errorMessage: "No active receipt printer assigned or configured",
+      });
+    }
+    pLog.warn({ event: "receipt_no_printer", orderId: order.id }, "receipt skipped: no printer available");
+  }
+
   if ((settings.autoPrintReceipts || settings.autoPrintOrders) && receiptPrinter) {
     const renderedText = renderCustomerReceipt(printOrder);
     const key = makeIdempotencyKey(order.id, receiptPrinter.id, "receipt");

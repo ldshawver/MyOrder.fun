@@ -10,7 +10,6 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
-  inventoryBalancesTable,
   inventoryLocationsTable,
   catalogItemsTable,
 } from "@workspace/db";
@@ -49,6 +48,8 @@ import {
 } from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
+
+const PosCloseoutPaymentMethod = z.enum(["cash", "gift_card", "cash_app", "stripe", "card", "paypal", "venmo", "manual", "other"]);
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -74,11 +75,11 @@ const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
 class InsufficientInventoryError extends Error {
   constructor(
     public readonly catalogItemId: number,
-    public readonly locationName: string | null,
-    public readonly available: number,
-    public readonly backstock: number,
-    public readonly storefront: number,
-    public readonly hasInventoryRows: boolean,
+    public readonly locationName: string | null = null,
+    public readonly available: number = 0,
+    public readonly backstock: number = 0,
+    public readonly storefront: number = 0,
+    public readonly hasInventoryRows: boolean = false,
   ) {
     super(hasInventoryRows
       ? `Insufficient inventory in ${locationName ?? "assigned CSR location"}. Available: ${available}. Backstock: ${backstock}. Storefront: ${storefront}.`
@@ -263,6 +264,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
         { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
         { id: "cash_app", label: "Cash App", promoted: false },
         { id: "stripe", label: "Stripe card", promoted: false },
+        { id: "paypal", label: "PayPal", promoted: false },
         { id: "venmo", label: "Venmo", promoted: false },
         { id: "gift_card", label: "Gift Card", promoted: false },
         { id: "manual", label: "Other/manual", promoted: false },
@@ -578,7 +580,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     customerEmail: c?.email ?? "",
     status: order.status,
     paymentStatus: order.paymentStatus,
-    paymentToken: order.paymentToken,
+    paymentToken: order.paymentToken ?? "",
     subtotal: parseFloat(order.subtotal as string),
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
@@ -791,14 +793,21 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   // Legacy assignedTechId/assignedShiftId mirror active CSR routing only.
   // Fallback/general-account orders must remain unassigned so they do not
   // accidentally attach to a non-ready shift or mutate a CSR box.
-  const assignedTechId: number | null = routing.assignedCsrUserId;
-  const assignedShiftId: number | null = routing.assignedShiftId;
+  const assignedTechId =
+    routing.routeSource === "active_csr"
+      ? routing.assignedCsrUserId
+      : null;
+
+  const assignedShiftId =
+    routing.routeSource === "active_csr"
+      ? routing.assignedShiftId
+      : null;
 
   const now = new Date();
 
   let targetLocationId: number | null = null;
-  let targetLocationName: string | null = null;
-  if (assignedShiftId) {
+
+  if (assignedShiftId != null) {
     const [activeShift] = await db
       .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
       .from(labTechShiftsTable)
@@ -815,32 +824,32 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           eq(inventoryLocationsTable.name, locationName),
         ))
         .limit(1);
+
       targetLocationId = loc?.id ?? null;
-      targetLocationName = loc ? locationName : null;
     }
   }
 
   const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
   await ensureInventoryReservationsTable();
-  const shouldReserveInventory = routing.routeSource === "active_csr" && targetLocationId != null;
-  const shouldConfirmReservationImmediately = shouldReserveInventory && immediatePaymentMethod === "cash";
+
+  const shouldReserveInventory =
+    routing.routeSource === "active_csr" && targetLocationId != null;
+
+  const shouldConfirmReservationImmediately =
+    shouldReserveInventory && immediatePaymentMethod === "cash";
 
   if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
     const missingRows = await db
       .select({ catalogItemId: catalogItemsTable.id })
       .from(catalogItemsTable)
-      .leftJoin(inventoryBalancesTable, and(
-        eq(inventoryBalancesTable.tenantId, houseTenantId),
-        eq(inventoryBalancesTable.productId, catalogItemsTable.id),
-      ))
       .where(and(
         eq(catalogItemsTable.tenantId, houseTenantId),
         inArray(catalogItemsTable.id, normalizedCatalogIds),
-        sql`${inventoryBalancesTable.id} IS NULL`,
       ));
-    if (missingRows.length > 0) {
+
+    if (missingRows.length !== normalizedCatalogIds.length) {
       res.status(409).json({
-        error: `Missing inventory row for catalogItemId ${missingRows[0]!.catalogItemId} in any sellable checkout location`,
+        error: "Inventory integrity check failed",
         missingInventoryByCatalogId: missingRows.map(row => ({ catalogItemId: row.catalogItemId, locationId: null })),
       });
       return;
@@ -849,6 +858,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   let order: typeof ordersTable.$inferSelect;
   try {
+
     order = await db.transaction(async (tx) => {
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
@@ -885,7 +895,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerAccepted: checkoutConfirmation?.acceptedAllSalesFinal === true,
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
-      checkoutConversionExpiresAt: conversionExpiresAt,
+        checkoutConversionExpiresAt: conversionExpiresAt,
       }).returning();
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
@@ -1107,7 +1117,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         totalPrice: String((l.unit_price * l.quantity).toFixed(2)),
       })),
     });
-  } catch { /* non-critical */ }
+  } catch (err) { logger.warn({ err, orderId: order.id }, "Order print enqueue failed (non-critical)"); }
 
   const orderObj = await buildOrderResponse(order);
 
@@ -1286,6 +1296,51 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
     resourceType: "order", resourceId: String(orderId),
     metadata: { estimatedReadyAt: when.toISOString(), promisedMinutes: promised ?? null }, ipAddress: req.ip,
   });
+  res.json(await buildOrderResponse(updated));
+});
+
+
+// POST /api/orders/:id/closeout — staff records an in-person/manual payment and completes the order.
+router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const orderId = parseInt(req.params.id as string, 10);
+  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const parsed = z.object({ paymentMethod: PosCloseoutPaymentMethod }).strict().safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(422).json({ error: "paymentMethod must be one of: cash, gift_card, cash_app, stripe/card, paypal, venmo, manual/other" }); return; }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  const role = normalizeRole(actor.role);
+  if (role === "csr") {
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(
+      eq(labTechShiftsTable.tenantId, tenantId),
+      eq(labTechShiftsTable.techId, actor.id),
+      eq(labTechShiftsTable.status, "active"),
+      eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
+    )).limit(1);
+    if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId }) || order.assignedCsrUserId !== actor.id) {
+      res.status(403).json({ error: "CSR must have the assigned active ready shift to close out this order" }); return;
+    }
+  }
+  const method = parsed.data.paymentMethod === "card" ? "stripe" : parsed.data.paymentMethod === "other" ? "manual" : parsed.data.paymentMethod;
+  const priorFulfillment = order.fulfillmentStatus ?? "submitted";
+  const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : "completed";
+  const [updated] = await db.update(ordersTable).set({
+    paymentStatus: "paid",
+    paymentMethod: method,
+    selectedPaymentMethod: method,
+    paymentToken: order.paymentToken ?? `${method}_${Date.now()}`,
+    status: nextFulfillment === "completed" ? "completed" : order.status,
+    fulfillmentStatus: nextFulfillment,
+    completedAt: nextFulfillment === "completed" ? new Date() : order.completedAt,
+    completedByUserId: nextFulfillment === "completed" ? actor.id : order.completedByUserId,
+  }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).returning();
+  await writeAuditLog({
+    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+    action: "ORDER_CLOSED_OUT", resourceType: "order", resourceId: String(orderId),
+    metadata: { paymentMethod: method, total: order.total }, ipAddress: req.ip,
+  });
+  emitUpdated(updated, "closed_out");
   res.json(await buildOrderResponse(updated));
 });
 

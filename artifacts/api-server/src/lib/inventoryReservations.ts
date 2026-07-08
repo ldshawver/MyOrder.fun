@@ -105,7 +105,7 @@ export async function reserveCheckoutInventoryByOrderType(
       AND ib.is_sellable = true
       AND ib.quarantined_at IS NULL
       AND il.is_active = true
-    ORDER BY array_position(${[...ORDER_LOCATION_POLICY[orderType]]}::text[], il.name) NULLS LAST, il.display_order ASC, il.id ASC
+    ORDER BY array_position(ARRAY[${sql.join([...ORDER_LOCATION_POLICY[orderType]], sql`, `)}]::text[], il.name) NULLS LAST, il.display_order ASC, il.id ASC
     FOR UPDATE OF ib
   `));
 

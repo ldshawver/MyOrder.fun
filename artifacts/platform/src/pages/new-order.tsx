@@ -276,7 +276,7 @@ export default function NewOrder() {
     if (requiresDeliveryAddress && !shippingAddress.trim()) return;
 
     setOrderSubmitError(null);
-    const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "venmo" | "gift_card" | "manual";
+    const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "paypal" | "venmo" | "gift_card" | "manual";
 
     try {
       const checkoutConversionToken = conversionPreview.conversionToken;
