@@ -24,7 +24,9 @@ export async function getActiveReservedQuantity(
   locationId: number,
   ignoreReservationIds: number[] = [],
 ): Promise<number> {
-  const ignoreSql = ignoreReservationIds.length > 0 ? sql`AND id <> ALL(${ignoreReservationIds})` : sql``;
+  const ignoreSql = ignoreReservationIds.length > 0
+    ? sql`AND id <> ALL(ARRAY[${sql.join(ignoreReservationIds, sql`, `)}]::int[])`
+    : sql``;
   const row = rowsFrom<ReservationSumRow>(await executor.execute(sql`
     SELECT COALESCE(SUM(quantity), 0)::numeric AS "reservedQuantity"
     FROM inventory_reservations
@@ -114,7 +116,7 @@ export async function reconcileInventoryState(): Promise<Awaited<ReturnType<type
     releasedOrphanReservations = await executeTransaction("inventoryAuthority.reconcile.releaseOrphans", async tx => rowsFrom<{ id: number }>(await tx.execute(sql`
       UPDATE inventory_reservations
       SET status = 'released', updated_at = now()
-      WHERE id = ANY(${orphanIds}) AND status = 'reserved'
+      WHERE id = ANY(ARRAY[${sql.join(orphanIds, sql`, `)}]::int[]) AND status = 'reserved'
       RETURNING id
     `)).length);
   }
@@ -204,7 +206,7 @@ export async function bootstrapMissingInventoryBalancesThroughAuthority(tenantId
       INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand, par_level, inventory_kind, is_sellable, updated_at)
       SELECT ${tenantId}, ci.id, il.id, 0, 0, 'sellable_catalog', true, now()
       FROM catalog_items ci
-      JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...requiredLocationNames]})
+      JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(ARRAY[${sql.join([...requiredLocationNames], sql`, `)}]::text[])
       WHERE ci.tenant_id = ${tenantId}
         AND NOT EXISTS (
           SELECT 1 FROM inventory_balances ib
