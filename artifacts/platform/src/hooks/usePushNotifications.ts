@@ -1,4 +1,6 @@
 import { useEffect, useCallback, useRef } from "react";
+import { repairPushNotifications } from "@/lib/pwaPushRepair";
+import { useAuth } from "@clerk/react";
 
 export type NotificationRole =
   | "global_admin"
@@ -70,6 +72,7 @@ function playNotificationTone() {
 }
 
 export function usePushNotifications({ role, onPermissionGranted }: UsePushNotificationsOptions) {
+  const { getToken } = useAuth();
   const permissionRef = useRef<NotificationPermission>("default");
 
   const requestPermission = useCallback(async () => {
@@ -77,6 +80,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     if (Notification.permission === "granted") {
       permissionRef.current = "granted";
       onPermissionGranted?.();
+      void repairPushNotifications(getToken);
       return true;
     }
     if (Notification.permission === "denied") {
@@ -87,10 +91,11 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     permissionRef.current = result;
     if (result === "granted") {
       onPermissionGranted?.();
+      void repairPushNotifications(getToken);
       return true;
     }
     return false;
-  }, [onPermissionGranted]);
+  }, [getToken, onPermissionGranted]);
 
   const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png", channel: NotificationChannel = "platformUpdates") => {
     const mode = getNotificationMode(channel);
@@ -102,8 +107,11 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
       body,
       icon,
       badge: "/lc-icon.png",
-      tag: `lc-${Date.now()}`,
-    });
+      tag: `lc-${channel}`,
+      silent: false,
+      renotify: true,
+      vibrate: mode === "vibrate" || mode === "sound_vibrate" ? [90, 40, 90] : undefined,
+    } as NotificationOptions & { renotify: boolean; vibrate?: number[] });
     n.onclick = () => {
       window.focus();
       n.close();
@@ -166,6 +174,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     notifyOrderPlaced,
     notifyOrderReady,
     notifyOrderStatusChange,
+    repairPushNotifications: () => repairPushNotifications(getToken),
     permission: typeof window !== "undefined" && "Notification" in window
       ? Notification.permission
       : "denied" as NotificationPermission,

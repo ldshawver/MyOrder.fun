@@ -26,6 +26,7 @@ import reportsRouter from "./reports";
 import visualEditorRouter from "./visual-editor";
 import rolePermissionsRouter from "./role-permissions";
 import privacyRouter from "./privacy";
+import pwaPushRouter from "./pwa-push";
 
 const router: IRouter = Router();
 
@@ -56,5 +57,6 @@ router.use(reportsRouter);
 router.use(visualEditorRouter);
 router.use(rolePermissionsRouter);
 router.use(privacyRouter);
+router.use(pwaPushRouter);
 
 export default router;
