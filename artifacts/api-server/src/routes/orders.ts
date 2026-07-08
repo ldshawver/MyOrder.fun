@@ -1308,37 +1308,71 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
   const parsed = z.object({ paymentMethod: PosCloseoutPaymentMethod }).strict().safeParse(req.body ?? {});
   if (!parsed.success) { res.status(422).json({ error: "paymentMethod must be one of: cash, gift_card, cash_app, stripe/card, paypal, venmo, manual/other" }); return; }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
-  if (!order) { res.status(404).json({ error: "Not found" }); return; }
-  const role = normalizeRole(actor.role);
-  if (role === "csr") {
-    const [shift] = await db.select().from(labTechShiftsTable).where(and(
-      eq(labTechShiftsTable.tenantId, tenantId),
-      eq(labTechShiftsTable.techId, actor.id),
-      eq(labTechShiftsTable.status, "active"),
-      eq(labTechShiftsTable.id, order.assignedShiftId ?? -1),
-    )).limit(1);
-    if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId }) || order.assignedCsrUserId !== actor.id) {
-      res.status(403).json({ error: "CSR must have the assigned active ready shift to close out this order" }); return;
-    }
-  }
   const method = parsed.data.paymentMethod === "card" ? "stripe" : parsed.data.paymentMethod === "other" ? "manual" : parsed.data.paymentMethod;
-  const priorFulfillment = order.fulfillmentStatus ?? "submitted";
-  const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : "completed";
-  const [updated] = await db.update(ordersTable).set({
-    paymentStatus: "paid",
-    paymentMethod: method,
-    selectedPaymentMethod: method,
-    paymentToken: order.paymentToken ?? `${method}_${Date.now()}`,
-    status: nextFulfillment === "completed" ? "completed" : order.status,
-    fulfillmentStatus: nextFulfillment,
-    completedAt: nextFulfillment === "completed" ? new Date() : order.completedAt,
-    completedByUserId: nextFulfillment === "completed" ? actor.id : order.completedByUserId,
-  }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).returning();
+
+  const { updated, auditTotal, cashShiftId, cashBoxAssignmentId, status } = await db.transaction(async (tx) => {
+    const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+    if (!order) return { updated: null, auditTotal: null, cashShiftId: null, cashBoxAssignmentId: null, status: 404 as const };
+    if (order.paymentStatus === "paid") return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 409 as const };
+
+    let closeoutShift: typeof labTechShiftsTable.$inferSelect | null = null;
+    const role = normalizeRole(actor.role);
+    if (role === "csr") {
+      const shiftFilters = [
+        eq(labTechShiftsTable.tenantId, tenantId),
+        eq(labTechShiftsTable.techId, actor.id),
+        eq(labTechShiftsTable.status, "active"),
+      ];
+      if (order.assignedShiftId != null) shiftFilters.push(eq(labTechShiftsTable.id, order.assignedShiftId));
+      const [shift] = await tx.select().from(labTechShiftsTable).where(and(...shiftFilters)).limit(1);
+      const orderIsAssignedToActor = order.assignedCsrUserId === actor.id && (order.assignedShiftId == null || shift?.id === order.assignedShiftId);
+      const orderIsGeneralQueue = order.assignedShiftId == null && order.assignedCsrUserId == null;
+      if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId }) || (!orderIsAssignedToActor && !orderIsGeneralQueue)) {
+        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 403 as const };
+      }
+      closeoutShift = shift;
+    } else if (method === "cash") {
+      const [shift] = await tx.select().from(labTechShiftsTable).where(and(
+        eq(labTechShiftsTable.tenantId, tenantId),
+        eq(labTechShiftsTable.techId, actor.id),
+        eq(labTechShiftsTable.status, "active"),
+      )).limit(1);
+      closeoutShift = shift ?? null;
+    }
+
+    const cashBoxAssignmentId = method === "cash"
+      ? (closeoutShift?.boxAssignmentId || "sales-box-1")
+      : null;
+    if (method === "cash" && closeoutShift && !closeoutShift.boxAssignmentId) {
+      await tx.update(labTechShiftsTable).set({ boxAssignmentId: cashBoxAssignmentId }).where(eq(labTechShiftsTable.id, closeoutShift.id));
+    }
+
+    const priorFulfillment = order.fulfillmentStatus ?? "submitted";
+    const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : "completed";
+    const [updated] = await tx.update(ordersTable).set({
+      paymentStatus: "paid",
+      paymentMethod: method,
+      selectedPaymentMethod: method,
+      paymentToken: order.paymentToken ?? `${method}_${Date.now()}`,
+      status: nextFulfillment === "completed" ? "completed" : order.status,
+      fulfillmentStatus: nextFulfillment,
+      completedAt: nextFulfillment === "completed" ? new Date() : order.completedAt,
+      completedByUserId: nextFulfillment === "completed" ? actor.id : order.completedByUserId,
+      ...(closeoutShift ? { assignedShiftId: order.assignedShiftId ?? closeoutShift.id, assignedCsrUserId: order.assignedCsrUserId ?? actor.id, routeSource: order.routeSource ?? "active_csr" } : {}),
+    }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), sql`${ordersTable.paymentStatus} <> 'paid'`)).returning();
+    if (!updated) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 409 as const };
+    return { updated, auditTotal: order.total, cashShiftId: method === "cash" ? closeoutShift?.id ?? null : null, cashBoxAssignmentId, status: 200 as const };
+  });
+
+  if (!updated) {
+    if (auditTotal === null) { res.status(404).json({ error: "Not found" }); return; }
+    res.status(status).json({ error: status === 409 ? "Order is already paid" : "CSR must have the assigned active ready shift to close out this order" });
+    return;
+  }
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "ORDER_CLOSED_OUT", resourceType: "order", resourceId: String(orderId),
-    metadata: { paymentMethod: method, total: order.total }, ipAddress: req.ip,
+    metadata: { paymentMethod: method, total: auditTotal, cashShiftId, cashBoxAssignmentId }, ipAddress: req.ip,
   });
   emitUpdated(updated, "closed_out");
   res.json(await buildOrderResponse(updated));
