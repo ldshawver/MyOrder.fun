@@ -4,6 +4,8 @@
  * the same idempotent logic runs after any operation that adds/changes
  * local Alavont products.
  */
+import { bootstrapMissingInventoryBalancesThroughAuthority } from "./inventoryAuthority";
+import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
@@ -15,7 +17,6 @@ import {
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
-import { bootstrapMissingInventoryBalancesThroughAuthority, deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -255,7 +256,7 @@ export async function deductCheckoutInventoryByOrderType(
       eq(inventoryLocationsTable.isActive, true),
     ))
     .orderBy(
-      sql`array_position(ARRAY[${sql.join([...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]], sql`, `)}]::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
+sql`array_position(ARRAY[${sql.join(CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType].map((locationName) => sql`${locationName}`), sql`, `)}]::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
       asc(inventoryLocationsTable.displayOrder),
       asc(inventoryLocationsTable.id),
     );
