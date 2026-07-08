@@ -7,12 +7,33 @@ import { logger } from "../lib/logger";
 import { pushEndpointHash } from "../lib/pwaPushSender";
 
 const router: IRouter = Router();
-const SERVICE_WORKER_VERSION = "20260708-push-subscription-repair";
+export const SERVICE_WORKER_VERSION = "20260708-push-subscription-repair-v3";
 
 const PushSubscriptionBody = z.object({
   subscription: z.object({ endpoint: z.string().url(), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string(), auth: z.string() }) }),
   device: z.object({ id: z.string().min(1).max(128), userAgent: z.string().max(512).optional(), platform: z.string().max(128).optional() }).optional(),
 });
+
+
+function rowsFrom<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return ((result as { rows?: T[] })?.rows ?? []);
+}
+
+export function missingColumnFromError(err: unknown): string | undefined {
+  const message = String((err as { message?: unknown })?.message ?? "");
+  const detail = String((err as { detail?: unknown })?.detail ?? "");
+  const combined = `${message} ${detail}`;
+  return combined.match(/column [\w."]*?([a-zA-Z_][a-zA-Z0-9_]*)["]? does not exist/i)?.[1];
+}
+
+async function rollbackFailedTransaction(): Promise<void> {
+  try {
+    await db.execute(sql`ROLLBACK`);
+  } catch {
+    // ROLLBACK may fail when the driver is not inside an explicit transaction; diagnostics still return JSON.
+  }
+}
 
 let ensured = false;
 async function ensurePushSubscriptionsTable(): Promise<void> {
@@ -44,29 +65,55 @@ router.get("/pwa/push/debug", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   try {
     await ensurePushSubscriptionsTable();
-    const rows = await db.execute(sql`
-      SELECT COUNT(*)::int AS count
+    const result = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS active_subscription_count,
+        MAX(device_id) AS latest_device_id,
+        MAX(updated_at) AS latest_subscription_seen_at
       FROM pwa_push_subscriptions
       WHERE user_id = ${actor.id} AND is_active = true
     `);
-    const count = Number((rows as unknown as { rows?: Array<{ count?: number | string }> }).rows?.[0]?.count ?? 0);
+    const row = rowsFrom<{ active_subscription_count?: number | string; latest_device_id?: string | null; latest_subscription_seen_at?: string | Date | null }>(result)[0];
+    const count = Number(row?.active_subscription_count ?? 0);
     res.status(200).json({
       ok: true,
+      success: true,
+      reason: count > 0 ? "active_push_subscription_found" : "no_active_push_subscription",
       notificationPermission: req.query.permission ?? "unknown",
+      active_subscription: count > 0,
       pushSubscriptionActive: count > 0,
       activeSubscriptionCount: count,
       serviceWorkerVersion: SERVICE_WORKER_VERSION,
       vapidPublicKeyConfigured: Boolean(process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY),
+      diagnostics: {
+        user: { id: actor.id },
+        company: { id: actor.tenantId ?? null },
+        device: { latestDeviceId: row?.latest_device_id ?? null },
+        subscription: { active: count > 0, activeCount: count, latestSeenAt: row?.latest_subscription_seen_at ?? null },
+      },
     });
   } catch (err) {
-    logger.warn({ err, userId: actor.id }, "PWA push debug degraded but returned 200");
+    await rollbackFailedTransaction();
+    const missingColumn = missingColumnFromError(err);
+    logger.warn({ err, userId: actor.id, tenantId: actor.tenantId ?? null, missingColumn }, "PWA push debug degraded but returned 200");
     res.status(200).json({
       ok: false,
+      success: false,
+      database_schema_error: Boolean(missingColumn),
+      missing_column: missingColumn,
+      reason: missingColumn ? "database_schema_mismatch" : "push_diagnostics_degraded",
       notificationPermission: req.query.permission ?? "unknown",
+      active_subscription: false,
       pushSubscriptionActive: false,
       activeSubscriptionCount: 0,
       serviceWorkerVersion: SERVICE_WORKER_VERSION,
-      error: "Push diagnostics are temporarily degraded; repair can still be attempted.",
+      error: "Push diagnostics hit a database schema issue; repair can still be attempted after the schema is corrected.",
+      diagnostics: {
+        user: { id: actor.id },
+        company: { id: actor.tenantId ?? null },
+        device: { latestDeviceId: null },
+        subscription: { active: false, activeCount: 0, latestSeenAt: null },
+      },
     });
   }
 });
@@ -82,11 +129,12 @@ router.post("/pwa/push/subscribe", async (req, res): Promise<void> => {
     res.status(400).json({ error: "Invalid push subscription payload", details: parsed.error.flatten() });
     return;
   }
-  await ensurePushSubscriptionsTable();
   const { subscription, device } = parsed.data;
   const deviceId = device?.id ?? `web-${actor.id}`;
   const endpointHash = pushEndpointHash(subscription.endpoint);
-  await db.execute(sql`
+  try {
+    await ensurePushSubscriptionsTable();
+    await db.execute(sql`
     INSERT INTO pwa_push_subscriptions (user_id, tenant_id, device_id, endpoint, subscription, user_agent, platform, is_active, updated_at, last_seen_at)
     VALUES (${actor.id}, ${actor.tenantId ?? null}, ${deviceId}, ${subscription.endpoint}, ${JSON.stringify(subscription)}::jsonb, ${device?.userAgent ?? null}, ${device?.platform ?? null}, true, now(), now())
     ON CONFLICT (endpoint) DO UPDATE SET
@@ -100,6 +148,20 @@ router.post("/pwa/push/subscribe", async (req, res): Promise<void> => {
       updated_at = now(),
       last_seen_at = now()
   `);
+  } catch (err) {
+    await rollbackFailedTransaction();
+    const missingColumn = missingColumnFromError(err);
+    logger.warn({ err, userId: actor.id, tenantId: actor.tenantId ?? null, deviceId, endpointHash, missingColumn }, "PWA push subscription registration failed safely");
+    res.status(500).json({
+      ok: false,
+      success: false,
+      database_schema_error: Boolean(missingColumn),
+      missing_column: missingColumn,
+      reason: missingColumn ? "database_schema_mismatch" : "push_subscription_registration_failed",
+      error: "Could not register this device for push notifications.",
+    });
+    return;
+  }
   req.log?.info({ event: "pwa_push_subscription_registered", userId: actor.id, tenantId: actor.tenantId ?? null, deviceId, endpointHash }, "PWA push subscription registered");
   res.status(200).json({ ok: true, pushSubscriptionActive: true, userId: actor.id, tenantId: actor.tenantId ?? null, deviceId, endpointHash });
 });

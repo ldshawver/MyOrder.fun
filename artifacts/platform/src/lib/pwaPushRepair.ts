@@ -45,8 +45,9 @@ export async function repairPushNotifications(getToken: () => Promise<string | n
   }));
 
   const registration = await navigator.serviceWorker.register(SW_URL, { scope: "/" });
-  await navigator.serviceWorker.ready;
   await registration.update().catch(() => undefined);
+  if (registration.waiting) registration.waiting.postMessage("SKIP_WAITING");
+  await navigator.serviceWorker.ready;
 
   let subscription = await registration.pushManager.getSubscription();
   if (!subscription) {

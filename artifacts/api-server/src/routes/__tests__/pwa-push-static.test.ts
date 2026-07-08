@@ -9,10 +9,16 @@ const smsRoute = readFileSync(new URL("../twilio-sms.ts", import.meta.url), "utf
 const sw = readFileSync(new URL("../../../../platform/public/myorder-push-sw.js", import.meta.url), "utf8");
 
 describe("PWA push repair implementation", () => {
-  it("debug route degrades to 200 instead of returning 500", () => {
+  it("debug route degrades to JSON 200 instead of returning HTML/500 on schema drift", () => {
     expect(route).toContain('router.get("/pwa/push/debug"');
     expect(route).toContain('res.status(200).json');
     expect(route).toContain('PWA push debug degraded but returned 200');
+    expect(route).toContain('missingColumnFromError');
+    expect(route).toContain('database_schema_error');
+    expect(route).toContain('missing_column');
+    expect(route).toContain('rollbackFailedTransaction');
+    expect(route).toContain('"no_active_push_subscription"');
+    expect(route).not.toContain('device_key');
   });
 
   it("repairs granted permission with missing subscription", () => {
@@ -40,5 +46,16 @@ describe("PWA push repair implementation", () => {
     expect(sw).toContain('renotify: true');
     expect(sw).toContain('badge:');
     expect(sw).toContain('vibrate:');
+  });
+});
+
+
+describe("PWA push schema migration", () => {
+  const migration = readFileSync(new URL("../../../../../lib/db/migrations/202607080001_pwa_push_subscriptions.sql", import.meta.url), "utf8");
+
+  it("creates the push subscription schema with device_id instead of legacy device_key", () => {
+    expect(migration).toContain("CREATE TABLE IF NOT EXISTS pwa_push_subscriptions");
+    expect(migration).toContain("device_id text NOT NULL");
+    expect(migration).not.toContain("device_key");
   });
 });

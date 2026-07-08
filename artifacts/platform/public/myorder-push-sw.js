@@ -1,5 +1,5 @@
 /* MyOrder.fun PWA push worker */
-const SERVICE_WORKER_VERSION = "20260708-myorder-push-sw-v2";
+const SERVICE_WORKER_VERSION = "20260708-push-subscription-repair-v3";
 const CACHE_PREFIX = "myorder-push-sw";
 const CACHE_VERSION = `${CACHE_PREFIX}-${SERVICE_WORKER_VERSION}`;
 
@@ -58,4 +58,5 @@ self.addEventListener("notificationclick", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data === "version") event.source?.postMessage({ serviceWorkerVersion: SERVICE_WORKER_VERSION });
+  if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
