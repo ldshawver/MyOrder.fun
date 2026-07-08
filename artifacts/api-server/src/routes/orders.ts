@@ -578,7 +578,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     customerEmail: c?.email ?? "",
     status: order.status,
     paymentStatus: order.paymentStatus,
-    paymentToken: order.paymentToken,
+    paymentToken: order.paymentToken ?? "",
     subtotal: parseFloat(order.subtotal as string),
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
