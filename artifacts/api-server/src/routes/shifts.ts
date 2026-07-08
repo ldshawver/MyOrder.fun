@@ -767,15 +767,17 @@ async function computeShiftStats(shiftId: number) {
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
+    cash: 0, card: 0, cash_app: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
   };
 
   for (const order of shiftOrders) {
+    if (order.paymentStatus !== "paid") continue;
     const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
     const orderTotal = parseFloat(order.total as string);
     if (method in paymentTotals) {
       paymentTotals[method] += orderTotal;
+      if (method === "cash_app") paymentTotals.cashapp += orderTotal;
     } else {
       paymentTotals.other += orderTotal;
     }
@@ -800,7 +802,7 @@ async function computeShiftStats(shiftId: number) {
 
   return {
     orderCount: shiftOrders.length,
-    totalRevenue: shiftOrders.reduce((s, o) => s + parseFloat(o.total as string), 0),
+    totalRevenue: shiftOrders.filter(o => o.paymentStatus === "paid").reduce((s, o) => s + parseFloat(o.total as string), 0),
     cashSales: paymentTotals.cash,
     cardSales: paymentTotals.card,
     compSales: paymentTotals.comp,

@@ -490,7 +490,7 @@ export default function OrderDetail() {
   }
 
 
-  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "stripe" | "paypal" | "venmo" | "manual") {
+  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "card" | "paypal" | "venmo" | "manual") {
     if (!order) return;
     setCloseoutBusy(method);
     setCloseoutMessage(null);
@@ -985,6 +985,18 @@ export default function OrderDetail() {
                     </Button>
                     <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("gift_card")} disabled={closeoutBusy !== null} data-testid="button-closeout-gift-card">
                       <Gift size={14} className="mr-2" /> Gift card closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("cash_app")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash-app">
+                      Cash App closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("card")} disabled={closeoutBusy !== null} data-testid="button-closeout-card">
+                      <CreditCard size={14} className="mr-2" /> Card closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("paypal")} disabled={closeoutBusy !== null} data-testid="button-closeout-paypal">
+                      PayPal closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("venmo")} disabled={closeoutBusy !== null} data-testid="button-closeout-venmo">
+                      Venmo closeout
                     </Button>
                   </div>
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
