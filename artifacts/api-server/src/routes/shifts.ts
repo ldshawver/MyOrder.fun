@@ -40,18 +40,23 @@ async function createShiftReceiptPrintJob(args: {
   renderedText: string;
 }): Promise<void> {
   try {
-    await db.insert(printJobsTable).values({
+    const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
+    const { dispatchReceiptJob } = await import("../lib/printService");
+    const profile = await getOperatorProfile(args.operatorUserId);
+    const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
+    const [job] = await db.insert(printJobsTable).values({
       orderId: null,
-      printerId: null,
+      printerId: receiptPrinter?.id ?? null,
       operatorUserId: args.operatorUserId,
       jobType: args.jobType,
-      status: process.env.RECEIPT_PRINT_ENABLED === "true" ? "queued" : "failed",
+      status: receiptPrinter ? "queued" : "failed",
       idempotencyKey: `${args.jobType}:${args.shiftId}:${Date.now()}`,
       renderFormat: "text",
       payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
       renderedText: args.renderedText,
-      errorMessage: process.env.RECEIPT_PRINT_ENABLED === "true" ? null : "Printer unavailable or receipt printing disabled",
-    });
+      errorMessage: receiptPrinter ? null : "No active receipt printer assigned or configured",
+    }).returning();
+    if (receiptPrinter) dispatchReceiptJob(job, receiptPrinter).catch(() => {});
   } catch {
     // Receipt creation must never block shift start/end in tests or production.
   }

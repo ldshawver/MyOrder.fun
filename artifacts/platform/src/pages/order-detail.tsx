@@ -18,7 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, Gift } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -381,6 +381,8 @@ export default function OrderDetail() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
+  const [closeoutBusy, setCloseoutBusy] = useState<string | null>(null);
+  const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -484,6 +486,29 @@ export default function OrderDetail() {
       setCreditMessage(err instanceof Error ? err.message : "Failed to apply credit");
     } finally {
       setCreditBusy(false);
+    }
+  }
+
+
+  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "stripe" | "paypal" | "venmo" | "manual") {
+    if (!order) return;
+    setCloseoutBusy(method);
+    setCloseoutMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/orders/${order.id}/closeout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ paymentMethod: method }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Failed to close out order");
+      setCloseoutMessage(`Closed out as ${method.replace("_", " ")}.`);
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
+    } catch (err) {
+      setCloseoutMessage(err instanceof Error ? err.message : "Failed to close out order");
+    } finally {
+      setCloseoutBusy(null);
     }
   }
 
@@ -953,6 +978,16 @@ export default function OrderDetail() {
                       {creditMessage && <div className="text-[11px] text-muted-foreground">{creditMessage}</div>}
                     </div>
                   )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Button className="rounded-xl font-semibold text-xs h-10" onClick={() => void closeOut("cash")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                      <Banknote size={14} className="mr-2" /> Cash closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("gift_card")} disabled={closeoutBusy !== null} data-testid="button-closeout-gift-card">
+                      <Gift size={14} className="mr-2" /> Gift card closeout
+                    </Button>
+                  </div>
+                  {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Card via Stripe */}
                   <Button
