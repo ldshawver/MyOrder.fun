@@ -8,6 +8,7 @@ import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxy
 import router from "./routes";
 import healthRouter from "./routes/health";
 import twilioVoiceRouter from "./routes/twilio-voice";
+import twilioSmsRouter from "./routes/twilio-sms";
 import { logger } from "./lib/logger";
 import { submitOnboardingRequestHandler } from "./routes/onboarding";
 
@@ -136,6 +137,7 @@ function sendLuxitFallbackShell(res: Response): void {
 }
 
 app.use(twilioVoiceRouter);
+app.use(twilioSmsRouter);
 app.get("/login", (_req, res) => res.redirect(302, "/sign-in"));
 app.get(["/app", "/app/", "/app/inbox"], (req, res) => {
   try {

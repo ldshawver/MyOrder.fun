@@ -5,10 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Bell, Shield, Fingerprint, User as UserIcon, Upload } from "lucide-react";
+import { Bell, Shield, Fingerprint, User as UserIcon, Upload, Wrench } from "lucide-react";
 import { Link } from "wouter";
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
+import { repairPushNotifications } from "@/lib/pwaPushRepair";
 
 type InAppAlertMode = "silent" | "sound" | "vibrate" | "sound_vibrate";
 type NotificationPreferences = {
@@ -48,6 +49,8 @@ export default function Account() {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFERENCES);
   const [saving, setSaving] = useState(false);
+  const [repairingPush, setRepairingPush] = useState(false);
+  const [pushRepairMsg, setPushRepairMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
@@ -158,6 +161,20 @@ export default function Account() {
       await refetch();
     } catch (e) {
       setMsg({ kind: "err", text: e instanceof Error ? e.message : "Failed to save notification settings" });
+    }
+  }
+
+
+  async function repairPush() {
+    setRepairingPush(true);
+    setPushRepairMsg(null);
+    try {
+      const result = await repairPushNotifications(getToken);
+      setPushRepairMsg({ kind: result.ok ? "ok" : "err", text: result.message });
+    } catch (e) {
+      setPushRepairMsg({ kind: "err", text: e instanceof Error ? e.message : "Could not repair push notifications." });
+    } finally {
+      setRepairingPush(false);
     }
   }
 
@@ -340,6 +357,31 @@ export default function Account() {
                     {channel.label}: {notificationPreferences[channel.key as keyof NotificationPreferences] ? "On" : "Off"}
                   </Button>
                 ))}
+              </div>
+
+              <div className="rounded-sm border border-border/50 bg-muted/10 p-4 space-y-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-[10px] font-mono font-medium text-muted-foreground uppercase tracking-widest">PWA Push Registration</div>
+                    <p className="mt-1 text-xs text-muted-foreground">If permission is granted but diagnostics show no active subscription, repair will activate the service worker, subscribe this browser, and tie it to your account, company, and device.</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-sm text-xs uppercase tracking-wider shrink-0"
+                    onClick={repairPush}
+                    disabled={repairingPush}
+                    data-testid="button-repair-push-notifications"
+                  >
+                    <Wrench size={14} className="mr-2" />
+                    {repairingPush ? "Repairing…" : "Repair Push Notifications"}
+                  </Button>
+                </div>
+                {pushRepairMsg && (
+                  <div className={`text-xs font-mono ${pushRepairMsg.kind === "err" ? "text-destructive" : "text-green-600"}`} data-testid="text-push-repair-msg">
+                    {pushRepairMsg.text}
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">
