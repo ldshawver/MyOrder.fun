@@ -129,8 +129,6 @@ export function getShiftReadiness(shift: {
   if (shift.clockedOutAt != null) failedConditions.push("shift_clocked_out");
   if (!boxAssignmentId) failedConditions.push("box_not_assigned");
   if (!inventoryLocationNameForBoxAssignment(boxAssignmentId)) failedConditions.push("inventory_location_not_assigned");
-  if (!(setup.inventoryConfirmed === true || setup.startingInventoryConfirmed === true || setup.parLevelsConfirmed === true)) failedConditions.push("inventory_not_confirmed");
-  if (!(setup.printerReady === true || setup.printerAssigned === true)) failedConditions.push("printer_not_assigned");
   return { ready: failedConditions.length === 0, failedConditions };
 }
 
