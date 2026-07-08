@@ -13,6 +13,7 @@ export const CreateOrderBodyCheckoutConfirmationPaymentMethod = {
   cash: 'cash',
   cash_app: 'cash_app',
   stripe: 'stripe',
+  paypal: 'paypal',
   venmo: 'venmo',
   gift_card: 'gift_card',
   manual: 'manual',

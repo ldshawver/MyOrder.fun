@@ -583,7 +583,7 @@ export const ListOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -650,7 +650,7 @@ export const CreateOrderBody = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional(),
   "tipAmount": zod.number().nullish(),
   "tipPercent": zod.number().nullish()
 }).optional(),
@@ -678,8 +678,8 @@ export const CreateOrderBody = zod.object({
   "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
   "checkoutConversionToken": zod.string().optional(),
   "checkoutConversionSnapshot": zod.unknown().optional(),
-  "selectedPaymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional(),
+  "selectedPaymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional(),
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional(),
   "csrDeliveryDistanceMiles": zod.number().min(0).nullish()
 })
 
@@ -783,7 +783,7 @@ export const GetOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -884,7 +884,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -996,7 +996,7 @@ export const AcceptOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1104,7 +1104,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1200,7 +1200,7 @@ export const MarkOrderReadyResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1300,7 +1300,7 @@ export const ReassignOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1425,7 +1425,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1526,7 +1526,7 @@ export const GetRecentOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -2316,7 +2316,7 @@ export const ConfirmPaymentResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'venmo', 'gift_card', 'manual']).optional()
+  "paymentMethod": zod.enum(['cash', 'cash_app', 'stripe', 'paypal', 'venmo', 'gift_card', 'manual']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
