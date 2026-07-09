@@ -75,16 +75,22 @@ const RoleBody = z.object({ role: RoleValue });
 
 function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
   if (actorRole === "global_admin") return true;
-  if (actorRole !== "admin") return false;
-  return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
+  if (actorRole === "admin") return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor" || targetRole === "admin";
+  if (actorRole === "supervisor") return targetRole === "user" || targetRole === "csr";
+  return false;
 }
 
 function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
   const actorRole = normalizeRole(actor.role);
+  const targetRole = normalizeRole(target.role);
+  if (actor.id === target.id) return false;
   if (actorRole === "global_admin") return true;
-  if (actorRole !== "admin") return false;
-  if (actor.tenantId == null || target.tenantId == null) return true;
-  return actor.tenantId === target.tenantId;
+  if (!["admin", "supervisor"].includes(actorRole)) return false;
+  if (actor.tenantId == null && target.tenantId != null) return false;
+  if (actor.tenantId != null && target.tenantId != null && actor.tenantId !== target.tenantId) return false;
+  if (actorRole === "supervisor" && !["user", "csr"].includes(targetRole)) return false;
+  if (actorRole === "admin" && targetRole === "global_admin") return false;
+  return true;
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -290,7 +296,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
 });
 
 // GET /api/users — admin and supervisor see all users
-router.get("/users", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.get("/users", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -351,8 +357,8 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
 
 // PATCH /api/users/:id/role — supervisors and admins (legacy path)
 // PATCH /api/admin/users/:id/role — admin-only namespace
-router.patch("/admin/users/:id/role", requireRole("admin"), updateUserRoleHandler);
-router.patch("/users/:id/role", requireRole("global_admin", "admin"), updateUserRoleHandler);
+router.patch("/admin/users/:id/role", requireRole("global_admin", "admin", "supervisor"), updateUserRoleHandler);
+router.patch("/users/:id/role", requireRole("global_admin", "admin", "supervisor"), updateUserRoleHandler);
 
 async function updateUserRoleHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
   const actor = req.dbUser!;
@@ -426,7 +432,7 @@ const UpdateUserStatusBody = z.object({
 });
 
 // PATCH /api/users/:id/status — admin only (alias also exposed at /api/admin/users/:id/status)
-router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admin"), async (req, res): Promise<void> => {
+router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -500,7 +506,7 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
 });
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
-router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Promise<void> => {
+router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
@@ -535,7 +541,7 @@ const ApprovalBody = z.object({
 // ─── PATCH /api/admin/users/:id/approval — single approval flow ─────────────
 // approve=true sets status='approved' (+ optional role) and pushes to Clerk.
 // approve=false sets status='rejected' and pushes to Clerk.
-router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res): Promise<void> => {
+router.patch("/admin/users/:id/approval", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);

@@ -1191,7 +1191,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     res.status(409).json({ error: "Order already accepted", acceptedAt: order.acceptedAt });
     return;
   }
-  if ((order.fulfillmentStatus ?? "submitted") !== "submitted") {
+  if (!["submitted", null, undefined].includes(order.fulfillmentStatus)) {
     res.status(409).json({
       error: "Order is not in submitted state",
       fulfillmentStatus: order.fulfillmentStatus,
@@ -1207,7 +1207,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const updatedRows = await db.update(ordersTable)
     .set({
       acceptedAt: now,
-      status: "processing",
+      status: "in_progress",
       fulfillmentStatus: "accepted",
       assignedCsrUserId: order.assignedCsrUserId ?? actor.id,
       assignedShiftId: order.assignedShiftId ?? shift.id,
@@ -1216,7 +1216,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       eq(ordersTable.id, orderId),
       eq(ordersTable.tenantId, tenantId),
       sql`${ordersTable.acceptedAt} is null`,
-      eq(ordersTable.fulfillmentStatus, "submitted"),
+      sql`(${ordersTable.fulfillmentStatus} = 'submitted' OR ${ordersTable.fulfillmentStatus} is null)`,
       order.assignedCsrUserId == null ? sql`${ordersTable.assignedCsrUserId} is null` : eq(ordersTable.assignedCsrUserId, actor.id),
       order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id),
     ))
@@ -1253,9 +1253,9 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
 
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-    action: "ORDER_ACCEPTED",
+    action: "ORDER_CLAIMED",
     resourceType: "order", resourceId: String(orderId),
-    metadata: { acceptedByUserId: actor.id }, ipAddress: req.ip,
+    metadata: { acceptedByUserId: actor.id, shiftId: shift.id, priorAssignedCsrUserId: order.assignedCsrUserId, priorAssignedShiftId: order.assignedShiftId }, ipAddress: req.ip,
   });
 
   res.json(await buildOrderResponse(updated));
@@ -1627,6 +1627,10 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     return;
   }
   const prior = order.status;
+  if (prior === "completed" && status === "completed") {
+    res.json(await buildOrderResponse(order));
+    return;
+  }
   if (prior === "completed" && status !== "archived") {
     res.status(409).json({ error: "Completed orders cannot be moved back to active states" });
     return;
@@ -1645,7 +1649,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     status === "cancelled" ? { cancelledAt: now, cancelledByUserId: actor.id, fulfillmentStatus: "cancelled" } :
     status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
     { voidedAt: now, voidedByUserId: actor.id };
-  const [updated] = await db.update(ordersTable).set({ status, ...stamps }).where(eq(ordersTable.id, id)).returning();
+  const [updated] = await db.update(ordersTable).set({ status, updatedAt: now, ...stamps }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).returning();
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -1656,8 +1660,39 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     metadata: { priorStatus: prior, newStatus: status, reason: reason ?? null },
     ipAddress: req.ip,
   });
+  emitUpdated(updated, status);
   res.json(await buildOrderResponse(updated));
 }
+
+const StaleArchiveBody = z.object({
+  olderThanMinutes: z.number().int().positive().max(60 * 24 * 365).default(24 * 60),
+  orderIds: z.array(z.number().int().positive()).max(500).optional(),
+  reason: z.string().trim().min(1).max(1000).default("Admin stale submitted order cleanup"),
+}).strict();
+
+router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const parsed = StaleArchiveBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - parsed.data.olderThanMinutes * 60_000);
+  const conditions = [
+    eq(ordersTable.tenantId, tenantId),
+    sql`${ordersTable.archivedAt} is null`,
+    sql`${ordersTable.completedAt} is null`,
+    or(eq(ordersTable.status, "submitted"), eq(ordersTable.status, "pending")),
+    or(eq(ordersTable.fulfillmentStatus, "submitted"), sql`${ordersTable.fulfillmentStatus} is null`),
+    lt(ordersTable.createdAt, cutoff),
+  ];
+  if (parsed.data.orderIds?.length) conditions.push(inArray(ordersTable.id, parsed.data.orderIds));
+  const archived = await db.update(ordersTable).set({
+    status: "archived", fulfillmentStatus: "cancelled", archivedAt: now, archivedByUserId: actor.id, updatedAt: now,
+  }).where(and(...conditions)).returning();
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "ORDER_STALE_SUBMITTED_ARCHIVED", resourceType: "order", metadata: { count: archived.length, orderIds: archived.map((o) => o.id), cutoff: cutoff.toISOString(), reason: parsed.data.reason }, ipAddress: req.ip });
+  for (const order of archived) emitUpdated(order, "stale_archived");
+  res.json({ archived: archived.length, orders: await Promise.all(archived.map(buildOrderResponse)) });
+});
 
 router.patch("/orders/:id/status", (req, res) => { void transitionOrder(req, res); });
 router.post("/orders/:id/complete", (req, res) => { void transitionOrder(req, res, "completed"); });

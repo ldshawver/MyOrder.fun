@@ -18,7 +18,7 @@
  * every admin/global admin is notified on new ticket creation.
  */
 import { Router, type IRouter } from "express";
-import { eq, and, desc, gte, lte, inArray, lt } from "drizzle-orm";
+import { eq, and, desc, gte, lte, inArray, lt, sql } from "drizzle-orm";
 import {
   db,
   feedbackTicketsTable,
@@ -41,6 +41,16 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+let feedbackSchemaEnsured = false;
+async function ensureFeedbackSchema(): Promise<void> {
+  if (feedbackSchemaEnsured) return;
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user'`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "ticket_id" text`);
+  feedbackSchemaEnsured = true;
+}
+
 
 const ADMIN_VIEW_ROLES = ["global_admin", "admin", "supervisor"] as const;
 const ADMIN_WRITE_ROLES = ["global_admin", "admin", "supervisor"] as const;
@@ -297,6 +307,7 @@ export async function runFeedbackAutoArchive(
 // ─── POST /api/feedback ──────────────────────────────────────────────────────
 router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
+  await ensureFeedbackSchema();
   const parsed = CreateTicketBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -411,6 +422,7 @@ router.get(
   ["/admin/feedback", "/feedback"],
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
+    await ensureFeedbackSchema();
     const parsed = ListQueryParams.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -473,6 +485,7 @@ router.get(
   ["/admin/feedback/:id", "/feedback/:id"],
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
+    await ensureFeedbackSchema();
     const id = parseInt(getRouteParam(req.params.id), 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid id" });
