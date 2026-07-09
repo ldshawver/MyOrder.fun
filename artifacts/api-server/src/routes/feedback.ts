@@ -52,6 +52,29 @@ async function ensureFeedbackSchema(): Promise<void> {
 }
 
 
+let feedbackSchemaEnsured = false;
+async function ensureFeedbackSchema(): Promise<void> {
+  if (feedbackSchemaEnsured) return;
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user'`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "context_json" jsonb`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_at" timestamp with time zone`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_by_user_id" integer REFERENCES "users"("id")`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer REFERENCES "users"("id")`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "ticket_id" text`);
+  await db.execute(sql`UPDATE "feedback_tickets" SET "submitter_role" = COALESCE(NULLIF("submitter_role", ''), 'user')`);
+  feedbackSchemaEnsured = true;
+}
+
+router.use(async (_req, _res, next) => {
+  try {
+    await ensureFeedbackSchema();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
 const ADMIN_VIEW_ROLES = ["global_admin", "admin", "supervisor"] as const;
 const ADMIN_WRITE_ROLES = ["global_admin", "admin", "supervisor"] as const;
 
@@ -306,6 +329,7 @@ export async function runFeedbackAutoArchive(
 
 // ─── POST /api/feedback ──────────────────────────────────────────────────────
 router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
+  await ensureFeedbackSchema();
   const actor = req.dbUser!;
   await ensureFeedbackSchema();
   const parsed = CreateTicketBody.safeParse(req.body);
@@ -421,6 +445,7 @@ router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
 router.get(
   ["/admin/feedback", "/feedback"],
   async (req, res): Promise<void> => {
+    await ensureFeedbackSchema();
     const actor = req.dbUser!;
     await ensureFeedbackSchema();
     const parsed = ListQueryParams.safeParse(req.query);
@@ -484,6 +509,7 @@ router.get(
 router.get(
   ["/admin/feedback/:id", "/feedback/:id"],
   async (req, res): Promise<void> => {
+    await ensureFeedbackSchema();
     const actor = req.dbUser!;
     await ensureFeedbackSchema();
     const id = parseInt(getRouteParam(req.params.id), 10);

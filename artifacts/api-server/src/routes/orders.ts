@@ -1177,17 +1177,22 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
 
   // CSRs may only accept tenant-local orders assigned to them/their ready
   // active shift, or sitting in the General Account fallback queue.
+  const isGeneralQueueOrder = order.assignedCsrUserId == null && order.routeSource === "general_account";
   if (normalizeRole(actor.role) === "csr") {
     if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
       res.status(403).json({ error: "Order is assigned to another rep" });
       return;
     }
-    if (order.assignedShiftId != null && order.assignedShiftId !== shift.id) {
+    if (!isGeneralQueueOrder && order.assignedShiftId != null && order.assignedShiftId !== shift.id) {
       res.status(403).json({ error: "Order is assigned to another shift" });
       return;
     }
   }
   if (order.acceptedAt) {
+    if (order.assignedCsrUserId === actor.id) {
+      res.json(await buildOrderResponse(order));
+      return;
+    }
     res.status(409).json({ error: "Order already accepted", acceptedAt: order.acceptedAt });
     return;
   }
@@ -1209,8 +1214,8 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       acceptedAt: now,
       status: "in_progress",
       fulfillmentStatus: "accepted",
-      assignedCsrUserId: order.assignedCsrUserId ?? actor.id,
-      assignedShiftId: order.assignedShiftId ?? shift.id,
+      assignedCsrUserId: actor.id,
+      assignedShiftId: shift.id,
     })
     .where(and(
       eq(ordersTable.id, orderId),
@@ -1218,7 +1223,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       sql`${ordersTable.acceptedAt} is null`,
       sql`(${ordersTable.fulfillmentStatus} = 'submitted' OR ${ordersTable.fulfillmentStatus} is null)`,
       order.assignedCsrUserId == null ? sql`${ordersTable.assignedCsrUserId} is null` : eq(ordersTable.assignedCsrUserId, actor.id),
-      order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id),
+      isGeneralQueueOrder ? sql`true` : (order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id)),
     ))
     .returning();
   const updated = updatedRows[0];

@@ -73,7 +73,14 @@ function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is stri
 const RoleValue = z.string().refine((value) => isKnownRole(value), { message: "Invalid role" }).transform((value) => normalizeRole(value));
 const RoleBody = z.object({ role: RoleValue });
 
-function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
+function roleRank(role: ValidRole): number {
+  return { user: 0, csr: 1, supervisor: 2, admin: 3, global_admin: 4 }[role];
+}
+
+function canAssignRole(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect, targetRole: ValidRole): boolean {
+  const actorRole = normalizeRole(actor.role);
+  const currentTargetRole = normalizeRole(target.role);
+  if (actor.id === target.id && roleRank(targetRole) > roleRank(currentTargetRole)) return false;
   if (actorRole === "global_admin") return true;
   if (actorRole === "admin") return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor" || targetRole === "admin";
   if (actorRole === "supervisor") return targetRole === "user" || targetRole === "csr";
@@ -307,6 +314,10 @@ router.get("/users", requireRole("global_admin", "admin", "supervisor"), async (
   await syncOnboardingRequestsToPendingUsers();
 
   let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
+  const actorRole = normalizeRole(req.dbUser!.role);
+  if (actorRole !== "global_admin") {
+    rows = rows.filter((u) => u.tenantId === req.dbUser!.tenantId && roleRank(actorRole) > roleRank(normalizeRole(u.role)));
+  }
 
   if (query.data.role) {
     // Compare against the normalized role so legacy values still match
@@ -385,9 +396,8 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     return;
   }
 
-  const actorRole = normalizeRole(actor.role);
   const newRole = body.data.role;
-  if (!canAssignRole(actorRole, newRole)) {
+  if (!canAssignRole(actor, target, newRole)) {
     res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
@@ -510,11 +520,13 @@ router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervi
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
-  const rows = await db
+  let rows = await db
     .select()
     .from(usersTable)
     .where(eq(usersTable.status, "pending"))
     .orderBy(usersTable.createdAt);
+  const actorRole = normalizeRole(req.dbUser!.role);
+  if (actorRole !== "global_admin") rows = rows.filter((u) => u.tenantId === req.dbUser!.tenantId && roleRank(actorRole) > roleRank(normalizeRole(u.role)));
   res.json({
     users: rows.map((u) => ({
       id: u.id,
@@ -568,8 +580,7 @@ router.patch("/admin/users/:id/approval", requireRole("global_admin", "admin", "
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
   const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
-  const actorRole = normalizeRole(actor.role);
-  if (newRole && !canAssignRole(actorRole, newRole)) {
+  if (newRole && !canAssignRole(actor, target, newRole)) {
     res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }

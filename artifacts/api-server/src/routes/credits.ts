@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
 import { desc, eq, sql } from "drizzle-orm";
 import { db, userCreditsTable, usersTable } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
@@ -57,7 +58,7 @@ router.get("/credits/me", ...authChain, async (req, res): Promise<void> => {
   });
 });
 
-router.get("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
+router.get("/admin/credits", ...authChain, requirePermission("billing.manage"), async (_req, res): Promise<void> => {
   await ensureCreditSchema();
   const [users, credits] = await Promise.all([
     db.select().from(usersTable).orderBy(usersTable.createdAt),
@@ -84,7 +85,7 @@ router.get("/admin/credits", ...authChain, requireRole("global_admin", "admin"),
   });
 });
 
-router.post("/admin/credits", ...authChain, requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.post("/admin/credits", ...authChain, requirePermission("billing.manage"), async (req, res): Promise<void> => {
   await ensureCreditSchema();
   const actor = req.dbUser!;
   const userId = Number(req.body?.userId);
@@ -99,10 +100,14 @@ router.post("/admin/credits", ...authChain, requireRole("global_admin", "admin")
     res.status(400).json({ error: "amount must be a non-zero number up to 10000" });
     return;
   }
-
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
   if (!target) {
     res.status(404).json({ error: "User not found" });
+    return;
+  }
+  const existingBalance = balanceFor(await db.select().from(userCreditsTable).where(eq(userCreditsTable.userId, userId)));
+  if (Number((existingBalance + amount).toFixed(2)) < 0) {
+    res.status(409).json({ error: "Adjustment would create a negative store credit balance" });
     return;
   }
 
@@ -120,7 +125,7 @@ router.post("/admin/credits", ...authChain, requireRole("global_admin", "admin")
     actorId: actor.id,
     actorEmail: actor.email,
     actorRole: actor.role,
-    action: amount > 0 ? "GRANT_USER_CREDIT" : "DEBIT_USER_CREDIT",
+    action: amount > 0 ? "store_credit.admin_adjustment" : "store_credit.reversal",
     tenantId,
     resourceType: "user",
     resourceId: String(userId),

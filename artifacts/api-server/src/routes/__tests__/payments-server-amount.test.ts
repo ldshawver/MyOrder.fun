@@ -10,10 +10,11 @@ const dbState: {
   orders: Array<Record<string, unknown>>;
   orderItems: Array<Record<string, unknown>>;
   users: Array<Record<string, unknown>>;
+  credits: Array<Record<string, unknown>>;
   audits: Array<Record<string, unknown>>;
   settings: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
-} = { orders: [], orderItems: [], users: [], audits: [], settings: [], disclaimerAcceptances: [] };
+} = { orders: [], orderItems: [], users: [], credits: [], audits: [], settings: [], disclaimerAcceptances: [] };
 
 const mockActor: Record<string, unknown> = { id: 1, email: "u@example.com", role: "user", tenantId: 1 };
 
@@ -125,12 +126,14 @@ vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
   const ordersTable = { __t: "orders", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
+  const userCreditsTable = { __t: "user_credits", userId: "userId", source: "source", reason: "reason" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
     if (t.__t === "orders") return dbState.orders;
     if (t.__t === "order_items") return dbState.orderItems;
+    if (t.__t === "user_credits") return dbState.credits;
     if (t.__t === "admin_settings") return dbState.settings;
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     return [];
@@ -142,7 +145,7 @@ vi.mock("@workspace/db", () => {
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: { __t: string }) => { target = t; return chain; });
     chain.where = vi.fn((p: { col?: string; val?: unknown }) => {
-      pred = (row) => row[p.col ?? ""] === p.val;
+      pred = typeof p === "function" ? p : (row) => row[p.col ?? ""] === p.val;
       return chain;
     });
     const resolveRows = () => target ? tableFor(target).filter(r => pred ? pred(r) : true) : [];
@@ -151,14 +154,22 @@ vi.mock("@workspace/db", () => {
     return Object.assign(chain, { then: (onF: (rows: unknown[]) => unknown) => onF(resolveRows()) });
   });
 
-  const update = vi.fn(() => ({
-    set: vi.fn(() => ({ where: vi.fn(async () => undefined) })),
+  const update = vi.fn((t: { __t: string }) => ({
+    set: vi.fn((values: Record<string, unknown>) => ({ where: vi.fn(() => ({ returning: vi.fn(async () => {
+      const rows = tableFor(t);
+      const row = rows[0];
+      if (row) Object.assign(row, values);
+      return row ? [row] : [];
+    }) })) })),
   }));
+  const insert = vi.fn((t: { __t: string }) => ({ values: vi.fn((values: Record<string, unknown>) => { tableFor(t).push({ id: tableFor(t).length + 1, ...values }); return { returning: vi.fn(async () => [tableFor(t).at(-1)]) }; }) }));
+  const tx = { execute: vi.fn(), select, update, insert };
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, update },
+    db: { execute: vi.fn(() => Promise.resolve()), select, update, insert, transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)) },
     ordersTable,
     orderItemsTable,
+    userCreditsTable,
     adminSettingsTable,
     customerDisclaimerAcceptancesTable,
   };
@@ -192,6 +203,7 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.orderItems = [];
   dbState.audits = [];
+  dbState.credits = [];
   dbState.settings = [{ id: 1, tenantId: 1, customerDisclaimerVersion: 1 }];
   dbState.disclaimerAcceptances = [{ id: 1, tenantId: 1, userId: 1, disclaimerVersion: 1, acceptedAt: new Date() }];
   stripePayloadCalls.length = 0;
@@ -263,6 +275,39 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/converted/i);
+  });
+
+  it("applies partial store credit and records an audit log", async () => {
+    dbState.orders.push({ id: 560, customerId: 1, tenantId: 1, status: "pending", paymentStatus: "unpaid", total: "43.20", ...convertedCheckoutFields() });
+    dbState.credits.push({ id: 1, tenantId: 1, userId: 1, amount: "20.00", source: "admin_adjustment", reason: "promo" });
+    const res = await supertest(makeApp()).post("/api/payments/560/apply-credit").send({ amount: 10 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ applied: 10, remainingTotal: 33.2, paymentStatus: "unpaid" });
+    expect(dbState.credits).toContainEqual(expect.objectContaining({ amount: "-10.00", source: "order_credit_application" }));
+    expect(dbState.audits).toContainEqual(expect.objectContaining({ action: "store_credit.apply" }));
+  });
+
+  it("applies full store credit and marks order paid", async () => {
+    dbState.orders.push({ id: 561, customerId: 1, tenantId: 1, status: "pending", paymentStatus: "unpaid", total: "43.20", ...convertedCheckoutFields() });
+    dbState.credits.push({ id: 1, tenantId: 1, userId: 1, amount: "100.00", source: "admin_adjustment", reason: "promo" });
+    const res = await supertest(makeApp()).post("/api/payments/561/apply-credit").send({ amount: 50 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ applied: 43.2, remainingTotal: 0, paymentStatus: "paid" });
+  });
+
+  it("rejects applying another user's credit/order", async () => {
+    dbState.orders.push({ id: 562, customerId: 2, tenantId: 1, status: "pending", paymentStatus: "unpaid", total: "43.20", ...convertedCheckoutFields() });
+    const res = await supertest(makeApp()).post("/api/payments/562/apply-credit").send({ amount: 5 });
+    expect(res.status).toBe(403);
+  });
+
+  it("treats duplicate apply as idempotent", async () => {
+    dbState.orders.push({ id: 563, customerId: 1, tenantId: 1, status: "pending", paymentStatus: "unpaid", total: "33.20", ...convertedCheckoutFields() });
+    dbState.credits.push({ id: 1, tenantId: 1, userId: 1, amount: "20.00", source: "admin_adjustment", reason: "promo" });
+    dbState.credits.push({ id: 2, tenantId: 1, userId: 1, amount: "-10.00", source: "order_credit_application", reason: "Applied to order #563" });
+    const res = await supertest(makeApp()).post("/api/payments/563/apply-credit").send({ amount: 10 });
+    expect(res.status).toBe(200);
+    expect(dbState.credits.filter(c => c.source === "order_credit_application" && c.reason === "Applied to order #563")).toHaveLength(1);
   });
 
   it("falls back to order.total when an order has no line items", async () => {

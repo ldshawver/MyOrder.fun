@@ -443,8 +443,8 @@ export default function Profile() {
                       {new Date(ticket.createdAt).toLocaleDateString()}
                     </p>
                   </div>
-                  <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-wider">
-                    {ticket.status.replaceAll("_", " ")}
+                  <span className="rounded-full border border-border px-2 py-1 text-[10px] uppercase tracking-wider" data-testid={`feedback-status-${ticket.id}`}>
+                    Status / Result / Outcome: {ticket.status.replaceAll("_", " ")}
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">
@@ -452,7 +452,7 @@ export default function Profile() {
                 </p>
                 <div className="space-y-2">
                   <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Public notes
+                    Public outcome notes
                   </p>
                   {commentsQuery.isLoading && (
                     <p className="text-xs text-muted-foreground">
