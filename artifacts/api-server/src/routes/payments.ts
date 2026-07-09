@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import Stripe from "stripe";
 import { db, ordersTable, orderItemsTable, userCreditsTable, labTechShiftsTable, inventoryReservationsTable } from "@workspace/db";
 import {
@@ -143,12 +143,6 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-async function getCreditBalance(userId: number): Promise<number> {
-  await ensureCreditSchema();
-  const entries = await db.select().from(userCreditsTable).where(eq(userCreditsTable.userId, userId));
-  return entries.reduce((sum, entry) => sum + money(entry.amount), 0);
-}
-
 // Dispatches WooCommerce-managed line items to WooCommerce (CJ Dropshipping sync)
 // after payment is confirmed. Fire-and-forget — errors logged, never block response.
 async function dispatchWooItemsAfterPayment(orderId: number): Promise<void> {
@@ -205,7 +199,7 @@ router.post("/payments/tokenize", requireCurrentCustomerDisclaimerAcceptance("pa
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (order.customerId !== actor.id && actor.role === "user") {
+  if (order.customerId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -370,7 +364,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (order.customerId !== actor.id && actor.role === "user") {
+  if (order.customerId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
@@ -385,52 +379,53 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     return;
   }
 
-  const balance = await getCreditBalance(order.customerId);
-  if (balance <= 0) {
-    res.status(400).json({ error: "No credit balance available" });
-    return;
-  }
-
-  const currentTotal = money(order.total);
-  const applied = Math.min(requestedAmount, balance, currentTotal);
-  if (applied <= 0) {
-    res.status(400).json({ error: "No payable amount remains" });
-    return;
-  }
-  const remainingTotal = Math.max(0, Number((currentTotal - applied).toFixed(2)));
-
-  await db.insert(userCreditsTable).values({
-    tenantId: order.tenantId,
-    userId: order.customerId,
-    amount: (-applied).toFixed(2),
-    reason: `Applied to order #${order.id}`,
-    source: "order_credit_application",
-    createdBy: actor.id,
-  });
-
-  const [updated] = await db.update(ordersTable)
-    .set({
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${order.customerId}, ${order.id})`);
+    const [lockedOrder] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, order.id), eq(ordersTable.customerId, actor.id))).limit(1);
+    if (!lockedOrder) throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+    const entries = await tx.select().from(userCreditsTable).where(eq(userCreditsTable.userId, actor.id));
+    const userEntries = entries.filter((entry) => entry.userId === actor.id);
+    const existingApplications = userEntries.filter((entry) => entry.source === "order_credit_application" && entry.reason === `Applied to order #${order.id}`);
+    const balance = userEntries.reduce((sum, entry) => sum + money(entry.amount), 0);
+    if (existingApplications.length > 0) {
+      const alreadyApplied = Math.abs(existingApplications.reduce((sum, entry) => sum + money(entry.amount), 0));
+      return { updated: lockedOrder, applied: alreadyApplied, previousTotal: money(lockedOrder.total) + alreadyApplied, remainingTotal: money(lockedOrder.total), balance, idempotent: true };
+    }
+    if (lockedOrder.paymentStatus === "paid") throw Object.assign(new Error("Order is already paid"), { statusCode: 409 });
+    if (balance <= 0) throw Object.assign(new Error("No credit balance available"), { statusCode: 400 });
+    const currentTotal = money(lockedOrder.total);
+    const applied = Math.min(requestedAmount, balance, currentTotal);
+    if (applied <= 0) throw Object.assign(new Error("No payable amount remains"), { statusCode: 400 });
+    const remainingTotal = Math.max(0, Number((currentTotal - applied).toFixed(2)));
+    if (Number((balance - applied).toFixed(2)) < 0) throw Object.assign(new Error("Insufficient store credit balance"), { statusCode: 409 });
+    await tx.insert(userCreditsTable).values({ tenantId: lockedOrder.tenantId, userId: actor.id, amount: (-applied).toFixed(2), reason: `Applied to order #${order.id}`, source: "order_credit_application", createdBy: actor.id });
+    const [updated] = await tx.update(ordersTable).set({
       total: remainingTotal.toFixed(2),
-      paymentMethod: remainingTotal === 0 ? "credit" : order.paymentMethod,
-      selectedPaymentMethod: remainingTotal === 0 ? "credit" : order.selectedPaymentMethod,
-      paymentStatus: remainingTotal === 0 ? "paid" : order.paymentStatus,
-      status: remainingTotal === 0 ? "confirmed" : order.status,
-      paymentToken: remainingTotal === 0 ? `credit_${Date.now()}` : order.paymentToken,
-    })
-    .where(eq(ordersTable.id, order.id))
-    .returning();
+      paymentMethod: remainingTotal === 0 ? "credit" : lockedOrder.paymentMethod,
+      selectedPaymentMethod: remainingTotal === 0 ? "credit" : lockedOrder.selectedPaymentMethod,
+      paymentStatus: remainingTotal === 0 ? "paid" : lockedOrder.paymentStatus,
+      status: remainingTotal === 0 ? "confirmed" : lockedOrder.status,
+      paymentToken: remainingTotal === 0 ? `credit_${lockedOrder.id}` : lockedOrder.paymentToken,
+    }).where(and(eq(ordersTable.id, lockedOrder.id), eq(ordersTable.customerId, actor.id))).returning();
+    return { updated, applied, previousTotal: currentTotal, remainingTotal, balance, idempotent: false };
+  }).catch((err: Error & { statusCode?: number }) => {
+    res.status(err.statusCode ?? 500).json({ error: err.message });
+    return null;
+  });
+  if (!result) return;
+  const { updated, applied, previousTotal, remainingTotal, balance } = result;
 
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
     actorRole: actor.role,
-    action: "APPLY_USER_CREDIT",
+    action: result.idempotent ? "store_credit.apply_duplicate" : "store_credit.apply",
     tenantId: order.tenantId,
     resourceType: "order",
     resourceId: String(order.id),
     metadata: {
       applied,
-      previousTotal: currentTotal,
+      previousTotal,
       remainingTotal,
       previousBalance: balance,
       remainingBalance: Number((balance - applied).toFixed(2)),
@@ -438,7 +433,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
     ipAddress: req.ip,
   });
 
-  if (remainingTotal === 0) {
+  if (remainingTotal === 0 && !result.idempotent) {
     void dispatchWooItemsAfterPayment(updated.id);
   }
 
@@ -479,7 +474,7 @@ router.post("/payments/:orderId/confirm", requireCurrentCustomerDisclaimerAccept
     res.status(404).json({ error: "Order not found" });
     return;
   }
-  if (order.customerId !== actor.id && actor.role === "user") {
+  if (order.customerId !== actor.id) {
     res.status(403).json({ error: "Forbidden" });
     return;
   }
