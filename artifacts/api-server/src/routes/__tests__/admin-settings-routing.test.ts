@@ -168,7 +168,7 @@ describe("/admin/concierge-steps — persistence and tenant scope", () => {
     const app = await buildApp();
     const defaultRes = await supertest(app).get("/api/concierge/intro-steps");
     expect(defaultRes.status).toBe(200);
-    expect(defaultRes.body[0].title).toBe("Hey! I'm Zappy");
+    expect(defaultRes.body[0].title).toBe("Order assistance");
 
     await supertest(app).put("/api/admin/concierge-steps").send(tenantOneSteps);
     const savedRes = await supertest(app).get("/api/concierge/intro-steps");
