@@ -147,8 +147,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     },
     {
       title: "Supervisor",
-      roles: ["global_admin", "admin"],
+      roles: ["global_admin", "admin", "supervisor"],
       items: [
+        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin", "supervisor"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "supervisor"] },
         {
           href: "/admin/settings",
           label: "Settings",
@@ -188,11 +190,11 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Platform Admin",
       roles: ["global_admin"],
       items: [
-        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/users", label: "Users", icon: UserCheck, roles: ["global_admin", "admin", "supervisor"] },
         { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: UserCheck, roles: ["global_admin", "admin"] },
         { href: "/global-admin", label: "Emergency Kill Switch", icon: Zap, roles: ["global_admin", "admin"] },
         { href: "/global-admin/integrations", label: "Platform Integrations", icon: PlugZap, roles: ["global_admin"] },
-        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "admin"] },
+        { href: "/admin/feedback", label: "Feedback", icon: MessageSquare, roles: ["global_admin", "admin", "supervisor"] },
         { href: "/admin/edit-catalog", label: "Edit Catalog", icon: FlaskConical, roles: ["global_admin", "admin"] },
         { href: "/admin/web-editor", label: "Web Editor", icon: Palette, roles: ["global_admin", "admin"] },
         {

@@ -41,6 +41,16 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+let feedbackSchemaEnsured = false;
+async function ensureFeedbackSchema(): Promise<void> {
+  if (feedbackSchemaEnsured) return;
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user'`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer`);
+  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "ticket_id" text`);
+  feedbackSchemaEnsured = true;
+}
+
 
 let feedbackSchemaEnsured = false;
 async function ensureFeedbackSchema(): Promise<void> {
@@ -321,6 +331,7 @@ export async function runFeedbackAutoArchive(
 router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
   await ensureFeedbackSchema();
   const actor = req.dbUser!;
+  await ensureFeedbackSchema();
   const parsed = CreateTicketBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -436,6 +447,7 @@ router.get(
   async (req, res): Promise<void> => {
     await ensureFeedbackSchema();
     const actor = req.dbUser!;
+    await ensureFeedbackSchema();
     const parsed = ListQueryParams.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.message });
@@ -499,6 +511,7 @@ router.get(
   async (req, res): Promise<void> => {
     await ensureFeedbackSchema();
     const actor = req.dbUser!;
+    await ensureFeedbackSchema();
     const id = parseInt(getRouteParam(req.params.id), 10);
     if (Number.isNaN(id)) {
       res.status(400).json({ error: "Invalid id" });

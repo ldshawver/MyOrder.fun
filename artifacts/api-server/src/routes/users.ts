@@ -82,18 +82,22 @@ function canAssignRole(actor: typeof usersTable.$inferSelect, target: typeof use
   const currentTargetRole = normalizeRole(target.role);
   if (actor.id === target.id && roleRank(targetRole) > roleRank(currentTargetRole)) return false;
   if (actorRole === "global_admin") return true;
-  if (actorRole === "admin") return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
+  if (actorRole === "admin") return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor" || targetRole === "admin";
   if (actorRole === "supervisor") return targetRole === "user" || targetRole === "csr";
   return false;
 }
 
 function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
   const actorRole = normalizeRole(actor.role);
+  const targetRole = normalizeRole(target.role);
+  if (actor.id === target.id) return false;
   if (actorRole === "global_admin") return true;
   if (!["admin", "supervisor"].includes(actorRole)) return false;
   if (actor.tenantId == null && target.tenantId != null) return false;
   if (actor.tenantId != null && target.tenantId != null && actor.tenantId !== target.tenantId) return false;
-  return roleRank(actorRole) > roleRank(normalizeRole(target.role));
+  if (actorRole === "supervisor" && !["user", "csr"].includes(targetRole)) return false;
+  if (actorRole === "admin" && targetRole === "global_admin") return false;
+  return true;
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -512,7 +516,7 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("glob
 });
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
-router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
