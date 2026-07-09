@@ -11,6 +11,7 @@ vi.mock("@workspace/db", () => {
     from: vi.fn(() => chain),
     where: vi.fn(() => chain),
     limit: vi.fn(async () => []),
+    then: (resolve: (value: unknown[]) => unknown) => resolve([]),
   };
   const deleteChain = { where: vi.fn(async () => undefined) };
   return {
@@ -29,6 +30,7 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args) => args),
   eq: vi.fn((col, val) => ({ col, val })),
   isNull: vi.fn((col) => ({ isNull: col })),
+  or: vi.fn((...args) => args),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 

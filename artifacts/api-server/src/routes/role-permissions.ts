@@ -1,17 +1,35 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db, rolePermissionsTable, permissionAuditLogsTable } from "@workspace/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { loadDbUser, requireApproved, requireAuth, requireDbUser } from "../lib/auth";
 import { DEFAULT_ROLE_PERMISSIONS, PERMISSIONS, PLATFORM_PERMISSIONS, ROLES, isGlobalAdmin, normalizeRole, requirePermission, ROLE_GLOBAL_ADMIN, type Permission, type Role } from "../lib/roles";
 
 const router = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
+let schemaEnsured = false;
+async function ensureRolePermissionsSchema(): Promise<void> {
+  if (schemaEnsured) return;
+  if (!("execute" in db) || typeof db.execute !== "function") { schemaEnsured = true; return; }
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "role_permissions" ("id" serial PRIMARY KEY, "tenant_id" integer, "role" text NOT NULL, "permission" text NOT NULL, "enabled" boolean NOT NULL DEFAULT true, "created_at" timestamp with time zone DEFAULT now() NOT NULL, "updated_at" timestamp with time zone DEFAULT now() NOT NULL)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "role_permissions_tenant_role_permission_unique" ON "role_permissions" (COALESCE("tenant_id", 0), "role", "permission")`);
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS "permission_audit_logs" ("id" serial PRIMARY KEY, "actor_user_id" integer NOT NULL, "tenant_id" integer, "action" text NOT NULL, "target_role" text NOT NULL, "permission" text NOT NULL, "old_value" boolean, "new_value" boolean, "created_at" timestamp with time zone DEFAULT now() NOT NULL)`);
+  schemaEnsured = true;
+}
+
 const permissionEnum = z.enum(PERMISSIONS);
 const permissionPatchSchema = z.object({
   tenantId: z.number().int().positive().nullable().optional(),
-  permissions: z.record(permissionEnum, z.boolean()).refine((permissions) => Object.keys(permissions).length > 0, "At least one permission is required"),
+  permissions: z
+    .union([
+      z.record(permissionEnum, z.boolean()),
+      z.array(z.object({ permission: permissionEnum, enabled: z.boolean() }).strict()),
+    ])
+    .transform((permissions) => Array.isArray(permissions)
+      ? Object.fromEntries(permissions.map((item) => [item.permission, item.enabled]))
+      : permissions)
+    .refine((permissions) => Object.keys(permissions).length > 0, "At least one permission is required"),
 }).strict();
 const resetSchema = z.object({ tenantId: z.number().int().positive().nullable().optional() }).strict();
 const listQuerySchema = z.object({ tenantId: z.coerce.number().int().positive().optional() }).strict();
@@ -51,6 +69,7 @@ function assertSafeAdminPermissionChange(role: Role, permission: string, enabled
 }
 
 router.get("/admin/roles-permissions", requirePermission("users.manage_permissions"), async (req, res): Promise<void> => {
+  await ensureRolePermissionsSchema();
   const actor = req.dbUser!;
   const parsed = listQuerySchema.safeParse(req.query);
   if (!parsed.success) return void res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
@@ -73,6 +92,7 @@ router.get("/admin/roles-permissions", requirePermission("users.manage_permissio
 });
 
 router.put("/admin/roles-permissions/:role", requirePermission("users.manage_permissions"), async (req, res): Promise<void> => {
+  await ensureRolePermissionsSchema();
   const actor = req.dbUser!;
   const role = normalizeRole(req.params.role);
   const parsed = permissionPatchSchema.safeParse(req.body);
@@ -101,6 +121,7 @@ router.put("/admin/roles-permissions/:role", requirePermission("users.manage_per
 });
 
 router.post("/admin/roles-permissions/:role/reset", requirePermission("users.manage_permissions"), async (req, res): Promise<void> => {
+  await ensureRolePermissionsSchema();
   const actor = req.dbUser!;
   const role = normalizeRole(req.params.role);
   const parsed = resetSchema.safeParse(req.body ?? {});
