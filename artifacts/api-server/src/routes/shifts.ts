@@ -50,7 +50,7 @@ async function createShiftReceiptPrintJob(args: {
       operatorUserId: args.operatorUserId,
       jobType: args.jobType,
       status: receiptPrinter ? "queued" : "failed",
-      idempotencyKey: `${args.jobType}:${args.shiftId}:${Date.now()}`,
+      idempotencyKey: `${args.jobType}:${args.shiftId}`,
       renderFormat: "text",
       payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
       renderedText: args.renderedText,

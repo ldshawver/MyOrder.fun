@@ -547,7 +547,7 @@ describe("SSE event emission via the live route handlers", () => {
     const updated = adminCapture.received.find(e => e.type === "order.updated");
     expect(updated).toBeDefined();
     expect((updated as { reason: string }).reason).toBe("accepted");
-    expect((updated as { fulfillmentStatus: string }).fulfillmentStatus).toBe("accepted");
+    expect((updated as { fulfillmentStatus: string }).fulfillmentStatus).toBe("in_progress");
   });
 
   it("POST /api/orders/:id/mark-ready emits an order.ready SSE event", async () => {

@@ -15,7 +15,7 @@ describe("production readiness workflow coverage", () => {
 
   it("exposes store-credit checkout UI states and cash closeout controls", () => {
     const orderDetail = page("order-detail.tsx");
-    for (const text of ["Apply Store Credit", "Remaining Balance", "Partial Store Credit", "Full Store Credit", "Cash closeout"]) {
+    for (const text of ["Apply Customer Credit", "Remaining Balance", "Partial Customer Credit", "Full Customer Credit", "Cash closeout"]) {
       expect(orderDetail).toContain(text);
     }
     expect(orderDetail).toContain('/api/payments/${order.id}/apply-credit');
@@ -39,7 +39,7 @@ describe("production readiness workflow coverage", () => {
 
   it("keeps backend cash closeout and stale archive endpoints available", () => {
     const orders = api("orders.ts");
-    expect(orders).toContain('z.enum(["cash", "gift_card", "cash_app", "stripe", "card", "paypal", "venmo", "manual", "other"])');
+    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
     expect(orders).toContain('/orders/:id/closeout');
     expect(orders).toContain('/admin/orders/stale-submitted/archive');
     expect(orders).toContain('ORDER_STALE_SUBMITTED_ARCHIVED');

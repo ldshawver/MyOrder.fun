@@ -12,6 +12,7 @@ import {
   adminSettingsTable,
   inventoryLocationsTable,
   catalogItemsTable,
+  cashLedgerEntriesTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -49,7 +50,8 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 
-const PosCloseoutPaymentMethod = z.enum(["cash", "gift_card", "cash_app", "stripe", "card", "paypal", "venmo", "manual", "other"]);
+const CanonicalTenderMethod = z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"]);
+const PosCloseoutPaymentMethod = CanonicalTenderMethod;
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -1213,7 +1215,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     .set({
       acceptedAt: now,
       status: "in_progress",
-      fulfillmentStatus: "accepted",
+      fulfillmentStatus: "in_progress",
       assignedCsrUserId: actor.id,
       assignedShiftId: shift.id,
     })
@@ -1310,15 +1312,20 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const parsed = z.object({ paymentMethod: PosCloseoutPaymentMethod }).strict().safeParse(req.body ?? {});
-  if (!parsed.success) { res.status(422).json({ error: "paymentMethod must be one of: cash, gift_card, cash_app, stripe/card, paypal, venmo, manual/other" }); return; }
+  const parsed = z.object({ paymentMethod: PosCloseoutPaymentMethod, idempotencyKey: z.string().trim().min(8).max(120).optional() }).strict().safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(422).json({ error: "paymentMethod must be one of: cash, customer_credit, gift_card, cash_app, venmo, paypal, card" }); return; }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const method = parsed.data.paymentMethod === "card" ? "stripe" : parsed.data.paymentMethod === "other" ? "manual" : parsed.data.paymentMethod;
+  const method = parsed.data.paymentMethod;
+  const idempotencyKey = parsed.data.idempotencyKey ?? String(req.header("Idempotency-Key") ?? `closeout:${tenantId}:${orderId}:${method}`);
 
-  const { updated, auditTotal, cashShiftId, cashBoxAssignmentId, status } = await db.transaction(async (tx) => {
+  const { updated, auditTotal, cashShiftId, cashBoxAssignmentId, cashLedgerId, status } = await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
-    if (!order) return { updated: null, auditTotal: null, cashShiftId: null, cashBoxAssignmentId: null, status: 404 as const };
-    if (order.paymentStatus === "paid") return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 409 as const };
+    if (!order) return { updated: null, auditTotal: null, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 404 as const };
+    if (["completed", "refunded", "cancelled", "archived", "voided"].includes(order.status) && order.paymentStatus !== "paid") {
+      return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 409 as const };
+    }
+    if (order.paymentStatus === "paid") return { updated: order, auditTotal: order.total, cashShiftId: order.assignedShiftId ?? null, cashBoxAssignmentId: null, cashLedgerId: null, status: 200 as const };
 
     let closeoutShift: typeof labTechShiftsTable.$inferSelect | null = null;
     const role = normalizeRole(actor.role);
@@ -1333,7 +1340,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
       const orderIsAssignedToActor = order.assignedCsrUserId === actor.id && (order.assignedShiftId == null || shift?.id === order.assignedShiftId);
       const orderIsGeneralQueue = order.assignedShiftId == null && order.assignedCsrUserId == null;
       if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId }) || (!orderIsAssignedToActor && !orderIsGeneralQueue)) {
-        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 403 as const };
+        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
       }
       closeoutShift = shift;
     } else if (method === "cash") {
@@ -1343,6 +1350,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
         eq(labTechShiftsTable.status, "active"),
       )).limit(1);
       closeoutShift = shift ?? null;
+      if (!closeoutShift || !isShiftOrderRoutable({ ...closeoutShift, expectedTenantId: tenantId })) {
+        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
+      }
     }
 
     const cashBoxAssignmentId = method === "cash"
@@ -1351,22 +1361,43 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
     if (method === "cash" && closeoutShift && !closeoutShift.boxAssignmentId) {
       await tx.update(labTechShiftsTable).set({ boxAssignmentId: cashBoxAssignmentId }).where(eq(labTechShiftsTable.id, closeoutShift.id));
     }
+    let cashLedgerId: number | null = null;
+    if (method === "cash") {
+      if (!closeoutShift) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
+      const [existingLedger] = await tx.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.idempotencyKey, idempotencyKey)).limit(1);
+      if (existingLedger) cashLedgerId = existingLedger.id;
+      else {
+        const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
+          tenantId,
+          orderId,
+          shiftId: closeoutShift.id,
+          csrUserId: actor.id,
+          boxAssignmentId: cashBoxAssignmentId ?? "sales-box-1",
+          amount: String(order.total),
+          idempotencyKey,
+        }).returning();
+        cashLedgerId = ledger?.id ?? null;
+      }
+      const totals = typeof closeoutShift.paymentTotalsJson === "object" && closeoutShift.paymentTotalsJson
+        ? { ...(closeoutShift.paymentTotalsJson as Record<string, number>) }
+        : {};
+      totals.cash = Number(totals.cash ?? 0) + Number(order.total);
+      await tx.update(labTechShiftsTable).set({ paymentTotalsJson: totals }).where(eq(labTechShiftsTable.id, closeoutShift.id));
+    }
 
     const priorFulfillment = order.fulfillmentStatus ?? "submitted";
-    const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : "completed";
+    const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : priorFulfillment;
     const [updated] = await tx.update(ordersTable).set({
       paymentStatus: "paid",
       paymentMethod: method,
       selectedPaymentMethod: method,
       paymentToken: order.paymentToken ?? `${method}_${Date.now()}`,
-      status: nextFulfillment === "completed" ? "completed" : order.status,
+      status: order.status === "pending" || order.status === "submitted" ? "in_progress" : order.status,
       fulfillmentStatus: nextFulfillment,
-      completedAt: nextFulfillment === "completed" ? new Date() : order.completedAt,
-      completedByUserId: nextFulfillment === "completed" ? actor.id : order.completedByUserId,
       ...(closeoutShift ? { assignedShiftId: order.assignedShiftId ?? closeoutShift.id, assignedCsrUserId: order.assignedCsrUserId ?? actor.id, routeSource: order.routeSource ?? "active_csr" } : {}),
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), sql`${ordersTable.paymentStatus} <> 'paid'`)).returning();
-    if (!updated) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 409 as const };
-    return { updated, auditTotal: order.total, cashShiftId: method === "cash" ? closeoutShift?.id ?? null : null, cashBoxAssignmentId, status: 200 as const };
+    if (!updated) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId, status: 409 as const };
+    return { updated, auditTotal: order.total, cashShiftId: method === "cash" ? closeoutShift?.id ?? null : null, cashBoxAssignmentId, cashLedgerId, status: 200 as const };
   });
 
   if (!updated) {
@@ -1377,7 +1408,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "ORDER_CLOSED_OUT", resourceType: "order", resourceId: String(orderId),
-    metadata: { paymentMethod: method, total: auditTotal, cashShiftId, cashBoxAssignmentId }, ipAddress: req.ip,
+    metadata: { paymentMethod: method, total: auditTotal, cashShiftId, cashBoxAssignmentId, cashLedgerId, idempotencyKey }, ipAddress: req.ip,
   });
   emitUpdated(updated, "closed_out");
   res.json(await buildOrderResponse(updated));
@@ -1648,6 +1679,10 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(409).json({ error: "Archived orders require an explicit restore endpoint before active transitions" });
     return;
   }
+  if (status === "completed" && order.paymentStatus !== "paid") {
+    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" });
+    return;
+  }
   const now = new Date();
   const stamps: Partial<typeof ordersTable.$inferInsert> =
     status === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
@@ -1902,11 +1937,13 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   // working for one rollout cycle.
   const LEGACY_MAP: Record<string, string> = {
     complete: "completed",
+    accepted: "in_progress",
+    preparing: "in_progress",
     handed_off: "completed",
     courier_arrived: "ready",
     ready_behind_gate: "ready",
   };
-  const VALID = ["submitted", "accepted", "preparing", "ready", "completed", "cancelled"] as const;
+  const VALID = ["submitted", "in_progress", "ready", "completed", "cancelled"] as const;
   const fulfillmentStatus = rawFulfillment ? (LEGACY_MAP[rawFulfillment] ?? rawFulfillment) : undefined;
   if (!fulfillmentStatus || !(VALID as readonly string[]).includes(fulfillmentStatus)) {
     res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
@@ -1929,14 +1966,17 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
       res.status(403).json({ error: "CSR must have the assigned active ready shift to update fulfillment" }); return;
     }
   }
-  const allowed: Record<string, string[]> = { submitted: ["accepted"], accepted: ["preparing"], preparing: ["ready", "cancelled"], ready: ["completed", "cancelled"], completed: [], cancelled: [] };
+  const allowed: Record<string, string[]> = { submitted: ["in_progress"], in_progress: ["ready", "cancelled"], ready: ["completed", "cancelled"], completed: [], cancelled: [] };
   const priorFulfillment = order.fulfillmentStatus ?? "submitted";
   if (!((allowed[priorFulfillment] ?? []).includes(fulfillmentStatus)) && fulfillmentStatus !== priorFulfillment) {
     res.status(409).json({ error: `Illegal fulfillment transition: ${priorFulfillment} -> ${fulfillmentStatus}` }); return;
   }
+  if (fulfillmentStatus === "completed" && order.paymentStatus !== "paid") {
+    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" }); return;
+  }
 
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
-  if (fulfillmentStatus === "preparing") update.status = "processing";
+  if (fulfillmentStatus === "in_progress") update.status = "in_progress";
   if (fulfillmentStatus === "ready") update.status = "ready";
   if (fulfillmentStatus === "completed") update.status = "completed";
   if (fulfillmentStatus === "cancelled") update.status = "cancelled";

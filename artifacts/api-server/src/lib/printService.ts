@@ -465,7 +465,7 @@ export async function enqueueOrderPrintJobs(order: {
       await db.insert(printJobsTable).values({
         orderId: order.id,
         printerId: null,
-        jobType: "receipt",
+        jobType: "customer_receipt",
         status: "failed",
         idempotencyKey: key,
         renderFormat: "text",
@@ -480,7 +480,7 @@ export async function enqueueOrderPrintJobs(order: {
 
   if ((settings.autoPrintReceipts || settings.autoPrintOrders) && receiptPrinter) {
     const renderedText = renderCustomerReceipt(printOrder);
-    const key = makeIdempotencyKey(order.id, receiptPrinter.id, "receipt");
+    const key = makeIdempotencyKey(order.id, receiptPrinter.id, "customer_receipt");
     const existing = await db.select().from(printJobsTable)
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
 
@@ -489,7 +489,7 @@ export async function enqueueOrderPrintJobs(order: {
       [job] = await db.insert(printJobsTable).values({
         orderId: order.id,
         printerId: receiptPrinter.id,
-        jobType: "receipt",
+        jobType: "customer_receipt",
         status: "queued",
         idempotencyKey: key,
         renderFormat: "text",
@@ -514,7 +514,7 @@ export async function enqueueOrderPrintJobs(order: {
 
   for (const kp of kitchenPrinters) {
     const renderedText = renderKitchenTicket(printOrder);
-    const key = makeIdempotencyKey(order.id, kp.id, "order_ticket");
+    const key = makeIdempotencyKey(order.id, kp.id, "expo_ticket");
     const existing = await db.select().from(printJobsTable)
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
 
@@ -522,7 +522,7 @@ export async function enqueueOrderPrintJobs(order: {
       const [job] = await db.insert(printJobsTable).values({
         orderId: order.id,
         printerId: kp.id,
-        jobType: "order_ticket",
+        jobType: "expo_ticket",
         status: "queued",
         idempotencyKey: key,
         renderFormat: "text",
@@ -546,7 +546,7 @@ export async function enqueueOrderPrintJobs(order: {
 
   for (const ep of expoPrinters) {
     const renderedText = renderKitchenTicket(printOrder);
-    const key = makeIdempotencyKey(order.id, ep.id, "order_ticket");
+    const key = makeIdempotencyKey(order.id, ep.id, "expo_ticket");
     const existing = await db.select().from(printJobsTable)
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
 
@@ -554,7 +554,7 @@ export async function enqueueOrderPrintJobs(order: {
       const [job] = await db.insert(printJobsTable).values({
         orderId: order.id,
         printerId: ep.id,
-        jobType: "order_ticket",
+        jobType: "expo_ticket",
         status: "queued",
         idempotencyKey: key,
         renderFormat: "text",

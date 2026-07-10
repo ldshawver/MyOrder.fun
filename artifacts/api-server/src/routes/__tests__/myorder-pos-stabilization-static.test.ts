@@ -246,7 +246,7 @@ describe("POS order closeout cash-bank safeguards", () => {
   const orderDetail = platform("pages/order-detail.tsx");
 
   it("exposes all supported closeout payment methods including cash", () => {
-    expect(orders).toContain('z.enum(["cash", "gift_card", "cash_app", "stripe", "card", "paypal", "venmo", "manual", "other"])');
+    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
     for (const method of ["cash", "gift_card", "cash_app", "card", "paypal", "venmo"]) {
       expect(orderDetail).toContain(`closeOut("${method}")`);
     }
@@ -266,7 +266,7 @@ describe("POS order closeout cash-bank safeguards", () => {
   it("requires CSR ownership or general queue access before closeout", () => {
     expect(orders).toContain("orderIsAssignedToActor");
     expect(orders).toContain("orderIsGeneralQueue");
-    expect(orders).toContain('return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, status: 403 as const };');
+    expect(orders).toContain('return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };');
   });
 });
 
