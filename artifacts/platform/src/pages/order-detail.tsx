@@ -956,12 +956,12 @@ export default function OrderDetail() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs font-semibold">
                           <BadgeDollarSign size={14} className="text-primary" />
-                          Apply Store Credit
+                          Apply Customer Credit
                         </div>
                         <div className="font-mono text-sm font-bold">${(creditBalance ?? 0).toFixed(2)}</div>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
-                        <div>Available Store Credit: <span className="font-mono text-foreground">${(creditBalance ?? 0).toFixed(2)}</span></div>
+                        <div>Available Customer Credit: <span className="font-mono text-foreground">${(creditBalance ?? 0).toFixed(2)}</span></div>
                         <div>Remaining Balance: <span className="font-mono text-foreground">${remainingAfterCredit.toFixed(2)}</span></div>
                       </div>
                       <div className="flex gap-2">
@@ -980,15 +980,15 @@ export default function OrderDetail() {
                           className="rounded-lg text-xs whitespace-nowrap"
                           data-testid="button-apply-credit"
                         >
-                          Apply Store Credit
+                          Apply Customer Credit
                         </Button>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={() => setCreditAmount(Math.min(maxApplicableCredit, Math.max(maxApplicableCredit / 2, 0)).toFixed(2))} data-testid="button-partial-store-credit">
-                          Partial Store Credit
+                          Partial Customer Credit
                         </Button>
                         <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={() => setCreditAmount(maxApplicableCredit.toFixed(2))} data-testid="button-full-store-credit">
-                          Full Store Credit
+                          Full Customer Credit
                         </Button>
                       </div>
                       {creditMessage && <div className="text-[11px] text-muted-foreground">{creditMessage}</div>}

@@ -45,17 +45,6 @@ let feedbackSchemaEnsured = false;
 async function ensureFeedbackSchema(): Promise<void> {
   if (feedbackSchemaEnsured) return;
   await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user'`);
-  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone`);
-  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "archived_by_user_id" integer`);
-  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "ticket_id" text`);
-  feedbackSchemaEnsured = true;
-}
-
-
-let feedbackSchemaEnsured = false;
-async function ensureFeedbackSchema(): Promise<void> {
-  if (feedbackSchemaEnsured) return;
-  await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "submitter_role" text NOT NULL DEFAULT 'user'`);
   await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "context_json" jsonb`);
   await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_at" timestamp with time zone`);
   await db.execute(sql`ALTER TABLE "feedback_tickets" ADD COLUMN IF NOT EXISTS "reviewed_by_user_id" integer REFERENCES "users"("id")`);

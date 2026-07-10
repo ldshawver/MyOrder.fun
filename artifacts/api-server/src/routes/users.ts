@@ -516,7 +516,7 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("glob
 });
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
-router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
+router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 

@@ -521,7 +521,7 @@ export default function AdminSettingsPage() {
 
             <div className="mt-5 pt-5 border-t border-border/40 space-y-3">
               <div>
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Store Credit Setup</div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer Credit Setup</div>
                 <p className="text-xs text-muted-foreground mt-1">Store public account IDs, checkout keys, webhook status, and admin notes for each accepted payment method.</p>
               </div>
               <div className="grid gap-3">
