@@ -65,6 +65,8 @@ export const ordersTable = pgTable("orders", {
   routeSource: text("route_source"),
   routedAt: timestamp("routed_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  preparedAt: timestamp("prepared_at", { withTimezone: true }),
+  preparedByUserId: integer("prepared_by_user_id").references(() => usersTable.id),
   // Per-order ETA in minutes; defaults to 30 (also overridable from
   // admin_settings.defaultEtaMinutes at insert time).
   promisedMinutes: integer("promised_minutes").default(30),

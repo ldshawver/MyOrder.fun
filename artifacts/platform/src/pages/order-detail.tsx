@@ -62,7 +62,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   });
 
   const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
-  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "delivered";
+  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "completed" || order.status === "delivered";
   const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
   const timerExpired = etaForCheck !== null && now >= etaForCheck;
   const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
@@ -113,7 +113,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
     message = "Almost ready — just putting on the finishing touches.";
   } else if (order.fulfillmentStatus === "preparing" || order.fulfillmentStatus === "accepted") {
     message = "Our lab team is preparing your order...";
-  } else if (order.status === "pending" || order.fulfillmentStatus === "submitted") {
+  } else if (order.status === "submitted" || order.status === "pending" || order.fulfillmentStatus === "submitted") {
     message = "Your order is in the queue waiting to be picked up...";
   } else {
     message = "Our lab team is working on your order...";
@@ -341,16 +341,21 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 const STATUS_MESSAGES: Record<string, string> = {
+  submitted: "Your order has been received and is awaiting processing by our team.",
   pending: "Your order has been received and is awaiting processing by our lab team.",
+  in_progress: "A customer service rep has claimed your order.",
+  preparing: "Your order is being prepared.",
   processing: "Our lab technicians are actively working on your order.",
   ready: "Your order is ready! Please proceed to collect it.",
+  completed: "Your order has been completed.",
   delivered: "Your order has been successfully delivered.",
   cancelled: "This order has been cancelled.",
 };
 
 const FULFILLMENT_STAGE_MESSAGES: Record<string, string> = {
   submitted: "Order received — waiting for a customer service rep to pick it up.",
-  accepted: "A customer service rep is preparing your order.",
+  in_progress: "Claimed — a customer service rep has accepted your order.",
+  accepted: "Claimed — a customer service rep has accepted your order.",
   preparing: "Your order is being packaged discreetly for pickup.",
   ready: "Your order is ready for pickup or delivery.",
   completed: "Your order has been completed. Thanks for shopping with us!",

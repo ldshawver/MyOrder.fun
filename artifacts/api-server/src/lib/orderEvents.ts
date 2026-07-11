@@ -23,6 +23,7 @@ export type OrderEventBase = {
   orderId: number;
   customerId: number;
   assignedCsrUserId: number | null;
+  eventId?: string;
 };
 
 export type OrderAssignedEvent = OrderEventBase & {
@@ -64,9 +65,11 @@ const RECENT_LIMIT = 200;
 const recent: StoredEvent[] = [];
 
 export function publishOrderEvent(ev: OrderEvent): void {
-  recent.push({ at: new Date().toISOString(), ev });
+  const eventId = ev.eventId ?? `${ev.type}:${ev.orderId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const stored = { ...ev, eventId } as OrderEvent;
+  recent.push({ at: new Date().toISOString(), ev: stored });
   if (recent.length > RECENT_LIMIT) recent.splice(0, recent.length - RECENT_LIMIT);
-  bus.emit("event", ev);
+  bus.emit("event", stored);
 }
 
 /**

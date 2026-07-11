@@ -10,10 +10,14 @@ export type OrderFulfillmentStatus = typeof OrderFulfillmentStatus[keyof typeof 
 
 
 export const OrderFulfillmentStatus = {
+  draft: 'draft',
   submitted: 'submitted',
+  in_progress: 'in_progress',
   accepted: 'accepted',
   preparing: 'preparing',
   ready: 'ready',
   completed: 'completed',
   cancelled: 'cancelled',
+  refunded: 'refunded',
+  reconciliation_required: 'reconciliation_required',
 } as const;

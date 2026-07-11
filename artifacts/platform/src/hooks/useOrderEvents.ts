@@ -14,6 +14,7 @@ export type OrderEvent =
       orderId: number;
       customerId: number;
       assignedCsrUserId: number | null;
+      eventId?: string;
       routeSource: string;
       customerName: string;
       total: number;
@@ -27,6 +28,7 @@ export type OrderEvent =
       orderId: number;
       customerId: number;
       assignedCsrUserId: number | null;
+      eventId?: string;
       fulfillmentStatus: string | null;
       status: string;
       estimatedReadyAt: string | null;
@@ -40,6 +42,7 @@ export type OrderEvent =
       orderId: number;
       customerId: number;
       assignedCsrUserId: number | null;
+      eventId?: string;
       readyAt: string;
     };
 
@@ -74,6 +77,14 @@ export function useOrderEvents(
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let lastSeenAt = new Date().toISOString();
     let reconnectAttempts = 0;
+    const seen = new Set<string>();
+    const deliver = (ev: OrderEvent) => {
+      const key = ev.eventId ?? `${ev.type}:${ev.orderId}:${"status" in ev ? `${ev.status}:${ev.fulfillmentStatus}:${ev.reason}` : "readyAt" in ev ? ev.readyAt : ""}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (seen.size > 500) seen.clear();
+      handlerRef.current(ev);
+    };
 
     const startPolling = () => {
       if (pollTimer) return;
@@ -85,7 +96,7 @@ export function useOrderEvents(
           });
           if (!r.ok) return;
           const body = (await r.json()) as { events: OrderEvent[]; serverTime?: string };
-          for (const ev of body.events ?? []) handlerRef.current(ev);
+          for (const ev of body.events ?? []) deliver(ev);
           if (body.serverTime) lastSeenAt = body.serverTime;
         } catch { /* keep trying */ }
       }, fallbackPollMs);
@@ -102,7 +113,7 @@ export function useOrderEvents(
         const fn = (e: MessageEvent) => {
           try {
             const data = JSON.parse(e.data) as OrderEvent;
-            handlerRef.current(data);
+            deliver(data);
             lastSeenAt = new Date().toISOString();
           } catch { /* ignore malformed */ }
         };

@@ -71,6 +71,13 @@ import {
   UberDirectConfigError,
   type UberManifestItem,
 } from "../lib/uberDirect";
+import {
+  IllegalOrderTransitionError,
+  normalizeOrderLifecycleState,
+  nextStateForOrderAction,
+  type OrderLifecycleAction,
+  type OrderLifecycleState,
+} from "../lib/orderStateMachine";
 
 const router: IRouter = Router();
 const OrderTypeSchema = z.enum(["WALK_IN", "CSR", "ONLINE"]);
@@ -612,6 +619,8 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     routeSource: order.routeSource ?? null,
     routedAt: order.routedAt ?? null,
     acceptedAt: order.acceptedAt ?? null,
+    preparedAt: order.preparedAt ?? null,
+    preparedByUserId: order.preparedByUserId ?? null,
     promisedMinutes: order.promisedMinutes ?? null,
     estimatedReadyAt: order.estimatedReadyAt ?? null,
     readyAt: order.readyAt ?? null,
@@ -865,7 +874,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
         customerId: actor.id,
-        status: "pending",
+        status: "submitted",
         paymentStatus: "unpaid",
         paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         subtotal: String(subtotal.toFixed(2)),
@@ -1198,7 +1207,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     res.status(409).json({ error: "Order already accepted", acceptedAt: order.acceptedAt });
     return;
   }
-  if (!["submitted", null, undefined].includes(order.fulfillmentStatus)) {
+  if (normalizeOrderLifecycleState(order.fulfillmentStatus, order.status) !== "submitted") {
     res.status(409).json({
       error: "Order is not in submitted state",
       fulfillmentStatus: order.fulfillmentStatus,
@@ -1223,7 +1232,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       eq(ordersTable.id, orderId),
       eq(ordersTable.tenantId, tenantId),
       sql`${ordersTable.acceptedAt} is null`,
-      sql`(${ordersTable.fulfillmentStatus} = 'submitted' OR ${ordersTable.fulfillmentStatus} is null)`,
+      sql`(${ordersTable.fulfillmentStatus} = 'submitted' OR (${ordersTable.fulfillmentStatus} is null AND ${ordersTable.status} IN ('pending', 'submitted')))`,
       order.assignedCsrUserId == null ? sql`${ordersTable.assignedCsrUserId} is null` : eq(ordersTable.assignedCsrUserId, actor.id),
       isGeneralQueueOrder ? sql`true` : (order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id)),
     ))
@@ -1362,6 +1371,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
       await tx.update(labTechShiftsTable).set({ boxAssignmentId: cashBoxAssignmentId }).where(eq(labTechShiftsTable.id, closeoutShift.id));
     }
     let cashLedgerId: number | null = null;
+    let createdCashLedger = false;
     if (method === "cash") {
       if (!closeoutShift) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
       const [existingLedger] = await tx.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.idempotencyKey, idempotencyKey)).limit(1);
@@ -1377,12 +1387,15 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"),
           idempotencyKey,
         }).returning();
         cashLedgerId = ledger?.id ?? null;
+        createdCashLedger = true;
       }
-      const totals = typeof closeoutShift.paymentTotalsJson === "object" && closeoutShift.paymentTotalsJson
-        ? { ...(closeoutShift.paymentTotalsJson as Record<string, number>) }
-        : {};
-      totals.cash = Number(totals.cash ?? 0) + Number(order.total);
-      await tx.update(labTechShiftsTable).set({ paymentTotalsJson: totals }).where(eq(labTechShiftsTable.id, closeoutShift.id));
+      if (createdCashLedger) {
+        const totals = typeof closeoutShift.paymentTotalsJson === "object" && closeoutShift.paymentTotalsJson
+          ? { ...(closeoutShift.paymentTotalsJson as Record<string, number>) }
+          : {};
+        totals.cash = Number(totals.cash ?? 0) + Number(order.total);
+        await tx.update(labTechShiftsTable).set({ paymentTotalsJson: totals }).where(eq(labTechShiftsTable.id, closeoutShift.id));
+      }
     }
 
     const priorFulfillment = order.fulfillmentStatus ?? "submitted";
@@ -1610,7 +1623,7 @@ router.get("/orders/:id", async (req, res): Promise<void> => {
 });
 
 const LifecycleBody = z.object({
-  status: z.enum(["completed", "cancelled", "archived", "voided"]),
+  status: z.enum(["completed", "cancelled", "refunded", "reconciliation_required", "archived", "voided"]),
   reason: z.string().trim().min(1).max(1000).optional(),
 }).strict();
 
@@ -1643,7 +1656,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     return;
   }
   const { status, reason } = parsed.data;
-  if (["cancelled", "archived", "voided"].includes(status) && !reason) {
+  if (["cancelled", "refunded", "reconciliation_required", "archived", "voided"].includes(status) && !reason) {
     res.status(400).json({ error: "Reason is required" });
     return;
   }
@@ -1662,21 +1675,27 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(403).json({ error: "Forbidden" });
     return;
   }
-  const prior = order.status;
-  if (prior === "completed" && status === "completed") {
+  const statusAction: OrderLifecycleAction =
+    status === "completed" ? "complete" :
+    status === "refunded" ? "refund" :
+    status === "reconciliation_required" ? "reconcile" :
+    "cancel";
+  const normalizedTarget = status === "archived" || status === "voided" ? "cancelled" : status;
+  const prior = normalizeOrderLifecycleState(order.fulfillmentStatus, order.status);
+  let transition: { from: OrderLifecycleState; to: OrderLifecycleState; changed: boolean };
+  try {
+    transition = status === "archived" || status === "voided"
+      ? { from: prior, to: "cancelled", changed: prior !== "cancelled" }
+      : nextStateForOrderAction(prior, statusAction);
+  } catch (err) {
+    if (err instanceof IllegalOrderTransitionError) {
+      res.status(409).json({ error: err.message, from: err.from, to: err.to });
+      return;
+    }
+    throw err;
+  }
+  if (!transition.changed) {
     res.json(await buildOrderResponse(order));
-    return;
-  }
-  if (prior === "completed" && status !== "archived") {
-    res.status(409).json({ error: "Completed orders cannot be moved back to active states" });
-    return;
-  }
-  if (prior === "voided") {
-    res.status(409).json({ error: "Voided orders cannot be reactivated" });
-    return;
-  }
-  if (prior === "archived" && status !== "voided") {
-    res.status(409).json({ error: "Archived orders require an explicit restore endpoint before active transitions" });
     return;
   }
   if (status === "completed" && order.paymentStatus !== "paid") {
@@ -1685,11 +1704,13 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
   }
   const now = new Date();
   const stamps: Partial<typeof ordersTable.$inferInsert> =
-    status === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
-    status === "cancelled" ? { cancelledAt: now, cancelledByUserId: actor.id, fulfillmentStatus: "cancelled" } :
+    normalizedTarget === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
+    normalizedTarget === "cancelled" ? { cancelledAt: now, cancelledByUserId: actor.id, fulfillmentStatus: "cancelled" } :
+    normalizedTarget === "refunded" ? { fulfillmentStatus: "refunded" } :
+    normalizedTarget === "reconciliation_required" ? { fulfillmentStatus: "reconciliation_required" } :
     status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
     { voidedAt: now, voidedByUserId: actor.id };
-  const [updated] = await db.update(ordersTable).set({ status, updatedAt: now, ...stamps }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).returning();
+  const [updated] = await db.update(ordersTable).set({ status: normalizedTarget, updatedAt: now, ...stamps }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).returning();
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -1697,7 +1718,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     action: "ORDER_STATUS_CHANGED",
     resourceType: "order",
     resourceId: String(id),
-    metadata: { priorStatus: prior, newStatus: status, reason: reason ?? null },
+    metadata: { priorStatus: prior, newStatus: normalizedTarget, reason: reason ?? null },
     ipAddress: req.ip,
   });
   emitUpdated(updated, status);
@@ -1931,19 +1952,17 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
 
   const { fulfillmentStatus: bodyFulfillment } = req.body as { fulfillmentStatus?: string };
   const rawFulfillment = forcedFulfillmentStatus ?? bodyFulfillment;
-  // Task #12 vocabulary — the only values the new contract accepts.
-  // Legacy inputs are mapped to the closest spec value before persistence
-  // so out-of-spec strings can never be written, but older clients keep
-  // working for one rollout cycle.
+  // Canonical lifecycle vocabulary. Legacy inputs are accepted at the edge
+  // but are normalized before persistence so the queue, customer tracking,
+  // and API all agree on one state.
   const LEGACY_MAP: Record<string, string> = {
     complete: "completed",
     accepted: "in_progress",
-    preparing: "in_progress",
     handed_off: "completed",
     courier_arrived: "ready",
     ready_behind_gate: "ready",
   };
-  const VALID = ["submitted", "in_progress", "ready", "completed", "cancelled"] as const;
+  const VALID = ["draft", "submitted", "in_progress", "preparing", "ready", "completed", "cancelled", "refunded", "reconciliation_required"] as const;
   const fulfillmentStatus = rawFulfillment ? (LEGACY_MAP[rawFulfillment] ?? rawFulfillment) : undefined;
   if (!fulfillmentStatus || !(VALID as readonly string[]).includes(fulfillmentStatus)) {
     res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
@@ -1966,20 +1985,39 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
       res.status(403).json({ error: "CSR must have the assigned active ready shift to update fulfillment" }); return;
     }
   }
-  const allowed: Record<string, string[]> = { submitted: ["in_progress"], in_progress: ["ready", "cancelled"], ready: ["completed", "cancelled"], completed: [], cancelled: [] };
-  const priorFulfillment = order.fulfillmentStatus ?? "submitted";
-  if (!((allowed[priorFulfillment] ?? []).includes(fulfillmentStatus)) && fulfillmentStatus !== priorFulfillment) {
-    res.status(409).json({ error: `Illegal fulfillment transition: ${priorFulfillment} -> ${fulfillmentStatus}` }); return;
+  const action: OrderLifecycleAction =
+    fulfillmentStatus === "in_progress" ? "claim" :
+    fulfillmentStatus === "preparing" ? "prepare" :
+    fulfillmentStatus === "ready" ? "ready" :
+    fulfillmentStatus === "completed" ? "complete" :
+    fulfillmentStatus === "refunded" ? "refund" :
+    fulfillmentStatus === "reconciliation_required" ? "reconcile" :
+    "cancel";
+  const priorFulfillment = normalizeOrderLifecycleState(order.fulfillmentStatus, order.status);
+  let transition: { from: OrderLifecycleState; to: OrderLifecycleState; changed: boolean };
+  try {
+    transition = nextStateForOrderAction(priorFulfillment, action);
+  } catch (err) {
+    if (err instanceof IllegalOrderTransitionError) {
+      res.status(409).json({ error: err.message, from: err.from, to: err.to }); return;
+    }
+    throw err;
+  }
+  if (!transition.changed) {
+    res.json({ id: order.id, fulfillmentStatus: order.fulfillmentStatus, status: order.status, idempotent: true });
+    return;
   }
   if (fulfillmentStatus === "completed" && order.paymentStatus !== "paid") {
     res.status(409).json({ error: "Order must be paid or closed out before it can be completed" }); return;
   }
 
-  const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus };
+  const now = new Date();
+  const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus, status: fulfillmentStatus, updatedAt: now };
   if (fulfillmentStatus === "in_progress") update.status = "in_progress";
-  if (fulfillmentStatus === "ready") update.status = "ready";
-  if (fulfillmentStatus === "completed") update.status = "completed";
-  if (fulfillmentStatus === "cancelled") update.status = "cancelled";
+  if (fulfillmentStatus === "preparing") { update.status = "preparing"; update.preparedAt = now; update.preparedByUserId = actor.id; }
+  if (fulfillmentStatus === "ready") { update.status = "ready"; update.readyAt = now; }
+  if (fulfillmentStatus === "completed") { update.status = "completed"; update.completedAt = now; update.completedByUserId = actor.id; }
+  if (fulfillmentStatus === "cancelled") { update.status = "cancelled"; update.cancelledAt = now; update.cancelledByUserId = actor.id; }
 
   const [updated] = await db.update(ordersTable).set(update).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).returning();
 
@@ -1999,7 +2037,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
       orderId: updated.id,
       customerId: updated.customerId,
       assignedCsrUserId: updated.assignedCsrUserId ?? null,
-      readyAt: new Date().toISOString(),
+      readyAt: (updated.readyAt ?? now).toISOString(),
     });
   } else {
     emitUpdated(updated, "fulfillment_changed");
