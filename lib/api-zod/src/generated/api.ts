@@ -528,7 +528,7 @@ export const listOrdersQueryPageDefault = 1;
 export const listOrdersQueryLimitDefault = 20;
 
 export const ListOrdersQueryParams = zod.object({
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']).optional(),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']).optional(),
   "customerId": zod.coerce.number().optional(),
   "page": zod.coerce.number().default(listOrdersQueryPageDefault),
   "limit": zod.coerce.number().default(listOrdersQueryLimitDefault)
@@ -545,7 +545,7 @@ export const ListOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -607,7 +607,7 @@ export const ListOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -745,7 +745,7 @@ export const GetOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -807,7 +807,7 @@ export const GetOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -832,7 +832,7 @@ export const UpdateOrderStatusParams = zod.object({
 })
 
 export const UpdateOrderStatusBody = zod.object({
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "notes": zod.string().optional()
 })
 
@@ -846,7 +846,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -908,7 +908,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -958,7 +958,7 @@ export const AcceptOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1020,7 +1020,7 @@ export const AcceptOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1066,7 +1066,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1128,7 +1128,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1162,7 +1162,7 @@ export const MarkOrderReadyResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1224,7 +1224,7 @@ export const MarkOrderReadyResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1262,7 +1262,7 @@ export const ReassignOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1324,7 +1324,7 @@ export const ReassignOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1387,7 +1387,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1449,7 +1449,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1488,7 +1488,7 @@ export const GetRecentOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -1550,7 +1550,7 @@ export const GetRecentOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -2278,7 +2278,7 @@ export const ConfirmPaymentResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
-  "status": zod.enum(['pending', 'confirmed', 'processing', 'ready', 'shipped', 'delivered', 'cancelled']),
+  "status": zod.enum(['draft', 'submitted', 'in_progress', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required', 'pending', 'confirmed', 'processing', 'shipped', 'delivered']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
   "subtotal": zod.number(),
@@ -2340,7 +2340,7 @@ export const ConfirmPaymentResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['draft', 'submitted', 'in_progress', 'accepted', 'preparing', 'ready', 'completed', 'cancelled', 'refunded', 'reconciliation_required']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
