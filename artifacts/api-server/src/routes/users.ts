@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
 import { syncUserToClerk, syncProfileToClerk, syncAvatarToClerk } from "../lib/clerkSync";
+import { ensureProvisioningSchema, normalizeEmail, fetchAndProvisionClerkUser } from "../lib/userProvisioning";
 import { normalizeNotificationPreferences, notificationPreferencesSchema } from "../lib/notificationPrefs";
 
 // E.164-ish: optional leading +, then digits/spaces/dashes, total 7–20 chars.
@@ -898,6 +899,76 @@ router.post("/admin/users/waitlist/:id/reject", requireRole("admin"), async (req
     req.log.warn({ err, waitlistId: id }, "Clerk waitlist reject failed — returning success anyway");
     res.json({ id, status: "rejected", clerkRejectFailed: true });
   }
+});
+
+
+const GlobalAdminCreateUserBody = z.object({
+  email: z.string().email(),
+  firstName: z.string().trim().max(100).optional(),
+  lastName: z.string().trim().max(100).optional(),
+  role: RoleValue.default("user"),
+  tenantId: z.number().int().positive().nullable().optional(),
+}).strict();
+const GlobalAdminPatchUserBody = z.object({
+  firstName: z.string().trim().max(100).nullable().optional(),
+  lastName: z.string().trim().max(100).nullable().optional(),
+  contactPhone: z.string().trim().max(30).nullable().optional(),
+  role: RoleValue.optional(),
+  tenantId: z.number().int().positive().nullable().optional(),
+  status: z.enum(["pending", "approved", "rejected", "deactivated", "suspended"]).optional(),
+  isActive: z.boolean().optional(),
+}).strict();
+
+router.get("/admin/users/all", requireRole("global_admin"), async (req, res): Promise<void> => {
+  await ensureUsersListSchema();
+  await ensureProvisioningSchema();
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 100);
+  const offset = Math.max(Number(req.query.offset ?? 0), 0);
+  const q = String(req.query.q ?? "").trim().toLowerCase();
+  let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
+  if (q) rows = rows.filter((u) => `${u.email ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase().includes(q));
+  const total = rows.length;
+  res.json({ users: rows.slice(offset, offset + limit).map((u) => ({ ...serializeUser(u), tenantId: u.tenantId, identityStatus: u.identityStatus, provisioningStatus: u.provisioningStatus, provisioningError: u.provisioningError })), total, limit, offset });
+});
+
+router.post("/admin/users", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const body = GlobalAdminCreateUserBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const actor = req.dbUser!;
+  const normalizedEmail = normalizeEmail(body.data.email);
+  try {
+    const invite = await clerkClient.invitations.createInvitation({ emailAddress: body.data.email, ignoreExisting: true, publicMetadata: { role: body.data.role, status: "approved" } });
+    const [created] = await db.insert(usersTable).values({ clerkId: `pending_invite:${invite.id}`, email: body.data.email, normalizedEmail, firstName: body.data.firstName, lastName: body.data.lastName, role: body.data.role, tenantId: body.data.tenantId ?? null, status: "approved", isActive: true, identityStatus: "invited", provisioningStatus: "pending" }).returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "GLOBAL_ADMIN_CREATE_INVITE_USER", tenantId: body.data.tenantId ?? null, resourceType: "user", resourceId: String(created.id), metadata: { role: body.data.role }, ipAddress: req.ip });
+    res.status(201).json({ user: serializeUser(created), invitationId: invite.id });
+  } catch (err) {
+    logger.error({ err }, "Global admin user invitation failed");
+    res.status(502).json({ error: "Identity provider invitation failed" });
+  }
+});
+
+router.patch("/admin/users/:id", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  const body = GlobalAdminPatchUserBody.safeParse(req.body);
+  if (!Number.isInteger(id) || !body.success) { res.status(400).json({ error: body.success ? "Invalid user id" : body.error.message }); return; }
+  const actor = req.dbUser!;
+  if (actor.id === id && body.data.role && roleRank(body.data.role) > roleRank(normalizeRole(actor.role))) { res.status(403).json({ error: "Forbidden: cannot self-escalate" }); return; }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  const updates = { ...body.data, status: body.data.status === "suspended" ? "deactivated" : body.data.status, updatedAt: new Date() } as Partial<typeof usersTable.$inferInsert>;
+  const [updated] = await db.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+  if (updated && hasRealClerkUserId(updated.clerkId)) await syncUserToClerk(updated.clerkId, { role: updated.role, status: updated.status as never });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "GLOBAL_ADMIN_UPDATE_USER", tenantId: updated.tenantId, resourceType: "user", resourceId: String(id), metadata: { fields: Object.keys(body.data) }, ipAddress: req.ip });
+  res.json({ user: serializeUser(updated) });
+});
+
+router.post("/admin/users/:id/reconcile", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (!hasRealClerkUserId(target.clerkId)) { res.status(409).json({ error: "Identity missing; resend invitation or create identity first" }); return; }
+  const result = await fetchAndProvisionClerkUser(target.clerkId, "global_admin_reconcile");
+  res.status(result.status === "failed" ? 500 : 200).json(result);
 });
 
 export default router;

@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { db, usersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail } from "./userProvisioning";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
 import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
@@ -61,6 +62,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   if (!auth?.userId) return null;
 
   await ensureUsersAuthSchema();
+  await ensureProvisioningSchema();
 
   const clerkId = auth.userId;
 
@@ -109,14 +111,14 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     const [byEmail] = await db
       .select()
       .from(usersTable)
-      .where(sql`lower(${usersTable.email}) = lower(${email})`)
+      .where(sql`${usersTable.normalizedEmail} = ${normalizeEmail(email)} AND (${usersTable.clerkId} LIKE 'pending:%' OR ${usersTable.clerkId} LIKE 'pending\_%' OR ${usersTable.clerkId} = ${clerkId})`)
       .limit(1);
     if (byEmail) {
       // Claim this row — swap the sentinel/stale clerkId for the real one.
       logger.info({ clerkId, userId: byEmail.id, role: byEmail.role, status: byEmail.status }, "Claiming pre-approved user row by email match");
       const [updated] = await db
         .update(usersTable)
-        .set({ clerkId, updatedAt: new Date() })
+        .set({ clerkId, normalizedEmail: normalizeEmail(email), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
         .where(eq(usersTable.id, byEmail.id))
         .returning();
       return updated ?? byEmail;
@@ -127,7 +129,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   try {
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user" })
+      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user", status: "approved", identityStatus: "verified", provisioningStatus: "active" })
       .returning();
     return created;
   } catch (err) {
@@ -144,18 +146,24 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
       const [byEmail] = await db
         .select()
         .from(usersTable)
-        .where(sql`lower(${usersTable.email}) = lower(${email})`)
+        .where(sql`${usersTable.normalizedEmail} = ${normalizeEmail(email)} AND (${usersTable.clerkId} LIKE 'pending:%' OR ${usersTable.clerkId} LIKE 'pending\_%' OR ${usersTable.clerkId} = ${clerkId})`)
         .limit(1);
       if (byEmail) {
         const [updated] = await db
           .update(usersTable)
-          .set({ clerkId, updatedAt: new Date() })
+          .set({ clerkId, normalizedEmail: normalizeEmail(email), identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() })
           .where(eq(usersTable.id, byEmail.id))
           .returning();
         return updated ?? byEmail;
       }
     }
 
+    try {
+      const reconciled = await fetchAndProvisionClerkUser(clerkId, "login_reconciliation");
+      if (reconciled.user) return reconciled.user;
+    } catch (reconcileErr) {
+      logger.error({ err: reconcileErr, clerkId }, "Login-time provisioning reconciliation failed");
+    }
     logger.error({ err, clerkId }, "Failed to create or find user");
     return null;
   }
