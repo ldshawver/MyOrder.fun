@@ -39,7 +39,7 @@ export const ordersTable = pgTable("orders", {
   handoffCompletedAt: timestamp("handoff_completed_at", { withTimezone: true }),
   handoffCompletedByUserId: integer("handoff_completed_by_user_id").references(() => usersTable.id),
   assignedTechId: integer("assigned_tech_id"),
-  assignedShiftId: integer("assigned_shift_id").references(() => labTechShiftsTable.id),
+  assignedShiftId: integer("assigned_shift_id").references(() => labTechShiftsTable.id, { onDelete: "set null" }),
   // Fulfillment workflow
   fulfillmentStatus: text("fulfillment_status"), // ready_behind_gate | courier_arrived | handed_off | complete
   // Task #12: Order routing + customer hourglass
