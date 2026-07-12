@@ -11,7 +11,7 @@ import {
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
-import { inventoryLocationsTable } from "./shifts";
+import { inventoryLocationsTable, labTechShiftsTable } from "./shifts";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
@@ -39,7 +39,7 @@ export const ordersTable = pgTable("orders", {
   handoffCompletedAt: timestamp("handoff_completed_at", { withTimezone: true }),
   handoffCompletedByUserId: integer("handoff_completed_by_user_id").references(() => usersTable.id),
   assignedTechId: integer("assigned_tech_id"),
-  assignedShiftId: integer("assigned_shift_id"),
+  assignedShiftId: integer("assigned_shift_id").references(() => labTechShiftsTable.id),
   // Fulfillment workflow
   fulfillmentStatus: text("fulfillment_status"), // ready_behind_gate | courier_arrived | handed_off | complete
   // Task #12: Order routing + customer hourglass
