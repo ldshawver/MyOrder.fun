@@ -4,6 +4,8 @@
  * the same idempotent logic runs after any operation that adds/changes
  * local Alavont products.
  */
+import { bootstrapMissingInventoryBalancesThroughAuthority } from "./inventoryAuthority";
+import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
@@ -15,7 +17,6 @@ import {
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "./inventoryHealth";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
-import { bootstrapMissingInventoryBalancesThroughAuthority, deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 
 let inventoryTablesEnsured = false;
 type InventoryDeductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -175,7 +176,7 @@ export async function ensureAllInventoryRowsExistForTenant(tenantId: number): Pr
   const rowsAlreadyExisting = Number(resultRows<InventoryBootstrapCountRow>(await db.execute(sql`
     SELECT count(*)::int AS count
     FROM catalog_items ci
-    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(${[...REQUIRED_BOOTSTRAP_LOCATION_NAMES]})
+    JOIN inventory_locations il ON il.tenant_id = ci.tenant_id AND il.name = ANY(ARRAY[${sql.join([...REQUIRED_BOOTSTRAP_LOCATION_NAMES], sql`, `)}]::text[])
     JOIN inventory_balances ib ON ib.tenant_id = ci.tenant_id AND ib.product_id = ci.id AND ib.location_id = il.id
     WHERE ci.tenant_id = ${tenantId}
   `))[0]?.count ?? 0);
@@ -255,7 +256,7 @@ export async function deductCheckoutInventoryByOrderType(
       eq(inventoryLocationsTable.isActive, true),
     ))
     .orderBy(
-      sql`array_position(ARRAY[${sql.join([...CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType]], sql`, `)}]::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
+sql`array_position(ARRAY[${sql.join(CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[orderType].map((locationName) => sql`${locationName}`), sql`, `)}]::text[], ${inventoryLocationsTable.name}) NULLS LAST`,
       asc(inventoryLocationsTable.displayOrder),
       asc(inventoryLocationsTable.id),
     );

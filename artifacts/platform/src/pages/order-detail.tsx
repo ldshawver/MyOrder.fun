@@ -18,7 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, Gift } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -62,7 +62,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   });
 
   const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
-  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "delivered";
+  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "completed" || order.status === "delivered";
   const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
   const timerExpired = etaForCheck !== null && now >= etaForCheck;
   const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
@@ -113,7 +113,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
     message = "Almost ready — just putting on the finishing touches.";
   } else if (order.fulfillmentStatus === "preparing" || order.fulfillmentStatus === "accepted") {
     message = "Our lab team is preparing your order...";
-  } else if (order.status === "pending" || order.fulfillmentStatus === "submitted") {
+  } else if (order.status === "submitted" || order.status === "pending" || order.fulfillmentStatus === "submitted") {
     message = "Your order is in the queue waiting to be picked up...";
   } else {
     message = "Our lab team is working on your order...";
@@ -341,16 +341,21 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 const STATUS_MESSAGES: Record<string, string> = {
+  submitted: "Your order has been received and is awaiting processing by our team.",
   pending: "Your order has been received and is awaiting processing by our lab team.",
+  in_progress: "A customer service rep has claimed your order.",
+  preparing: "Your order is being prepared.",
   processing: "Our lab technicians are actively working on your order.",
   ready: "Your order is ready! Please proceed to collect it.",
+  completed: "Your order has been completed.",
   delivered: "Your order has been successfully delivered.",
   cancelled: "This order has been cancelled.",
 };
 
 const FULFILLMENT_STAGE_MESSAGES: Record<string, string> = {
   submitted: "Order received — waiting for a customer service rep to pick it up.",
-  accepted: "A customer service rep is preparing your order.",
+  in_progress: "Claimed — a customer service rep has accepted your order.",
+  accepted: "Claimed — a customer service rep has accepted your order.",
   preparing: "Your order is being packaged discreetly for pickup.",
   ready: "Your order is ready for pickup or delivery.",
   completed: "Your order has been completed. Thanks for shopping with us!",
@@ -381,6 +386,8 @@ export default function OrderDetail() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
+  const [closeoutBusy, setCloseoutBusy] = useState<string | null>(null);
+  const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -487,6 +494,29 @@ export default function OrderDetail() {
     }
   }
 
+
+  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "card" | "paypal" | "venmo" | "manual") {
+    if (!order) return;
+    setCloseoutBusy(method);
+    setCloseoutMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/orders/${order.id}/closeout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ paymentMethod: method }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Failed to close out order");
+      setCloseoutMessage(`Closed out as ${method.replace("_", " ")}.`);
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
+    } catch (err) {
+      setCloseoutMessage(err instanceof Error ? err.message : "Failed to close out order");
+    } finally {
+      setCloseoutBusy(null);
+    }
+  }
+
   // Sync tracking input when order loads
   useEffect(() => {
     if (order && (order as OrderWithTracking).trackingUrl) {
@@ -550,6 +580,10 @@ export default function OrderDetail() {
       </div>
     );
   }
+
+  const requestedCredit = Number(creditAmount) || 0;
+  const maxApplicableCredit = Math.min(creditBalance ?? 0, order.total);
+  const remainingAfterCredit = Math.max(order.total - Math.min(requestedCredit, maxApplicableCredit), 0);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -927,9 +961,13 @@ export default function OrderDetail() {
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs font-semibold">
                           <BadgeDollarSign size={14} className="text-primary" />
-                          Credit balance
+                          Apply Customer Credit
                         </div>
                         <div className="font-mono text-sm font-bold">${(creditBalance ?? 0).toFixed(2)}</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+                        <div>Available Customer Credit: <span className="font-mono text-foreground">${(creditBalance ?? 0).toFixed(2)}</span></div>
+                        <div>Remaining Balance: <span className="font-mono text-foreground">${remainingAfterCredit.toFixed(2)}</span></div>
                       </div>
                       <div className="flex gap-2">
                         <Input
@@ -947,12 +985,42 @@ export default function OrderDetail() {
                           className="rounded-lg text-xs whitespace-nowrap"
                           data-testid="button-apply-credit"
                         >
-                          Apply
+                          Apply Customer Credit
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={() => setCreditAmount(Math.min(maxApplicableCredit, Math.max(maxApplicableCredit / 2, 0)).toFixed(2))} data-testid="button-partial-store-credit">
+                          Partial Customer Credit
+                        </Button>
+                        <Button size="sm" variant="ghost" className="h-7 rounded-lg text-[11px]" onClick={() => setCreditAmount(maxApplicableCredit.toFixed(2))} data-testid="button-full-store-credit">
+                          Full Customer Credit
                         </Button>
                       </div>
                       {creditMessage && <div className="text-[11px] text-muted-foreground">{creditMessage}</div>}
                     </div>
                   )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Button className="rounded-xl font-semibold text-xs h-10" onClick={() => void closeOut("cash")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                      <Banknote size={14} className="mr-2" /> Cash closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("gift_card")} disabled={closeoutBusy !== null} data-testid="button-closeout-gift-card">
+                      <Gift size={14} className="mr-2" /> Gift card closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("cash_app")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash-app">
+                      Cash App closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("card")} disabled={closeoutBusy !== null} data-testid="button-closeout-card">
+                      <CreditCard size={14} className="mr-2" /> Card closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("paypal")} disabled={closeoutBusy !== null} data-testid="button-closeout-paypal">
+                      PayPal closeout
+                    </Button>
+                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("venmo")} disabled={closeoutBusy !== null} data-testid="button-closeout-venmo">
+                      Venmo closeout
+                    </Button>
+                  </div>
+                  {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Card via Stripe */}
                   <Button

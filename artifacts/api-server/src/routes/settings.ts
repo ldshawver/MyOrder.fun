@@ -789,10 +789,9 @@ router.put("/admin/concierge/promoted", requireRole("global_admin", "admin"), as
 // ─── Concierge Intro Steps ────────────────────────────────────────────────────
 
 const DEFAULT_CONCIERGE_STEPS = [
-  { emoji: "⚡", title: "Hey! I'm Zappy", body: "Your personal shopping buddy for everything at Alavont & Lucifer Cruz. No judgment, no awkwardness — just me helping you find what you need. I know this menu inside and out.", cta: "Let's go!" },
-  { emoji: "🛍️", title: "Explore the Menu", body: "Browse hundreds of products by category or just tell me what you're into. Search it, ask me, or I'll recommend something that fits. We'll find it together.", cta: "Got it, nice!" },
-  { emoji: "🛒", title: "Order Like a Pro", body: "Take a quick look at your cart before checking out. Double-check the details — quantities, product names, the works. Once it's in, it's in. No stress though, I got you.", cta: "Sounds good!" },
-  { emoji: "📱", title: "Track It & Chill", body: "After checkout, updates come straight here — no calls needed. Sit back, relax. When your order's ready, you'll know. I'll be here if you need anything else.", cta: "I'm ready ⚡" },
+  { emoji: "👋", title: "Order assistance", body: "I am your order assistant concierge. MyOrder.fun supports a privacy-first shopping experience with server-side validation, audit logging, and secure order-processing workflows that limit unnecessary exposure of customer information.", cta: "Continue" },
+  { emoji: "🔒", title: "Privacy and payment care", body: "Customer information is used only for account support, payment processing, inventory accuracy, order fulfillment, and service communications. Please review your cart and payment details carefully before submitting an order.", cta: "Understood" },
+  { emoji: "✅", title: "Responsible ordering", body: "By continuing, you agree to provide accurate information, follow applicable policies, and use this service only for lawful purchases and standard order-processing communications.", cta: "I agree" },
 ];
 
 function parseSteps(raw: string | null | undefined) {
@@ -808,6 +807,17 @@ const conciergeStepSchema = z.object({
 }).strict();
 
 const conciergeStepsSchema = z.array(conciergeStepSchema).min(1).max(8);
+const PROHIBITED_CONCIERGE_LANGUAGE = [
+  /illegal\s+substances?/i, /law[-\s]?enforcement/i, /avoid(?:ing)?\s+(?:police|detection|attention)/i,
+  /encrypted\s+(?:buyer|communication|network|channel)/i, /meetups?/i, /purity|high-purity/i,
+  /confidential\s+(?:transaction|meeting|meetup|spot)/i, /substance/i, /restock/i, /vouching/i, /rival parties/i,
+];
+
+function containsProhibitedConciergeLanguage(steps: Array<{ title: string; body: string; cta: string }>): boolean {
+  const haystack = steps.map((step) => `${step.title} ${step.body} ${step.cta}`).join("\n");
+  return PROHIBITED_CONCIERGE_LANGUAGE.some((pattern) => pattern.test(haystack));
+}
+
 
 // GET /api/concierge/intro-steps — any authenticated user
 router.get("/concierge/intro-steps", async (req, res): Promise<void> => {
@@ -826,6 +836,10 @@ router.put("/admin/concierge-steps", requireRole("global_admin", "admin", "super
   const parsed = conciergeStepsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid concierge steps payload", issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })) });
+    return;
+  }
+  if (containsProhibitedConciergeLanguage(parsed.data)) {
+    res.status(400).json({ error: "Intro steps contain unsafe or prohibited marketplace language." });
     return;
   }
   const existing = await getOrCreateSettings(req.dbUser);

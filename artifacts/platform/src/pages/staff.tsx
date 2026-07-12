@@ -33,8 +33,9 @@ function formatCourierEta(value?: string | null) {
 }
 
 const STATUS_TABS = [
-  { value: "pending", label: "Incoming" },
-  { value: "processing", label: "In Progress" },
+  { value: "submitted", label: "Incoming" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "preparing", label: "Preparing" },
   { value: "ready", label: "Ready" },
 ];
 
@@ -1354,7 +1355,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 // ─── Fulfillment Card ─────────────────────────────────────────────────────────
 
 const FULFILLMENT_STEPS = [
-  { status: "accepted", label: "Claim", icon: HandshakeIcon, color: "yellow" },
+  { status: "in_progress", label: "Claim", icon: HandshakeIcon, color: "yellow" },
   { status: "preparing", label: "Prepare", icon: Activity, color: "blue" },
   { status: "ready", label: "Ready", icon: DoorOpen, color: "emerald" },
   { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
@@ -1416,8 +1417,8 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     setLoading(status);
     try {
       const token = await getToken();
-      const endpoint = status === "accepted"
-        ? `/api/orders/${order.id}/claim`
+      const endpoint = status === "in_progress"
+      ? `/api/orders/${order.id}/claim`
         : status === "preparing"
         ? `/api/orders/${order.id}/prepare`
         : status === "ready"
@@ -1710,7 +1711,10 @@ function CustomerServiceRepQueueContent() {
   }, [getToken]);
 
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
-  const visibleOrders = safeOrders.filter(order => order.status === activeTab || order.fulfillmentStatus === activeTab);
+  const visibleOrders = safeOrders.filter(order => {
+    const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
+    return lifecycle === activeTab;
+  });
 
   const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });

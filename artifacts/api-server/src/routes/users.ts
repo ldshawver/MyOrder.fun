@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import { z } from "zod/v4";
 import { clerkClient } from "@clerk/express";
 import { syncUserToClerk, syncProfileToClerk, syncAvatarToClerk } from "../lib/clerkSync";
+import { ensureProvisioningSchema, normalizeEmail, fetchAndProvisionClerkUser } from "../lib/userProvisioning";
 import { normalizeNotificationPreferences, notificationPreferencesSchema } from "../lib/notificationPrefs";
 
 // E.164-ish: optional leading +, then digits/spaces/dashes, total 7–20 chars.
@@ -73,18 +74,31 @@ function hasRealClerkUserId(clerkId: string | null | undefined): clerkId is stri
 const RoleValue = z.string().refine((value) => isKnownRole(value), { message: "Invalid role" }).transform((value) => normalizeRole(value));
 const RoleBody = z.object({ role: RoleValue });
 
-function canAssignRole(actorRole: ValidRole, targetRole: ValidRole): boolean {
+function roleRank(role: ValidRole): number {
+  return { user: 0, csr: 1, supervisor: 2, admin: 3, global_admin: 4 }[role];
+}
+
+function canAssignRole(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect, targetRole: ValidRole): boolean {
+  const actorRole = normalizeRole(actor.role);
+  const currentTargetRole = normalizeRole(target.role);
+  if (actor.id === target.id && roleRank(targetRole) > roleRank(currentTargetRole)) return false;
   if (actorRole === "global_admin") return true;
-  if (actorRole !== "admin") return false;
-  return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor";
+  if (actorRole === "admin") return targetRole === "user" || targetRole === "csr" || targetRole === "supervisor" || targetRole === "admin";
+  if (actorRole === "supervisor") return targetRole === "user" || targetRole === "csr";
+  return false;
 }
 
 function canManageUserInTenant(actor: typeof usersTable.$inferSelect, target: typeof usersTable.$inferSelect): boolean {
   const actorRole = normalizeRole(actor.role);
+  const targetRole = normalizeRole(target.role);
+  if (actor.id === target.id) return false;
   if (actorRole === "global_admin") return true;
-  if (actorRole !== "admin") return false;
-  if (actor.tenantId == null || target.tenantId == null) return true;
-  return actor.tenantId === target.tenantId;
+  if (!["admin", "supervisor"].includes(actorRole)) return false;
+  if (actor.tenantId == null && target.tenantId != null) return false;
+  if (actor.tenantId != null && target.tenantId != null && actor.tenantId !== target.tenantId) return false;
+  if (actorRole === "supervisor" && !["user", "csr"].includes(targetRole)) return false;
+  if (actorRole === "admin" && targetRole === "global_admin") return false;
+  return true;
 }
 
 async function ensureUsersListSchema(): Promise<void> {
@@ -290,7 +304,7 @@ router.post("/users/sync", async (req, res): Promise<void> => {
 });
 
 // GET /api/users — admin and supervisor see all users
-router.get("/users", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+router.get("/users", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const query = ListUsersQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -301,6 +315,10 @@ router.get("/users", requireRole("global_admin", "admin"), async (req, res): Pro
   await syncOnboardingRequestsToPendingUsers();
 
   let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
+  const actorRole = normalizeRole(req.dbUser!.role);
+  if (actorRole !== "global_admin") {
+    rows = rows.filter((u) => u.tenantId === req.dbUser!.tenantId && roleRank(actorRole) > roleRank(normalizeRole(u.role)));
+  }
 
   if (query.data.role) {
     // Compare against the normalized role so legacy values still match
@@ -351,8 +369,8 @@ router.patch("/users/me/phone", async (req, res): Promise<void> => {
 
 // PATCH /api/users/:id/role — supervisors and admins (legacy path)
 // PATCH /api/admin/users/:id/role — admin-only namespace
-router.patch("/admin/users/:id/role", requireRole("admin"), updateUserRoleHandler);
-router.patch("/users/:id/role", requireRole("global_admin", "admin"), updateUserRoleHandler);
+router.patch("/admin/users/:id/role", requireRole("global_admin", "admin", "supervisor"), updateUserRoleHandler);
+router.patch("/users/:id/role", requireRole("global_admin", "admin", "supervisor"), updateUserRoleHandler);
 
 async function updateUserRoleHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
   const actor = req.dbUser!;
@@ -379,9 +397,8 @@ async function updateUserRoleHandler(req: import("express").Request, res: import
     return;
   }
 
-  const actorRole = normalizeRole(actor.role);
   const newRole = body.data.role;
-  if (!canAssignRole(actorRole, newRole)) {
+  if (!canAssignRole(actor, target, newRole)) {
     res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
@@ -426,7 +443,7 @@ const UpdateUserStatusBody = z.object({
 });
 
 // PATCH /api/users/:id/status — admin only (alias also exposed at /api/admin/users/:id/status)
-router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admin"), async (req, res): Promise<void> => {
+router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -500,15 +517,17 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireRole("admi
 });
 
 // ─── GET /api/admin/users/pending — list app users with status='pending' ────
-router.get("/admin/users/pending", requireRole("admin"), async (_req, res): Promise<void> => {
+router.get("/admin/users/pending", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   await ensureUsersListSchema();
   await syncOnboardingRequestsToPendingUsers();
 
-  const rows = await db
+  let rows = await db
     .select()
     .from(usersTable)
     .where(eq(usersTable.status, "pending"))
     .orderBy(usersTable.createdAt);
+  const actorRole = normalizeRole(req.dbUser!.role);
+  if (actorRole !== "global_admin") rows = rows.filter((u) => u.tenantId === req.dbUser!.tenantId && roleRank(actorRole) > roleRank(normalizeRole(u.role)));
   res.json({
     users: rows.map((u) => ({
       id: u.id,
@@ -535,7 +554,7 @@ const ApprovalBody = z.object({
 // ─── PATCH /api/admin/users/:id/approval — single approval flow ─────────────
 // approve=true sets status='approved' (+ optional role) and pushes to Clerk.
 // approve=false sets status='rejected' and pushes to Clerk.
-router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res): Promise<void> => {
+router.patch("/admin/users/:id/approval", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
@@ -562,8 +581,7 @@ router.patch("/admin/users/:id/approval", requireRole("admin"), async (req, res)
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
   const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
-  const actorRole = normalizeRole(actor.role);
-  if (newRole && !canAssignRole(actorRole, newRole)) {
+  if (newRole && !canAssignRole(actor, target, newRole)) {
     res.status(403).json({ error: "Forbidden: cannot assign role" });
     return;
   }
@@ -881,6 +899,76 @@ router.post("/admin/users/waitlist/:id/reject", requireRole("admin"), async (req
     req.log.warn({ err, waitlistId: id }, "Clerk waitlist reject failed — returning success anyway");
     res.json({ id, status: "rejected", clerkRejectFailed: true });
   }
+});
+
+
+const GlobalAdminCreateUserBody = z.object({
+  email: z.string().email(),
+  firstName: z.string().trim().max(100).optional(),
+  lastName: z.string().trim().max(100).optional(),
+  role: RoleValue.default("user"),
+  tenantId: z.number().int().positive().nullable().optional(),
+}).strict();
+const GlobalAdminPatchUserBody = z.object({
+  firstName: z.string().trim().max(100).nullable().optional(),
+  lastName: z.string().trim().max(100).nullable().optional(),
+  contactPhone: z.string().trim().max(30).nullable().optional(),
+  role: RoleValue.optional(),
+  tenantId: z.number().int().positive().nullable().optional(),
+  status: z.enum(["pending", "approved", "rejected", "deactivated", "suspended"]).optional(),
+  isActive: z.boolean().optional(),
+}).strict();
+
+router.get("/admin/users/all", requireRole("global_admin"), async (req, res): Promise<void> => {
+  await ensureUsersListSchema();
+  await ensureProvisioningSchema();
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 100);
+  const offset = Math.max(Number(req.query.offset ?? 0), 0);
+  const q = String(req.query.q ?? "").trim().toLowerCase();
+  let rows = await db.select().from(usersTable).orderBy(usersTable.createdAt);
+  if (q) rows = rows.filter((u) => `${u.email ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""}`.toLowerCase().includes(q));
+  const total = rows.length;
+  res.json({ users: rows.slice(offset, offset + limit).map((u) => ({ ...serializeUser(u), tenantId: u.tenantId, identityStatus: u.identityStatus, provisioningStatus: u.provisioningStatus, provisioningError: u.provisioningError })), total, limit, offset });
+});
+
+router.post("/admin/users", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const body = GlobalAdminCreateUserBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const actor = req.dbUser!;
+  const normalizedEmail = normalizeEmail(body.data.email);
+  try {
+    const invite = await clerkClient.invitations.createInvitation({ emailAddress: body.data.email, ignoreExisting: true, publicMetadata: { role: body.data.role, status: "approved" } });
+    const [created] = await db.insert(usersTable).values({ clerkId: `pending_invite:${invite.id}`, email: body.data.email, normalizedEmail, firstName: body.data.firstName, lastName: body.data.lastName, role: body.data.role, tenantId: body.data.tenantId ?? null, status: "approved", isActive: true, identityStatus: "invited", provisioningStatus: "pending" }).returning();
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "GLOBAL_ADMIN_CREATE_INVITE_USER", tenantId: body.data.tenantId ?? null, resourceType: "user", resourceId: String(created.id), metadata: { role: body.data.role }, ipAddress: req.ip });
+    res.status(201).json({ user: serializeUser(created), invitationId: invite.id });
+  } catch (err) {
+    logger.error({ err }, "Global admin user invitation failed");
+    res.status(502).json({ error: "Identity provider invitation failed" });
+  }
+});
+
+router.patch("/admin/users/:id", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  const body = GlobalAdminPatchUserBody.safeParse(req.body);
+  if (!Number.isInteger(id) || !body.success) { res.status(400).json({ error: body.success ? "Invalid user id" : body.error.message }); return; }
+  const actor = req.dbUser!;
+  if (actor.id === id && body.data.role && roleRank(body.data.role) > roleRank(normalizeRole(actor.role))) { res.status(403).json({ error: "Forbidden: cannot self-escalate" }); return; }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  const updates = { ...body.data, status: body.data.status === "suspended" ? "deactivated" : body.data.status, updatedAt: new Date() } as Partial<typeof usersTable.$inferInsert>;
+  const [updated] = await db.update(usersTable).set(updates).where(eq(usersTable.id, id)).returning();
+  if (updated && hasRealClerkUserId(updated.clerkId)) await syncUserToClerk(updated.clerkId, { role: updated.role, status: updated.status as never });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "GLOBAL_ADMIN_UPDATE_USER", tenantId: updated.tenantId, resourceType: "user", resourceId: String(id), metadata: { fields: Object.keys(body.data) }, ipAddress: req.ip });
+  res.json({ user: serializeUser(updated) });
+});
+
+router.post("/admin/users/:id/reconcile", requireRole("global_admin"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (!hasRealClerkUserId(target.clerkId)) { res.status(409).json({ error: "Identity missing; resend invitation or create identity first" }); return; }
+  const result = await fetchAndProvisionClerkUser(target.clerkId, "global_admin_reconcile");
+  res.status(result.status === "failed" ? 500 : 200).json(result);
 });
 
 export default router;

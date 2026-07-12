@@ -241,6 +241,35 @@ describe("receipts and deploy workflow", () => {
   });
 });
 
+describe("POS order closeout cash-bank safeguards", () => {
+  const orders = api("routes/orders.ts");
+  const orderDetail = platform("pages/order-detail.tsx");
+
+  it("exposes all supported closeout payment methods including cash", () => {
+    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
+    for (const method of ["cash", "gift_card", "cash_app", "card", "paypal", "venmo"]) {
+      expect(orderDetail).toContain(`closeOut("${method}")`);
+    }
+  });
+
+  it("closes out cash in a transaction without trusting client box totals", () => {
+    expect(orders).toContain('await db.transaction(async (tx) => {');
+    expect(orders).toContain('if (order.paymentStatus === "paid")');
+    expect(orders).toContain("sql`${ordersTable.paymentStatus} <> 'paid'`");
+    expect(orders).toContain('const cashBoxAssignmentId = method === "cash"');
+    expect(orders).toContain('closeoutShift?.boxAssignmentId || "sales-box-1"');
+    expect(orders).toContain("assignedShiftId: order.assignedShiftId ?? closeoutShift.id");
+    expect(orders).not.toContain("cashBankEnd: req.body");
+    expect(orders).not.toContain("boxAssignmentId: req.body");
+  });
+
+  it("requires CSR ownership or general queue access before closeout", () => {
+    expect(orders).toContain("orderIsAssignedToActor");
+    expect(orders).toContain("orderIsGeneralQueue");
+    expect(orders).toContain('return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };');
+  });
+});
+
 describe("shift wording compatibility", () => {
   const staff = platform("pages/staff.tsx");
   const shifts = api("routes/shifts.ts");

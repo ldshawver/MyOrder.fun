@@ -65,6 +65,8 @@ export const ordersTable = pgTable("orders", {
   routeSource: text("route_source"),
   routedAt: timestamp("routed_at", { withTimezone: true }),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  preparedAt: timestamp("prepared_at", { withTimezone: true }),
+  preparedByUserId: integer("prepared_by_user_id").references(() => usersTable.id),
   // Per-order ETA in minutes; defaults to 30 (also overridable from
   // admin_settings.defaultEtaMinutes at insert time).
   promisedMinutes: integer("promised_minutes").default(30),
@@ -133,6 +135,19 @@ export const inventoryReservationsTable = pgTable("inventory_reservations", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+export const cashLedgerEntriesTable = pgTable("cash_ledger_entries", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  orderId: integer("order_id").notNull().references(() => ordersTable.id),
+  shiftId: integer("shift_id"),
+  csrUserId: integer("csr_user_id").notNull().references(() => usersTable.id),
+  boxAssignmentId: text("box_assignment_id").notNull(),
+  amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+  entryType: text("entry_type").notNull().default("cash_sale_closeout"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Order = typeof ordersTable.$inferSelect;
 export type InsertOrder = typeof ordersTable.$inferInsert;
 export type OrderItem = typeof orderItemsTable.$inferSelect;
@@ -140,3 +155,4 @@ export type InsertOrderItem = typeof orderItemsTable.$inferInsert;
 export type OrderNote = typeof orderNotesTable.$inferSelect;
 export type InsertOrderNote = typeof orderNotesTable.$inferInsert;
 export type InventoryReservation = typeof inventoryReservationsTable.$inferSelect;
+export type CashLedgerEntry = typeof cashLedgerEntriesTable.$inferSelect;

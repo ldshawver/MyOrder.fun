@@ -89,6 +89,8 @@ export async function getApprovedMultiShiftConfig(tenantId: number) {
 
 type ActiveCsr = { userId: number; shiftId: number };
 
+export type ShiftReadinessCheck = { ready: boolean; failedConditions: string[] };
+
 const CSR_BOX_LOCATION_NAMES: Record<string, string> = {
   "sales-box-1": "CSR Sales Box 1",
   "sales-box-2": "CSR Sales Box 2",
@@ -109,18 +111,36 @@ type ShiftSetupState = {
   printerAssigned?: unknown;
 };
 
+export function getShiftReadiness(shift: {
+  tenantId?: number | null;
+  expectedTenantId?: number | null;
+  status?: string | null;
+  clockedOutAt?: Date | string | null;
+  boxAssignmentId?: string | null;
+  setupJson?: unknown;
+}): ShiftReadinessCheck {
+  const setup = (shift.setupJson && typeof shift.setupJson === "object" ? shift.setupJson : {}) as ShiftSetupState;
+  const boxAssignmentId = typeof shift.boxAssignmentId === "string" && shift.boxAssignmentId.trim()
+    ? shift.boxAssignmentId.trim()
+    : typeof setup.boxAssignmentId === "string" ? setup.boxAssignmentId.trim() : "";
+  const failedConditions: string[] = [];
+  if (shift.expectedTenantId != null && shift.tenantId != null && shift.tenantId !== shift.expectedTenantId) failedConditions.push("tenant_mismatch");
+  if (shift.status !== "active") failedConditions.push("shift_status_not_active");
+  if (shift.clockedOutAt != null) failedConditions.push("shift_clocked_out");
+  if (!boxAssignmentId) failedConditions.push("box_not_assigned");
+  if (!inventoryLocationNameForBoxAssignment(boxAssignmentId)) failedConditions.push("inventory_location_not_assigned");
+  return { ready: failedConditions.length === 0, failedConditions };
+}
+
 export function isShiftOrderRoutable(shift: {
+  tenantId?: number | null;
+  expectedTenantId?: number | null;
   status?: string | null;
   clockedOutAt?: Date | string | null;
   boxAssignmentId?: string | null;
   setupJson?: unknown;
 }): boolean {
-  const setup = (shift.setupJson && typeof shift.setupJson === "object" ? shift.setupJson : {}) as ShiftSetupState;
-  const boxAssignmentId = typeof shift.boxAssignmentId === "string" && shift.boxAssignmentId.trim()
-    ? shift.boxAssignmentId.trim()
-    : typeof setup.boxAssignmentId === "string" ? setup.boxAssignmentId.trim() : "";
-
-  return shift.status === "active" && shift.clockedOutAt == null && Boolean(boxAssignmentId);
+  return getShiftReadiness(shift).ready;
 }
 
 export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
@@ -128,6 +148,7 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
     .select({
       userId: labTechShiftsTable.techId,
       shiftId: labTechShiftsTable.id,
+      tenantId: labTechShiftsTable.tenantId,
       boxAssignmentId: labTechShiftsTable.boxAssignmentId,
       setupJson: labTechShiftsTable.setupJson,
       status: labTechShiftsTable.status,
@@ -137,12 +158,12 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
     .from(labTechShiftsTable)
     .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
     .where(tenantId
-      ? sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL AND ${labTechShiftsTable.boxAssignmentId} IS NOT NULL AND ${labTechShiftsTable.tenantId} = ${tenantId}`
-      : sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL AND ${labTechShiftsTable.boxAssignmentId} IS NOT NULL`);
+      ? sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL AND ${labTechShiftsTable.tenantId} = ${tenantId}`
+      : sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL`);
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
     if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
-    if (!isShiftOrderRoutable(r)) continue;
+    if (!isShiftOrderRoutable({ ...r, expectedTenantId: tenantId })) continue;
     if (!seen.has(r.userId)) seen.set(r.userId, { userId: r.userId, shiftId: r.shiftId });
   }
   return [...seen.values()].sort((a, b) => a.userId - b.userId);

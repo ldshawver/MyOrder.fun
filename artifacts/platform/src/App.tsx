@@ -567,6 +567,13 @@ function AuthenticatedApp() {
             </>
           )}
 
+          {appRole === "supervisor" && (
+            <>
+              <Route path="/admin/users">{() => protect(<AdminUsers />)}</Route>
+              <Route path="/admin/feedback" component={AdminFeedback} />
+            </>
+          )}
+
           {isStaff && (
             <>
               <Route path="/staff">{() => protect(<StaffQueue />)}</Route>

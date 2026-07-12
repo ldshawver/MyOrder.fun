@@ -40,18 +40,23 @@ async function createShiftReceiptPrintJob(args: {
   renderedText: string;
 }): Promise<void> {
   try {
-    await db.insert(printJobsTable).values({
+    const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
+    const { dispatchReceiptJob } = await import("../lib/printService");
+    const profile = await getOperatorProfile(args.operatorUserId);
+    const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
+    const [job] = await db.insert(printJobsTable).values({
       orderId: null,
-      printerId: null,
+      printerId: receiptPrinter?.id ?? null,
       operatorUserId: args.operatorUserId,
       jobType: args.jobType,
-      status: process.env.RECEIPT_PRINT_ENABLED === "true" ? "queued" : "failed",
-      idempotencyKey: `${args.jobType}:${args.shiftId}:${Date.now()}`,
+      status: receiptPrinter ? "queued" : "failed",
+      idempotencyKey: `${args.jobType}:${args.shiftId}`,
       renderFormat: "text",
       payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
       renderedText: args.renderedText,
-      errorMessage: process.env.RECEIPT_PRINT_ENABLED === "true" ? null : "Printer unavailable or receipt printing disabled",
-    });
+      errorMessage: receiptPrinter ? null : "No active receipt printer assigned or configured",
+    }).returning();
+    if (receiptPrinter) dispatchReceiptJob(job, receiptPrinter).catch(() => {});
   } catch {
     // Receipt creation must never block shift start/end in tests or production.
   }
@@ -762,15 +767,17 @@ async function computeShiftStats(shiftId: number) {
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
+    cash: 0, card: 0, cash_app: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
   };
 
   for (const order of shiftOrders) {
+    if (order.paymentStatus !== "paid") continue;
     const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
     const orderTotal = parseFloat(order.total as string);
     if (method in paymentTotals) {
       paymentTotals[method] += orderTotal;
+      if (method === "cash_app") paymentTotals.cashapp += orderTotal;
     } else {
       paymentTotals.other += orderTotal;
     }
@@ -795,7 +802,7 @@ async function computeShiftStats(shiftId: number) {
 
   return {
     orderCount: shiftOrders.length,
-    totalRevenue: shiftOrders.reduce((s, o) => s + parseFloat(o.total as string), 0),
+    totalRevenue: shiftOrders.filter(o => o.paymentStatus === "paid").reduce((s, o) => s + parseFloat(o.total as string), 0),
     cashSales: paymentTotals.cash,
     cardSales: paymentTotals.card,
     compSales: paymentTotals.comp,

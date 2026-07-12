@@ -15,6 +15,7 @@ export const usersTable = pgTable("users", {
   id: serial("id").primaryKey(),
   clerkId: text("clerk_id").notNull().unique(),
   email: text("email"),
+  normalizedEmail: text("normalized_email"),
   firstName: text("first_name"),
   lastName: text("last_name"),
   role: text("role").notNull().default("user"),
@@ -31,6 +32,9 @@ export const usersTable = pgTable("users", {
   status: text("status").notNull().default("pending"),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),
+  identityStatus: text("identity_status").notNull().default("verification_pending"),
+  provisioningStatus: text("provisioning_status").notNull().default("pending"),
+  provisioningError: text("provisioning_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
