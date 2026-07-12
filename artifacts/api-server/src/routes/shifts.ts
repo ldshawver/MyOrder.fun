@@ -31,47 +31,82 @@ const SHIFT_OPERATOR_ROLES = [
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 
-function extractPostgresError(error: unknown) {
-  const err = error as Record<string, unknown> | undefined;
-  const cause = err?.cause as Record<string, unknown> | undefined;
-  const source = cause ?? err ?? {};
-  return {
-    sqlstate: (source.sqlState ?? source.sqlstate ?? source.code) as string | undefined ?? null,
-    postgresErrorCode: (source.code ?? source.sqlState ?? source.sqlstate) as string | undefined ?? null,
-    message: (source.message ?? err?.message) as string | undefined ?? String(error),
-    detail: (source.detail ?? null) as string | null,
-    hint: (source.hint ?? null) as string | null,
-    constraint: (source.constraint ?? null) as string | null,
-    table: (source.table ?? null) as string | null,
-    column: (source.column ?? null) as string | null,
-    stack: (err?.stack ?? source.stack ?? null) as string | null,
-  };
-}
+type PostgresErrorDetails = {
+  message: string;
+  sqlstate: string | null;
+  postgresErrorCode: string | null;
+  detail: string | null;
+  hint: string | null;
+  constraint: string | null;
+  table: string | null;
+  column: string | null;
+  stack: string | null;
+};
 
 function requestCorrelationId(req: Request): string | null {
-  const reqWithId = req as Request & { id?: string | number };
-  const header = req.get("x-request-id") ?? req.get("x-correlation-id");
-  return String(reqWithId.id ?? header ?? "") || null;
+  const requestWithId = req as Request & { id?: unknown };
+  if (typeof requestWithId.id === "string" || typeof requestWithId.id === "number") {
+    return String(requestWithId.id);
+  }
+  return req.get("x-request-id") ?? req.get("x-correlation-id") ?? null;
 }
 
-function logAndSendShiftDatabaseError(req: Request, res: Response, error: unknown, context: Record<string, unknown>): void {
+function extractPostgresError(error: unknown): PostgresErrorDetails {
+  const outer = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  const cause = outer.cause && typeof outer.cause === "object"
+    ? outer.cause as Record<string, unknown>
+    : {};
+
+  const readString = (...keys: string[]): string | null => {
+    for (const key of keys) {
+      const value = cause[key] ?? outer[key];
+      if (typeof value === "string") return value;
+    }
+    return null;
+  };
+
+  const sqlstate = readString("sqlState", "sqlstate", "code");
+  return {
+    message: readString("message") ?? (error instanceof Error ? error.message : "Unknown database error"),
+    sqlstate,
+    postgresErrorCode: readString("code", "sqlState", "sqlstate"),
+    detail: readString("detail"),
+    hint: readString("hint"),
+    constraint: readString("constraint"),
+    table: readString("table"),
+    column: readString("column"),
+    stack: readString("stack") ?? (error instanceof Error ? error.stack ?? null : null),
+  };
+}
+
+function logAndSendShiftDatabaseError(
+  req: Request,
+  res: Response,
+  error: unknown,
+  context: Record<string, unknown>,
+): void {
   const requestId = requestCorrelationId(req);
-  const pg = extractPostgresError(error);
-  const payload = {
-    error: "Database query failed",
+  const postgres = extractPostgresError(error);
+
+  req.log?.error?.(
+    {
+      ...context,
+      requestId,
+      correlationId: requestId,
+      postgres,
+      err: error,
+    },
+    "Shift database query failed",
+  );
+
+  res.status(500).json({
+    error: "Unable to complete the shift operation",
+    message: "A database error occurred while processing the shift. Retry or contact support with the request ID.",
     requestId,
     correlationId: requestId,
-    table: pg.table ?? (context.table as string | undefined) ?? null,
-    column: pg.column,
-    constraint: pg.constraint,
-    sqlstate: pg.sqlstate,
-    postgresErrorCode: pg.postgresErrorCode,
-    message: pg.message,
-    detail: pg.detail,
-    hint: pg.hint,
-  };
-  req.log?.error?.({ ...context, requestId, correlationId: requestId, postgres: pg }, "shift database query failed");
-  res.status(500).json(payload);
+  });
 }
 
 async function createShiftReceiptPrintJob(args: {
@@ -777,6 +812,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Tenant-scoped replacement for legacy computeShiftStats(shiftId) calls.
 
 async function computeShiftStats(shiftId: number, tenantId: number | null, req?: Request) {
   let shiftOrders: (typeof ordersTable.$inferSelect)[];
@@ -787,20 +823,23 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       .where(
         tenantId == null
           ? eq(ordersTable.assignedShiftId, shiftId)
-          : and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId))
+          : and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId)),
       );
   } catch (error) {
-    const pg = extractPostgresError(error);
-    req?.log?.error?.({
-      requestId: req ? requestCorrelationId(req) : null,
-      shiftId,
-      tenantId,
-      flow: "shift_check_in_payload",
-      service: "computeShiftStats",
-      table: "orders",
-      query: "orders_by_tenant_and_assigned_shift",
-      postgres: pg,
-    }, "failed to load orders assigned to shift");
+    const postgres = extractPostgresError(error);
+    req?.log?.error?.(
+      {
+        requestId: req ? requestCorrelationId(req) : null,
+        shiftId,
+        tenantId,
+        flow: "shift_check_in_payload",
+        service: "computeShiftStats",
+        table: "orders",
+        query: "orders_by_tenant_and_assigned_shift",
+        postgres,
+      },
+      "Failed to load orders assigned to shift",
+    );
     throw error;
   }
   const orderIds = shiftOrders.map(o => o.id);
@@ -1605,7 +1644,7 @@ router.get(
       .where(eq(shiftInventoryItemsTable.shiftId, id))
       .orderBy(asc(shiftInventoryItemsTable.displayOrder));
 
-    const stats = await computeShiftStats(id, null, req);
+    const stats = await computeShiftStats(id, shift.tenantId ?? null, req);
     const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
     res.json({ shift, stats, inventory });
@@ -2103,8 +2142,7 @@ router.post(
 
     const supervisor = req.dbUser!;
 
-    // computeShiftStats(shiftId) is intentionally tenant-scoped via the loaded shift row.
-    const stats = await computeShiftStats(shiftId, shift.tenantId ?? null);
+    const stats = await computeShiftStats(shiftId, shift.tenantId ?? null, req);
     const snapshotItems = await db
       .select()
       .from(shiftInventoryItemsTable)
