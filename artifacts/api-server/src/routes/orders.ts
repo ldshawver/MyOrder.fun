@@ -10,7 +10,6 @@ import {
   labTechShiftsTable,
   inventoryTemplatesTable,
   adminSettingsTable,
-  inventoryBalancesTable,
   inventoryLocationsTable,
   catalogItemsTable,
 } from "@workspace/db";
