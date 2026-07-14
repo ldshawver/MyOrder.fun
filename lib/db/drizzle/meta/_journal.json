@@ -68,8 +68,36 @@
     {
       "idx": 9,
       "version": "7",
-      "when": 1781308800000,
-      "tag": "0022_delete_test_employee_users",
+      "when": 1784047334000,
+      "tag": "0032_order_lifecycle_preparing_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784047394000,
+      "tag": "0033_orders_shift_routing_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784047454000,
+      "tag": "0034_pos_cash_ledger_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784047514000,
+      "tag": "0035_print_job_schema_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784047574000,
+      "tag": "0036_clerk_provisioning_reconciliation",
       "breakpoints": true
     }
   ]

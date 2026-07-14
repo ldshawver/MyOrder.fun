@@ -76,7 +76,6 @@ export default defineConfig(async () => {
         "@clerk/react",
         "@clerk/shared",
       ],
-      preserveSymlinks: true,
     },
     optimizeDeps: {
       include: [
