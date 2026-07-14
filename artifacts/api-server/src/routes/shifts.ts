@@ -31,6 +31,84 @@ const SHIFT_OPERATOR_ROLES = [
 ] as const;
 const MAREK_DEBUG_EMAIL_PATTERN = /marek/i;
 
+type PostgresErrorDetails = {
+  message: string;
+  sqlstate: string | null;
+  postgresErrorCode: string | null;
+  detail: string | null;
+  hint: string | null;
+  constraint: string | null;
+  table: string | null;
+  column: string | null;
+  stack: string | null;
+};
+
+function requestCorrelationId(req: Request): string | null {
+  const requestWithId = req as Request & { id?: unknown };
+  if (typeof requestWithId.id === "string" || typeof requestWithId.id === "number") {
+    return String(requestWithId.id);
+  }
+  return req.get("x-request-id") ?? req.get("x-correlation-id") ?? null;
+}
+
+function extractPostgresError(error: unknown): PostgresErrorDetails {
+  const outer = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : {};
+  const cause = outer.cause && typeof outer.cause === "object"
+    ? outer.cause as Record<string, unknown>
+    : {};
+
+  const readString = (...keys: string[]): string | null => {
+    for (const key of keys) {
+      const value = cause[key] ?? outer[key];
+      if (typeof value === "string") return value;
+    }
+    return null;
+  };
+
+  const sqlstate = readString("sqlState", "sqlstate", "code");
+  return {
+    message: readString("message") ?? (error instanceof Error ? error.message : "Unknown database error"),
+    sqlstate,
+    postgresErrorCode: readString("code", "sqlState", "sqlstate"),
+    detail: readString("detail"),
+    hint: readString("hint"),
+    constraint: readString("constraint"),
+    table: readString("table"),
+    column: readString("column"),
+    stack: readString("stack") ?? (error instanceof Error ? error.stack ?? null : null),
+  };
+}
+
+function logAndSendShiftDatabaseError(
+  req: Request,
+  res: Response,
+  error: unknown,
+  context: Record<string, unknown>,
+): void {
+  const requestId = requestCorrelationId(req);
+  const postgres = extractPostgresError(error);
+
+  req.log?.error?.(
+    {
+      ...context,
+      requestId,
+      correlationId: requestId,
+      postgres,
+      err: error,
+    },
+    "Shift database query failed",
+  );
+
+  res.status(500).json({
+    error: "Unable to complete the shift operation",
+    message: "A database error occurred while processing the shift. Retry or contact support with the request ID.",
+    requestId,
+    correlationId: requestId,
+  });
+}
+
 async function createShiftReceiptPrintJob(args: {
   shiftId: number;
   tenantId: number | null;
@@ -734,12 +812,36 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Tenant-scoped replacement for legacy computeShiftStats(shiftId) calls.
 
-async function computeShiftStats(shiftId: number) {
-  const shiftOrders = await db
-    .select()
-    .from(ordersTable)
-    .where(eq(ordersTable.assignedShiftId, shiftId));
+async function computeShiftStats(shiftId: number, tenantId: number | null, req?: Request) {
+  let shiftOrders: (typeof ordersTable.$inferSelect)[];
+  try {
+    shiftOrders = await db
+      .select()
+      .from(ordersTable)
+      .where(
+        tenantId == null
+          ? eq(ordersTable.assignedShiftId, shiftId)
+          : and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId)),
+      );
+  } catch (error) {
+    const postgres = extractPostgresError(error);
+    req?.log?.error?.(
+      {
+        requestId: req ? requestCorrelationId(req) : null,
+        shiftId,
+        tenantId,
+        flow: "shift_check_in_payload",
+        service: "computeShiftStats",
+        table: "orders",
+        query: "orders_by_tenant_and_assigned_shift",
+        postgres,
+      },
+      "Failed to load orders assigned to shift",
+    );
+    throw error;
+  }
   const orderIds = shiftOrders.map(o => o.id);
 
   const lineItems: (typeof orderItemsTable.$inferSelect)[] = [];
@@ -956,14 +1058,14 @@ router.get(
 );
 
 
-async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$inferSelect) {
+async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$inferSelect, req?: Request) {
   const snapshotItems = await db
     .select()
     .from(shiftInventoryItemsTable)
     .where(eq(shiftInventoryItemsTable.shiftId, activeShift.id))
     .orderBy(asc(shiftInventoryItemsTable.displayOrder));
 
-  const stats = await computeShiftStats(activeShift.id);
+  const stats = await computeShiftStats(activeShift.id, activeShift.tenantId ?? null, req);
   const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
   const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
   const csrDeliveryEarnings = parseFloat(String(activeShift.csrDeliveryEarnings ?? 0));
@@ -1027,6 +1129,7 @@ router.post(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
+          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1037,7 +1140,18 @@ router.post(
       // erroring so the UI doesn't double-create on retry / refresh races.
       // Return the same enriched payload as /api/shifts/current so POS clients
       // can resume immediately without rendering raw DB rows as an error.
-      res.status(200).json({ shift: await buildActiveShiftPayload(existing[0]), alreadyClockedIn: true });
+      try {
+        res.status(200).json({ shift: await buildActiveShiftPayload(existing[0], req), alreadyClockedIn: true });
+      } catch (error) {
+        logAndSendShiftDatabaseError(req, res, error, {
+          flow: "shift_check_in",
+          step: "load_assigned_orders",
+          service: "computeShiftStats",
+          table: "orders",
+          shiftId: existing[0].id,
+          tenantId: existing[0].tenantId ?? null,
+        });
+      }
       return;
     }
 
@@ -1245,17 +1359,28 @@ router.post(
       renderedText: [`SHIFT START`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${shift.id}`, `Box: ${selectedBox}`, `Starting cash: ${cashBankStart ?? 0}`, `Inventory rows: ${inventoryItemsInserted}`, new Date().toISOString()].join("\n"),
     });
 
-    res.status(201).json({
-      shift: await buildActiveShiftPayload(shift),
-      _debug: {
-        tenantId: houseTenantId,
-        techId: tech.id,
-        techClerkId: tech.clerkId,
-        techRole: tech.role,
+    try {
+      res.status(201).json({
+        shift: await buildActiveShiftPayload(shift, req),
+        _debug: {
+          tenantId: houseTenantId,
+          techId: tech.id,
+          techClerkId: tech.clerkId,
+          techRole: tech.role,
+          shiftId: shift.id,
+          inventoryItemsInserted,
+        },
+      });
+    } catch (error) {
+      logAndSendShiftDatabaseError(req, res, error, {
+        flow: "shift_check_in",
+        step: "load_assigned_orders",
+        service: "computeShiftStats",
+        table: "orders",
         shiftId: shift.id,
-        inventoryItemsInserted,
-      },
-    });
+        tenantId: shift.tenantId ?? null,
+      });
+    }
   }
 );
 
@@ -1272,6 +1397,7 @@ router.post(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
+          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1287,7 +1413,7 @@ router.post(
       cashBankEnd?: number; // rep-reported ending cash bank
     };
 
-    const stats = await computeShiftStats(activeShift.id);
+    const stats = await computeShiftStats(activeShift.id, activeShift.tenantId ?? null, req);
 
     const snapshotItems = await db
       .select()
@@ -1439,6 +1565,7 @@ router.get(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
+          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1446,7 +1573,18 @@ router.get(
 
     if (!activeShift) { res.json({ shift: null }); return; }
 
-    res.json({ shift: await buildActiveShiftPayload(activeShift) });
+    try {
+      res.json({ shift: await buildActiveShiftPayload(activeShift, req) });
+    } catch (error) {
+      logAndSendShiftDatabaseError(req, res, error, {
+        flow: "shift_current",
+        step: "load_assigned_orders",
+        service: "computeShiftStats",
+        table: "orders",
+        shiftId: activeShift.id,
+        tenantId: activeShift.tenantId ?? null,
+      });
+    }
   }
 );
 
@@ -1506,7 +1644,7 @@ router.get(
       .where(eq(shiftInventoryItemsTable.shiftId, id))
       .orderBy(asc(shiftInventoryItemsTable.displayOrder));
 
-    const stats = await computeShiftStats(id);
+    const stats = await computeShiftStats(id, shift.tenantId ?? null, req);
     const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
 
     res.json({ shift, stats, inventory });
@@ -2004,7 +2142,7 @@ router.post(
 
     const supervisor = req.dbUser!;
 
-    const stats = await computeShiftStats(shiftId);
+    const stats = await computeShiftStats(shiftId, shift.tenantId ?? null, req);
     const snapshotItems = await db
       .select()
       .from(shiftInventoryItemsTable)
@@ -2275,7 +2413,7 @@ router.post(
 router.get(
   "/shifts/pending-supervisor",
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
@@ -2289,7 +2427,7 @@ router.get(
           .from(usersTable)
           .where(eq(usersTable.id, shift.techId))
           .limit(1);
-        const stats = await computeShiftStats(shift.id);
+        const stats = await computeShiftStats(shift.id, shift.tenantId ?? null, req);
         return {
           shiftId: shift.id,
           techName: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() : "Unknown",
@@ -2314,7 +2452,7 @@ const ShiftReceiptKind = z.enum(["beginning_inventory", "ending_inventory", "shi
 async function buildShiftOperationsReceipt(tenantId: number, shiftId: number, kind: z.infer<typeof ShiftReceiptKind>) {
   const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, shiftId))).limit(1);
   if (!shift) return null;
-  const stats = await computeShiftStats(shiftId);
+  const stats = await computeShiftStats(shiftId, shift.tenantId ?? null);
   const items = await db.select().from(shiftInventoryItemsTable).where(eq(shiftInventoryItemsTable.shiftId, shiftId)).orderBy(asc(shiftInventoryItemsTable.displayOrder));
   const inventory = enrichInventoryWithSales(items, stats.byItem);
   const summary = shift.summary as Record<string, unknown> | null;
