@@ -8,6 +8,46 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+
+type BusinessAddress = {
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  region?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+};
+
+type TenantBusinessSettings = {
+  version: number;
+  legalBusinessName: string | null;
+  publicBusinessName: string;
+  appName: string;
+  websiteUrl: string | null;
+  storefrontUrl: string | null;
+  supportEmail: string | null;
+  supportPhone: string | null;
+  businessAddress: BusinessAddress;
+  timezone: string;
+  defaultCurrency: string;
+  businessDescription: string | null;
+};
+
+const EMPTY_BUSINESS: TenantBusinessSettings = {
+  version: 1,
+  legalBusinessName: null,
+  publicBusinessName: "",
+  appName: "",
+  websiteUrl: null,
+  storefrontUrl: null,
+  supportEmail: null,
+  supportPhone: null,
+  businessAddress: {},
+  timezone: "America/Los_Angeles",
+  defaultCurrency: "USD",
+  businessDescription: null,
+};
+
 type MerchantProcessorConfig = Record<string, {
   displayName?: string;
   accountId?: string;
@@ -125,16 +165,29 @@ export default function AdminSettingsPage() {
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
 
+  const [business, setBusiness] = useState<TenantBusinessSettings>(EMPTY_BUSINESS);
+  const [businessSaving, setBusinessSaving] = useState(false);
+  const [businessSaved, setBusinessSaved] = useState(false);
+  const [businessError, setBusinessError] = useState<string | null>(null);
+  const [businessFieldErrors, setBusinessFieldErrors] = useState<Record<string, string>>({});
+  const [businessConflict, setBusinessConflict] = useState<string | null>(null);
+
+
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        const [genRes, wcRes] = await Promise.all([
+        const [genRes, wcRes, tenantRes] = await Promise.all([
           fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         let merged: Partial<AdminSettings> = {};
         if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
+        if (tenantRes.ok) {
+          const tenantSettings = await tenantRes.json();
+          setBusiness({ ...EMPTY_BUSINESS, ...(tenantSettings.business ?? {}) });
+        }
         if (wcRes.ok) {
           const wc = await wcRes.json();
           merged = {
@@ -158,6 +211,73 @@ export default function AdminSettingsPage() {
       setLoading(false);
     })();
   }, [getToken]);
+
+
+  function setBusinessField<K extends keyof TenantBusinessSettings>(key: K, value: TenantBusinessSettings[K]) {
+    setBusiness(current => ({ ...current, [key]: value }));
+  }
+
+  function setBusinessAddressField<K extends keyof BusinessAddress>(key: K, value: string) {
+    setBusiness(current => ({
+      ...current,
+      businessAddress: { ...current.businessAddress, [key]: value || null },
+    }));
+  }
+
+  async function reloadBusinessSettings() {
+    const token = await getToken();
+    const res = await fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) {
+      const data = await res.json();
+      setBusiness({ ...EMPTY_BUSINESS, ...(data.business ?? {}) });
+    }
+  }
+
+  async function saveBusiness() {
+    setBusinessSaving(true);
+    setBusinessError(null);
+    setBusinessConflict(null);
+    setBusinessFieldErrors({});
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/settings/business", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          version: business.version,
+          legalBusinessName: business.legalBusinessName || null,
+          publicBusinessName: business.publicBusinessName || null,
+          appName: business.appName || null,
+          websiteUrl: business.websiteUrl || null,
+          storefrontUrl: business.storefrontUrl || null,
+          supportEmail: business.supportEmail || null,
+          supportPhone: business.supportPhone || null,
+          businessAddress: business.businessAddress,
+          timezone: business.timezone,
+          defaultCurrency: business.defaultCurrency,
+          businessDescription: business.businessDescription || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        setBusinessConflict("These business settings were changed elsewhere. The latest version has been reloaded; review your changes before saving again.");
+        await reloadBusinessSettings();
+        return;
+      }
+      if (!res.ok) {
+        setBusinessError(data.error ?? "Business settings save failed");
+        setBusinessFieldErrors(data.fieldErrors ?? {});
+        return;
+      }
+      setBusiness({ ...EMPTY_BUSINESS, ...(data.business ?? {}) });
+      setBusinessSaved(true);
+      setTimeout(() => setBusinessSaved(false), 2500);
+    } catch (e) {
+      setBusinessError((e as Error)?.message ?? "Network error");
+    } finally {
+      setBusinessSaving(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -281,6 +401,10 @@ export default function AdminSettingsPage() {
     }));
   }
 
+  function BusinessField({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+    return <label className="space-y-1 text-xs"><span className="font-semibold text-muted-foreground uppercase tracking-widest">{label}</span>{children}{error && <span className="block text-[11px] text-red-300">{error}</span>}</label>;
+  }
+
   function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
     return (
       <div className="flex items-center justify-between py-4 border-b border-border/30 last:border-0">
@@ -320,8 +444,9 @@ export default function AdminSettingsPage() {
         <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 text-sm">{error}</div>
       )}
 
-      <Tabs defaultValue="products">
-        <TabsList className="rounded-xl bg-muted/30 border border-border/40 mb-2">
+      <Tabs defaultValue="business">
+        <TabsList className="rounded-xl bg-muted/30 border border-border/40 mb-2 flex flex-wrap h-auto justify-start">
+          <TabsTrigger value="business" className="rounded-lg text-xs">Business</TabsTrigger>
           <TabsTrigger value="products" className="rounded-lg text-xs">Products</TabsTrigger>
           <TabsTrigger value="checkout" className="rounded-lg text-xs">Checkout</TabsTrigger>
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
@@ -332,6 +457,45 @@ export default function AdminSettingsPage() {
           <TabsTrigger value="disclaimer" className="rounded-lg text-xs">Disclaimer</TabsTrigger>
           <TabsTrigger value="diagnostics" className="rounded-lg text-xs">Diagnostics</TabsTrigger>
         </TabsList>
+
+
+        <TabsContent value="business">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Business Settings</div>
+                <p className="text-xs text-muted-foreground mt-1">Tenant-scoped business identity. Runtime app-shell branding will be applied in a later branding phase.</p>
+              </div>
+              <div className="text-[11px] font-mono text-muted-foreground">Version {business.version}</div>
+            </div>
+            {businessError && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">{businessError}</div>}
+            {businessConflict && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">{businessConflict}</div>}
+            <div className="grid gap-3 md:grid-cols-2">
+              <BusinessField label="Legal business name" error={businessFieldErrors.legalBusinessName}><Input value={business.legalBusinessName ?? ""} onChange={e => setBusinessField("legalBusinessName", e.target.value)} /></BusinessField>
+              <BusinessField label="Public business name" error={businessFieldErrors.publicBusinessName}><Input value={business.publicBusinessName ?? ""} onChange={e => setBusinessField("publicBusinessName", e.target.value)} /></BusinessField>
+              <BusinessField label="App display name" error={businessFieldErrors.appName}><Input value={business.appName ?? ""} onChange={e => setBusinessField("appName", e.target.value)} /></BusinessField>
+              <BusinessField label="Support email" error={businessFieldErrors.supportEmail}><Input type="email" value={business.supportEmail ?? ""} onChange={e => setBusinessField("supportEmail", e.target.value)} /></BusinessField>
+              <BusinessField label="Website URL" error={businessFieldErrors.websiteUrl}><Input value={business.websiteUrl ?? ""} onChange={e => setBusinessField("websiteUrl", e.target.value)} placeholder="https://example.com" /></BusinessField>
+              <BusinessField label="Storefront URL" error={businessFieldErrors.storefrontUrl}><Input value={business.storefrontUrl ?? ""} onChange={e => setBusinessField("storefrontUrl", e.target.value)} placeholder="https://shop.example.com" /></BusinessField>
+              <BusinessField label="Support phone" error={businessFieldErrors.supportPhone}><Input value={business.supportPhone ?? ""} onChange={e => setBusinessField("supportPhone", e.target.value)} /></BusinessField>
+              <BusinessField label="Timezone" error={businessFieldErrors.timezone}><Input value={business.timezone} onChange={e => setBusinessField("timezone", e.target.value)} /></BusinessField>
+              <BusinessField label="Currency" error={businessFieldErrors.defaultCurrency}><Select value={business.defaultCurrency} onValueChange={v => setBusinessField("defaultCurrency", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="USD">USD</SelectItem></SelectContent></Select></BusinessField>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <BusinessField label="Address line 1" error={businessFieldErrors["businessAddress.line1"]}><Input value={business.businessAddress.line1 ?? ""} onChange={e => setBusinessAddressField("line1", e.target.value)} /></BusinessField>
+              <BusinessField label="Address line 2" error={businessFieldErrors["businessAddress.line2"]}><Input value={business.businessAddress.line2 ?? ""} onChange={e => setBusinessAddressField("line2", e.target.value)} /></BusinessField>
+              <BusinessField label="City" error={businessFieldErrors["businessAddress.city"]}><Input value={business.businessAddress.city ?? ""} onChange={e => setBusinessAddressField("city", e.target.value)} /></BusinessField>
+              <BusinessField label="Region" error={businessFieldErrors["businessAddress.region"]}><Input value={business.businessAddress.region ?? ""} onChange={e => setBusinessAddressField("region", e.target.value)} /></BusinessField>
+              <BusinessField label="Postal code" error={businessFieldErrors["businessAddress.postalCode"]}><Input value={business.businessAddress.postalCode ?? ""} onChange={e => setBusinessAddressField("postalCode", e.target.value)} /></BusinessField>
+              <BusinessField label="Country" error={businessFieldErrors["businessAddress.country"]}><Input value={business.businessAddress.country ?? ""} onChange={e => setBusinessAddressField("country", e.target.value.toUpperCase())} maxLength={2} /></BusinessField>
+            </div>
+            <BusinessField label="Business description" error={businessFieldErrors.businessDescription}><Textarea rows={4} value={business.businessDescription ?? ""} onChange={e => setBusinessField("businessDescription", e.target.value)} /></BusinessField>
+            <Button onClick={() => void saveBusiness()} disabled={businessSaving} className="gap-2 rounded-xl">
+              {businessSaving ? <RefreshCw size={14} className="animate-spin" /> : businessSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
+              {businessSaved ? "Business saved" : businessSaving ? "Saving..." : "Save Business Settings"}
+            </Button>
+          </div>
+        </TabsContent>
 
 
         <TabsContent value="privacy">

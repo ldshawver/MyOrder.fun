@@ -13,3 +13,4 @@ export * from "./feedback";
 export * from "./credits";
 export * from "./visual-editor";
 export * from "./permissions";
+export * from "./tenant-settings";
