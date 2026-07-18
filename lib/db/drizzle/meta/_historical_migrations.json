@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "tag": "0001_feedback_hardening",
+      "sha256": "dda1532b58acd7630804a3a7f64f6864558bb221428678cf777acfd1bbe036c6",
+      "classification": "historical_unjournaled",
+      "reason": "feedback schema patch exists in production drift but was never journaled"
+    },
+    {
+      "tag": "0005_user_avatar_url",
+      "sha256": "c4d18d70ceaea169961aaa9dc8581737d0186f509a48ab8a82a9dd15dacbe7fb",
+      "classification": "historical_unjournaled",
+      "reason": "duplicate of applied 0005_user_avatar"
+    },
+    {
+      "tag": "0008_menu_import_columns",
+      "sha256": "358733d5c88ad430c57f0dfbab849cae06627e6428375bb9cac8be85dca56487",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0009_order_routing",
+      "sha256": "3bc2aee8f5b4c8fd68ec4b69c6e53c3622e24bb2fa4e2b6806e074d94901ce99",
+      "classification": "historical_unjournaled",
+      "reason": "superseded by additive routing reconciliation"
+    },
+    {
+      "tag": "0010_merchant_brand_sku",
+      "sha256": "d2f32b686ea0330fa4abb046fe9ddc89218d077f28422b97bf56938c98e57745",
+      "classification": "historical_unjournaled",
+      "reason": "schema and data patch was never journaled"
+    },
+    {
+      "tag": "0011_ai_concierge_prompt",
+      "sha256": "defa6767e42148596d32863c1d1c0342dd285e1e97b212dc31ac016a38e88249",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0012_product_conversion_fields",
+      "sha256": "4b909d95b56d4fb3b05dbbcdcb7971210f86f1e792431a494a26b4bd354e59eb",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0013_import_template_spec",
+      "sha256": "d4dd987ded44ee973410b9a05806781730cf550beadb5c0fea5e698fcdb20ccd",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0014_csr_location_settings",
+      "sha256": "87bcc29b9abd12d390f6a0ccbe304b32cfce7e769ad944f79a812225870fc57d",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0015_shift_box_assignment",
+      "sha256": "e98cad040612ff5adc22d27ce6be964c3ee14cb6d4733d9574709668b5fcf28c",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0016_uber_direct_delivery",
+      "sha256": "ae4114e567144de8e9b5124675e6a409f9afee96af3f6a1ece6ddcbd67cf1258",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0017_csr_inventory_catalog_repair",
+      "sha256": "8b0f6e4788fd73c4860069b47c578e911c437cf1dea2ddfe5ceb36c0ec598098",
+      "classification": "data_repair_excluded",
+      "reason": "targets named users and catalog records; not safe for automatic production upgrade"
+    },
+    {
+      "tag": "0018_catalog_notifications_banners",
+      "sha256": "a06a705959c050dd2c9768b06e2dc2c14827cd346d4736baeb74002f21881741",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0019_csr_boxes",
+      "sha256": "51c44e6d7d3ccf44d270aa68147167c372681738f57a17fb0157b981df983a9d",
+      "classification": "historical_unjournaled",
+      "reason": "conflicts numerically with tenant concierge settings"
+    },
+    {
+      "tag": "0019_tenant_scoped_concierge_settings",
+      "sha256": "8d53a850d380aaa138393a19d4e1e94355e74dd008aa680f986f01a851422690",
+      "classification": "historical_unjournaled",
+      "reason": "conflicts numerically with CSR boxes"
+    },
+    {
+      "tag": "0020_inventory_locations_balances",
+      "sha256": "501c58d27866fd0aa1a5b3c259e4c7ea7be71a36c229b4ebcb66467121373959",
+      "classification": "historical_unjournaled",
+      "reason": "schema was introduced outside the Drizzle ledger"
+    },
+    {
+      "tag": "0022_delete_test_employee_users",
+      "sha256": "4d17f2704e8fefe8473d33d274b9bd082912252800855241e9191462a4e5069a",
+      "classification": "destructive_excluded",
+      "reason": "deletes production records and is unrelated to the POS schema upgrade"
+    },
+    {
+      "tag": "0023_role_permissions",
+      "sha256": "3d72207a592de0a695b5e02693fe8260208e769dbf5c790f84594c09fb90ca6f",
+      "classification": "historical_unjournaled",
+      "reason": "contains role data rewrites and was never journaled"
+    },
+    {
+      "tag": "0024_order_isolation_shift_routing",
+      "sha256": "160913592967171d648b6e6fac81123fcf4eb3460fdbcb5b97ded4125b21c9ab",
+      "classification": "historical_unjournaled",
+      "reason": "schema exists in drift; routing gaps are reconciled additively"
+    },
+    {
+      "tag": "0025_catalog_import_snapshots",
+      "sha256": "bf44cda5a040a5b8e6dc13c6d7b4c47cfe7aeb2be49fc432ed8a6853de555fff",
+      "classification": "historical_unjournaled",
+      "reason": "conflicting 0025 number; schema was never journaled"
+    },
+    {
+      "tag": "0025_customer_disclaimer",
+      "sha256": "3dd88db6195d567ae03f02618f78c15069f2d9a6add490df0efce7999d2da13f",
+      "classification": "historical_unjournaled",
+      "reason": "conflicting 0025 number; schema was never journaled"
+    },
+    {
+      "tag": "0025_inventory_balance_quarantine",
+      "sha256": "367833c67b762da214e977c080ba3548d5af54d9fee6881b6ee6b0e37ef281ba",
+      "classification": "historical_unjournaled",
+      "reason": "conflicting 0025 number; includes a data backfill"
+    },
+    {
+      "tag": "0026_repair_duplicate_catalog_items",
+      "sha256": "3104a1a3343d5efbf351a3c1500d1ff005ce46c7c3ccc02dd11aac831b2f0617",
+      "classification": "data_repair_excluded",
+      "reason": "rewrites references and deletes duplicate catalog records"
+    },
+    {
+      "tag": "0027_orders_shift_schema_drift",
+      "sha256": "59de4d5875e5f9728496b38d0233c207157c25b3743e157e5d608c2044ba95c7",
+      "classification": "historical_unjournaled",
+      "reason": "superseded by additive routing reconciliation"
+    },
+    {
+      "tag": "0028_orders_lifecycle_schema_drift",
+      "sha256": "60906fbf81c776df64cca7af6aaea467849e74a458df405a0f26233725534ae1",
+      "classification": "historical_unjournaled",
+      "reason": "schema exists in production drift; not part of the applied ledger"
+    },
+    {
+      "tag": "0029_pos_cash_ledger_and_receipt_jobs",
+      "sha256": "0f68d08600df95a15f1c98f7ce73bf70a54945a00aecf6ad646392a6154952bf",
+      "classification": "historical_unjournaled",
+      "reason": "cash DDL is ported into canonical 0034 with shift integrity"
+    },
+    {
+      "tag": "0029_shift_routing_config_repair",
+      "sha256": "a47685a05a225633dafa11444f16fcf2193694127f6de3941dc1ad215a73f466",
+      "classification": "historical_unjournaled",
+      "reason": "conflicting 0029 number; schema exists in production drift"
+    },
+    {
+      "tag": "0030_order_lifecycle_preparing",
+      "sha256": "302dee37056c783fb2dc687125f85ace253e28a50ee3681eca618d1e3739186d",
+      "classification": "historical_unjournaled",
+      "reason": "data normalization separated from canonical additive lifecycle migration"
+    },
+    {
+      "tag": "0030_orders_shift_routing_integrity",
+      "sha256": "3820087780fd4f5c084085ad07fc5587f87cf9bdafdb213c68967832b41e54b4",
+      "classification": "historical_unjournaled",
+      "reason": "superseded by canonical 0033 routing integrity migration"
+    },
+    {
+      "tag": "0030_shift_checkin_schema_validation",
+      "sha256": "05f0355e5e9acb7d2c8cad0c7d8e0705cfe1291c3dba439e9b95de838ae58a4f",
+      "classification": "historical_unjournaled",
+      "reason": "superseded by canonical 0033 routing integrity migration"
+    },
+    {
+      "tag": "0031_clerk_provisioning_reconciliation",
+      "sha256": "4051ed975a32711199a80e9e6185bd4473c20041f0ac6c736315b9d2da870fbb",
+      "classification": "historical_unjournaled",
+      "reason": "unsafe duplicate-email backfill superseded by canonical 0036"
+    }
+  ]
+}
