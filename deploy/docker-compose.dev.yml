@@ -1,0 +1,120 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      TZ: America/Los_Angeles
+      POSTGRES_DB: ${POSTGRES_DB:-myorder_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-devadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.migrate
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://devadmin:dev_password_change_me@db:5432/myorder_dev}
+      DB_SSL: "false"
+      NODE_ENV: development
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+      args:
+        DEPLOY_SHA: ${DEPLOY_SHA:-dev}
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://devadmin:dev_password_change_me@db:5432/myorder_dev}
+      DB_SSL: "false"
+      DEPLOY_SHA: ${DEPLOY_SHA:-dev}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-${VITE_CLERK_PUBLISHABLE_KEY:-}}
+      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-http://127.0.0.1:18081/api/__clerk}
+      CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-dev_session_secret_change_me}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      STRIPE_SECRET_KEY: ""
+      STRIPE_PUBLISHABLE_KEY: ""
+      TWILIO_ACCOUNT_SID: ""
+      TWILIO_AUTH_TOKEN: ""
+      TWILIO_PHONE_NUMBER: ""
+      UBER_CLIENT_ID: ""
+      UBER_CUSTOMER_ID: ""
+      UBER_CLIENT_SECRET: ""
+      UBER_PICKUP_ADDRESS: ""
+      UBER_PICKUP_ACTION: ""
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      CUPS_SERVER: ""
+      PRINT_BRIDGE_URL: ""
+      PRINT_BRIDGE_API_KEY: ""
+      PRINT_SERVER_HOST: ""
+      RECEIPT_PRINT_ENABLED: "false"
+      LABEL_PRINT_ENABLED: "false"
+      SMS_ENABLED: "false"
+      EMAIL_ENABLED: "false"
+      PUSH_ENABLED: "false"
+      LIVE_PAYMENTS_ENABLED: "false"
+      PAYMENT_MODE: test
+    volumes:
+      - uploads:/app/uploads
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  platform:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.platform
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:-pk_test_dev_placeholder_not_live}}
+        VITE_WOOCOMMERCE_URL: ""
+        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-http://127.0.0.1:18081/api/__clerk}
+    restart: unless-stopped
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18081:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - platform
+    networks:
+      - internal
+
+volumes:
+  postgres_data:
+  nginx_logs:
+  uploads:
+  app_data:
+
+networks:
+  internal:
+    driver: bridge

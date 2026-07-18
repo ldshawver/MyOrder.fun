@@ -116,7 +116,7 @@ export const PERMISSIONS = [
   "schedules.view_self", "schedules.view_team", "schedules.view_tenant", "schedules.create", "schedules.update", "schedules.approve", "schedules.publish",
   "timeclock.clock_self", "timeclock.view_team", "timeclock.approve_team", "timeclock.view_tenant",
   "reports.view_self", "reports.view_team", "reports.view_tenant", "reports.export",
-  "settings.view", "settings.manage_tenant", "billing.manage", "audit_logs.view", "pages.manage", "content.manage", "app_doctor.view", "app_doctor.run",
+  "settings.view", "settings.manage_tenant", "settings.edit_business", "billing.manage", "audit_logs.view", "pages.manage", "content.manage", "app_doctor.view", "app_doctor.run",
   "platform.tenants.view", "platform.tenants.manage", "platform.impersonate", "platform.global_settings.manage",
 ] as const;
 export type Permission = typeof PERMISSIONS[number];
@@ -126,7 +126,7 @@ export const PLATFORM_PERMISSIONS = PERMISSIONS.filter((p) => p.startsWith("plat
 
 const userPerms = ["feedback.submit", "users.view_self", "orders.view_self", "schedules.view_self", "timeclock.clock_self", "reports.view_self"] satisfies Permission[];
 const csrExtra = ["customers.view", "customers.create", "customers.update", "orders.create", "orders.update", "schedules.view_team", "reports.view_team"] satisfies Permission[];
-const supervisorExtra = ["users.view_team", "users.manage_team", "schedules.create", "schedules.update", "schedules.approve", "timeclock.view_team", "timeclock.approve_team"] satisfies Permission[];
+const supervisorExtra = ["settings.view", "users.view_team", "users.manage_team", "schedules.create", "schedules.update", "schedules.approve", "timeclock.view_team", "timeclock.approve_team"] satisfies Permission[];
 const adminExtra = PERMISSIONS.filter((p) => !p.startsWith("platform.")) as Permission[];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Permission[]> = {
