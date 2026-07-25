@@ -39,6 +39,15 @@ export const usersTable = pgTable("users", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 
+export const clerkWebhookEventsTable = pgTable("clerk_webhook_events", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  clerkUserId: text("clerk_user_id"),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+  status: text("status").notNull().default("processed"),
+  error: text("error"),
+});
+
 export const insertUserSchema = createInsertSchema(usersTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertUser = typeof insertUserSchema._output;
 export type User = typeof usersTable.$inferSelect;

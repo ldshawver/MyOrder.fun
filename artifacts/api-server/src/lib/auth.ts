@@ -7,6 +7,7 @@ import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail } 
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
 import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
+import { getHouseTenantId } from "./singleTenant";
 export { normalizeRole } from "./roles";
 
 export type Role = NormalizedRole | string;
@@ -80,6 +81,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     const patch: Partial<typeof usersTable.$inferInsert> = {};
     if (!existing.firstName && claimFirstName) patch.firstName = claimFirstName;
     if (!existing.lastName && claimLastName) patch.lastName = claimLastName;
+    if (existing.tenantId === null && normalizeRole(existing.role) === "user") patch.tenantId = await getHouseTenantId();
     if (Object.keys(patch).length > 0) {
       const [updated] = await db.update(usersTable).set(patch).where(eq(usersTable.id, existing.id)).returning();
       return updated ?? existing;
@@ -127,9 +129,10 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
 
   // 4. Truly new user — create a pending row.
   try {
+    const tenantId = await getHouseTenantId();
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, role: "user", status: "approved", identityStatus: "verified", provisioningStatus: "active" })
+      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, tenantId, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" })
       .returning();
     return created;
   } catch (err) {

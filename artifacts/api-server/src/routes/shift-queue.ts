@@ -6,7 +6,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole, n
 import { getHouseTenantId } from "../lib/singleTenant";
 
 const router: IRouter = Router();
-const QUEUE_ORDER_STATUSES = ["pending", "processing", "ready", "completed"];
+const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "ready", "completed", "pending", "processing"];
 
 let orderLifecycleSchemaEnsured = false;
 

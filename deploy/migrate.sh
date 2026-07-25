@@ -45,10 +45,18 @@ until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -q; do
 done
 echo "  ✓ Postgres is accepting connections"
 
+# ── Migration-ledger preflight ────────────────────────────────────────────────
+echo ""
+cd /app
+echo "▶ Validating migration journal and applied database prefix..."
+if ! pnpm --filter @workspace/db db:validate-migrations; then
+  echo "  ✗ Migration ledger validation failed; refusing to run migrations." >&2
+  exit 1
+fi
+
 # ── Pre-migration DB check ────────────────────────────────────────────────────
 echo ""
 echo "▶ Running pre-migration connectivity check (check-db)..."
-cd /app
 if ! pnpm --filter @workspace/db db:check; then
   echo ""
   echo "  ✗ db:check failed — running diagnostics:" >&2

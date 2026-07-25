@@ -1,8 +1,8 @@
 # Applies pending drizzle-kit SQL migrations to the production database.
 # Used as a one-shot service: docker compose run --rm migrate
 #
-# IMPORTANT: uses `drizzle-kit migrate` (applies lib/db/drizzle/*.sql files in
-# order) — NOT `push --force` (which diffs and alters the live schema
+# IMPORTANT: uses `drizzle-kit migrate` (applies SQL files listed in the
+# validated Drizzle journal) — NOT `push --force` (which diffs and alters the live schema
 # destructively; only safe for dev resets).
 FROM node:24-alpine
 

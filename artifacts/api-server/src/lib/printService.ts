@@ -21,7 +21,7 @@ import {
   adminSettingsTable,
 } from "@workspace/db";
 import { eq, and, inArray, sql } from "drizzle-orm";
-import { renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
+import { decodeStoredReceiptText, renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
 import { charWidth, getLogo } from "./print/index";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
@@ -102,7 +102,7 @@ async function dispatchEthernet(
 
   const port = printer.directPort ?? 9100;
   const timeoutMs = printer.timeoutMs ?? 5000;
-  const text = job.renderedText ?? "";
+  const text = decodeStoredReceiptText(job.renderedText ?? "");
   const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
 
   return new Promise(resolve => {
@@ -136,7 +136,7 @@ async function dispatchBridge(
 ): Promise<{ success: boolean; error?: string; responsePayload?: object }> {
   const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
   const timeoutMs = printer.timeoutMs ?? 8000;
-  const text = job.renderedText ?? "";
+  const text = decodeStoredReceiptText(job.renderedText ?? "");
   const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));
 
   if (!printer.bridgeUrl) {

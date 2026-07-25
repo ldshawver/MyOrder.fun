@@ -10,6 +10,12 @@ import {
   getLogo,
 } from "./print/index";
 
+const STORED_NUL_PLACEHOLDER = "\u2400";
+
+export function decodeStoredReceiptText(text: string): string {
+  return text.replaceAll(STORED_NUL_PLACEHOLDER, "\x00");
+}
+
 interface OrderItem {
   quantity: number;
   name: string;
@@ -115,7 +121,9 @@ export function renderKitchenTicket(order: PrintOrder): string {
     showOperatorName: order.showOperatorName ?? true,
     receiptTemplateStyle: order.receiptTemplateStyle ?? "clean",
   });
-  return renderBlocks(blocks, width);
+  // PostgreSQL text columns reject NUL bytes. Keep the queued/rendered receipt
+  // human-readable and reversible; the transport restores NUL before dispatch.
+  return renderBlocks(blocks, width).replaceAll("\x00", STORED_NUL_PLACEHOLDER);
 }
 
 export function renderCustomerReceipt(order: PrintOrder): string {

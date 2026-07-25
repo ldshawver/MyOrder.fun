@@ -31,8 +31,11 @@ pnpm install --frozen-lockfile
 echo "==> Building lib/db type declarations..."
 pnpm --filter @workspace/db exec tsc
 
-echo "==> Pushing DB schema to production database..."
-pnpm --filter @workspace/db run push-force
+echo "==> Validating the production migration ledger (read-only)..."
+pnpm --filter @workspace/db run db:validate-migrations
+
+echo "==> Database schema changes are not applied by build.sh."
+echo "    Use the separately gated migrate service after snapshot validation."
 
 echo "==> Building API server..."
 pnpm --filter @workspace/api-server run build

@@ -1,8 +1,9 @@
 import { clerkClient } from "@clerk/express";
-import { db, usersTable, tenantsTable, auditLogsTable } from "@workspace/db";
+import { db, usersTable, auditLogsTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { normalizeRole } from "./roles";
+import { getHouseTenantId } from "./singleTenant";
 
 export type ClerkProvisioningUser = {
   id: string;
@@ -45,22 +46,13 @@ export function getPrimaryPhone(user: ClerkProvisioningUser): string | null {
   return primary?.phoneNumber ?? primary?.phone_number ?? null;
 }
 
-export async function ensureProvisioningSchema(): Promise<void> {
-  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "normalized_email" text`);
-  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "identity_status" text NOT NULL DEFAULT 'verification_pending'`);
-  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provisioning_status" text NOT NULL DEFAULT 'pending'`);
-  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provisioning_error" text`);
-  await db.execute(sql`UPDATE "users" SET "normalized_email" = lower(trim("email")) WHERE "normalized_email" IS NULL AND "email" IS NOT NULL`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "users_normalized_email_unique" ON "users" ("normalized_email") WHERE "normalized_email" IS NOT NULL`);
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS "clerk_webhook_events" ("id" text PRIMARY KEY, "event_type" text NOT NULL, "clerk_user_id" text, "processed_at" timestamp with time zone DEFAULT now() NOT NULL, "status" text NOT NULL DEFAULT 'processed', "error" text)`);
-}
+let provisioningSchemaVerified = false;
 
-async function defaultTenantId(): Promise<number | null> {
-  const slug = process.env.DEFAULT_TENANT_SLUG || process.env.MYORDER_DEFAULT_TENANT_SLUG || "myorder";
-  const [bySlug] = await db.select().from(tenantsTable).where(eq(tenantsTable.slug, slug)).limit(1);
-  if (bySlug) return bySlug.id;
-  const [first] = await db.select().from(tenantsTable).limit(1);
-  return first?.id ?? null;
+export async function ensureProvisioningSchema(): Promise<void> {
+  if (provisioningSchemaVerified) return;
+  await db.execute(sql`SELECT "normalized_email", "identity_status", "provisioning_status", "provisioning_error" FROM "users" LIMIT 0`);
+  await db.execute(sql`SELECT "id", "status" FROM "clerk_webhook_events" LIMIT 0`);
+  provisioningSchemaVerified = true;
 }
 
 export async function provisionVerifiedClerkUser(input: { clerkUser: ClerkProvisioningUser; correlationId?: string; source: string; requireVerified?: boolean }): Promise<ProvisioningResult> {
@@ -71,14 +63,15 @@ export async function provisionVerifiedClerkUser(input: { clerkUser: ClerkProvis
   const { email, normalizedEmail, verified } = getPrimaryVerifiedEmail(clerkUser);
   if (!clerkId || !normalizedEmail) return { user: null, status: "skipped", correlationId, error: "missing_identity" };
   if (input.requireVerified !== false && !verified) return { user: null, status: "skipped", correlationId, error: "email_not_verified" };
-  const tenantId = await defaultTenantId();
+  const tenantId = await getHouseTenantId();
   const firstName = clerkUser.firstName ?? clerkUser.first_name ?? null;
   const lastName = clerkUser.lastName ?? clerkUser.last_name ?? null;
   const contactPhone = getPrimaryPhone(clerkUser);
   try {
     const [byClerk] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId)).limit(1);
     if (byClerk) {
-      const [updated] = await db.update(usersTable).set({ email, normalizedEmail, firstName: firstName ?? byClerk.firstName, lastName: lastName ?? byClerk.lastName, contactPhone: contactPhone ?? byClerk.contactPhone, identityStatus: verified ? "verified" : "verification_pending", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byClerk.id)).returning();
+      const isPendingCustomer = normalizeRole(byClerk.role) === "user" && byClerk.status === "pending";
+      const [updated] = await db.update(usersTable).set({ email, normalizedEmail, firstName: firstName ?? byClerk.firstName, lastName: lastName ?? byClerk.lastName, contactPhone: contactPhone ?? byClerk.contactPhone, tenantId: byClerk.tenantId ?? (normalizeRole(byClerk.role) === "user" ? tenantId : null), role: normalizeRole(byClerk.role), status: isPendingCustomer ? "approved" : byClerk.status, isActive: isPendingCustomer ? true : byClerk.isActive, identityStatus: verified ? "verified" : "verification_pending", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byClerk.id)).returning();
       return { user: updated ?? byClerk, status: "updated", correlationId };
     }
     const [byEmail] = await db.select().from(usersTable).where(sql`${usersTable.normalizedEmail} = ${normalizedEmail}`).limit(1);
