@@ -101,10 +101,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.platform
-      args:
-        VITE_CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY is required}
-        VITE_WOOCOMMERCE_URL: ""
-        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://dev.myorder.fun/api/__clerk}
+      secrets:
+        - clerk_publishable_key
+        - clerk_proxy_url
     restart: unless-stopped
     networks:
       - internal
@@ -134,3 +133,9 @@ volumes:
 networks:
   internal:
     driver: bridge
+
+secrets:
+  clerk_publishable_key:
+    environment: CLERK_PUBLISHABLE_KEY
+  clerk_proxy_url:
+    environment: VITE_CLERK_PROXY_URL
