@@ -163,9 +163,11 @@ const _clerkPubKey =
   process.env.VITE_CLERK_PUBLISHABLE_KEY ||
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
   process.env.PUBLIC_KEY;
-const _clerkProxyUrl =
-  process.env.CLERK_PROXY_URL ||
-  process.env.VITE_CLERK_PROXY_URL;
+// Clerk development instances use their direct *.clerk.accounts.dev FAPI.
+// Clerk Frontend API proxying is supported only for live instances.
+const _clerkProxyUrl = _clerkPubKey?.startsWith("pk_test_")
+  ? undefined
+  : process.env.CLERK_PROXY_URL || process.env.VITE_CLERK_PROXY_URL;
 app.use(clerkMiddleware({
   publishableKey: _clerkPubKey,
   ...(process.env.NODE_ENV === "production" && _clerkProxyUrl

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { BrandProvider } from "@/contexts/BrandContext";
 import { CartProvider } from "@/contexts/CartContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
@@ -55,8 +55,9 @@ import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const isClerkDevelopmentInstance = clerkPubKey?.startsWith("pk_test_");
 
-const clerkProxyUrl = import.meta.env.PROD
+const clerkProxyUrl = import.meta.env.PROD && !isClerkDevelopmentInstance
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
 
@@ -655,13 +656,57 @@ function ClerkProviderWithRoutes() {
   );
 }
 
+class ClerkInitializationBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Clerk initialization failed", error, info);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <ClerkInitializationError />;
+    }
+
+    return this.props.children;
+  }
+}
+
+export function ClerkInitializationError() {
+  return (
+    <main className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
+      <section
+        role="alert"
+        className="w-full max-w-lg rounded-2xl border border-destructive/40 bg-card p-6 shadow-xl"
+      >
+        <h1 className="text-xl font-semibold">Authentication unavailable</h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Clerk could not initialize. Reload the page or contact support if the problem continues.
+        </p>
+        <p className="mt-4 font-mono text-xs text-destructive">
+          CLERK_INITIALIZATION_FAILED
+        </p>
+      </section>
+    </main>
+  );
+}
+
 function App() {
   return (
     <BrandProvider>
       <CartProvider>
         <TooltipProvider>
           <WouterRouter base={basePath}>
-            <ClerkProviderWithRoutes />
+            <ClerkInitializationBoundary>
+              <ClerkProviderWithRoutes />
+            </ClerkInitializationBoundary>
           </WouterRouter>
           <Toaster />
         </TooltipProvider>

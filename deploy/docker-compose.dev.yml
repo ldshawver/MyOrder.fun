@@ -101,6 +101,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.platform
+      args:
+        ENABLE_CLERK_DEV_FAPI: "true"
       secrets:
         - clerk_publishable_key
         - clerk_proxy_url
