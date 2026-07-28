@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, and, desc, lt, isNotNull, notInArray, or, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, lt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -13,6 +13,10 @@ import {
   inventoryLocationsTable,
   catalogItemsTable,
   cashLedgerEntriesTable,
+  auditLogsTable,
+  csrBoxesTable,
+  generalQueueCashSessionParticipantsTable,
+  generalQueueCashSessionsTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -32,6 +36,7 @@ import {
   AddOrderNoteBody,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
   normalizeCheckoutCart,
@@ -50,8 +55,6 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 
-const CanonicalTenderMethod = z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"]);
-const PosCloseoutPaymentMethod = CanonicalTenderMethod;
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -1172,32 +1175,38 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const actor = req.dbUser!;
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  if (!z.object({}).strict().safeParse(req.body ?? {}).success) {
+    res.status(422).json({ error: "Claim does not accept actor or assignment fields" });
+    return;
+  }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
-  const [shift] = await db.select().from(labTechShiftsTable).where(and(
-    eq(labTechShiftsTable.tenantId, tenantId),
-    eq(labTechShiftsTable.techId, actor.id),
-    eq(labTechShiftsTable.status, "active"),
-  )).limit(1);
-  if (!shift || !isShiftOrderRoutable(shift)) {
-    res.status(403).json({ error: "CSR must have an active ready shift before claiming orders" });
+  const eligibleShifts = await listActiveCsrs(tenantId);
+  const eligibleShift = eligibleShifts.find(candidate => candidate.userId === actor.id);
+  const [shift] = eligibleShift
+    ? await db.select().from(labTechShiftsTable).where(and(
+        eq(labTechShiftsTable.id, eligibleShift.shiftId),
+        eq(labTechShiftsTable.tenantId, tenantId),
+        eq(labTechShiftsTable.techId, actor.id),
+        eq(labTechShiftsTable.status, "active"),
+        isNull(labTechShiftsTable.clockedOutAt),
+      )).limit(1)
+    : [];
+  const isGeneralQueueOrder = order.assignedShiftId == null && order.routeSource === "general_account";
+  if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId })) {
+    res.status(403).json({ error: "An eligible active CSR shift is required to claim this order" });
     return;
   }
 
-  // CSRs may only accept tenant-local orders assigned to them/their ready
-  // active shift, or sitting in the General Account fallback queue.
-  const isGeneralQueueOrder = order.assignedCsrUserId == null && order.routeSource === "general_account";
-  if (normalizeRole(actor.role) === "csr") {
-    if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
-      res.status(403).json({ error: "Order is assigned to another rep" });
-      return;
-    }
-    if (!isGeneralQueueOrder && order.assignedShiftId != null && order.assignedShiftId !== shift.id) {
-      res.status(403).json({ error: "Order is assigned to another shift" });
-      return;
-    }
+  if (order.assignedCsrUserId != null && order.assignedCsrUserId !== actor.id) {
+    res.status(409).json({ error: "Order is already assigned to another CSR" });
+    return;
+  }
+  if (!isGeneralQueueOrder && order.assignedShiftId != null && order.assignedShiftId !== shift.id) {
+    res.status(409).json({ error: "Order is already assigned to another shift" });
+    return;
   }
   if (order.acceptedAt) {
     if (order.assignedCsrUserId === actor.id) {
@@ -1227,6 +1236,8 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       fulfillmentStatus: "in_progress",
       assignedCsrUserId: actor.id,
       assignedShiftId: shift.id,
+      routeSource: "active_csr",
+      routedTo: "csr_shift",
     })
     .where(and(
       eq(ordersTable.id, orderId),
@@ -1234,7 +1245,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
       sql`${ordersTable.acceptedAt} is null`,
       sql`(${ordersTable.fulfillmentStatus} = 'submitted' OR (${ordersTable.fulfillmentStatus} is null AND ${ordersTable.status} IN ('pending', 'submitted')))`,
       order.assignedCsrUserId == null ? sql`${ordersTable.assignedCsrUserId} is null` : eq(ordersTable.assignedCsrUserId, actor.id),
-      isGeneralQueueOrder ? sql`true` : (order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id)),
+      isGeneralQueueOrder ? sql`${ordersTable.assignedShiftId} is null` : (order.assignedShiftId == null ? sql`${ordersTable.assignedShiftId} is null` : eq(ordersTable.assignedShiftId, shift.id)),
     ))
     .returning();
   const updated = updatedRows[0];
@@ -1271,16 +1282,55 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
     action: "ORDER_CLAIMED",
     resourceType: "order", resourceId: String(orderId),
-    metadata: { acceptedByUserId: actor.id, shiftId: shift.id, priorAssignedCsrUserId: order.assignedCsrUserId, priorAssignedShiftId: order.assignedShiftId }, ipAddress: req.ip,
+    tenantId,
+    metadata: { acceptedByUserId: actor.id, shiftId: shift.id, queueContext: "active_csr", priorQueueContext: isGeneralQueueOrder ? "general_queue" : "active_csr", priorAssignedCsrUserId: order.assignedCsrUserId, priorAssignedShiftId: order.assignedShiftId }, ipAddress: req.ip,
   });
 
   res.json(await buildOrderResponse(updated));
 }
 
 // POST /api/orders/:id/accept — CSR accepts a routed order
-router.post("/orders/:id/accept", requireRole("csr"), acceptOrder);
+router.post("/orders/:id/accept", requirePermission("queue.claim"), acceptOrder);
 // POST /api/orders/:id/claim — POS synonym used by staff queue buttons.
-router.post("/orders/:id/claim", requireRole("csr"), acceptOrder);
+router.post("/orders/:id/claim", requirePermission("queue.claim"), acceptOrder);
+
+router.post("/orders/:id/release", requireRole("csr", "supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const tenantId = actor.tenantId;
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
+  const orderId = Number(req.params.id);
+  const parsed = z.object({ reason: z.string().trim().min(3).max(240).optional() }).strict().safeParse(req.body ?? {});
+  if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "Invalid release request" }); return; }
+  const role = normalizeRole(actor.role);
+  const ownership = role === "csr" ? eq(ordersTable.assignedCsrUserId, actor.id) : sql`true`;
+  const [updated] = await db.update(ordersTable).set({ assignedCsrUserId: null, assignedShiftId: null, acceptedAt: null, status: "submitted", fulfillmentStatus: "submitted", routeSource: "general_account", routedTo: "default_queue" }).where(and(
+    eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), ownership,
+    sql`${ordersTable.paymentStatus} <> 'paid'`, sql`${ordersTable.status} NOT IN ('cancelled','refunded','voided','archived','completed')`,
+  )).returning();
+  if (!updated) { res.status(403).json({ error: "Order cannot be released by this user" }); return; }
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "ORDER_RELEASED", resourceType: "order", resourceId: String(orderId), metadata: { queueContext: "general_queue", reason: parsed.data.reason ?? null }, ipAddress: req.ip });
+  emitUpdated(updated, "released_to_general_queue");
+  res.json(await buildOrderResponse(updated));
+});
+
+router.post("/orders/:id/assign", requireRole("supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const orderId = Number(req.params.id);
+  const parsed = z.object({ assigneeUserId: z.number().int().positive(), reason: z.string().trim().min(3).max(240) }).strict().safeParse(req.body ?? {});
+  if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "Invalid assignment request" }); return; }
+  const [assignee] = await db.select().from(usersTable).where(and(eq(usersTable.id, parsed.data.assigneeUserId), eq(usersTable.tenantId, tenantId), eq(usersTable.isActive, true))).limit(1);
+  if (!assignee || normalizeRole(assignee.role) !== "csr") { res.status(422).json({ error: "Assignee must be an active CSR in this tenant" }); return; }
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.techId, assignee.id), eq(labTechShiftsTable.status, "active"))).limit(1);
+  const [updated] = await db.update(ordersTable).set({ assignedCsrUserId: assignee.id, assignedShiftId: shift?.id ?? null, acceptedAt: new Date(), status: "in_progress", fulfillmentStatus: "in_progress", routeSource: "supervisor_override" }).where(and(
+    eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), sql`${ordersTable.paymentStatus} <> 'paid'`,
+    sql`${ordersTable.status} NOT IN ('cancelled','refunded','voided','archived','completed')`,
+  )).returning();
+  if (!updated) { res.status(409).json({ error: "Order is not assignable" }); return; }
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "ORDER_ASSIGNED", resourceType: "order", resourceId: String(orderId), metadata: { assigneeUserId: assignee.id, assignedShiftId: shift?.id ?? null, queueContext: shift ? "active_csr" : "general_queue", reason: parsed.data.reason }, ipAddress: req.ip });
+  emitUpdated(updated, "supervisor_reassigned");
+  res.json(await buildOrderResponse(updated));
+});
 
 // PATCH /api/orders/:id/eta — supervisor adjusts the customer hourglass
 router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
@@ -1316,115 +1366,131 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
 });
 
 
-// POST /api/orders/:id/closeout — staff records an in-person/manual payment and completes the order.
-router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
+const CashCloseoutBody = z.object({
+  paymentMethod: z.literal("cash"),
+  amountTendered: z.union([z.string().regex(/^\d{1,7}(\.\d{1,2})?$/), z.number().finite().nonnegative()]),
+  idempotencyKey: z.string().trim().min(8).max(120),
+  internalNote: z.string().trim().max(500).optional(),
+  generalQueueSessionId: z.number().int().positive().optional(),
+  supervisorOverride: z.boolean().default(false),
+}).strict();
+
+function moneyToCents(value: string | number): number | null {
+  const text = String(value);
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
+  const [whole, fraction = ""] = text.split(".");
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return Number.isSafeInteger(cents) ? cents : null;
+}
+
+// POST /api/orders/:id/closeout — accountable, idempotent CASH closeout.
+router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "supervisor", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const parsed = z.object({ paymentMethod: PosCloseoutPaymentMethod, idempotencyKey: z.string().trim().min(8).max(120).optional() }).strict().safeParse(req.body ?? {});
-  if (!parsed.success) { res.status(422).json({ error: "paymentMethod must be one of: cash, customer_credit, gift_card, cash_app, venmo, paypal, card" }); return; }
+  const orderId = Number(req.params.id);
+  const parsed = CashCloseoutBody.safeParse(req.body ?? {});
+  if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "A valid cash tender and idempotency key are required" }); return; }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const method = parsed.data.paymentMethod;
-  const idempotencyKey = parsed.data.idempotencyKey ?? String(req.header("Idempotency-Key") ?? `closeout:${tenantId}:${orderId}:${method}`);
+  const role = normalizeRole(actor.role);
+  const canOverride = ["supervisor", "admin", "global_admin"].includes(role);
+  if (parsed.data.supervisorOverride && !canOverride) { res.status(403).json({ error: "Supervisor override permission is required" }); return; }
 
-  const { updated, auditTotal, cashShiftId, cashBoxAssignmentId, cashLedgerId, status } = await db.transaction(async (tx) => {
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "CASH_CLOSEOUT_ATTEMPTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", queueContext: parsed.data.generalQueueSessionId ? "general_queue" : "resolved_server_side", supervisorOverride: parsed.data.supervisorOverride }, ipAddress: req.ip });
+
+  const outcome = await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
-    const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
-    if (!order) return { updated: null, auditTotal: null, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 404 as const };
-    if (["completed", "refunded", "cancelled", "archived", "voided"].includes(order.status) && order.paymentStatus !== "paid") {
-      return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 409 as const };
+    const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).for("update").limit(1);
+    if (!order) return { status: 404, error: "Order not found" } as const;
+    const [existingLedger] = await tx.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.idempotencyKey, parsed.data.idempotencyKey))).limit(1);
+    if (existingLedger) {
+      if (existingLedger.orderId !== orderId) return { status: 409, error: "Idempotency key is already in use" } as const;
+      if (existingLedger.actorUserId !== actor.id && !parsed.data.supervisorOverride) {
+        return { status: 403, error: "Only the original cash actor or an authorized supervisor may replay this closeout" } as const;
+      }
+      return { status: 200, updated: order, ledger: existingLedger, idempotent: true } as const;
     }
-    if (order.paymentStatus === "paid") return { updated: order, auditTotal: order.total, cashShiftId: order.assignedShiftId ?? null, cashBoxAssignmentId: null, cashLedgerId: null, status: 200 as const };
+    const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
+    if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
+    if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
+    const dueCents = moneyToCents(order.total);
+    const tenderedCents = moneyToCents(parsed.data.amountTendered);
+    if (dueCents == null || tenderedCents == null) return { status: 422, error: "Invalid authoritative order balance or tender" } as const;
+    if (tenderedCents < dueCents) return { status: 422, error: "Amount tendered is insufficient" } as const;
+    const changeCents = tenderedCents - dueCents;
 
-    let closeoutShift: typeof labTechShiftsTable.$inferSelect | null = null;
-    const role = normalizeRole(actor.role);
-    if (role === "csr") {
-      const shiftFilters = [
-        eq(labTechShiftsTable.tenantId, tenantId),
-        eq(labTechShiftsTable.techId, actor.id),
-        eq(labTechShiftsTable.status, "active"),
-      ];
-      if (order.assignedShiftId != null) shiftFilters.push(eq(labTechShiftsTable.id, order.assignedShiftId));
-      const [shift] = await tx.select().from(labTechShiftsTable).where(and(...shiftFilters)).limit(1);
-      const orderIsAssignedToActor = order.assignedCsrUserId === actor.id && (order.assignedShiftId == null || shift?.id === order.assignedShiftId);
-      const orderIsGeneralQueue = order.assignedShiftId == null && order.assignedCsrUserId == null;
-      if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId }) || (!orderIsAssignedToActor && !orderIsGeneralQueue)) {
-        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
-      }
-      closeoutShift = shift;
-    } else if (method === "cash") {
-      const [shift] = await tx.select().from(labTechShiftsTable).where(and(
-        eq(labTechShiftsTable.tenantId, tenantId),
-        eq(labTechShiftsTable.techId, actor.id),
-        eq(labTechShiftsTable.status, "active"),
-      )).limit(1);
-      closeoutShift = shift ?? null;
-      if (!closeoutShift || !isShiftOrderRoutable({ ...closeoutShift, expectedTenantId: tenantId })) {
-        return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
-      }
-    }
+    let shift: typeof labTechShiftsTable.$inferSelect | null = null;
+    let session: typeof generalQueueCashSessionsTable.$inferSelect | null = null;
+    let boxSlug: string;
+    let locationId: number | null;
+    const assignedToActor = order.assignedCsrUserId === actor.id;
 
-    const cashBoxAssignmentId = method === "cash"
-      ? (closeoutShift?.boxAssignmentId || "sales-box-1")
-      : null;
-    if (method === "cash" && closeoutShift && !closeoutShift.boxAssignmentId) {
-      await tx.update(labTechShiftsTable).set({ boxAssignmentId: cashBoxAssignmentId }).where(eq(labTechShiftsTable.id, closeoutShift.id));
-    }
-    let cashLedgerId: number | null = null;
-    let createdCashLedger = false;
-    if (method === "cash") {
-      if (!closeoutShift) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };
-      const [existingLedger] = await tx.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.idempotencyKey, idempotencyKey)).limit(1);
-      if (existingLedger) cashLedgerId = existingLedger.id;
-      else {
-        const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
-          tenantId,
-          orderId,
-          shiftId: closeoutShift.id,
-          csrUserId: actor.id,
-          boxAssignmentId: cashBoxAssignmentId ?? "sales-box-1",
-          amount: String(order.total),
-          idempotencyKey,
-        }).returning();
-        cashLedgerId = ledger?.id ?? null;
-        createdCashLedger = true;
+    if (order.assignedShiftId != null) {
+      [shift] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, order.assignedShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
+      if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId })) return { status: 409, error: "The assigned CSR shift is no longer an eligible cash session" } as const;
+      if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Only the assigned CSR may close this order for cash" } as const;
+      boxSlug = shift.boxAssignmentId ?? "";
+      if (!boxSlug) return { status: 409, error: "The active CSR shift has no authorized register" } as const;
+      const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.slug, boxSlug), eq(csrBoxesTable.isActive, true))).limit(1);
+      if (!box) return { status: 409, error: "The active CSR register is unavailable" } as const;
+      const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, box.id), eq(inventoryLocationsTable.isActive, true))).limit(1);
+      locationId = location?.id ?? null;
+    } else {
+      if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Claim this General Queue order before accepting cash" } as const;
+      const sessionFilters = [eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")];
+      if (parsed.data.generalQueueSessionId) sessionFilters.push(eq(generalQueueCashSessionsTable.id, parsed.data.generalQueueSessionId));
+      [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(...sessionFilters)).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(1);
+      if (!session) return { status: 409, error: "A General Queue cash session must be opened before accepting cash.", action: canOverride ? "open_general_queue_cash_session" : undefined } as const;
+      if (!parsed.data.supervisorOverride) {
+        const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(eq(generalQueueCashSessionParticipantsTable.sessionId, session.id), eq(generalQueueCashSessionParticipantsTable.userId, actor.id), isNull(generalQueueCashSessionParticipantsTable.leftAt))).limit(1);
+        if (!participant) return { status: 403, error: "Join the active General Queue cash session before accepting cash" } as const;
       }
-      if (createdCashLedger) {
-        const totals = typeof closeoutShift.paymentTotalsJson === "object" && closeoutShift.paymentTotalsJson
-          ? { ...(closeoutShift.paymentTotalsJson as Record<string, number>) }
-          : {};
-        totals.cash = Number(totals.cash ?? 0) + Number(order.total);
-        await tx.update(labTechShiftsTable).set({ paymentTotalsJson: totals }).where(eq(labTechShiftsTable.id, closeoutShift.id));
-      }
+      const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, session.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
+      if (!box) return { status: 409, error: "The General Queue register is unavailable" } as const;
+      boxSlug = box.slug;
+      locationId = session.locationId;
     }
 
-    const priorFulfillment = order.fulfillmentStatus ?? "submitted";
-    const nextFulfillment = priorFulfillment === "cancelled" ? priorFulfillment : priorFulfillment;
+    const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
+      tenantId, orderId, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null,
+      csrUserId: actor.id, actorUserId: actor.id, locationId, boxAssignmentId: boxSlug,
+      amount: (dueCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2),
+      changeGiven: (changeCents / 100).toFixed(2), internalNote: parsed.data.internalNote || null,
+      entryType: "cash_sale_closeout", idempotencyKey: parsed.data.idempotencyKey,
+    }).returning();
+    if (shift) {
+      await tx.update(labTechShiftsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${labTechShiftsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${labTechShiftsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(dueCents / 100).toFixed(2)}::numeric))::json` }).where(eq(labTechShiftsTable.id, shift.id));
+    } else if (session) {
+      await tx.update(generalQueueCashSessionsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${generalQueueCashSessionsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${generalQueueCashSessionsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(dueCents / 100).toFixed(2)}::numeric))::json` }).where(eq(generalQueueCashSessionsTable.id, session.id));
+    }
+    const now = new Date();
     const [updated] = await tx.update(ordersTable).set({
-      paymentStatus: "paid",
-      paymentMethod: method,
-      selectedPaymentMethod: method,
-      paymentToken: order.paymentToken ?? `${method}_${Date.now()}`,
-      status: order.status === "pending" || order.status === "submitted" ? "in_progress" : order.status,
-      fulfillmentStatus: nextFulfillment,
-      ...(closeoutShift ? { assignedShiftId: order.assignedShiftId ?? closeoutShift.id, assignedCsrUserId: order.assignedCsrUserId ?? actor.id, routeSource: order.routeSource ?? "active_csr" } : {}),
-    }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), sql`${ordersTable.paymentStatus} <> 'paid'`)).returning();
-    if (!updated) return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId, status: 409 as const };
-    return { updated, auditTotal: order.total, cashShiftId: method === "cash" ? closeoutShift?.id ?? null : null, cashBoxAssignmentId, cashLedgerId, status: 200 as const };
+      paymentStatus: "paid", paymentMethod: "cash", selectedPaymentMethod: "cash",
+      paymentToken: null, status: "completed", fulfillmentStatus: "completed",
+      completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
+    }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
+    if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
+    await tx.insert(auditLogsTable).values({
+      tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "CASH_CLOSEOUT_COMPLETED", resourceType: "order", resourceId: String(orderId),
+      metadata: { paymentMethod: "cash", amount: (dueCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), cashLedgerId: ledger.id, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null, locationId, register: boxSlug, supervisorOverride: parsed.data.supervisorOverride },
+      ipAddress: req.ip ?? null,
+    });
+    if (parsed.data.supervisorOverride) {
+      await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "CASH_CLOSEOUT_SUPERVISOR_OVERRIDE", resourceType: "order", resourceId: String(orderId), metadata: { cashLedgerId: ledger.id, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null }, ipAddress: req.ip ?? null });
+    }
+    return { status: 200, updated, ledger, idempotent: false } as const;
   });
 
-  if (!updated) {
-    if (auditTotal === null) { res.status(404).json({ error: "Not found" }); return; }
-    res.status(status).json({ error: status === 409 ? "Order is already paid" : "CSR must have the assigned active ready shift to close out this order" });
+  if (!("updated" in outcome) || !outcome.updated || !outcome.ledger) {
+    if ("updated" in outcome) {
+      res.status(500).json({ error: "Cash closeout did not produce a complete ledger result" });
+      return;
+    }
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: outcome.status === 409 ? "CASH_CLOSEOUT_CONFLICTED" : "CASH_CLOSEOUT_REJECTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", result: outcome.error }, ipAddress: req.ip });
+    res.status(outcome.status).json({ error: outcome.error, ...("action" in outcome && outcome.action ? { action: outcome.action } : {}) });
     return;
   }
-  await writeAuditLog({
-    actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
-    action: "ORDER_CLOSED_OUT", resourceType: "order", resourceId: String(orderId),
-    metadata: { paymentMethod: method, total: auditTotal, cashShiftId, cashBoxAssignmentId, cashLedgerId, idempotencyKey }, ipAddress: req.ip,
-  });
-  emitUpdated(updated, "closed_out");
-  res.json(await buildOrderResponse(updated));
+  emitUpdated(outcome.updated, "cash_closeout_completed");
+  res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, idempotent: outcome.idempotent } });
 });
 
 // POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
@@ -1457,6 +1523,8 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
 // POST /api/orders/:id/reassign — supervisor reassigns to a specific user
 router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
+  const tenantId = actor.tenantId;
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
   const orderId = parseInt(req.params.id as string, 10);
   if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { assignedCsrUserId } = req.body as { assignedCsrUserId?: number | null };
@@ -1467,11 +1535,11 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
   // Capture the previous assignee BEFORE the swap so we can emit a
   // scoped clearance event to them after the new assignment publishes.
   const [priorRow] = await db.select({ a: ordersTable.assignedCsrUserId })
-    .from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+    .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   const previousAssignedCsrUserId = priorRow?.a ?? null;
   let updated;
   try {
-    updated = await reassignOrder(orderId, assignedCsrUserId);
+    updated = await reassignOrder(orderId, tenantId, assignedCsrUserId);
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
     return;
@@ -1531,8 +1599,14 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
 });
 
 // GET /api/orders/active-csrs — supervisor reassign dropdown source.
-router.get("/orders/active-csrs", requireRole("global_admin", "admin", "supervisor"), async (_req, res): Promise<void> => {
-  const active = await listActiveCsrs();
+router.get("/orders/active-csrs", requirePermission("queue.manage"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const tenantId = actor.tenantId;
+  if (tenantId == null) {
+    res.status(403).json({ error: "Tenant assignment is required" });
+    return;
+  }
+  const active = await listActiveCsrs(tenantId);
   if (active.length === 0) { res.json({ csrs: [] }); return; }
   const ids = active.map(a => a.userId);
   const users = await db.select({
@@ -1541,16 +1615,35 @@ router.get("/orders/active-csrs", requireRole("global_admin", "admin", "supervis
     lastName: usersTable.lastName,
     email: usersTable.email,
     role: usersTable.role,
-  }).from(usersTable).where(inArray(usersTable.id, ids));
+    isActive: usersTable.isActive,
+  }).from(usersTable).where(and(
+    eq(usersTable.tenantId, tenantId),
+    inArray(usersTable.id, ids),
+    eq(usersTable.isActive, true),
+  ));
+  const boxes = await db.select({
+    slug: csrBoxesTable.slug,
+    label: csrBoxesTable.label,
+    location: csrBoxesTable.location,
+  }).from(csrBoxesTable).where(and(
+    eq(csrBoxesTable.tenantId, tenantId),
+    eq(csrBoxesTable.isActive, true),
+  ));
+  const boxesBySlug = new Map(boxes.map(box => [box.slug, box]));
   const byId = new Map(users.map(u => [u.id, u]));
   res.json({
     csrs: active.map(a => {
       const u = byId.get(a.userId);
+      const box = boxesBySlug.get(a.boxAssignmentId);
+      const location = box?.location?.trim() || box?.label || a.boxAssignmentId;
       return {
         userId: a.userId,
         shiftId: a.shiftId,
         name: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email : `User ${a.userId}`,
         role: u?.role ?? null,
+        location,
+        clockedInAt: a.clockedInAt,
+        label: `${u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email : `User ${a.userId}`} — ${location} — ${a.clockedInAt.toISOString()}`,
       };
     }),
   });

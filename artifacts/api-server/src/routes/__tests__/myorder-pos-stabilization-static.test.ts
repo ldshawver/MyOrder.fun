@@ -51,6 +51,8 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "Reprint Receipts"');
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
+    expect(layout).toContain('label: isCustomer ? "My Order" : "Orders"');
+    expect(layout).toContain('{ href: "/orders/new", label: "Cart & Checkout"');
   });
 
   it("replaces web-editor Plasmic UI copy with Puck copy", () => {
@@ -189,6 +191,29 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 });
 
+describe("authenticated CSR claim client contract", () => {
+  const staff = platform("pages/staff.tsx");
+  const detail = platform("pages/order-detail.tsx");
+
+  it("sends an identity-free claim once, surfaces errors, and refreshes affected state", () => {
+    expect(staff).toContain("if (loading !== null) return;");
+    expect(staff).toContain('body: JSON.stringify(status === "in_progress" ? {}');
+    expect(staff).toContain("body?.error ?? `Request failed with HTTP ${res.status}`");
+    expect(staff).toContain('data-testid={`claim-message-${order.id}`}');
+    for (const key of ["shiftQueueOrders", "generalQueueOrders", "csrAssignedOrders", "queueCounts", "activeAssignment", "getCurrentShift", "getOrder"]) {
+      expect(staff).toContain(`["${key}"]`);
+    }
+  });
+
+  it("does not swallow reassignment option or mutation failures", () => {
+    expect(detail).toContain("Could not load eligible shifts");
+    expect(detail).toContain("if (!response.ok)");
+    expect(detail).toContain("responseBody?.error");
+    expect(detail).toContain("{c.label}");
+    expect(detail).toContain('role={routingMessage.kind === "error" ? "alert" : "status"}');
+  });
+});
+
 describe("receipts and deploy workflow", () => {
   it("centralizes receipt and printer sections", () => {
     const receipts = platform("pages/admin/receipts.tsx");
@@ -196,6 +221,16 @@ describe("receipts and deploy workflow", () => {
       expect(receipts).toContain(label);
     }
     expect(receipts).toContain("Printer hardware must be configured");
+    expect(receipts).toContain("aria-selected={activeTab === key}");
+    expect(receipts).toContain("<AdminPrint />");
+    expect(platform("pages/new-order.tsx")).toContain("xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)]");
+  });
+
+  it("keeps restrictive catch-all admin routers after feature routers", () => {
+    const routesIndex = api("routes/index.ts");
+    expect(routesIndex.indexOf("router.use(inventoryRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
+    expect(routesIndex.indexOf("router.use(adminPrintersRouter)")).toBeLessThan(routesIndex.indexOf("router.use(adminRouter)"));
+    expect(routesIndex.indexOf("router.use(aiRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
   });
 
   it("uses safer deploy flow and OAuth Tailscale tags", () => {
@@ -245,28 +280,31 @@ describe("POS order closeout cash-bank safeguards", () => {
   const orders = api("routes/orders.ts");
   const orderDetail = platform("pages/order-detail.tsx");
 
-  it("exposes all supported closeout payment methods including cash", () => {
-    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
-    for (const method of ["cash", "gift_card", "cash_app", "card", "paypal", "venmo"]) {
-      expect(orderDetail).toContain(`closeOut("${method}")`);
-    }
+  it("exposes accountable cash closeout without bypassing canonical card or credit flows", () => {
+    expect(orders).toContain('paymentMethod: z.literal("cash")');
+    expect(orderDetail).toContain("Close as Cash Paid");
+    expect(orderDetail).toContain("Trusted amount due");
+    expect(orderDetail).toContain("Calculated change");
+    expect(orderDetail).toContain("Pay with Card");
+    expect(orderDetail).toContain("Apply Customer Credit");
   });
 
   it("closes out cash in a transaction without trusting client box totals", () => {
     expect(orders).toContain('await db.transaction(async (tx) => {');
-    expect(orders).toContain('if (order.paymentStatus === "paid")');
-    expect(orders).toContain("sql`${ordersTable.paymentStatus} <> 'paid'`");
-    expect(orders).toContain('const cashBoxAssignmentId = method === "cash"');
-    expect(orders).toContain('closeoutShift?.boxAssignmentId || "sales-box-1"');
-    expect(orders).toContain("assignedShiftId: order.assignedShiftId ?? closeoutShift.id");
+    expect(orders).toContain("await tx.execute(sql`select pg_advisory_xact_lock");
+    expect(orders).toContain("moneyToCents(order.total)");
+    expect(orders).toContain("amountTendered: (tenderedCents / 100).toFixed(2)");
+    expect(orders).toContain("generalQueueSessionId: session?.id ?? null");
+    expect(orders).toContain("CASH_CLOSEOUT_COMPLETED");
     expect(orders).not.toContain("cashBankEnd: req.body");
     expect(orders).not.toContain("boxAssignmentId: req.body");
   });
 
   it("requires CSR ownership or general queue access before closeout", () => {
-    expect(orders).toContain("orderIsAssignedToActor");
-    expect(orders).toContain("orderIsGeneralQueue");
-    expect(orders).toContain('return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };');
+    expect(orders).toContain("const assignedToActor = order.assignedCsrUserId === actor.id");
+    expect(orders).toContain("Only the assigned CSR may close this order for cash");
+    expect(orders).toContain("Claim this General Queue order before accepting cash");
+    expect(orders).toContain("Join the active General Queue cash session before accepting cash");
   });
 });
 

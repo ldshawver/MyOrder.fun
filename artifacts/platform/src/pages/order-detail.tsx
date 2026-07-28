@@ -18,7 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, Gift } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -180,7 +180,15 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   );
 }
 
-type ActiveCsrOption = { userId: number; shiftId: number; name: string; role: string | null };
+type ActiveCsrOption = {
+  userId: number;
+  shiftId: number;
+  name: string;
+  role: string | null;
+  location: string;
+  clockedInAt: string;
+  label: string;
+};
 
 function SupervisorRoutingPanel({
   order,
@@ -200,13 +208,19 @@ function SupervisorRoutingPanel({
   const [reassignTo, setReassignTo] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   const [activeCsrs, setActiveCsrs] = useState<ActiveCsrOption[]>([]);
+  const [routingMessage, setRoutingMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const token = await getToken();
       const res = await fetch("/api/orders/active-csrs", { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok || cancelled) return;
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        if (!cancelled) setRoutingMessage({ kind: "error", text: body?.error ?? `Could not load eligible shifts (HTTP ${res.status}).` });
+        return;
+      }
+      if (cancelled) return;
       const json = (await res.json()) as { csrs: ActiveCsrOption[] };
       if (!cancelled) setActiveCsrs(json.csrs);
     })();
@@ -215,14 +229,22 @@ function SupervisorRoutingPanel({
 
   const call = async (key: string, url: string, method: "POST" | "PATCH", body?: unknown) => {
     setBusy(key);
+    setRoutingMessage(null);
     try {
       const token = await getToken();
-      await fetch(url, {
+      const response = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: body ? JSON.stringify(body) : undefined,
       });
+      if (!response.ok) {
+        const responseBody = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(responseBody?.error ?? `Request failed with HTTP ${response.status}`);
+      }
       onMutated();
+      setRoutingMessage({ kind: "success", text: key === "reassign" ? "Order reassigned." : "Order updated." });
+    } catch (error) {
+      setRoutingMessage({ kind: "error", text: error instanceof Error ? error.message : "Routing update failed." });
     } finally { setBusy(null); }
   };
 
@@ -316,7 +338,7 @@ function SupervisorRoutingPanel({
               <SelectItem value="__general__">— General Account queue —</SelectItem>
               {activeCsrs.map((c) => (
                 <SelectItem key={c.userId} value={String(c.userId)} data-testid={`option-csr-${c.userId}`}>
-                  {c.name} {c.role ? `· ${c.role}` : ""}
+                  {c.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -325,6 +347,11 @@ function SupervisorRoutingPanel({
         </div>
         {activeCsrs.length === 0 && (
           <p className="text-[11px] text-muted-foreground">No CSRs are currently clocked in — orders will go to the General Account queue.</p>
+        )}
+        {routingMessage && (
+          <p role={routingMessage.kind === "error" ? "alert" : "status"} className={routingMessage.kind === "error" ? "text-xs text-red-300" : "text-xs text-emerald-300"}>
+            {routingMessage.text}
+          </p>
         )}
       </div>
     </div>
@@ -388,6 +415,9 @@ export default function OrderDetail() {
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
   const [closeoutBusy, setCloseoutBusy] = useState<string | null>(null);
   const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
+  const [showCashCloseout, setShowCashCloseout] = useState(false);
+  const [amountTendered, setAmountTendered] = useState("");
+  const [cashInternalNote, setCashInternalNote] = useState("");
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
@@ -404,6 +434,12 @@ export default function OrderDetail() {
     id,
     { query: { enabled: !!id, queryKey: getGetOrderQueryKey(id) } }
   );
+
+  useEffect(() => {
+    if (!order || new URLSearchParams(window.location.search).get("cashCloseout") !== "1") return;
+    setAmountTendered(Number(order.total).toFixed(2));
+    setShowCashCloseout(true);
+  }, [order]);
 
   const { data: notesRes, isLoading: isNotesLoading } = useGetOrderNotes(
     id,
@@ -495,20 +531,32 @@ export default function OrderDetail() {
   }
 
 
-  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "card" | "paypal" | "venmo" | "manual") {
+  async function closeOutCash() {
     if (!order) return;
-    setCloseoutBusy(method);
+    setCloseoutBusy("cash");
     setCloseoutMessage(null);
     try {
       const token = await getToken();
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `cash-${order.id}-${Date.now()}`;
       const res = await fetch(`/api/orders/${order.id}/closeout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ paymentMethod: method }),
+        body: JSON.stringify({
+          paymentMethod: "cash",
+          amountTendered,
+          internalNote: cashInternalNote || undefined,
+          idempotencyKey,
+          supervisorOverride: userRole === "supervisor" || userRole === "admin" || userRole === "global_admin",
+        }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Failed to close out order");
-      setCloseoutMessage(`Closed out as ${method.replace("_", " ")}.`);
+      if (!res.ok) {
+        setCloseoutMessage(data.error ?? "Failed to close out order");
+        if (data.action === "open_general_queue_cash_session") return;
+        throw new Error(data.error ?? "Failed to close out order");
+      }
+      setCloseoutMessage(`Cash recorded. Change due: $${Number(data.cash?.changeGiven ?? 0).toFixed(2)}.`);
+      setShowCashCloseout(false);
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
     } catch (err) {
       setCloseoutMessage(err instanceof Error ? err.message : "Failed to close out order");
@@ -1000,26 +1048,32 @@ export default function OrderDetail() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Button className="rounded-xl font-semibold text-xs h-10" onClick={() => void closeOut("cash")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
-                      <Banknote size={14} className="mr-2" /> Cash closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("gift_card")} disabled={closeoutBusy !== null} data-testid="button-closeout-gift-card">
-                      <Gift size={14} className="mr-2" /> Gift card closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("cash_app")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash-app">
-                      Cash App closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("card")} disabled={closeoutBusy !== null} data-testid="button-closeout-card">
-                      <CreditCard size={14} className="mr-2" /> Card closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("paypal")} disabled={closeoutBusy !== null} data-testid="button-closeout-paypal">
-                      PayPal closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("venmo")} disabled={closeoutBusy !== null} data-testid="button-closeout-venmo">
-                      Venmo closeout
-                    </Button>
-                  </div>
+                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(order.total).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                    <Banknote size={14} className="mr-2" /> Close as Cash Paid
+                  </Button>
+                  {showCashCloseout && (
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="cash-closeout-dialog">
+                      <div className="font-semibold text-sm">Confirm cash payment for order #{order.id}</div>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>Trusted amount due<br /><strong className="text-base">${Number(order.total).toFixed(2)}</strong></div>
+                        <div>Calculated change<br /><strong className="text-base">${Math.max(0, Number(amountTendered || 0) - Number(order.total)).toFixed(2)}</strong></div>
+                      </div>
+                      <Label htmlFor="cash-tendered">Amount tendered</Label>
+                      <Input id="cash-tendered" inputMode="decimal" value={amountTendered} onChange={(event) => setAmountTendered(event.target.value)} data-testid="input-cash-tendered" />
+                      <Label htmlFor="cash-note">Internal note (optional)</Label>
+                      <Textarea id="cash-note" maxLength={500} value={cashInternalNote} onChange={(event) => setCashInternalNote(event.target.value)} data-testid="input-cash-note" />
+                      <p className="text-xs text-amber-300">Confirm only after physically receiving the tendered cash. This creates an audited cash-ledger entry and cannot be undone here.</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) < Number(order.total)} data-testid="button-confirm-cash-closeout">Confirm Cash Paid</Button>
+                        <Button variant="outline" onClick={() => setShowCashCloseout(false)}>Cancel</Button>
+                        {closeoutMessage?.includes("General Queue cash session") && canManageRouting && (
+                          <Link href={`/staff?openGeneralQueue=1&returnOrder=${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-2 text-xs font-semibold" data-testid="button-open-general-queue-session">
+                            Open General Queue Cash Session
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Card via Stripe */}

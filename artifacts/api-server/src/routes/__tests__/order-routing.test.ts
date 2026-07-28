@@ -215,32 +215,29 @@ describe("decideRouting", () => {
 describe("reassignOrder", () => {
   it("rejects targets that are not currently active CSRs", async () => {
     activeCsrUsers = [{ userId: 7, shiftId: 70, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
-    await expect(reassignOrder(1, 999)).rejects.toThrow(/active CSR/);
+    await expect(reassignOrder(1, 1, 999)).rejects.toThrow(/active CSR/);
   });
 
   it("accepts null (sends order back to General Account queue)", async () => {
     activeCsrUsers = [];
-    await expect(reassignOrder(1, null)).resolves.toBeDefined();
+    existingOrderState = { f: "in_progress", s: "in_progress" };
+    await expect(reassignOrder(1, 1, null)).resolves.toBeDefined();
   });
 
-  it("preserves terminal status/fulfillment when reassigning a completed order", async () => {
+  it("rejects reassignment of a completed order", async () => {
     activeCsrUsers = [];
     existingOrderState = { f: "completed", s: "completed" };
     lastReassignUpdateSet = null;
-    await reassignOrder(1, null);
-    expect(lastReassignUpdateSet).not.toBeNull();
-    expect(lastReassignUpdateSet).not.toHaveProperty("status");
-    expect(lastReassignUpdateSet).not.toHaveProperty("fulfillmentStatus");
-    expect(lastReassignUpdateSet?.routeSource).toBe("supervisor_override");
+    await expect(reassignOrder(1, 1, null)).rejects.toThrow(/Terminal orders/);
   });
 
-  it("resets to submitted/pending when reassigning an in-flight order", async () => {
+  it("resets to submitted when reassigning an in-flight order", async () => {
     activeCsrUsers = [];
     existingOrderState = { f: "accepted", s: "processing" };
     lastReassignUpdateSet = null;
-    await reassignOrder(1, null);
+    await reassignOrder(1, 1, null);
     expect(lastReassignUpdateSet?.fulfillmentStatus).toBe("submitted");
-    expect(lastReassignUpdateSet?.status).toBe("pending");
+    expect(lastReassignUpdateSet?.status).toBe("submitted");
   });
 });
 

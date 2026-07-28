@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   db,
   ordersTable,
@@ -7,7 +7,7 @@ import {
   adminSettingsTable,
   shiftRoutingConfigTable,
 } from "@workspace/db";
-import { normalizeRole } from "./auth";
+import { defaultHasPermission } from "./roles";
 
 /**
  *
@@ -50,8 +50,6 @@ export type RoutingDecision = {
   promisedMinutes: number;
 };
 
-const ROUTING_ROLES = ["csr"] as const;
-
 let shiftRoutingConfigSchemaEnsured = false;
 
 export async function ensureShiftRoutingConfigSchema(): Promise<void> {
@@ -87,7 +85,13 @@ export async function getApprovedMultiShiftConfig(tenantId: number) {
   return config?.allowMultipleActiveShifts ? config : null;
 }
 
-type ActiveCsr = { userId: number; shiftId: number };
+export type ActiveCsr = {
+  userId: number;
+  shiftId: number;
+  tenantId: number;
+  boxAssignmentId: string;
+  clockedInAt: Date;
+};
 
 export type ShiftReadinessCheck = { ready: boolean; failedConditions: string[] };
 
@@ -153,7 +157,11 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
       setupJson: labTechShiftsTable.setupJson,
       status: labTechShiftsTable.status,
       clockedOutAt: labTechShiftsTable.clockedOutAt,
+      clockedInAt: labTechShiftsTable.clockedInAt,
       role: usersTable.role,
+      userTenantId: usersTable.tenantId,
+      userIsActive: usersTable.isActive,
+      userStatus: usersTable.status,
     })
     .from(labTechShiftsTable)
     .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
@@ -162,9 +170,21 @@ export async function listActiveCsrs(tenantId?: number): Promise<ActiveCsr[]> {
       : sql`${labTechShiftsTable.status} = 'active' AND ${labTechShiftsTable.clockedOutAt} IS NULL`);
   const seen = new Map<number, ActiveCsr>();
   for (const r of rows) {
-    if (!(ROUTING_ROLES as readonly string[]).includes(normalizeRole(r.role))) continue;
+    // An active shift is the authoritative operational CSR relationship.
+    // The account may also carry a supervisor/admin role; require the same
+    // queue.claim capability instead of comparing a presentation label.
+    if (r.userIsActive === false || (r.userStatus != null && r.userStatus !== "approved") || !defaultHasPermission(r.role, "queue.claim")) continue;
+    if (r.userTenantId != null && r.userTenantId !== r.tenantId) continue;
     if (!isShiftOrderRoutable({ ...r, expectedTenantId: tenantId })) continue;
-    if (!seen.has(r.userId)) seen.set(r.userId, { userId: r.userId, shiftId: r.shiftId });
+    if (!seen.has(r.userId)) {
+      seen.set(r.userId, {
+        userId: r.userId,
+        shiftId: r.shiftId,
+        tenantId: r.tenantId,
+        boxAssignmentId: r.boxAssignmentId!,
+        clockedInAt: r.clockedInAt,
+      });
+    }
   }
   return [...seen.values()].sort((a, b) => a.userId - b.userId);
 }
@@ -300,10 +320,10 @@ export async function decideRouting(tenantId?: number): Promise<RoutingDecision>
  * Supervisor reassignment. Target user (when not null) must already be an
  * active CSR. The route_source is stamped `supervisor_override`.
  */
-export async function reassignOrder(orderId: number, newUserId: number | null) {
+export async function reassignOrder(orderId: number, tenantId: number, newUserId: number | null) {
   let shiftId: number | null = null;
   if (newUserId !== null) {
-    const active = await listActiveCsrs();
+    const active = await listActiveCsrs(tenantId);
     const found = active.find(c => c.userId === newUserId);
     if (!found) {
       throw new Error("Reassignment target must be a currently active CSR");
@@ -319,12 +339,14 @@ export async function reassignOrder(orderId: number, newUserId: number | null) {
   const [existing] = await db
     .select({ f: ordersTable.fulfillmentStatus, s: ordersTable.status })
     .from(ordersTable)
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId)))
     .limit(1);
-  const TERMINAL_FULFILLMENT = new Set(["ready", "completed", "cancelled"]);
-  const TERMINAL_STATUS = new Set(["completed", "cancelled", "ready", "delivered", "refunded"]);
+  const TERMINAL_FULFILLMENT = new Set(["ready", "completed", "cancelled", "refunded", "voided", "archived"]);
+  const TERMINAL_STATUS = new Set(["completed", "cancelled", "ready", "delivered", "refunded", "voided", "archived"]);
   const isTerminal =
     TERMINAL_FULFILLMENT.has(existing?.f ?? "") || TERMINAL_STATUS.has(existing?.s ?? "");
+  if (!existing) return undefined;
+  if (isTerminal) throw new Error("Terminal orders cannot be reassigned");
   const update: Partial<typeof ordersTable.$inferInsert> = {
     assignedCsrUserId: newUserId,
     assignedShiftId: shiftId,
@@ -332,14 +354,12 @@ export async function reassignOrder(orderId: number, newUserId: number | null) {
     routedAt: now,
     acceptedAt: null,
   };
-  if (!isTerminal) {
-    update.fulfillmentStatus = "submitted";
-    update.status = "pending";
-  }
+  update.fulfillmentStatus = "submitted";
+  update.status = "submitted";
   const [updated] = await db
     .update(ordersTable)
     .set(update)
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId)))
     .returning();
   return updated;
 }

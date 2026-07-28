@@ -4,7 +4,7 @@ import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
@@ -18,6 +18,10 @@ import { useAuth } from "@clerk/react";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
+type GeneralQueueSessionState = {
+  session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number } | null;
+  participants: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null; joinedAt: string }[];
+};
 
 function safeArray<T>(value: T[] | null | undefined): T[];
 function safeArray<T>(value: unknown): T[];
@@ -1381,6 +1385,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   const [printingLabel, setPrintingLabel] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
+  const [actionMessage, setActionMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [checklist, setChecklist] = useState<Record<string, boolean>>(
     (order.handoffChecklist as Record<string, boolean> | null) ?? {}
   );
@@ -1414,7 +1419,9 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   }
 
   async function setFulfillmentStatus(status: string) {
+    if (loading !== null) return;
     setLoading(status);
+    setActionMessage(null);
     try {
       const token = await getToken();
       const endpoint = status === "in_progress"
@@ -1429,16 +1436,34 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
         headers: status === "completed"
           ? { Authorization: `Bearer ${token}` }
           : { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        ...(status === "completed" ? {} : { body: JSON.stringify({ fulfillmentStatus: status }) }),
+        ...(status === "completed" ? {} : { body: JSON.stringify(status === "in_progress" ? {} : { fulfillmentStatus: status }) }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null) as { error?: string } | null;
         throw new Error(body?.error ?? `Request failed with HTTP ${res.status}`);
       }
       onRefresh();
+      setActionMessage({ kind: "success", text: status === "in_progress" ? "Order claimed and assigned to your active shift." : "Order updated." });
     } catch (err) {
       console.error("Fulfillment action failed", err);
+      setActionMessage({ kind: "error", text: err instanceof Error ? err.message : "The order could not be updated." });
     } finally { setLoading(null); }
+  }
+
+  async function releaseToGeneralQueue() {
+    setLoading("release");
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ reason: "Released from Shift/Queue management" }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? "Release failed");
+      onRefresh();
+    } finally {
+      setLoading(null);
+    }
   }
 
   async function printReceipt() {
@@ -1483,6 +1508,9 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
                 {order.paymentMethod.toUpperCase()}
               </span>
             )}
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border/50">
+              {order.assignedCsrUserId ? `Claimed by agent ${order.assignedCsrUserId}` : "Unassigned · General Queue"}
+            </span>
             {fulfillment && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
                 {fulfillment.replace(/_/g, " ")}
@@ -1625,6 +1653,15 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
           ))}
         </div>
       )}
+      {actionMessage && (
+        <div
+          role={actionMessage.kind === "error" ? "alert" : "status"}
+          className={`mx-4 mb-3 rounded-lg border px-3 py-2 text-xs ${actionMessage.kind === "error" ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}`}
+          data-testid={`claim-message-${order.id}`}
+        >
+          {actionMessage.text}
+        </div>
+      )}
 
       <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
         <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printReceipt} disabled={printingReceipt}>
@@ -1641,6 +1678,12 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
       </div>
 
       <div className="border-t border-border/30 px-4 py-3">
+        <div className="flex flex-wrap gap-2 mb-3">
+          <Link href={`/orders/${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-semibold">Open order</Link>
+          {order.assignedCsrUserId && order.paymentStatus !== "paid" && (
+            <Button size="sm" variant="outline" onClick={() => void releaseToGeneralQueue()} disabled={loading !== null} data-testid={`button-release-${order.id}`}>Release to General Queue</Button>
+          )}
+        </div>
         <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
         <div className="flex flex-wrap gap-2">
           {FULFILLMENT_STEPS.map((step, idx) => {
@@ -1681,6 +1724,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 function CustomerServiceRepQueueContent() {
+  const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
@@ -1695,6 +1739,12 @@ function CustomerServiceRepQueueContent() {
   const userRole = normalizeUiRole(user?.role);
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+  const [generalSession, setGeneralSession] = useState<GeneralQueueSessionState>({ session: null, participants: [] });
+  const [sessionOptions, setSessionOptions] = useState<{ registerBoxId: number; registerLabel: string; locationId: number; locationName: string }[]>([]);
+  const [selectedSessionOption, setSelectedSessionOption] = useState("");
+  const [openingBalance, setOpeningBalance] = useState("0.00");
+  const [closingBalance, setClosingBalance] = useState("");
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
     setIsLoadingQueue(true);
@@ -1710,6 +1760,22 @@ function CustomerServiceRepQueueContent() {
     }
   }, [getToken]);
 
+  const fetchGeneralSession = useCallback(async () => {
+    const token = await getToken();
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const [sessionResponse, optionsResponse] = await Promise.all([
+      fetch("/api/shift-queue/general/session", { headers }),
+      fetch("/api/shift-queue/general/session/options", { headers }),
+    ]);
+    if (sessionResponse.ok) setGeneralSession(await sessionResponse.json());
+    if (optionsResponse.ok) {
+      const data = await optionsResponse.json() as { options?: typeof sessionOptions };
+      const options = data.options ?? [];
+      setSessionOptions(options);
+      setSelectedSessionOption(current => current || (options[0] ? `${options[0].registerBoxId}:${options[0].locationId}` : ""));
+    }
+  }, [getToken]);
+
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => {
     const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
@@ -1717,10 +1783,22 @@ function CustomerServiceRepQueueContent() {
   });
 
   const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    for (const queryKey of [
+      ["shiftQueueOrders"],
+      ["generalQueueOrders"],
+      ["csrAssignedOrders"],
+      ["queueCounts"],
+      ["activeAssignment"],
+      ["getCurrentShift"],
+      ["getOrders"],
+      ["getOrder"],
+    ]) {
+      queryClient.invalidateQueries({ queryKey });
+    }
     void fetchQueue();
     refetchShift();
-  }, [fetchQueue, queryClient, refetchShift]);
+    void fetchGeneralSession();
+  }, [fetchGeneralSession, fetchQueue, queryClient, refetchShift]);
 
   useOrderEvents(() => {
     refresh();
@@ -1728,7 +1806,8 @@ function CustomerServiceRepQueueContent() {
 
   useEffect(() => {
     void fetchQueue();
-  }, [fetchQueue, shift]);
+    void fetchGeneralSession();
+  }, [fetchGeneralSession, fetchQueue, shift]);
 
   useEffect(() => {
     if (!shift) return;
@@ -1814,6 +1893,46 @@ function CustomerServiceRepQueueContent() {
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
   const isCsrOnly = userRole === "csr";
+  const canManageGeneralSession = userRole === "supervisor" || userRole === "admin" || userRole === "global_admin";
+
+  async function openGeneralQueueSession() {
+    const [registerBoxId, locationId] = selectedSessionOption.split(":").map(Number);
+    setSessionMessage(null);
+    const token = await getToken();
+    const response = await fetch("/api/shift-queue/general/session/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ registerBoxId, locationId, openingBalance: Number(openingBalance) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { setSessionMessage(data.error ?? "Could not open General Queue cash session"); return; }
+    setSessionMessage("General Queue cash session opened.");
+    await fetchGeneralSession();
+    const returnOrder = new URLSearchParams(window.location.search).get("returnOrder");
+    if (returnOrder && /^\d+$/.test(returnOrder)) navigate(`/orders/${returnOrder}?cashCloseout=1`);
+  }
+
+  async function joinGeneralQueueSession() {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const response = await fetch(`/api/shift-queue/general/session/${generalSession.session.id}/join`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? "Joined General Queue cash session." : data.error ?? "Could not join session");
+    if (response.ok) await fetchGeneralSession();
+  }
+
+  async function closeGeneralQueueSession() {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const response = await fetch(`/api/shift-queue/general/session/${generalSession.session.id}/close`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ closingBalance: Number(closingBalance) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? "General Queue cash session closed and reconciled." : data.error ?? "Could not close session");
+    if (response.ok) await fetchGeneralSession();
+  }
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -1836,6 +1955,46 @@ function CustomerServiceRepQueueContent() {
       {isCsrOnly && user?.id != null && (
         <CsrAlertBanner currentUserId={user.id} onAccepted={refresh} />
       )}
+
+      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-4" data-testid="general-queue-management">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">View General Queue</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Cash session: <span className={generalSession.session ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>{generalSession.session ? "Open" : "Closed"}</span>
+            </p>
+          </div>
+          {generalSession.session && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
+        </div>
+        {generalSession.session ? (
+          <div className="space-y-3">
+            <div className="text-xs">Opened {new Date(generalSession.session.openedAt).toLocaleString()} · opening balance ${Number(generalSession.session.openingBalance).toFixed(2)}</div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Participating agents</div>
+              <div className="flex flex-wrap gap-2">
+                {generalSession.participants.map(participant => <span key={participant.id} className="rounded-full border px-2 py-1 text-xs">{`${participant.firstName ?? ""} ${participant.lastName ?? ""}`.trim() || participant.email || `Agent ${participant.id}`}</span>)}
+              </div>
+            </div>
+            {canManageGeneralSession && (
+              <div className="flex gap-2 max-w-md">
+                <Input inputMode="decimal" placeholder="Closing balance" value={closingBalance} onChange={event => setClosingBalance(event.target.value)} />
+                <Button variant="outline" onClick={() => void closeGeneralQueueSession()} disabled={!closingBalance} data-testid="button-close-general-session">Reconcile &amp; Close</Button>
+              </div>
+            )}
+          </div>
+        ) : canManageGeneralSession ? (
+          <div className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
+            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedSessionOption} onChange={event => setSelectedSessionOption(event.target.value)} data-testid="select-general-session-register">
+              {sessionOptions.map(option => <option key={`${option.registerBoxId}:${option.locationId}`} value={`${option.registerBoxId}:${option.locationId}`}>{option.registerLabel} · {option.locationName}</option>)}
+            </select>
+            <Input inputMode="decimal" value={openingBalance} onChange={event => setOpeningBalance(event.target.value)} aria-label="Opening balance" />
+            <Button onClick={() => void openGeneralQueueSession()} disabled={!selectedSessionOption} data-testid="button-open-general-session">Open Cash Session</Button>
+          </div>
+        ) : (
+          <p className="text-xs text-amber-300">A supervisor or manager must open a General Queue cash session before cash can be accepted.</p>
+        )}
+        {sessionMessage && <p className="text-xs text-muted-foreground">{sessionMessage}</p>}
+      </section>
 
       {/* Shift panel */}
       {isStaff && (
