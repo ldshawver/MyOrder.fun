@@ -7,7 +7,13 @@ import {
   numeric,
   json,
   boolean,
+  uniqueIndex,
+  unique,
+  foreignKey,
+  check,
+  primaryKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
@@ -27,7 +33,9 @@ export const csrBoxesTable = pgTable("csr_boxes", {
   displayOrder: integer("display_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdIdUnique: unique("csr_boxes_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 export type CsrBox = typeof csrBoxesTable.$inferSelect;
 export type InsertCsrBox = typeof csrBoxesTable.$inferInsert;
@@ -47,7 +55,9 @@ export const inventoryLocationsTable = pgTable("inventory_locations", {
   displayOrder: integer("display_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdIdUnique: unique("inventory_locations_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 export type InventoryLocation = typeof inventoryLocationsTable.$inferSelect;
 export type InsertInventoryLocation = typeof inventoryLocationsTable.$inferInsert;
@@ -106,6 +116,83 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
+
+// A General Queue session is an alternative cash-accountability context for
+// orders claimed while no CSR shift is authoritative. It deliberately shares
+// the canonical cash ledger; it is not a second payment ledger.
+export const generalQueueCashSessionsTable = pgTable("general_queue_cash_sessions", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
+  registerBoxId: integer("register_box_id").notNull().references(() => csrBoxesTable.id),
+  status: text("status").notNull().default("open"),
+  openedByUserId: integer("opened_by_user_id").notNull().references(() => usersTable.id),
+  openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+  openingBalance: numeric("opening_balance", { precision: 10, scale: 2 }).notNull().default("0"),
+  closedByUserId: integer("closed_by_user_id").references(() => usersTable.id),
+  closedAt: timestamp("closed_at", { withTimezone: true }),
+  closingBalance: numeric("closing_balance", { precision: 10, scale: 2 }),
+  expectedBalance: numeric("expected_balance", { precision: 10, scale: 2 }),
+  differenceAmount: numeric("difference_amount", { precision: 10, scale: 2 }),
+  paymentTotalsJson: json("payment_totals_json").default({}),
+  summary: json("summary").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  tenantRegisterStatusIdx: uniqueIndex("general_queue_cash_sessions_open_register_uq")
+    .on(table.tenantId, table.locationId, table.registerBoxId)
+    .where(sql`${table.status} = 'open'`),
+  tenantIdIdUnique: unique("general_queue_cash_sessions_tenant_id_id_unique").on(table.tenantId, table.id),
+  statusCheck: check("general_queue_cash_sessions_status_check", sql`${table.status} IN ('open', 'closed')`),
+  tenantLocationFk: foreignKey({
+    name: "gq_sessions_tenant_location_fk",
+    columns: [table.tenantId, table.locationId],
+    foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id],
+  }),
+  tenantRegisterBoxFk: foreignKey({
+    name: "gq_sessions_tenant_register_box_fk",
+    columns: [table.tenantId, table.registerBoxId],
+    foreignColumns: [csrBoxesTable.tenantId, csrBoxesTable.id],
+  }),
+  tenantOpenedByUserFk: foreignKey({
+    name: "gq_sessions_tenant_opened_by_user_fk",
+    columns: [table.tenantId, table.openedByUserId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+  tenantClosedByUserFk: foreignKey({
+    name: "gq_sessions_tenant_closed_by_user_fk",
+    columns: [table.tenantId, table.closedByUserId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+}));
+
+export const generalQueueCashSessionParticipantsTable = pgTable("general_queue_cash_session_participants", {
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  sessionId: integer("session_id").notNull().references(() => generalQueueCashSessionsTable.id),
+  userId: integer("user_id").notNull().references(() => usersTable.id),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+  joinedByUserId: integer("joined_by_user_id").notNull().references(() => usersTable.id),
+  leftAt: timestamp("left_at", { withTimezone: true }),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.sessionId, table.userId] }),
+  tenantSessionFk: foreignKey({
+    name: "gq_participants_tenant_session_fk",
+    columns: [table.tenantId, table.sessionId],
+    foreignColumns: [generalQueueCashSessionsTable.tenantId, generalQueueCashSessionsTable.id],
+  }),
+  tenantUserFk: foreignKey({
+    name: "gq_participants_tenant_user_fk",
+    columns: [table.tenantId, table.userId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+  tenantJoinedByUserFk: foreignKey({
+    name: "gq_participants_tenant_joined_by_user_fk",
+    columns: [table.tenantId, table.joinedByUserId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+}));
+
+export type GeneralQueueCashSession = typeof generalQueueCashSessionsTable.$inferSelect;
 
 export const shiftRoutingConfigTable = pgTable("shift_routing_config", {
   id: serial("id").primaryKey(),

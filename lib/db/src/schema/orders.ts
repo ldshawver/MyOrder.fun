@@ -7,11 +7,14 @@ import {
   numeric,
   jsonb,
   boolean,
+  foreignKey,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
-import { inventoryLocationsTable, labTechShiftsTable } from "./shifts";
+import { generalQueueCashSessionsTable, inventoryLocationsTable, labTechShiftsTable } from "./shifts";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
@@ -140,13 +143,39 @@ export const cashLedgerEntriesTable = pgTable("cash_ledger_entries", {
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   shiftId: integer("shift_id"),
+  generalQueueSessionId: integer("general_queue_session_id").references(() => generalQueueCashSessionsTable.id),
   csrUserId: integer("csr_user_id").notNull().references(() => usersTable.id),
+  actorUserId: integer("actor_user_id").notNull().references(() => usersTable.id),
+  locationId: integer("location_id").references(() => inventoryLocationsTable.id),
   boxAssignmentId: text("box_assignment_id").notNull(),
   amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+  amountTendered: numeric("amount_tendered", { precision: 10, scale: 2 }).notNull(),
+  changeGiven: numeric("change_given", { precision: 10, scale: 2 }).notNull(),
+  internalNote: text("internal_note"),
   entryType: text("entry_type").notNull().default("cash_sale_closeout"),
   idempotencyKey: text("idempotency_key").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  accountabilityContextCheck: check(
+    "cash_ledger_accountability_context_check",
+    sql`((${table.shiftId} IS NOT NULL)::integer + (${table.generalQueueSessionId} IS NOT NULL)::integer = 1)`,
+  ),
+  tenantGeneralQueueSessionFk: foreignKey({
+    name: "cash_ledger_tenant_gq_session_fk",
+    columns: [table.tenantId, table.generalQueueSessionId],
+    foreignColumns: [generalQueueCashSessionsTable.tenantId, generalQueueCashSessionsTable.id],
+  }),
+  tenantActorUserFk: foreignKey({
+    name: "cash_ledger_tenant_actor_user_fk",
+    columns: [table.tenantId, table.actorUserId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+  tenantLocationFk: foreignKey({
+    name: "cash_ledger_tenant_location_fk",
+    columns: [table.tenantId, table.locationId],
+    foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id],
+  }),
+}));
 
 export type Order = typeof ordersTable.$inferSelect;
 export type InsertOrder = typeof ordersTable.$inferInsert;

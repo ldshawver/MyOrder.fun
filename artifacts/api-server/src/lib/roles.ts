@@ -111,6 +111,9 @@ export function roleIncludes(roles: readonly LegacyRole[], role: unknown): boole
 export const PERMISSIONS = [
   "users.view_self", "users.view_team", "users.view_tenant", "users.manage_team", "users.manage_tenant", "users.manage_roles", "users.manage_permissions",
   "orders.view_self", "orders.view_team", "orders.view_tenant", "orders.create", "orders.update", "orders.cancel", "orders.refund",
+  "queue.view", "queue.claim", "queue.manage",
+  "cash_sessions.view", "cash_sessions.join", "cash_sessions.manage",
+  "cash_closeout.own", "cash_closeout.override",
   "customers.view", "customers.create", "customers.update", "customers.delete",
   "feedback.submit", "feedback.admin_view", "feedback.review", "feedback.archive", "feedback.create_ticket",
   "schedules.view_self", "schedules.view_team", "schedules.view_tenant", "schedules.create", "schedules.update", "schedules.approve", "schedules.publish",
@@ -125,8 +128,16 @@ export type PermissionKey = Permission;
 export const PLATFORM_PERMISSIONS = PERMISSIONS.filter((p) => p.startsWith("platform."));
 
 const userPerms = ["feedback.submit", "users.view_self", "orders.view_self", "schedules.view_self", "timeclock.clock_self", "reports.view_self"] satisfies Permission[];
-const csrExtra = ["customers.view", "customers.create", "customers.update", "orders.create", "orders.update", "schedules.view_team", "reports.view_team"] satisfies Permission[];
-const supervisorExtra = ["settings.view", "users.view_team", "users.manage_team", "schedules.create", "schedules.update", "schedules.approve", "timeclock.view_team", "timeclock.approve_team"] satisfies Permission[];
+const csrExtra = [
+  "customers.view", "customers.create", "customers.update", "orders.create", "orders.update",
+  "schedules.view_team", "reports.view_team", "queue.view", "queue.claim",
+  "cash_sessions.view", "cash_sessions.join", "cash_closeout.own",
+] satisfies Permission[];
+const supervisorExtra = [
+  "settings.view", "users.view_team", "users.manage_team", "schedules.create", "schedules.update",
+  "schedules.approve", "timeclock.view_team", "timeclock.approve_team", "queue.manage",
+  "cash_sessions.manage", "cash_closeout.override",
+] satisfies Permission[];
 const adminExtra = PERMISSIONS.filter((p) => !p.startsWith("platform.")) as Permission[];
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Permission[]> = {

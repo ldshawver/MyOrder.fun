@@ -1440,7 +1440,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(...sessionFilters)).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(1);
       if (!session) return { status: 409, error: "A General Queue cash session must be opened before accepting cash.", action: canOverride ? "open_general_queue_cash_session" : undefined } as const;
       if (!parsed.data.supervisorOverride) {
-        const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(eq(generalQueueCashSessionParticipantsTable.sessionId, session.id), eq(generalQueueCashSessionParticipantsTable.userId, actor.id), isNull(generalQueueCashSessionParticipantsTable.leftAt))).limit(1);
+        const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
+          eq(generalQueueCashSessionParticipantsTable.tenantId, tenantId),
+          eq(generalQueueCashSessionParticipantsTable.sessionId, session.id),
+          eq(generalQueueCashSessionParticipantsTable.userId, actor.id),
+          isNull(generalQueueCashSessionParticipantsTable.leftAt),
+        )).limit(1);
         if (!participant) return { status: 403, error: "Join the active General Queue cash session before accepting cash" } as const;
       }
       const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, session.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
