@@ -56,7 +56,9 @@ beforeEach(() => {
   delete process.env.PRINT_BRIDGE_API_KEY;
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
+  delete process.env.PRINT_BRIDGE_HEALTH_TIMEOUT_MS;
 });
 
 describe("isValidQueueName", () => {
@@ -162,6 +164,78 @@ describe("probeBridge", () => {
 });
 
 describe("printViaBridge", () => {
+  it("accepts a health response after 2 seconds when the configured timeout is 10 seconds", async () => {
+    vi.useFakeTimers();
+    process.env.PRINT_BRIDGE_HEALTH_TIMEOUT_MS = "10000";
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        setTimeout(() => resolve(new Response("ok", { status: 200 })), 2500);
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const resultPromise = printViaBridge(
+      "receipt",
+      "Brightek_POS80",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+      1000,
+    );
+    await vi.advanceTimersByTimeAsync(2500);
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1][0]).toBe("http://bridge.test/print");
+  });
+
+  it("an actual health timeout prevents POST /print", async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => (
+      new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      })
+    ));
+
+    const resultPromise = printViaBridge(
+      "receipt",
+      "Brightek_POS80",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+      1000,
+      10000,
+    );
+    await vi.advanceTimersByTimeAsync(10000);
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("timeout after 10000ms");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe("http://bridge.test/healthz");
+  });
+
+  it("a non-success health response prevents printing", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("offline", { status: 503 }));
+
+    const result = await printViaBridge(
+      "receipt",
+      "Brightek_POS80",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+      1000,
+      10000,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0]).toBe("http://bridge.test/healthz");
+  });
+
   it("sends an x-api-key header when PRINT_BRIDGE_API_KEY is set", async () => {
     process.env.PRINT_BRIDGE_API_KEY = "secret-key";
     const fetchSpy = vi.spyOn(globalThis, "fetch")
@@ -182,6 +256,30 @@ describe("printViaBridge", () => {
     expect(body.role).toBe("receipt");
     expect(body.printer).toBe("receipt");
     expect(typeof body.payloadBase64).toBe("string");
+  });
+
+  it("posts exactly once to the requested Brightek queue without fallback or retry", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const result = await printViaBridge(
+      "receipt",
+      "Brightek_POS80",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+      1000,
+      10000,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.printerName).toBe("Brightek_POS80");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const postCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(postCalls).toHaveLength(1);
+    const body = JSON.parse(String(postCalls[0][1]?.body));
+    expect(body.printer).toBe("Brightek_POS80");
+    expect(JSON.stringify(body)).not.toContain("Label_Themal_Printer");
   });
 
   it("returns a friendly error when the bridge health check fails", async () => {

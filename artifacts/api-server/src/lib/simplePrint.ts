@@ -21,6 +21,12 @@ export const DEFAULT_BRIDGE_URL = "http://100.83.99.2:3100";
 // Health preflight is intentionally short — we'd rather report "bridge
 // unreachable, use Local VPS CUPS" quickly than make the admin wait.
 export const BRIDGE_HEALTH_TIMEOUT_MS = 2000;
+export function getBridgeHealthTimeoutMs(): number {
+  const configured = Number.parseInt(process.env.PRINT_BRIDGE_HEALTH_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : BRIDGE_HEALTH_TIMEOUT_MS;
+}
 // Print POSTs get a slightly longer budget for the actual job.
 export const BRIDGE_REQUEST_TIMEOUT_MS = 4000;
 
@@ -224,7 +230,7 @@ export async function printViaBridge(
   payload: Buffer,
   bridgeUrl: string = getBridgeUrl(),
   timeoutMs: number = BRIDGE_REQUEST_TIMEOUT_MS,
-  healthTimeoutMs: number = BRIDGE_HEALTH_TIMEOUT_MS,
+  healthTimeoutMs: number = getBridgeHealthTimeoutMs(),
 ): Promise<PrintAttemptResult> {
   const health = await probeBridge(bridgeUrl, healthTimeoutMs);
   if (!health.ok) {
