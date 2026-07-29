@@ -104,8 +104,8 @@ vi.mock("../../lib/logger", () => ({
 import { db } from "@workspace/db";
 import shiftsRouter from "../shifts";
 
-function makeUser(role: string, status: string = "pending", isActive = true) {
-  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive };
+function makeUser(role: string, status: string = "pending", isActive = true, tenantId: number | null = 1) {
+  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive, tenantId };
 }
 
 /**
@@ -289,15 +289,37 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(res.body).toHaveProperty("shift", null);
   });
 
-  it("approved CSR can access GET /api/shifts/inventory-template and does not receive a generic admin-only 403", async () => {
+  it("approved tenant CSR can access GET /api/shifts/inventory-template with safe shift setup data", async () => {
     configureDb({ user: makeUser("customer_service_rep", "approved") });
     const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
-    // Must not be blocked by an admin-role gate (403 with "insufficient role" from admin middleware)
-    expect(res.status).not.toBe(403);
-    if (res.status === 403) {
-      // Surface the exact reason so future failures are easy to read
-      expect(res.body).not.toMatchObject({ failedCondition: "csr_role_required" });
-    }
+    expect(res.status).toBe(200);
+    expect(res.body.template).toEqual(expect.any(Array));
+    expect(res.body.boxes).toEqual(expect.any(Array));
+    expect(res.body.shiftLocationOptions).toEqual(expect.any(Array));
+    expect(res.body.pickupInstructionOptions).toEqual(expect.any(Array));
+    expect(res.body.deliveryOptions).toEqual(expect.any(Array));
+    expect(res.body.printerNetworkConfig).toEqual({
+      onsiteMode: "auto",
+      ssid: "",
+      approvedSsids: [],
+      passwordSet: false,
+      raspberryPiBluetooth: true,
+    });
+    expect(res.body.printerNetworkConfig).not.toHaveProperty("password");
+  });
+
+  it("approved CSR without a tenant is rejected from GET /api/shifts/inventory-template", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved", true, null) });
+    const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Tenant assignment is required");
+  });
+
+  it("approved non-shift role is rejected from GET /api/shifts/inventory-template", async () => {
+    configureDb({ user: makeUser("user", "approved") });
+    const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(403);
+    expect(res.body.failedCondition).toBe("csr_role_required");
   });
 
   it("non-admin CSR is blocked when an admin-only gate comes before the shift handler (regression guard)", async () => {
