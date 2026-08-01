@@ -269,6 +269,23 @@ operationalDescribe("POS opening-manager operational flow", () => {
       const inventoryResponse = await as("csr").get(inventoryPath);
       expect(inventoryResponse.status, `${inventoryPath}: ${inventoryResponse.text}`).toBe(200);
     }
+    const [inventoryTemplateResponse, inventoryResponse, balancesResponse, outsiderInventoryResponse] = await Promise.all([
+      as("csr").get("/api/admin/inventory-template"),
+      as("csr").get("/api/admin/inventory"),
+      as("csr").get("/api/admin/inventory-balances"),
+      as("outsider").get("/api/admin/inventory"),
+    ]);
+    const templateRows = inventoryTemplateResponse.body.template as Array<{ id: number; catalogItemId: number | null }>;
+    const inventoryItems = inventoryResponse.body.items as Array<{ id: number }>;
+    const inventoryLocations = inventoryResponse.body.locations as Array<{ id: number }>;
+    const balances = balancesResponse.body.balances as Array<{ id: number; productId: number; locationId: number }>;
+    expect(new Set(templateRows.map(row => row.id)).size).toBe(templateRows.length);
+    expect(new Set(inventoryItems.map(row => row.id)).size).toBe(inventoryItems.length);
+    expect(new Set(inventoryLocations.map(row => row.id)).size).toBe(inventoryLocations.length);
+    expect(new Set(balances.map(row => row.id)).size).toBe(balances.length);
+    expect(new Set(balances.map(row => `${row.productId}:${row.locationId}`)).size).toBe(balances.length);
+    expect(outsiderInventoryResponse.status, outsiderInventoryResponse.text).toBe(200);
+    expect((outsiderInventoryResponse.body.items as Array<{ id: number }>).some(row => row.id === catalogItemId)).toBe(false);
     const tenantUsers = await as("supervisor").get("/api/users");
     expect(tenantUsers.status, tenantUsers.text).toBe(200);
     expect(tenantUsers.body.users.every((candidate: { tenantId?: number }) => candidate.tenantId === tenantUsers.body.users[0]?.tenantId)).toBe(true);
@@ -525,6 +542,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const [csr] = await db.select().from(usersTable).where(sql`${usersTable.email} = ${identities.csr.email}`).limit(1);
     const [box] = await db.select().from(csrBoxesTable).where(sql`${csrBoxesTable.tenantId} = ${tenant.id}`).limit(1);
     const [location] = await db.select().from(inventoryLocationsTable).where(sql`${inventoryLocationsTable.csrBoxId} = ${box.id}`).limit(1);
+    const [generalLocation] = await db.insert(inventoryLocationsTable).values({ tenantId: tenant.id, type: "storefront", name: "General Queue Counter", isActive: true }).returning();
     const [order] = await db.insert(ordersTable).values({
       tenantId: tenant.id, customerId: customer.id, status: "submitted", fulfillmentStatus: "submitted",
       paymentStatus: "unpaid", subtotal: "20.00", tax: "1.60", total: "21.60",
@@ -561,24 +579,52 @@ operationalDescribe("POS opening-manager operational flow", () => {
 
     const sessionOptions = await as("admin").get("/api/shift-queue/general/session/options");
     expect(sessionOptions.status, sessionOptions.text).toBe(200);
-    expect(sessionOptions.body.options).toEqual([
-      expect.objectContaining({ registerBoxId: box.id, locationId: location.id, registerLabel: box.label, locationName: location.name }),
-    ]);
+    expect(sessionOptions.body.locations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: generalLocation.id, locationName: generalLocation.name }),
+    ]));
+    const supervisorSessionOptions = await as("supervisor").get("/api/shift-queue/general/session/options");
+    expect(supervisorSessionOptions.status, supervisorSessionOptions.text).toBe(200);
+    expect(supervisorSessionOptions.body.locations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: generalLocation.id, locationName: generalLocation.name }),
+    ]));
     const outsiderSessionOptions = await as("outsider").get("/api/shift-queue/general/session/options");
     expect(outsiderSessionOptions.status, outsiderSessionOptions.text).toBe(200);
-    expect(outsiderSessionOptions.body.options).toEqual([]);
+    expect(outsiderSessionOptions.body.locations).not.toEqual([]);
+    expect((outsiderSessionOptions.body.locations as Array<{ locationId: number }>).some(candidate =>
+      candidate.locationId === generalLocation.id || candidate.locationId === location.id,
+    )).toBe(false);
 
     const [opened, duplicateOpen] = await Promise.all([
-      as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: location.id, openingBalance: 100 }),
-      as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: location.id, openingBalance: 100 }),
+      as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: null, locationId: generalLocation.id, openingBalance: 100, idempotencyKey: `open-a-${order.id}` }),
+      as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: null, locationId: generalLocation.id, openingBalance: 100, idempotencyKey: `open-b-${order.id}` }),
     ]);
-    expect(opened.status, opened.text).toBe(201);
-    const sessionId = opened.body.session.id;
-    expect(duplicateOpen.status, duplicateOpen.text).toBe(201);
-    expect(duplicateOpen.body.session.id).toBe(sessionId);
+    const creator = [opened, duplicateOpen].find(response => response.status === 201)!;
+    const conflict = [opened, duplicateOpen].find(response => response.status === 409)!;
+    expect(creator).toBeTruthy(); expect(conflict).toBeTruthy();
+    const sessionId = creator.body.session.id;
+    expect(conflict.body.conflict.sessionId).toBe(sessionId);
+    const replay = await as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: null, locationId: generalLocation.id, openingBalance: 100, idempotencyKey: creator === opened ? `open-a-${order.id}` : `open-b-${order.id}` });
+    expect(replay.status, replay.text).toBe(200); expect(replay.body.session.id).toBe(sessionId);
+    const invalidBox = await as("admin").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: generalLocation.id, openingBalance: 100, idempotencyKey: `invalid-box-${order.id}` });
+    expect(invalidBox.status, invalidBox.text).toBe(422);
+    const [inactiveLocation] = await db.insert(inventoryLocationsTable).values({ tenantId: tenant.id, type: "storefront", name: `Inactive General Queue ${order.id}`, isActive: false }).returning();
+    const inactiveLocationOpen = await as("supervisor").post("/api/shift-queue/general/session/open").send({ registerBoxId: null, locationId: inactiveLocation.id, openingBalance: 0, idempotencyKey: `inactive-location-${order.id}` });
+    expect(inactiveLocationOpen.status, inactiveLocationOpen.text).toBe(422);
+    const [inactiveBox] = await db.insert(csrBoxesTable).values({ tenantId: tenant.id, slug: `inactive-box-${order.id}`, label: "Inactive E2E Box", isActive: false }).returning();
+    const inactiveBoxOpen = await as("supervisor").post("/api/shift-queue/general/session/open").send({ registerBoxId: inactiveBox.id, locationId: generalLocation.id, openingBalance: 0, idempotencyKey: `inactive-box-${order.id}` });
+    expect(inactiveBoxOpen.status, inactiveBoxOpen.text).toBe(422);
+    expect((await as("csr").post("/api/shift-queue/general/session/open").send({ locationId: generalLocation.id, openingBalance: 0, idempotencyKey: "csr-cannot-open" })).status).toBe(403);
+    expect((await as("customer").post("/api/shift-queue/general/session/open").send({ locationId: generalLocation.id, openingBalance: 0, idempotencyKey: "customer-cannot-open" })).status).toBe(403);
+    expect((await as("csr").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 100, idempotencyKey: "csr-cannot-close" })).status).toBe(403);
     expect((await as("outsider").post(`/api/shift-queue/general/session/${sessionId}/join`).send({})).status).toBe(404);
-    expect((await as("outsider").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: location.id, openingBalance: 0 })).status).toBe(422);
+    expect((await as("outsider").post("/api/shift-queue/general/session/open").send({ registerBoxId: box.id, locationId: location.id, openingBalance: 0, idempotencyKey: "outsider-open" })).status).toBe(422);
 
+    const managed = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/participants`).send({ userId: csr.id });
+    expect(managed.status, managed.text).toBe(200);
+    const managedAgain = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/participants`).send({ userId: csr.id });
+    expect(managedAgain.status, managedAgain.text).toBe(200);
+    const removed = await request.delete(`/api/shift-queue/general/session/${sessionId}/participants/${csr.id}`).set("x-pos-e2e-user", "admin");
+    expect(removed.status, removed.text).toBe(200);
     const joined = await as(winner).post(`/api/shift-queue/general/session/${sessionId}/join`).send({});
     expect(joined.status, joined.text).toBe(200);
     const forbidden = await as(loser).post(`/api/orders/${order.id}/closeout`).send({
@@ -625,7 +671,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
 
     const entries = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${order.id}`);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ tenantId: tenant.id, orderId: order.id, actorUserId: expect.any(Number), generalQueueSessionId: sessionId, locationId: location.id, boxAssignmentId: box.slug, amount: "21.60", amountTendered: "25.00", changeGiven: "3.40" });
+    expect(entries[0]).toMatchObject({ tenantId: tenant.id, orderId: order.id, actorUserId: expect.any(Number), generalQueueSessionId: sessionId, locationId: generalLocation.id, boxAssignmentId: `general-queue-location-${generalLocation.id}`, amount: "21.60", amountTendered: "25.00", changeGiven: "3.40" });
     const audits = await db.select().from(auditLogsTable).where(sql`${auditLogsTable.resourceId} = ${String(order.id)}`);
     expect(audits.some(row => row.action === "CASH_CLOSEOUT_COMPLETED")).toBe(true);
     expect(JSON.stringify(audits)).not.toMatch(/token|cookie|secret/i);
@@ -645,9 +691,15 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const overrideAudits = await db.select().from(auditLogsTable).where(sql`${auditLogsTable.resourceId} = ${String(overrideOrder.id)}`);
     expect(overrideAudits.some(row => row.action === "CASH_CLOSEOUT_SUPERVISOR_OVERRIDE")).toBe(true);
 
-    const reconciled = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 127 });
+    const reasonRequired = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 126, idempotencyKey: `close-needs-reason-${sessionId}` });
+    expect(reasonRequired.status, reasonRequired.text).toBe(422); expect(reasonRequired.body.error).toBe("A discrepancy reason is required");
+    const reconciled = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 127, idempotencyKey: `close-session-${sessionId}` });
     expect(reconciled.status, reconciled.text).toBe(200);
     expect(reconciled.body.session).toMatchObject({ expectedBalance: "127.00", differenceAmount: "0.00" });
+    const replayClose = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 127, idempotencyKey: `close-session-${sessionId}` });
+    expect(replayClose.status, replayClose.text).toBe(200); expect(replayClose.body.idempotent).toBe(true);
+    const conflictingClose = await as("admin").post(`/api/shift-queue/general/session/${sessionId}/close`).send({ closingBalance: 126, idempotencyKey: `close-other-${sessionId}`, discrepancyReason: "Different recount" });
+    expect(conflictingClose.status, conflictingClose.text).toBe(409);
 
     const [nextOrder] = await db.insert(ordersTable).values({
       tenantId: tenant.id, customerId: customer.id, status: "in_progress", fulfillmentStatus: "in_progress",
@@ -657,5 +709,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const blockedAfterClose = await as("csr").post(`/api/orders/${nextOrder.id}/closeout`).send({ paymentMethod: "cash", amountTendered: "11.00", idempotencyKey: `closed-session-${nextOrder.id}` });
     expect(blockedAfterClose.status, blockedAfterClose.text).toBe(409);
     expect(blockedAfterClose.body.error).toBe("A General Queue cash session must be opened before accepting cash.");
+    const supervisorOpen = await as("supervisor").post("/api/shift-queue/general/session/open").send({ locationId: generalLocation.id, registerBoxId: null, openingBalance: 0, idempotencyKey: `supervisor-open-${order.id}` });
+    expect(supervisorOpen.status, supervisorOpen.text).toBe(201);
   }, 60_000);
 });

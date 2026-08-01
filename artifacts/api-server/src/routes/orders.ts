@@ -1437,7 +1437,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Claim this General Queue order before accepting cash" } as const;
       const sessionFilters = [eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")];
       if (parsed.data.generalQueueSessionId) sessionFilters.push(eq(generalQueueCashSessionsTable.id, parsed.data.generalQueueSessionId));
-      [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(...sessionFilters)).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(1);
+      const sessions = await tx.select().from(generalQueueCashSessionsTable).where(and(...sessionFilters)).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(parsed.data.generalQueueSessionId ? 1 : 2);
+      if (!parsed.data.generalQueueSessionId && sessions.length > 1) return { status: 409, error: "Select the General Queue cash session for this location" } as const;
+      [session] = sessions;
       if (!session) return { status: 409, error: "A General Queue cash session must be opened before accepting cash.", action: canOverride ? "open_general_queue_cash_session" : undefined } as const;
       if (!parsed.data.supervisorOverride) {
         const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
@@ -1448,9 +1450,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
         )).limit(1);
         if (!participant) return { status: 403, error: "Join the active General Queue cash session before accepting cash" } as const;
       }
-      const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, session.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
-      if (!box) return { status: 409, error: "The General Queue register is unavailable" } as const;
-      boxSlug = box.slug;
+      let box: typeof csrBoxesTable.$inferSelect | undefined;
+      if (session.registerBoxId != null) {
+        [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, session.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
+        if (!box) return { status: 409, error: "The General Queue register is unavailable" } as const;
+      }
+      boxSlug = box?.slug ?? `general-queue-location-${session.locationId}`;
       locationId = session.locationId;
     }
 

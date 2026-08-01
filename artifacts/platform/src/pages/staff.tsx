@@ -19,8 +19,13 @@ import { useAuth } from "@clerk/react";
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 type GeneralQueueSessionState = {
-  session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number } | null;
+  session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number | null; locationName?: string; registerLabel?: string | null; accountableCash?: string; expectedClosingCash?: string; opener?: { firstName?: string | null; lastName?: string | null; email?: string | null } | null } | null;
   participants: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null; joinedAt: string }[];
+};
+type GeneralSessionOptions = {
+  locations: { locationId: number; locationName: string }[];
+  boxes: { registerBoxId: number; registerLabel: string; locationIds: number[] }[];
+  eligibleCsrs: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null }[];
 };
 
 function safeArray<T>(value: T[] | null | undefined): T[];
@@ -1740,10 +1745,15 @@ function CustomerServiceRepQueueContent() {
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [generalSession, setGeneralSession] = useState<GeneralQueueSessionState>({ session: null, participants: [] });
-  const [sessionOptions, setSessionOptions] = useState<{ registerBoxId: number; registerLabel: string; locationId: number; locationName: string }[]>([]);
-  const [selectedSessionOption, setSelectedSessionOption] = useState("");
+  const [sessionOptions, setSessionOptions] = useState<GeneralSessionOptions>({ locations: [], boxes: [], eligibleCsrs: [] });
+  const [selectedLocationId, setSelectedLocationId] = useState("");
+  const [selectedRegisterBoxId, setSelectedRegisterBoxId] = useState("");
+  const [selectedParticipantId, setSelectedParticipantId] = useState("");
   const [openingBalance, setOpeningBalance] = useState("0.00");
   const [closingBalance, setClosingBalance] = useState("");
+  const [discrepancyReason, setDiscrepancyReason] = useState("");
+  const [openIdempotencyKey, setOpenIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [closeIdempotencyKey, setCloseIdempotencyKey] = useState(() => crypto.randomUUID());
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
@@ -1769,10 +1779,11 @@ function CustomerServiceRepQueueContent() {
     ]);
     if (sessionResponse.ok) setGeneralSession(await sessionResponse.json());
     if (optionsResponse.ok) {
-      const data = await optionsResponse.json() as { options?: typeof sessionOptions };
-      const options = data.options ?? [];
+      const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
+      const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
       setSessionOptions(options);
-      setSelectedSessionOption(current => current || (options[0] ? `${options[0].registerBoxId}:${options[0].locationId}` : ""));
+      setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
+      setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
     }
   }, [getToken]);
 
@@ -1896,20 +1907,32 @@ function CustomerServiceRepQueueContent() {
   const canManageGeneralSession = userRole === "supervisor" || userRole === "admin" || userRole === "global_admin";
 
   async function openGeneralQueueSession() {
-    const [registerBoxId, locationId] = selectedSessionOption.split(":").map(Number);
+    const locationId = Number(selectedLocationId);
+    const registerBoxId = selectedRegisterBoxId ? Number(selectedRegisterBoxId) : null;
     setSessionMessage(null);
     const token = await getToken();
     const response = await fetch("/api/shift-queue/general/session/open", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ registerBoxId, locationId, openingBalance: Number(openingBalance) }),
+      body: JSON.stringify({ registerBoxId, locationId, openingBalance: Number(openingBalance), idempotencyKey: openIdempotencyKey }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) { setSessionMessage(data.error ?? "Could not open General Queue cash session"); return; }
     setSessionMessage("General Queue cash session opened.");
+    setOpenIdempotencyKey(crypto.randomUUID());
     await fetchGeneralSession();
     const returnOrder = new URLSearchParams(window.location.search).get("returnOrder");
     if (returnOrder && /^\d+$/.test(returnOrder)) navigate(`/orders/${returnOrder}?cashCloseout=1`);
+  }
+
+  async function manageParticipant(method: "POST" | "DELETE", participantId: number) {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const endpoint = method === "POST" ? `/api/shift-queue/general/session/${generalSession.session.id}/participants` : `/api/shift-queue/general/session/${generalSession.session.id}/participants/${participantId}`;
+    const response = await fetch(endpoint, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(method === "POST" ? { "Content-Type": "application/json" } : {}) }, ...(method === "POST" ? { body: JSON.stringify({ userId: participantId }) } : {}) });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? (method === "POST" ? "Participant added." : "Participant removed.") : data.error ?? "Could not update participant");
+    if (response.ok) await fetchGeneralSession();
   }
 
   async function joinGeneralQueueSession() {
@@ -1927,11 +1950,11 @@ function CustomerServiceRepQueueContent() {
     const response = await fetch(`/api/shift-queue/general/session/${generalSession.session.id}/close`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ closingBalance: Number(closingBalance) }),
+      body: JSON.stringify({ closingBalance: Number(closingBalance), idempotencyKey: closeIdempotencyKey, ...(discrepancyReason.trim() ? { discrepancyReason: discrepancyReason.trim() } : {}) }),
     });
     const data = await response.json().catch(() => ({}));
     setSessionMessage(response.ok ? "General Queue cash session closed and reconciled." : data.error ?? "Could not close session");
-    if (response.ok) await fetchGeneralSession();
+    if (response.ok) { setCloseIdempotencyKey(crypto.randomUUID()); await fetchGeneralSession(); }
   }
 
   return (
@@ -1961,34 +1984,56 @@ function CustomerServiceRepQueueContent() {
           <div>
             <h2 className="font-semibold">View General Queue</h2>
             <p className="text-xs text-muted-foreground mt-1">
-              Cash session: <span className={generalSession.session ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>{generalSession.session ? "Open" : "Closed"}</span>
+              Cash session: <span className={generalSession.session ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>{generalSession.session ? "Open" : "No open cash session"}</span>
             </p>
           </div>
-          {generalSession.session && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
+          {generalSession.session && isCsrOnly && !generalSession.participants.some(participant => participant.id === user?.id) && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
         </div>
         {generalSession.session ? (
           <div className="space-y-3">
-            <div className="text-xs">Opened {new Date(generalSession.session.openedAt).toLocaleString()} · opening balance ${Number(generalSession.session.openingBalance).toFixed(2)}</div>
+            <div className="grid gap-1 text-xs sm:grid-cols-2">
+              <div>Location: {generalSession.session.locationName ?? `Location ${generalSession.session.locationId}`}</div>
+              <div>Register: {generalSession.session.registerLabel ?? "No register selected"}</div>
+              <div>Opened by: {`${generalSession.session.opener?.firstName ?? ""} ${generalSession.session.opener?.lastName ?? ""}`.trim() || generalSession.session.opener?.email || "Authorized manager"}</div>
+              <div>Opened: {new Date(generalSession.session.openedAt).toLocaleString()}</div>
+              <div>Opening amount: ${Number(generalSession.session.openingBalance).toFixed(2)}</div>
+              <div>Accountable cash: ${Number(generalSession.session.accountableCash ?? 0).toFixed(2)}</div>
+              <div>Expected closing cash: ${Number(generalSession.session.expectedClosingCash ?? generalSession.session.openingBalance).toFixed(2)}</div>
+            </div>
             <div>
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Participating agents</div>
               <div className="flex flex-wrap gap-2">
-                {generalSession.participants.map(participant => <span key={participant.id} className="rounded-full border px-2 py-1 text-xs">{`${participant.firstName ?? ""} ${participant.lastName ?? ""}`.trim() || participant.email || `Agent ${participant.id}`}</span>)}
+                {generalSession.participants.map(participant => <span key={participant.id} className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs">{`${participant.firstName ?? ""} ${participant.lastName ?? ""}`.trim() || participant.email || `Agent ${participant.id}`}{canManageGeneralSession && <button type="button" aria-label="Remove participant" onClick={() => void manageParticipant("DELETE", participant.id)}>×</button>}</span>)}
               </div>
             </div>
             {canManageGeneralSession && (
-              <div className="flex gap-2 max-w-md">
-                <Input inputMode="decimal" placeholder="Closing balance" value={closingBalance} onChange={event => setClosingBalance(event.target.value)} />
+              <div className="space-y-2 max-w-xl">
+                <div className="flex gap-2">
+                  <select className="h-10 flex-1 rounded-md border bg-background px-3 text-sm" value={selectedParticipantId} onChange={event => setSelectedParticipantId(event.target.value)} aria-label="Eligible CSR">
+                    {sessionOptions.eligibleCsrs.filter(csr => !generalSession.participants.some(participant => participant.id === csr.id)).map(csr => <option key={csr.id} value={csr.id}>{`${csr.firstName ?? ""} ${csr.lastName ?? ""}`.trim() || csr.email || `CSR ${csr.id}`}</option>)}
+                  </select>
+                  <Button variant="outline" onClick={() => void manageParticipant("POST", Number(selectedParticipantId))} disabled={!selectedParticipantId}>Add Participant</Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input inputMode="decimal" placeholder="Counted cash" value={closingBalance} onChange={event => setClosingBalance(event.target.value)} />
+                  <Input placeholder="Discrepancy reason (required above threshold)" value={discrepancyReason} onChange={event => setDiscrepancyReason(event.target.value)} />
+                </div>
                 <Button variant="outline" onClick={() => void closeGeneralQueueSession()} disabled={!closingBalance} data-testid="button-close-general-session">Reconcile &amp; Close</Button>
               </div>
             )}
           </div>
         ) : canManageGeneralSession ? (
-          <div className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
-            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedSessionOption} onChange={event => setSelectedSessionOption(event.target.value)} data-testid="select-general-session-register">
-              {sessionOptions.map(option => <option key={`${option.registerBoxId}:${option.locationId}`} value={`${option.registerBoxId}:${option.locationId}`}>{option.registerLabel} · {option.locationName}</option>)}
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_140px_auto]">
+            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedLocationId} onChange={event => { setSelectedLocationId(event.target.value); setSelectedRegisterBoxId(""); }} data-testid="select-general-session-location">
+              <option value="">Select location</option>
+              {sessionOptions.locations.map(option => <option key={option.locationId} value={option.locationId}>{option.locationName}</option>)}
+            </select>
+            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedRegisterBoxId} onChange={event => setSelectedRegisterBoxId(event.target.value)} data-testid="select-general-session-register">
+              <option value="">No register (optional)</option>
+              {sessionOptions.boxes.filter(box => box.locationIds.includes(Number(selectedLocationId))).map(box => <option key={box.registerBoxId} value={box.registerBoxId}>{box.registerLabel}</option>)}
             </select>
             <Input inputMode="decimal" value={openingBalance} onChange={event => setOpeningBalance(event.target.value)} aria-label="Opening balance" />
-            <Button onClick={() => void openGeneralQueueSession()} disabled={!selectedSessionOption} data-testid="button-open-general-session">Open Cash Session</Button>
+            <Button onClick={() => void openGeneralQueueSession()} disabled={!selectedLocationId || !/^\d+(\.\d{1,2})?$/.test(openingBalance)} data-testid="button-open-general-session">Open Cash Session</Button>
           </div>
         ) : (
           <p className="text-xs text-amber-300">A supervisor or manager must open a General Queue cash session before cash can be accepted.</p>

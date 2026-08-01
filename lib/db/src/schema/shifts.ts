@@ -124,7 +124,7 @@ export const generalQueueCashSessionsTable = pgTable("general_queue_cash_session
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
-  registerBoxId: integer("register_box_id").notNull().references(() => csrBoxesTable.id),
+  registerBoxId: integer("register_box_id").references(() => csrBoxesTable.id),
   status: text("status").notNull().default("open"),
   openedByUserId: integer("opened_by_user_id").notNull().references(() => usersTable.id),
   openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
@@ -134,14 +134,21 @@ export const generalQueueCashSessionsTable = pgTable("general_queue_cash_session
   closingBalance: numeric("closing_balance", { precision: 10, scale: 2 }),
   expectedBalance: numeric("expected_balance", { precision: 10, scale: 2 }),
   differenceAmount: numeric("difference_amount", { precision: 10, scale: 2 }),
+  openIdempotencyKey: text("open_idempotency_key"),
+  closeIdempotencyKey: text("close_idempotency_key"),
+  discrepancyReason: text("discrepancy_reason"),
   paymentTotalsJson: json("payment_totals_json").default({}),
   summary: json("summary").default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
-  tenantRegisterStatusIdx: uniqueIndex("general_queue_cash_sessions_open_register_uq")
-    .on(table.tenantId, table.locationId, table.registerBoxId)
+  tenantLocationStatusIdx: uniqueIndex("general_queue_cash_sessions_open_location_uq")
+    .on(table.tenantId, table.locationId)
     .where(sql`${table.status} = 'open'`),
+  openIdempotencyIdx: uniqueIndex("general_queue_cash_sessions_open_idempotency_uq")
+    .on(table.tenantId, table.openIdempotencyKey).where(sql`${table.openIdempotencyKey} IS NOT NULL`),
+  closeIdempotencyIdx: uniqueIndex("general_queue_cash_sessions_close_idempotency_uq")
+    .on(table.tenantId, table.closeIdempotencyKey).where(sql`${table.closeIdempotencyKey} IS NOT NULL`),
   tenantIdIdUnique: unique("general_queue_cash_sessions_tenant_id_id_unique").on(table.tenantId, table.id),
   statusCheck: check("general_queue_cash_sessions_status_check", sql`${table.status} IN ('open', 'closed')`),
   tenantLocationFk: foreignKey({

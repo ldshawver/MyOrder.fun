@@ -32,6 +32,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   keepAuditToken: boolean("keep_audit_token").notNull().default(true),
   keepFailedPaymentLogs: boolean("keep_failed_payment_logs").notNull().default(true),
   pettyCash: numeric("petty_cash", { precision: 10, scale: 2 }).default("0"),
+  cashDiscrepancyReasonThreshold: numeric("cash_discrepancy_reason_threshold", { precision: 10, scale: 2 }).notNull().default("0"),
   receiptLineNameMode: text("receipt_line_name_mode").notNull().default("lucifer_only"),
   // WooCommerce integration credentials.
   // Consumer key/secret are stored as AES-256-GCM ciphertext (see api-server lib/crypto.ts).

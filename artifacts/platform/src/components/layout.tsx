@@ -206,7 +206,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin"] },
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin"] },
-            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin"] },
             { href: "/admin/credits", label: "Customer Credit", icon: BadgeDollarSign, roles: ["global_admin"] },
             { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: ShieldAlert, roles: ["global_admin"] },
           ],

@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
-  auditLogsTable, cashLedgerEntriesTable, csrBoxesTable, db,
+  adminSettingsTable, auditLogsTable, cashLedgerEntriesTable, csrBoxesTable, db,
   generalQueueCashSessionParticipantsTable, generalQueueCashSessionsTable,
   inventoryLocationsTable, labTechShiftsTable, ordersTable, shiftRoutingConfigTable, usersTable,
 } from "@workspace/db";
@@ -15,9 +15,11 @@ const router: IRouter = Router();
 const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "ready", "pending", "processing"];
 const supervisorRoles = new Set(["supervisor", "admin", "global_admin"]);
 
-async function currentGeneralQueueSession(tenantId: number) {
+async function currentGeneralQueueSession(tenantId: number, locationId?: number) {
+  const filters = [eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")];
+  if (locationId != null) filters.push(eq(generalQueueCashSessionsTable.locationId, locationId));
   const [session] = await db.select().from(generalQueueCashSessionsTable)
-    .where(and(eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")))
+    .where(and(...filters))
     .orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(1);
   return session ?? null;
 }
@@ -170,7 +172,9 @@ router.get("/shift-queue/general", requirePermission("queue.view"), async (req, 
 router.get("/shift-queue/general/session", requirePermission("cash_sessions.view"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const session = await currentGeneralQueueSession(tenantId);
+  const requestedLocationId = req.query.locationId == null ? undefined : Number(req.query.locationId);
+  if (requestedLocationId != null && !Number.isInteger(requestedLocationId)) { res.status(400).json({ error: "Invalid location" }); return; }
+  const session = await currentGeneralQueueSession(tenantId, requestedLocationId);
   if (!session) { res.json({ session: null, participants: [] }); return; }
   const participants = await db.select({
     id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName,
@@ -182,21 +186,51 @@ router.get("/shift-queue/general/session", requirePermission("cash_sessions.view
       eq(generalQueueCashSessionParticipantsTable.sessionId, session.id),
       isNull(generalQueueCashSessionParticipantsTable.leftAt),
     ));
-  res.json({ session, participants });
+  const [[details], [totals]] = await Promise.all([
+    db.select({
+      locationName: inventoryLocationsTable.name,
+      registerLabel: csrBoxesTable.label,
+      openerFirstName: usersTable.firstName,
+      openerLastName: usersTable.lastName,
+      openerEmail: usersTable.email,
+    }).from(generalQueueCashSessionsTable)
+      .innerJoin(inventoryLocationsTable, and(eq(inventoryLocationsTable.id, generalQueueCashSessionsTable.locationId), eq(inventoryLocationsTable.tenantId, tenantId)))
+      .leftJoin(csrBoxesTable, and(eq(csrBoxesTable.id, generalQueueCashSessionsTable.registerBoxId), eq(csrBoxesTable.tenantId, tenantId)))
+      .innerJoin(usersTable, and(eq(usersTable.id, generalQueueCashSessionsTable.openedByUserId), eq(usersTable.tenantId, tenantId)))
+      .where(and(eq(generalQueueCashSessionsTable.id, session.id), eq(generalQueueCashSessionsTable.tenantId, tenantId))).limit(1),
+    db.select({ accountableCash: sql<string>`coalesce(sum(${cashLedgerEntriesTable.amount}), 0)` })
+      .from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.generalQueueSessionId, session.id))),
+  ]);
+  const accountableCash = Number(totals?.accountableCash ?? 0);
+  res.json({
+    session: {
+      ...session,
+      locationName: details?.locationName ?? "Location",
+      registerLabel: details?.registerLabel ?? null,
+      opener: details ? { firstName: details.openerFirstName, lastName: details.openerLastName, email: details.openerEmail } : null,
+      accountableCash: accountableCash.toFixed(2),
+      expectedClosingCash: (Number(session.openingBalance) + accountableCash).toFixed(2),
+    },
+    participants,
+  });
 });
 
 router.get("/shift-queue/general/session/options", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const tenantId = actor.tenantId ?? await getHouseTenantId();
-  const rows = await db.select({
-    registerBoxId: csrBoxesTable.id, registerLabel: csrBoxesTable.label,
-    locationId: inventoryLocationsTable.id, locationName: inventoryLocationsTable.name,
-  }).from(csrBoxesTable).innerJoin(inventoryLocationsTable, and(
-    eq(inventoryLocationsTable.csrBoxId, csrBoxesTable.id),
-    eq(inventoryLocationsTable.tenantId, tenantId),
-    eq(inventoryLocationsTable.isActive, true),
-  )).where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true)));
-  res.json({ options: rows });
+  const [locations, boxes, eligibleCsrs] = await Promise.all([
+    db.select({ locationId: inventoryLocationsTable.id, locationName: inventoryLocationsTable.name, csrBoxId: inventoryLocationsTable.csrBoxId })
+      .from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
+    db.select({ registerBoxId: csrBoxesTable.id, registerLabel: csrBoxesTable.label })
+      .from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))),
+    db.select({ id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
+      .from(usersTable).where(and(eq(usersTable.tenantId, tenantId), eq(usersTable.isActive, true), eq(usersTable.status, "approved"), sql`lower(${usersTable.role}) IN ('csr','qsr')`)),
+  ]);
+  res.json({
+    locations: locations.map(location => ({ locationId: location.locationId, locationName: location.locationName })),
+    boxes: boxes.map(box => ({ ...box, locationIds: locations.filter(location => location.csrBoxId === box.registerBoxId).map(location => location.locationId) })),
+    eligibleCsrs,
+  });
 });
 
 router.post("/shift-queue/general/session/open", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
@@ -204,30 +238,72 @@ router.post("/shift-queue/general/session/open", requirePermission("cash_session
   const role = normalizeRole(actor.role);
   if (!supervisorRoles.has(role)) { res.status(403).json({ error: "Supervisor permission is required" }); return; }
   const parsed = z.object({
-    registerBoxId: z.number().int().positive(),
+    registerBoxId: z.number().int().positive().nullable().optional(),
     locationId: z.number().int().positive(),
-    openingBalance: z.number().finite().min(0).max(100000).default(0),
+    openingBalance: z.number().finite().min(0).max(100000),
+    idempotencyKey: z.string().trim().min(8).max(128),
   }).strict().safeParse(req.body ?? {});
   if (!parsed.success) { res.status(422).json({ error: "Select an authorized register and location" }); return; }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
   try {
     const session = await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${parsed.data.registerBoxId})`);
-      const [register] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, parsed.data.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
-      const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.id, parsed.data.locationId), eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, parsed.data.registerBoxId), eq(inventoryLocationsTable.isActive, true))).limit(1);
-      if (!register || !location) return null;
-      const [existing] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.locationId, location.id), eq(generalQueueCashSessionsTable.registerBoxId, register.id), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
-      if (existing) return existing;
-      const [created] = await tx.insert(generalQueueCashSessionsTable).values({ tenantId, locationId: location.id, registerBoxId: register.id, openedByUserId: actor.id, openingBalance: parsed.data.openingBalance.toFixed(2) }).returning();
-      await tx.insert(generalQueueCashSessionParticipantsTable).values({ tenantId, sessionId: created.id, userId: actor.id, joinedByUserId: actor.id });
-      await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_OPENED", resourceType: "general_queue_session", resourceId: String(created.id), metadata: { locationId: location.id, registerBoxId: register.id, openingBalance: parsed.data.openingBalance } });
-      return created;
+      await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${parsed.data.locationId})`);
+      const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.id, parsed.data.locationId), eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))).limit(1);
+      if (!location) return { kind: "invalid" as const };
+      let register: typeof csrBoxesTable.$inferSelect | null = null;
+      if (parsed.data.registerBoxId != null) {
+        [register] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, parsed.data.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
+        if (!register || location.csrBoxId !== register.id) return { kind: "invalid" as const };
+      }
+      const [replay] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.openIdempotencyKey, parsed.data.idempotencyKey))).limit(1);
+      if (replay) {
+        const same = replay.locationId === location.id && replay.registerBoxId === (register?.id ?? null) && Number(replay.openingBalance) === parsed.data.openingBalance;
+        return same ? { kind: "replay" as const, session: replay } : { kind: "key_conflict" as const, session: replay };
+      }
+      const [existing] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.locationId, location.id), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
+      if (existing) return { kind: "open_conflict" as const, session: existing };
+      const [created] = await tx.insert(generalQueueCashSessionsTable).values({ tenantId, locationId: location.id, registerBoxId: register?.id ?? null, openedByUserId: actor.id, openingBalance: parsed.data.openingBalance.toFixed(2), openIdempotencyKey: parsed.data.idempotencyKey }).returning();
+      await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_OPENED", resourceType: "general_queue_session", resourceId: String(created.id), metadata: { locationId: location.id, registerBoxId: register?.id ?? null, openingBalance: parsed.data.openingBalance } });
+      return { kind: "created" as const, session: created };
     });
-    if (!session) { res.status(422).json({ error: "The register/location is not authorized for this tenant" }); return; }
-    res.status(201).json({ session });
+    if (session.kind === "invalid") { res.status(422).json({ error: "The location or optional register is not authorized for this tenant" }); return; }
+    if (session.kind === "key_conflict") { res.status(409).json({ error: "Idempotency key was already used for a different request" }); return; }
+    if (session.kind === "open_conflict") { res.status(409).json({ error: "An active General Queue cash session already exists for this location", conflict: { sessionId: session.session.id, locationId: session.session.locationId } }); return; }
+    res.status(session.kind === "created" ? 201 : 200).json({ session: session.session, idempotent: session.kind === "replay" });
   } catch {
     res.status(409).json({ error: "An active General Queue cash session already exists for that register" });
   }
+});
+
+const participantBody = z.object({ userId: z.number().int().positive() }).strict();
+
+router.post("/shift-queue/general/session/:id/participants", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const sessionId = Number(req.params.id);
+  const parsed = participantBody.safeParse(req.body ?? {});
+  if (!Number.isInteger(sessionId) || !parsed.success) { res.status(422).json({ error: "Select an eligible CSR" }); return; }
+  const [[session], [target]] = await Promise.all([
+    db.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).limit(1),
+    db.select().from(usersTable).where(and(eq(usersTable.id, parsed.data.userId), eq(usersTable.tenantId, tenantId), eq(usersTable.status, "approved"), eq(usersTable.isActive, true), sql`lower(${usersTable.role}) IN ('csr','qsr')`)).limit(1),
+  ]);
+  if (!session) { res.status(404).json({ error: "Open General Queue session not found" }); return; }
+  if (!target) { res.status(422).json({ error: "The selected CSR is not eligible for this tenant" }); return; }
+  await db.insert(generalQueueCashSessionParticipantsTable).values({ tenantId, sessionId, userId: target.id, joinedByUserId: actor.id })
+    .onConflictDoUpdate({ target: [generalQueueCashSessionParticipantsTable.sessionId, generalQueueCashSessionParticipantsTable.userId], set: { leftAt: null, joinedAt: new Date(), joinedByUserId: actor.id } });
+  await db.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_PARTICIPANT_ADDED", resourceType: "general_queue_session", resourceId: String(sessionId), metadata: { participantUserId: target.id, locationId: session.locationId } });
+  res.json({ participant: { id: target.id, firstName: target.firstName, lastName: target.lastName, email: target.email } });
+});
+
+router.delete("/shift-queue/general/session/:id/participants/:userId", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const sessionId = Number(req.params.id); const userId = Number(req.params.userId);
+  if (!Number.isInteger(sessionId) || !Number.isInteger(userId)) { res.status(400).json({ error: "Invalid participant" }); return; }
+  const [session] = await db.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
+  if (!session) { res.status(404).json({ error: "Open General Queue session not found" }); return; }
+  const [accountability] = await db.select({ count: sql<number>`count(*)::int` }).from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.generalQueueSessionId, sessionId), eq(cashLedgerEntriesTable.actorUserId, userId)));
+  if ((accountability?.count ?? 0) > 0) { res.status(409).json({ error: "This participant has accountable cash transactions and cannot be removed" }); return; }
+  const [removed] = await db.update(generalQueueCashSessionParticipantsTable).set({ leftAt: new Date() }).where(and(eq(generalQueueCashSessionParticipantsTable.tenantId, tenantId), eq(generalQueueCashSessionParticipantsTable.sessionId, sessionId), eq(generalQueueCashSessionParticipantsTable.userId, userId), isNull(generalQueueCashSessionParticipantsTable.leftAt))).returning();
+  if (!removed) { res.status(404).json({ error: "Active participant not found" }); return; }
+  await db.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_PARTICIPANT_REMOVED", resourceType: "general_queue_session", resourceId: String(sessionId), metadata: { participantUserId: userId, locationId: session.locationId } });
+  res.json({ removed: true });
 });
 
 router.post("/shift-queue/general/session/:id/join", requirePermission("cash_sessions.join"), async (req, res): Promise<void> => {
@@ -237,6 +313,7 @@ router.post("/shift-queue/general/session/:id/join", requirePermission("cash_ses
   if (!Number.isInteger(sessionId)) { res.status(400).json({ error: "Invalid session id" }); return; }
   const [session] = await db.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
   if (!session) { res.status(404).json({ error: "Open General Queue session not found" }); return; }
+  if (normalizeRole(actor.role) !== "csr") { res.status(403).json({ error: "Only an eligible CSR may join a cash session" }); return; }
   await db.insert(generalQueueCashSessionParticipantsTable).values({ tenantId, sessionId, userId: actor.id, joinedByUserId: actor.id })
     .onConflictDoUpdate({ target: [generalQueueCashSessionParticipantsTable.sessionId, generalQueueCashSessionParticipantsTable.userId], set: { leftAt: null, joinedAt: new Date(), joinedByUserId: actor.id } });
   await db.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_JOINED", resourceType: "general_queue_session", resourceId: String(sessionId), metadata: {} });
@@ -247,22 +324,31 @@ router.post("/shift-queue/general/session/:id/close", requirePermission("cash_se
   const actor = req.dbUser!;
   const role = normalizeRole(actor.role);
   if (!supervisorRoles.has(role)) { res.status(403).json({ error: "Supervisor permission is required" }); return; }
-  const parsed = z.object({ closingBalance: z.number().finite().min(0).max(100000) }).strict().safeParse(req.body ?? {});
+  const parsed = z.object({ closingBalance: z.number().finite().min(0).max(100000), idempotencyKey: z.string().trim().min(8).max(128), discrepancyReason: z.string().trim().min(3).max(500).optional() }).strict().safeParse(req.body ?? {});
   if (!parsed.success) { res.status(422).json({ error: "A valid closing balance is required" }); return; }
   const tenantId = actor.tenantId ?? await getHouseTenantId();
   const sessionId = Number(req.params.id);
-  const [closed] = await db.transaction(async (tx) => {
-    const [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).for("update").limit(1);
-    if (!session) return [null];
+  const closed = await db.transaction(async (tx) => {
+    const [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId))).for("update").limit(1);
+    if (!session) return { kind: "missing" as const };
+    if (session.status === "closed") {
+      const same = session.closeIdempotencyKey === parsed.data.idempotencyKey && Number(session.closingBalance) === parsed.data.closingBalance && (session.discrepancyReason ?? null) === (parsed.data.discrepancyReason ?? null);
+      return same ? { kind: "replay" as const, session } : { kind: "conflict" as const };
+    }
     const [totals] = await tx.select({ cash: sql<string>`coalesce(sum(${cashLedgerEntriesTable.amount}), 0)` }).from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.generalQueueSessionId, sessionId)));
     const expected = Number(session.openingBalance) + Number(totals?.cash ?? 0);
     const difference = parsed.data.closingBalance - expected;
-    const rows = await tx.update(generalQueueCashSessionsTable).set({ status: "closed", closedByUserId: actor.id, closedAt: new Date(), closingBalance: parsed.data.closingBalance.toFixed(2), expectedBalance: expected.toFixed(2), differenceAmount: difference.toFixed(2), paymentTotalsJson: { cash: Number(totals?.cash ?? 0) } }).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.status, "open"))).returning();
+    const [settings] = await tx.select({ threshold: adminSettingsTable.cashDiscrepancyReasonThreshold }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+    const threshold = Math.max(0, Number(settings?.threshold ?? 0));
+    if (Math.abs(difference) > threshold && !parsed.data.discrepancyReason) return { kind: "reason_required" as const, threshold };
+    const [closedSession] = await tx.update(generalQueueCashSessionsTable).set({ status: "closed", closedByUserId: actor.id, closedAt: new Date(), closingBalance: parsed.data.closingBalance.toFixed(2), expectedBalance: expected.toFixed(2), differenceAmount: difference.toFixed(2), paymentTotalsJson: { cash: Number(totals?.cash ?? 0) }, closeIdempotencyKey: parsed.data.idempotencyKey, discrepancyReason: parsed.data.discrepancyReason ?? null }).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).returning();
     await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "GENERAL_QUEUE_SESSION_CLOSED", resourceType: "general_queue_session", resourceId: String(sessionId), metadata: { expectedBalance: expected, closingBalance: parsed.data.closingBalance, difference } });
-    return rows;
+    return { kind: "closed" as const, session: closedSession };
   });
-  if (!closed) { res.status(409).json({ error: "General Queue session is already closed or unavailable" }); return; }
-  res.json({ session: closed });
+  if (closed.kind === "missing") { res.status(404).json({ error: "General Queue session not found" }); return; }
+  if (closed.kind === "conflict") { res.status(409).json({ error: "This session was already reconciled with different close details" }); return; }
+  if (closed.kind === "reason_required") { res.status(422).json({ error: "A discrepancy reason is required", threshold: closed.threshold }); return; }
+  res.json({ session: closed.session, idempotent: closed.kind === "replay" });
 });
 
 export default router;
