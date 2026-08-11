@@ -47,6 +47,10 @@ RUN --mount=type=secret,id=clerk_publishable_key,required=false \
 # ── Stage 2: Serve with Nginx ────────────────────────────────────────────────
 FROM nginx:alpine AS runtime
 
+ARG DEPLOY_SHA=unknown
+LABEL org.opencontainers.image.revision=$DEPLOY_SHA \
+      com.myorder.deploy-sha=$DEPLOY_SHA
+
 COPY --from=builder /app/artifacts/platform/dist /usr/share/nginx/html
 
 COPY deploy/nginx-spa.conf /etc/nginx/conf.d/default.conf

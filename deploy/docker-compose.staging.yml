@@ -1,0 +1,147 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      TZ: America/Los_Angeles
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [internal]
+
+  migrate:
+    image: myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.migrate
+      labels:
+        org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DB_SSL: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
+  api:
+    image: myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+      args:
+        DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+      labels:
+        org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      NODE_ENV: staging
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      DB_SSL: "false"
+      DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY is required}
+      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:?VITE_CLERK_PROXY_URL is required}
+      CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET:?CLERK_WEBHOOK_SECRET is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      OPENAI_API_KEY: ""
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      TWILIO_ACCOUNT_SID: ""
+      TWILIO_AUTH_TOKEN: ""
+      TWILIO_PHONE_NUMBER: ""
+      UBER_CLIENT_ID: ""
+      UBER_CUSTOMER_ID: ""
+      UBER_CLIENT_SECRET: ""
+      UBER_PICKUP_ADDRESS: ""
+      UBER_PICKUP_ACTION: ""
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CUPS_SERVER: ${CUPS_SERVER:-}
+      PRINT_BRIDGE_URL: ${PRINT_BRIDGE_URL:-}
+      PRINT_BRIDGE_API_KEY: ${PRINT_BRIDGE_API_KEY:-}
+      PRINT_BRIDGE_HEALTH_TIMEOUT_MS: ${PRINT_BRIDGE_HEALTH_TIMEOUT_MS:-2000}
+      PRINT_SERVER_HOST: ""
+      RECEIPT_PRINT_ENABLED: ${RECEIPT_PRINT_ENABLED:-false}
+      RECEIPT_PRINTER_NAME: ${RECEIPT_PRINTER_NAME:-staging-receipt-test}
+      LABEL_PRINT_ENABLED: ${LABEL_PRINT_ENABLED:-false}
+      LABEL_PRINTER_NAME: ${LABEL_PRINTER_NAME:-staging-label-test}
+      SMS_ENABLED: "false"
+      EMAIL_ENABLED: "false"
+      PUSH_ENABLED: "false"
+      LIVE_PAYMENTS_ENABLED: "false"
+      PAYMENT_MODE: test
+    volumes:
+      - uploads:/app/uploads
+      - app_data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
+
+  platform:
+    image: myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.platform
+      args:
+        DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        ENABLE_CLERK_DEV_FAPI: "true"
+      labels:
+        org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+      secrets:
+        - clerk_publishable_key
+        - clerk_proxy_url
+    restart: unless-stopped
+    networks: [internal]
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:28081:80"
+    volumes:
+      - ./nginx-staging.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      api:
+        condition: service_healthy
+      platform:
+        condition: service_started
+    networks: [internal]
+
+volumes:
+  postgres_data:
+  nginx_logs:
+  uploads:
+  app_data:
+
+networks:
+  internal:
+    driver: bridge
+
+secrets:
+  clerk_publishable_key:
+    environment: CLERK_PUBLISHABLE_KEY
+  clerk_proxy_url:
+    environment: VITE_CLERK_PROXY_URL

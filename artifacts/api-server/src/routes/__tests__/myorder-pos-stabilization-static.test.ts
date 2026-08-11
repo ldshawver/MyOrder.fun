@@ -220,9 +220,9 @@ describe("receipts and deploy workflow", () => {
     for (const label of ["Receipts & Printers", "Reprint Receipts", "Templates", "Printers", "Routing", "Test Print"]) {
       expect(receipts).toContain(label);
     }
-    expect(receipts).toContain("Printer hardware must be configured");
+    expect(receipts).toContain("integration errors are shown clearly");
     expect(receipts).toContain("aria-selected={activeTab === key}");
-    expect(receipts).toContain("<AdminPrint />");
+    expect(receipts).toContain("<RegisteredPrintAdmin mode={activeTab} />");
     expect(platform("pages/new-order.tsx")).toContain("xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)]");
   });
 

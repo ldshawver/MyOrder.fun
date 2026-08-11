@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@workspace/db": "workspace:*",
+    "drizzle-orm": "catalog:"
+  },
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "lint:ratchet": "tsx ./src/lint-ratchet.ts",

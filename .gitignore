@@ -62,6 +62,7 @@ attached_assets/
 client_secret*.json
 *.env
 .env.*
+!deploy/.env.staging.example
 .deployed-sha
 
 # Generated Playwright proof artifacts (uploaded by CI, not committed)

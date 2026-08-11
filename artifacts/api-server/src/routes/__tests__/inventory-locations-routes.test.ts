@@ -135,14 +135,14 @@ function buildApp(router: Router) {
 
 function makeAdmin() {
   return {
-    id: 1, clerkId: "admin-clerk-id", email: "admin@example.com",
+    id: 1, tenantId: 1, clerkId: "admin-clerk-id", email: "admin@example.com",
     firstName: "A", lastName: "D", role: "admin", status: "approved", isActive: true,
   };
 }
 
 function makeCsr() {
   return {
-    id: 2, clerkId: "csr-clerk-id", email: "csr@example.com",
+    id: 2, tenantId: 1, clerkId: "csr-clerk-id", email: "csr@example.com",
     firstName: "C", lastName: "R", role: "customer_service_rep", status: "approved", isActive: true,
   };
 }
@@ -205,11 +205,11 @@ describe("GET /api/admin/inventory-locations", () => {
     expect(Array.isArray(res.body.locations)).toBe(true);
   });
 
-  it("returns 403 for CSR (non-admin)", async () => {
+  it("allows CSR with inventory.view permission", async () => {
     mockUserId = "csr-clerk-id";
     configureDb(makeCsr());
     const res = await supertest(buildApp(shiftsRouter)).get("/api/admin/inventory-locations");
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 });
 
@@ -259,7 +259,7 @@ describe("POST /api/admin/inventory-locations", () => {
     expect(res.body.error).toMatch(/type/i);
   });
 
-  it("returns 403 for CSR", async () => {
+  it("returns 403 for CSR without inventory.manage permission", async () => {
     mockUserId = "csr-clerk-id";
     configureDb(makeCsr());
     const res = await supertest(buildApp(shiftsRouter))
@@ -339,11 +339,11 @@ describe("GET /api/admin/inventory-balances", () => {
     // Direct balance mutation is forbidden; this route remains read-only.
   });
 
-  it("returns 403 for CSR", async () => {
+  it("allows CSR with inventory.view permission", async () => {
     mockUserId = "csr-clerk-id";
     configureDb(makeCsr());
     const res = await supertest(buildApp(shiftsRouter)).get("/api/admin/inventory-balances");
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 });
 
