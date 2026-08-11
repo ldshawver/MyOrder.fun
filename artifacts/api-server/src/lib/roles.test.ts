@@ -24,10 +24,21 @@ describe("default role permission matrix", () => {
 
   it("keeps csr from role management", () => {
     expect(defaultHasPermission("csr", "users.manage_roles")).toBe(false);
+    expect(defaultHasPermission("csr", "queue.view")).toBe(true);
+    expect(defaultHasPermission("csr", "queue.claim")).toBe(true);
+    expect(defaultHasPermission("csr", "cash_sessions.join")).toBe(true);
+    expect(defaultHasPermission("csr", "cash_closeout.own")).toBe(true);
+    expect(defaultHasPermission("csr", "inventory.view")).toBe(true);
+    expect(defaultHasPermission("csr", "queue.manage")).toBe(false);
+    expect(defaultHasPermission("csr", "cash_closeout.override")).toBe(false);
   });
 
   it("keeps supervisor from tenant settings", () => {
     expect(defaultHasPermission("supervisor", "settings.manage_tenant")).toBe(false);
+    expect(defaultHasPermission("supervisor", "queue.manage")).toBe(true);
+    expect(defaultHasPermission("supervisor", "cash_sessions.manage")).toBe(true);
+    expect(defaultHasPermission("supervisor", "cash_closeout.override")).toBe(true);
+    expect(defaultHasPermission("supervisor", "shift_settings.manage")).toBe(true);
   });
 
   it("allows admin tenant role/permission management but no platform permissions", () => {

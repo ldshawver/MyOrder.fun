@@ -9,6 +9,7 @@ import {
   boolean,
   foreignKey,
   check,
+  unique,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
@@ -88,11 +89,15 @@ export const ordersTable = pgTable("orders", {
   legalDisclaimerAccepted: boolean("legal_disclaimer_accepted").notNull().default(false),
   legalDisclaimerText: text("legal_disclaimer_text"),
   checkoutConversionSnapshot: jsonb("checkout_conversion_snapshot"),
+  taxSnapshot: jsonb("tax_snapshot"),
+  cashDiscountSnapshot: jsonb("cash_discount_snapshot"),
   checkoutConversionExpiresAt: timestamp("checkout_conversion_expires_at", { withTimezone: true }),
   selectedPaymentMethod: text("selected_payment_method"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("orders_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 export const orderItemsTable = pgTable("order_items", {
   id: serial("id").primaryKey(),

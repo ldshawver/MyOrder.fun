@@ -23,6 +23,8 @@ import {
   buildLabelTestPayload,
   printViaCups,
   printViaBridge,
+  printPngLabelViaBridge,
+  printPngLabelViaCups,
   probeBridge,
   probeCupsQueues,
   isValidQueueName,
@@ -282,6 +284,55 @@ describe("printViaBridge", () => {
     expect(JSON.stringify(body)).not.toContain("Label_Themal_Printer");
   });
 
+  it("refuses an empty queue instead of allowing a system-default CUPS fallback", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const result = await printViaBridge("receipt", "", buildReceiptTestPayload(), "http://bridge.test");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("refusing system-default fallback");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the bridge reports an unknown queue", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ success: false, error: "Printer not found" }),
+        { status: 404 },
+      ));
+
+    const result = await printViaBridge(
+      "receipt",
+      "Unknown_USB_Queue",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.bridgeStatus).toBe(404);
+    expect(result.message).toContain("Printer not found");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not accept HTTP 200 when the bridge body reports failure", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ success: false, error: "CUPS rejected job" }),
+        { status: 200 },
+      ));
+
+    const result = await printViaBridge(
+      "receipt",
+      "Brightek_POS80",
+      buildReceiptTestPayload(),
+      "http://bridge.test",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("CUPS rejected job");
+  });
+
   it("returns a friendly error when the bridge health check fails", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
       return new Promise((_resolve, reject) => {
@@ -297,6 +348,54 @@ describe("printViaBridge", () => {
     const result = await printViaBridge("label", "label", buildLabelTestPayload(), "http://bridge.test", 30);
     expect(result.ok).toBe(false);
     expect(result.message).toContain("Bridge unreachable");
+  });
+});
+
+describe("printPngLabelViaBridge", () => {
+  it("sends a rendered image with explicit media and never sends raw ESC/POS", async () => {
+    process.env.PRINT_BRIDGE_API_KEY = "secret-key";
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }));
+
+    const result = await printPngLabelViaBridge(
+      "Label_Themal_Printer",
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      "http://bridge.test",
+    );
+
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(String(fetchSpy.mock.calls[1][1]?.body));
+    expect(body).toMatchObject({
+      role: "label",
+      printerName: "Label_Themal_Printer",
+      format: "png",
+      media: "Custom.2x2in",
+      raw: false,
+      copies: 1,
+    });
+    expect(body.imageBase64).toBeTruthy();
+    expect(body).not.toHaveProperty("payloadBase64");
+  });
+});
+
+describe("printPngLabelViaCups", () => {
+  it("pipes PNG bytes with explicit 2x2 driver options and no raw option", async () => {
+    const proc = makeFakeProc();
+    spawnMock.mockReturnValueOnce(proc);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const promise = printPngLabelViaCups("Label_Themal_Printer", png);
+    setImmediate(() => proc.emit("close", 0));
+    const result = await promise;
+
+    expect(result.ok).toBe(true);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "lp",
+      ["-d", "Label_Themal_Printer", "-o", "media=Custom.2x2in", "-o", "fit-to-page"],
+      expect.any(Object),
+    );
+    expect(Buffer.concat(proc.__writes)).toEqual(png);
+    expect(result.command).not.toContain("raw");
   });
 });
 

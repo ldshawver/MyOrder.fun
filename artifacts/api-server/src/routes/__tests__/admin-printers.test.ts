@@ -131,16 +131,14 @@ describe("/api/admin/printers/settings round-trip", () => {
     expect(get1.body.settings.autoPrintReceipts).toBe(false);
     expect(get1.body.settings.bridgeUrl).toMatch(/^http:\/\//);
 
-    // PATCH every one of the eight editable fields.
+    // Legacy settings retain enable toggles, but queue selection is canonical-only.
     const patch = await supertest(app)
       .patch("/api/admin/printers/settings")
       .send({
         receiptEnabled: true,
         receiptMethod: "bridge",
-        receiptPrinterName: "Reciept_POS80_Printer",
         labelEnabled: false,
-        labelMethod: "local_cups",
-        labelPrinterName: "Label_Themal_Printer",
+        labelMethod: "bridge",
         autoPrintReceipts: true,
       });
     expect(patch.status).toBe(200);
@@ -151,9 +149,9 @@ describe("/api/admin/printers/settings round-trip", () => {
 
     // A second GET returns the updated values.
     const get2 = await supertest(app).get("/api/admin/printers/settings");
-    expect(get2.body.settings.receiptPrinterName).toBe("Reciept_POS80_Printer");
+    expect(get2.body.settings.receiptPrinterName).toBe("receipt");
     expect(get2.body.settings.labelPrinterName).toBe("Label_Themal_Printer");
-    expect(get2.body.settings.labelMethod).toBe("local_cups");
+    expect(get2.body.settings.labelMethod).toBe("bridge");
   });
 
   it("PATCH with an invalid method or queue name returns a 400 JSON error", async () => {
@@ -169,7 +167,7 @@ describe("/api/admin/printers/settings round-trip", () => {
 });
 
 describe("/api/admin/printers/test-receipt", () => {
-  it("uses local_cups by default, runs lp -d <queue>, and returns command/stdout/stderr/exitCode", async () => {
+  it("rejects the legacy direct-CUPS test path without spawning lp", async () => {
     const app = makeApp();
     await supertest(app).get("/api/admin/printers/settings"); // seed
     await supertest(app)
@@ -186,17 +184,13 @@ describe("/api/admin/printers/test-receipt", () => {
     });
 
     const r = await supertest(app).post("/api/admin/printers/test-receipt").send({});
-    expect(r.status).toBe(200);
+    expect(r.status).toBe(410);
     expect(r.headers["content-type"]).toMatch(/application\/json/);
-    expect(r.body.ok).toBe(true);
-    expect(r.body.mode).toBe("local_cups");
-    expect(r.body.command).toBe("lp -d receipt");
-    expect(r.body.exitCode).toBe(0);
-    expect(r.body.stdout).toContain("request id is receipt-7");
-    expect(spawnMock).toHaveBeenCalledWith("lp", ["-d", "receipt"], expect.any(Object));
+    expect(r.body.ok).toBe(false);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("returns a friendly JSON error when the bridge is unreachable (mode=bridge)", async () => {
+  it("rejects the legacy arbitrary-queue bridge test path", async () => {
     const app = makeApp();
     await supertest(app).get("/api/admin/printers/settings");
     await supertest(app)
@@ -216,11 +210,9 @@ describe("/api/admin/printers/test-receipt", () => {
     });
 
     const r = await supertest(app).post("/api/admin/printers/test-receipt").send({});
-    expect(r.status).toBe(502);
+    expect(r.status).toBe(410);
     expect(r.headers["content-type"]).toMatch(/application\/json/);
     expect(r.body.ok).toBe(false);
-    expect(r.body.mode).toBe("bridge");
-    expect(r.body.message).toContain("Printer bridge unavailable");
-    expect(r.body.message).toMatch(/Local VPS CUPS|Tailscale/);
+    expect(r.body.error).toContain("tenant-scoped registered-printer");
   });
 });

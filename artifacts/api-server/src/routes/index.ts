@@ -42,8 +42,6 @@ router.use(settingsRouter);
 router.use(tenantSettingsRouter);
 router.use(shiftsRouter);
 router.use(shiftQueueRouter);
-router.use(auditRouter);
-router.use(adminRouter);
 router.use(aiRouter);
 router.use(paymentsRouter);
 router.use(printRouter);
@@ -60,5 +58,10 @@ router.use(visualEditorRouter);
 router.use(rolePermissionsRouter);
 router.use(privacyRouter);
 router.use(pwaPushRouter);
+// These legacy routers install router-wide admin role middleware. Keep them
+// last so an unrelated route owned by a later module (for example inventory,
+// printers, or role permissions) is not rejected before Express can match it.
+router.use(auditRouter);
+router.use(adminRouter);
 
 export default router;

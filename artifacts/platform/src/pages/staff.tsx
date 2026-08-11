@@ -117,6 +117,7 @@ type ActiveShift = {
   boxAssignmentId: string | null;
   clockedInAt: string;
   cashBankStart: number;
+  accountableCash?: number;
   runningCashBank: number;
   csrDeliveryOptIn: boolean;
   csrDeliveryEarnings: number;
@@ -153,6 +154,7 @@ function normalizeActiveShift(raw: RawShift | null | undefined): ActiveShift | n
     boxAssignmentId: raw.boxAssignmentId ?? raw.box_assignment_id ?? null,
     clockedInAt: raw.clockedInAt ?? new Date().toISOString(),
     cashBankStart: Number(raw.cashBankStart ?? 0),
+    accountableCash: Number(raw.accountableCash ?? raw.stats?.cashSales ?? 0),
     runningCashBank: Number(raw.runningCashBank ?? raw.cashBankStart ?? 0),
     csrDeliveryOptIn: Boolean(raw.csrDeliveryOptIn),
     csrDeliveryEarnings: Number(raw.csrDeliveryEarnings ?? 0),
@@ -270,7 +272,7 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [pickupNote, setPickupNote] = useState("");
   const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
-  const [cashBankStart, setCashBankStart] = useState("100");
+  const cashBankStart = "100";
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [clocking, setClocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -531,19 +533,11 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <div className="text-xs text-muted-foreground mb-1">Cash bank par is $100. Confirm the box starts at par or enter the counted total</div>
+            <div className="text-xs text-muted-foreground mb-1">Checking out this box accepts responsibility for its fixed $100 opening bank.</div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-emerald-400">$</span>
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              value={cashBankStart}
-              onChange={e => setCashBankStart(e.target.value)}
-              className="h-9 w-28 text-right text-sm rounded-xl bg-background/50 border-emerald-500/30 font-mono font-bold text-emerald-400 focus:border-emerald-500/60"
-              placeholder="100.00"
-            />
+            <span className="font-mono font-bold text-emerald-400" data-testid="text-box-opening-bank">100.00</span>
           </div>
         </div>
       </div>
@@ -648,7 +642,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
     }
   }
 
-  const expectedCash = (shift.cashBankStart ?? 0) + (shiftStats.cashSales ?? 0);
+  const expectedCash = (shift.cashBankStart ?? 0) + (shift.accountableCash ?? shiftStats.cashSales ?? 0);
 
   const [actualCounts, setActualCounts] = useState<Record<number, string>>(initialCounts);
   const [cashBankEnd, setCashBankEnd] = useState(expectedCash.toFixed(2));

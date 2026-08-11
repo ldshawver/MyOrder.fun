@@ -99,6 +99,9 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     checkoutConversionPreview: s.checkoutConversionPreview,
     salesTaxMode: csrSettings.salesTaxMode ?? "added",
     salesTaxRate: Number(csrSettings.salesTaxRate ?? 0.08),
+    cashDiscountEnabled: s.cashDiscountEnabled,
+    cashDiscountType: s.cashDiscountType,
+    cashDiscountValue: Number(s.cashDiscountValue ?? 0),
     merchantImageEnabled: s.merchantImageEnabled,
     merchantProcessorConfig: parseMerchantProcessorConfig(s.merchantProcessorConfig),
     autoPrintOnPayment: s.autoPrintOnPayment,
@@ -490,7 +493,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
     "receiptTemplateStyle", "labelTemplateStyle", "purgeMode",
     "purgeDelayHours", "keepAuditToken", "keepFailedPaymentLogs",
-    "receiptLineNameMode", "salesTaxMode", "salesTaxRate",
+    "receiptLineNameMode", "salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue",
     "privacyModeEnabled", "sensitiveScreensProtectionEnabled", "watermarkSensitiveScreens",
     "privacyBlurOnBackground", "privacyPrintBlockingEnabled", "privacyProtectedRoles",
   ];
@@ -521,6 +524,16 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
       return;
     }
     update.salesTaxRate = String(rate);
+  }
+  if (body.cashDiscountType !== undefined && body.cashDiscountType !== "percentage" && body.cashDiscountType !== "fixed") {
+    res.status(400).json({ error: "cashDiscountType must be percentage or fixed" }); return;
+  }
+  if (body.cashDiscountValue !== undefined) {
+    const value = Number(body.cashDiscountValue);
+    if (!Number.isFinite(value) || value < 0 || (body.cashDiscountType !== "fixed" && value > 100)) {
+      res.status(400).json({ error: "cashDiscountValue must be non-negative and percentage discounts cannot exceed 100" }); return;
+    }
+    update.cashDiscountValue = String(value);
   }
   if (body.merchantProcessorConfig !== undefined) {
     update.merchantProcessorConfig = JSON.stringify(cleanMerchantProcessorConfig(body.merchantProcessorConfig));
@@ -572,6 +585,8 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     .set(update)
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
+  const financialFields = Object.keys(update).filter(key => ["salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue"].includes(key));
+  if (financialFields.length) await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: updated.tenantId, action: "settings.financial_rules.updated", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { fields: financialFields }, ipAddress: req.ip });
   res.json(mapSettings(updated));
 });
 
@@ -648,8 +663,8 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
 
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
-router.get("/admin/csr-settings", requireRole("global_admin", "admin", "csr"), async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings() as AdminSettingsWithCsr;
+router.get("/admin/csr-settings", requirePermission("shift_settings.view"), async (req, res): Promise<void> => {
+  const s = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
     shiftLocationOptions: parseShiftLocations(s.shiftLocationOptions),
@@ -658,13 +673,13 @@ router.get("/admin/csr-settings", requireRole("global_admin", "admin", "csr"), a
   });
 });
 
-router.put("/admin/csr-settings", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), async (req, res): Promise<void> => {
   const pickupInstructionOptions = req.body?.pickupInstructionOptions;
   const shiftLocationOptions = req.body?.shiftLocationOptions;
   const deliveryOptions = req.body?.deliveryOptions;
   const printerNetworkConfig = req.body?.printerNetworkConfig;
   const update: Record<string, unknown> = {};
-  const existing = await getOrCreateSettings() as AdminSettingsWithCsr;
+  const existing = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
 
   if (pickupInstructionOptions !== undefined) {
     if (!Array.isArray(pickupInstructionOptions) || pickupInstructionOptions.length > 20) {

@@ -183,7 +183,7 @@ function printerNames(printers) {
   return printers.map((printer) => typeof printer === "string" ? printer : printer.name).filter(Boolean);
 }
 
-function printViaCups({ text, imagePath, printerName, copies, raw }) {
+function printViaCups({ text, imagePath, printerName, copies, raw, media }) {
   const name = printerName || PRINTER_NAME;
   const safeCopies = clampCopies(copies);
 
@@ -205,6 +205,13 @@ function printViaCups({ text, imagePath, printerName, copies, raw }) {
 
     if (raw && !imagePath) {
       args.push("-o", "raw");
+    }
+
+    if (media) {
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(media)) {
+        throw new Error(`Invalid CUPS media option: ${media}`);
+      }
+      args.push("-o", `media=${media}`);
     }
 
     args.push("-n", String(safeCopies), fileToPrint);
@@ -326,6 +333,7 @@ async function handlePrint(req, res) {
     copies = 1,
     role = "",
     raw = undefined,
+    media = "",
   } = body;
   const printerName = explicitPrinterName || printer || "";
   const decodedText = payloadBase64 ? Buffer.from(payloadBase64, "base64").toString("binary") : "";
@@ -381,6 +389,7 @@ async function handlePrint(req, res) {
     isBase64Image: Boolean(imageBase64),
     copies: safeCopies,
     rawMode,
+    media: media || null,
   });
 
   // 1) Direct raw socket: text only
@@ -423,6 +432,7 @@ async function handlePrint(req, res) {
       printerName,
       copies: safeCopies,
       raw: rawMode,
+      media,
     });
 
     cleanupTemp();

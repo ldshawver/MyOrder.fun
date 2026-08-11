@@ -17,6 +17,7 @@ import {
   csrBoxesTable,
   generalQueueCashSessionParticipantsTable,
   generalQueueCashSessionsTable,
+  orderTaxSnapshotsTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -54,6 +55,7 @@ import {
 } from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
+import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
 
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
@@ -754,9 +756,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
   // Server-side authoritative totals — any client-supplied numeric fields
   // were rejected above; subtotal/tax/total are rederived from DB prices.
-  const subtotal = trustedTotals.subtotal;
-  const tax = trustedTotals.tax;
-  const merchandiseTotal = trustedTotals.total;
+  const [financialSettings] = await db.select({
+    cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
+    cashDiscountType: adminSettingsTable.cashDiscountType,
+    cashDiscountValue: adminSettingsTable.cashDiscountValue,
+  }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
+  const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const subtotal = financial.taxableSubtotal;
+  const tax = financial.taxCollected;
+  const merchandiseTotal = financial.merchandiseTotal;
+  const cashDiscountAmount = financial.cashDiscountAmount;
+  const { taxSnapshot, cashDiscountSnapshot } = financial;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
@@ -910,7 +921,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         checkoutConversionExpiresAt: conversionExpiresAt,
+        taxSnapshot,
+        cashDiscountSnapshot,
       }).returning();
+
+      await tx.insert(orderTaxSnapshotsTable).values({
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: null,
+        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(subtotal.toFixed(2)), nonTaxableSubtotal: "0.00",
+        discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
+        taxCollected: String(tax.toFixed(2)), tender, exemptionReason: null,
+        snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
+      });
 
       const alavontCartSnapshot = normalizedLines.map(l => ({
         originalCatalogItemId: l.original_catalog_item_id ?? l.catalog_item_id,
@@ -1120,8 +1141,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       total: order.total as string,
       createdAt: order.createdAt,
       customerName,
+      customerFirstName: actor.firstName,
       fulfillmentType: body.data.shippingAddress ? "delivery" : "pickup",
       shippingAddress: body.data.shippingAddress ?? null,
+      tenantId: houseTenantId,
+      assignedShiftId,
       items: normalizedLines.map(l => ({
         quantity: l.quantity,
         catalogItemName: l.catalog_display_name,  // Alavont display name (internal)
@@ -1371,7 +1395,6 @@ const CashCloseoutBody = z.object({
   amountTendered: z.union([z.string().regex(/^\d{1,7}(\.\d{1,2})?$/), z.number().finite().nonnegative()]),
   idempotencyKey: z.string().trim().min(8).max(120),
   internalNote: z.string().trim().max(500).optional(),
-  generalQueueSessionId: z.number().int().positive().optional(),
   supervisorOverride: z.boolean().default(false),
 }).strict();
 
@@ -1394,7 +1417,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
   const canOverride = ["supervisor", "admin", "global_admin"].includes(role);
   if (parsed.data.supervisorOverride && !canOverride) { res.status(403).json({ error: "Supervisor override permission is required" }); return; }
 
-  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "CASH_CLOSEOUT_ATTEMPTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", queueContext: parsed.data.generalQueueSessionId ? "general_queue" : "resolved_server_side", supervisorOverride: parsed.data.supervisorOverride }, ipAddress: req.ip });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "CASH_CLOSEOUT_ATTEMPTED", resourceType: "order", resourceId: String(orderId), metadata: { paymentMethod: "cash", queueContext: "resolved_server_side", supervisorOverride: parsed.data.supervisorOverride }, ipAddress: req.ip });
 
   const outcome = await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${orderId})`);
@@ -1423,33 +1446,25 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     let locationId: number | null;
     const assignedToActor = order.assignedCsrUserId === actor.id;
 
-    if (order.assignedShiftId != null) {
-      [shift] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, order.assignedShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
-      if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId })) return { status: 409, error: "The assigned CSR shift is no longer an eligible cash session" } as const;
-      if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Only the assigned CSR may close this order for cash" } as const;
-      boxSlug = shift.boxAssignmentId ?? "";
-      if (!boxSlug) return { status: 409, error: "The active CSR shift has no authorized register" } as const;
-      const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.slug, boxSlug), eq(csrBoxesTable.isActive, true))).limit(1);
-      if (!box) return { status: 409, error: "The active CSR register is unavailable" } as const;
-      const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, box.id), eq(inventoryLocationsTable.isActive, true))).limit(1);
-      locationId = location?.id ?? null;
-    } else {
+    const openSessions = await tx.select().from(generalQueueCashSessionsTable).where(and(
+      eq(generalQueueCashSessionsTable.tenantId, tenantId),
+      eq(generalQueueCashSessionsTable.status, "open"),
+    )).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(2);
+
+    if (openSessions.length > 1) {
+      return { status: 409, error: "Multiple General Queue cash sessions are active; resolve the location configuration before accepting cash" } as const;
+    }
+
+    if (openSessions.length === 1) {
+      [session] = openSessions;
       if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Claim this General Queue order before accepting cash" } as const;
-      const sessionFilters = [eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")];
-      if (parsed.data.generalQueueSessionId) sessionFilters.push(eq(generalQueueCashSessionsTable.id, parsed.data.generalQueueSessionId));
-      const sessions = await tx.select().from(generalQueueCashSessionsTable).where(and(...sessionFilters)).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(parsed.data.generalQueueSessionId ? 1 : 2);
-      if (!parsed.data.generalQueueSessionId && sessions.length > 1) return { status: 409, error: "Select the General Queue cash session for this location" } as const;
-      [session] = sessions;
-      if (!session) return { status: 409, error: "A General Queue cash session must be opened before accepting cash.", action: canOverride ? "open_general_queue_cash_session" : undefined } as const;
-      if (!parsed.data.supervisorOverride) {
-        const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
-          eq(generalQueueCashSessionParticipantsTable.tenantId, tenantId),
-          eq(generalQueueCashSessionParticipantsTable.sessionId, session.id),
-          eq(generalQueueCashSessionParticipantsTable.userId, actor.id),
-          isNull(generalQueueCashSessionParticipantsTable.leftAt),
-        )).limit(1);
-        if (!participant) return { status: 403, error: "Join the active General Queue cash session before accepting cash" } as const;
-      }
+      const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
+        eq(generalQueueCashSessionParticipantsTable.tenantId, tenantId),
+        eq(generalQueueCashSessionParticipantsTable.sessionId, session.id),
+        eq(generalQueueCashSessionParticipantsTable.userId, actor.id),
+        isNull(generalQueueCashSessionParticipantsTable.leftAt),
+      )).limit(1);
+      if (!participant) return { status: 403, error: "Join the active General Queue cash session before accepting cash" } as const;
       let box: typeof csrBoxesTable.$inferSelect | undefined;
       if (session.registerBoxId != null) {
         [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, session.registerBoxId), eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.isActive, true))).limit(1);
@@ -1457,8 +1472,30 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       }
       boxSlug = box?.slug ?? `general-queue-location-${session.locationId}`;
       locationId = session.locationId;
+    } else {
+      [shift] = await tx.select().from(labTechShiftsTable).where(and(
+        eq(labTechShiftsTable.techId, actor.id),
+        eq(labTechShiftsTable.tenantId, tenantId),
+        eq(labTechShiftsTable.status, "active"),
+      )).orderBy(desc(labTechShiftsTable.clockedInAt)).limit(1);
+      if (!shift || !isShiftOrderRoutable({ ...shift, expectedTenantId: tenantId })) return { status: 409, error: "Check out an active CSR box before accepting cash" } as const;
+      if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Only the assigned CSR may close this order for cash" } as const;
+      if (order.assignedShiftId != null && order.assignedShiftId !== shift.id) return { status: 403, error: "This order belongs to another CSR box" } as const;
+      boxSlug = shift.boxAssignmentId ?? "";
+      if (!boxSlug) return { status: 409, error: "The active CSR shift has no authorized register" } as const;
+      const [box] = await tx.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.tenantId, tenantId), eq(csrBoxesTable.slug, boxSlug), eq(csrBoxesTable.isActive, true))).limit(1);
+      if (!box) return { status: 409, error: "The active CSR register is unavailable" } as const;
+      const [location] = await tx.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, box.id), eq(inventoryLocationsTable.isActive, true))).limit(1);
+      locationId = location?.id ?? null;
     }
 
+    const now = new Date();
+    const [updated] = await tx.update(ordersTable).set({
+      paymentStatus: "paid", paymentMethod: "cash", selectedPaymentMethod: "cash",
+      paymentToken: null, status: "completed", fulfillmentStatus: "completed",
+      completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
+    }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
+    if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
     const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
       tenantId, orderId, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null,
       csrUserId: actor.id, actorUserId: actor.id, locationId, boxAssignmentId: boxSlug,
@@ -1471,13 +1508,6 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     } else if (session) {
       await tx.update(generalQueueCashSessionsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${generalQueueCashSessionsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${generalQueueCashSessionsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(dueCents / 100).toFixed(2)}::numeric))::json` }).where(eq(generalQueueCashSessionsTable.id, session.id));
     }
-    const now = new Date();
-    const [updated] = await tx.update(ordersTable).set({
-      paymentStatus: "paid", paymentMethod: "cash", selectedPaymentMethod: "cash",
-      paymentToken: null, status: "completed", fulfillmentStatus: "completed",
-      completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
-    }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
-    if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
     await tx.insert(auditLogsTable).values({
       tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
       action: "CASH_CLOSEOUT_COMPLETED", resourceType: "order", resourceId: String(orderId),

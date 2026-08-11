@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installDevelopmentCloudflareAccess } from "./cloudflare-access";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "https://myorder.fun";
 
@@ -28,23 +29,31 @@ const credentials: Record<Role, { email: string; password: string; statePath: st
 };
 
 async function fillFirstVisible(page: Page, selectors: string[], value: string) {
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.fill(value);
-      return;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    for (const selector of selectors) {
+      const locator = page.locator(selector).first();
+      if (await locator.isVisible().catch(() => false)) {
+        await locator.fill(value);
+        return;
+      }
     }
+    await page.waitForTimeout(250);
   }
   throw new Error(`No visible input found for ${selectors.join(", ")}`);
 }
 
 async function clickFirstVisible(page: Page, selectors: string[]) {
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    if (await locator.isVisible().catch(() => false)) {
-      await locator.click();
-      return;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    for (const selector of selectors) {
+      const locator = page.locator(selector).first();
+      if (await locator.isVisible().catch(() => false)) {
+        await locator.click();
+        return;
+      }
     }
+    await page.waitForTimeout(250);
   }
   throw new Error(`No visible button/link found for ${selectors.join(", ")}`);
 }
@@ -54,7 +63,7 @@ async function clerkLogin(page: Page, role: Role) {
   expect(email, `${role} email env var is required`).toBeTruthy();
   expect(password, `${role} password env var is required`).toBeTruthy();
 
-  await page.goto(`${baseURL}/login`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${baseURL}/sign-in`, { waitUntil: "domcontentloaded" });
   await fillFirstVisible(page, [
     'input[name="identifier"]',
     'input[name="email"]',
@@ -82,8 +91,10 @@ async function clerkLogin(page: Page, role: Role) {
 }
 
 test("authenticate Clerk sessions for admin, CSR, supervisor, and customer", async ({ browser }) => {
+  test.setTimeout(180_000);
   for (const role of ["admin", "csr", "supervisor", "customer"] as Role[]) {
     const context = await browser.newContext();
+    await installDevelopmentCloudflareAccess(context, baseURL);
     const page = await context.newPage();
     await clerkLogin(page, role);
     await context.close();

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
+import { legacyDev0038, validateAppliedLineage } from "./migration-lineage.js";
 
 const { Pool } = pg;
 
@@ -51,6 +52,11 @@ const historicalPath = resolve(
   migrationsDir,
   "meta",
   "_historical_migrations.json",
+);
+const legacyDev0038ArtifactPath = resolve(
+  dbRoot,
+  "migration-lineage",
+  "0038_general_queue_cash_sessions.legacy-dev.sql",
 );
 
 function fail(message: string): never {
@@ -144,6 +150,12 @@ function loadAndValidateInventory(journalTags: Set<string>): HistoricalEntry[] {
 }
 
 function loadJournal(): LocalMigration[] {
+  if (
+    !existsSync(legacyDev0038ArtifactPath) ||
+    fileHash(legacyDev0038ArtifactPath) !== legacyDev0038.hash
+  ) {
+    fail("historical DEV 0038 lineage artifact is missing or changed");
+  }
   const journal = JSON.parse(readFileSync(journalPath, "utf8")) as Journal;
   if (journal.version !== "7" || journal.dialect !== "postgresql") {
     fail(`unsupported journal format ${journal.version}/${journal.dialect}`);
@@ -236,30 +248,81 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
           )
         ).rows
       : [];
-    await client.query("COMMIT");
+    const { legacyIndices } = validateAppliedLineage(local, applied);
 
-    if (applied.length > local.length) {
-      fail(
-        `database has ${applied.length} migrations but the journal has only ${local.length}`,
-      );
-    }
-
-    for (const [index, row] of applied.entries()) {
-      const expected = local[index];
-      if (
-        row.hash !== expected.hash ||
-        row.created_at !== String(expected.when)
-      ) {
+    if (legacyIndices.has(legacyDev0038.index)) {
+      const reconciled = await client.query<{ healthy: boolean }>(`
+        SELECT
+          to_regclass('public.general_queue_cash_sessions') IS NOT NULL
+          AND to_regclass('public.general_queue_cash_session_participants') IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='general_queue_cash_sessions'
+              AND column_name='register_box_id' AND is_nullable='YES'
+          )
+          AND 3 = (
+            SELECT count(*) FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='general_queue_cash_sessions'
+              AND column_name IN ('open_idempotency_key','close_idempotency_key','discrepancy_reason')
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='admin_settings'
+              AND column_name='cash_discrepancy_reason_threshold'
+              AND is_nullable='NO' AND column_default='0'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='general_queue_cash_session_participants'
+              AND column_name='tenant_id' AND is_nullable='NO'
+          )
+          AND to_regclass('public.general_queue_cash_sessions_open_location_uq') IS NOT NULL
+          AND to_regclass('public.general_queue_cash_sessions_open_idempotency_uq') IS NOT NULL
+          AND to_regclass('public.general_queue_cash_sessions_close_idempotency_uq') IS NOT NULL
+          AND to_regclass('public.gq_participants_tenant_session_active_idx') IS NOT NULL
+          AND to_regclass('public.general_queue_cash_sessions_open_register_uq') IS NULL
+          AND NOT EXISTS (
+            SELECT required.name
+            FROM unnest(ARRAY[
+              'users_tenant_id_id_unique',
+              'inventory_locations_tenant_id_id_unique',
+              'csr_boxes_tenant_id_id_unique',
+              'general_queue_cash_sessions_tenant_id_id_unique',
+              'gq_sessions_tenant_location_fk',
+              'gq_sessions_tenant_register_box_fk',
+              'gq_sessions_tenant_opened_by_user_fk',
+              'gq_sessions_tenant_closed_by_user_fk',
+              'gq_participants_tenant_session_fk',
+              'gq_participants_tenant_user_fk',
+              'gq_participants_tenant_joined_by_user_fk',
+              'cash_ledger_tenant_gq_session_fk',
+              'cash_ledger_tenant_actor_user_fk',
+              'cash_ledger_tenant_location_fk'
+            ]) AS required(name)
+            WHERE NOT EXISTS (
+              SELECT 1 FROM pg_constraint WHERE conname=required.name AND convalidated
+            )
+          ) AS healthy
+      `);
+      if (reconciled.rows[0]?.healthy !== true) {
         fail(
-          `database row ${index + 1} does not match journal entry ${expected.tag}; refusing to migrate`,
+          "historical DEV 0038 lineage lacks the required reconciled post-0039 schema",
         );
       }
+      console.log(
+        `[migration-ledger] HISTORICAL-LINEAGE ${legacyDev0038.tag} ` +
+          `sha256=${legacyDev0038.hash} reconciled-by=${legacyDev0038.reconciliationTag}`,
+      );
     }
+    await client.query("COMMIT");
 
     for (const [index, migration] of local.entries()) {
       const state = index < applied.length ? "APPLIED" : "PENDING";
+      const lineage = legacyIndices.has(index)
+        ? ` historical-sha256=${legacyDev0038.hash}`
+        : "";
       console.log(
-        `[migration-ledger] ${state} ${migration.tag} sha256=${migration.hash}`,
+        `[migration-ledger] ${state} ${migration.tag} sha256=${migration.hash}${lineage}`,
       );
     }
     console.log(

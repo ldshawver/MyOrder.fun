@@ -3,6 +3,16 @@ import { useAuth } from "@clerk/react";
 import { Loader2, Save, RefreshCw, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import RegisteredPrintAdmin from "./registered-print";
+
+type ReceiptTab = "reprint" | "templates" | "printers" | "routing" | "test";
+const RECEIPT_TABS: Array<{ key: ReceiptTab; label: string }> = [
+  { key: "reprint", label: "Reprint Receipts" },
+  { key: "templates", label: "Templates" },
+  { key: "printers", label: "Printers" },
+  { key: "routing", label: "Routing" },
+  { key: "test", label: "Test Print" },
+];
 
 type ReceiptSettings = {
   brandName: string;
@@ -39,6 +49,21 @@ export default function AdminReceipts() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [preview, setPreview] = useState<string>("");
   const [previewing, setPreviewing] = useState(false);
+  const [activeTab, setActiveTab] = useState<ReceiptTab>(() => {
+    const requested = new URLSearchParams(window.location.search).get(
+      "tab",
+    ) as ReceiptTab | null;
+    return RECEIPT_TABS.some((tab) => tab.key === requested)
+      ? requested!
+      : "reprint";
+  });
+
+  function selectTab(tab: ReceiptTab) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", tab);
+    window.history.replaceState(window.history.state, "", url);
+    setActiveTab(tab);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,7 +75,9 @@ export default function AdminReceipts() {
       });
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Failed to load settings (HTTP ${res.status}): ${txt.slice(0, 200)}`);
+        throw new Error(
+          `Failed to load settings (HTTP ${res.status}): ${txt.slice(0, 200)}`,
+        );
       }
       const data = await res.json();
       const s = data.settings ?? {};
@@ -73,7 +100,9 @@ export default function AdminReceipts() {
     }
   }, [getToken]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   async function save() {
     setSaving(true);
@@ -82,16 +111,21 @@ export default function AdminReceipts() {
       const token = await getToken();
       const res = await fetch("/api/print/settings", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(settings),
       });
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Save failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
+        throw new Error(
+          `Save failed (HTTP ${res.status}): ${txt.slice(0, 200)}`,
+        );
       }
       const data = await res.json();
       const s = data.settings ?? {};
-      setSettings(prev => ({
+      setSettings((prev) => ({
         ...prev,
         brandName: s.brandName ?? prev.brandName,
         footerMessage: s.footerMessage ?? prev.footerMessage,
@@ -101,7 +135,8 @@ export default function AdminReceipts() {
         showDiscreetNotice: Boolean(s.showDiscreetNotice),
         autoPrintReceipts: Boolean(s.autoPrintReceipts),
         autoPrintLabels: Boolean(s.autoPrintLabels),
-        receiptTemplateStyle: s.receiptTemplateStyle ?? prev.receiptTemplateStyle,
+        receiptTemplateStyle:
+          s.receiptTemplateStyle ?? prev.receiptTemplateStyle,
         labelTemplateStyle: s.labelTemplateStyle ?? prev.labelTemplateStyle,
       }));
       setSavedAt(Date.now());
@@ -119,12 +154,17 @@ export default function AdminReceipts() {
       const token = await getToken();
       const res = await fetch("/api/print/preview/receipt", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({}),
       });
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Preview failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
+        throw new Error(
+          `Preview failed (HTTP ${res.status}): ${txt.slice(0, 200)}`,
+        );
       }
       setPreview(await res.text());
     } catch (e: unknown) {
@@ -134,8 +174,11 @@ export default function AdminReceipts() {
     }
   }
 
-  function update<K extends keyof ReceiptSettings>(key: K, value: ReceiptSettings[K]) {
-    setSettings(prev => ({ ...prev, [key]: value }));
+  function update<K extends keyof ReceiptSettings>(
+    key: K,
+    value: ReceiptSettings[K],
+  ) {
+    setSettings((prev) => ({ ...prev, [key]: value }));
   }
 
   if (loading) {
@@ -147,138 +190,287 @@ export default function AdminReceipts() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6" data-testid="page-admin-receipts">
+    <div
+      className="max-w-4xl mx-auto p-6 space-y-6"
+      data-testid="page-admin-receipts"
+    >
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold">Receipts & Printers</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Centralized receipt templates, reprint receipt preview, printer management, routing, and test-print configuration. Printer integration errors are shown clearly when hardware is not configured.
+            Centralized receipt templates, reprint receipt preview, printer
+            management, routing, and test-print configuration. Printer
+            integration errors are shown clearly when hardware is not
+            configured.
           </p>
         </div>
         <div className="flex items-center gap-2">
           {savedAt && <span className="text-xs text-green-400">Saved</span>}
-          <Button onClick={load} variant="outline" size="sm" className="gap-1.5 rounded-xl" data-testid="button-receipts-reload">
+          <Button
+            onClick={load}
+            variant="outline"
+            size="sm"
+            className="gap-1.5 rounded-xl"
+            data-testid="button-receipts-reload"
+          >
             <RefreshCw size={12} /> Reload
           </Button>
-          <Button onClick={save} disabled={saving} size="sm" className="gap-1.5 rounded-xl" data-testid="button-receipts-save">
-            {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-            {saving ? "Saving..." : "Save"}
-          </Button>
+          {(activeTab === "templates" || activeTab === "routing") && (
+            <Button
+              onClick={save}
+              disabled={saving}
+              size="sm"
+              className="gap-1.5 rounded-xl"
+              data-testid="button-receipts-save"
+            >
+              {saving ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Save size={12} />
+              )}
+              {saving ? "Saving..." : "Save"}
+            </Button>
+          )}
         </div>
       </div>
 
       {error && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-3 text-sm" data-testid="text-receipts-error">
+        <div
+          className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-3 text-sm"
+          data-testid="text-receipts-error"
+        >
           {error}
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs" data-testid="receipts-printers-tabs">
-        {['Reprint Receipts', 'Templates', 'Printers', 'Routing', 'Test Print'].map((label) => (
-          <div key={label} className="rounded-lg border border-border/40 bg-background/50 px-3 py-2 text-center font-semibold">{label}</div>
+      <div
+        className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs"
+        data-testid="receipts-printers-tabs"
+        role="tablist"
+        aria-label="Receipt and printer administration"
+      >
+        {RECEIPT_TABS.map(({ key, label }) => (
+          <button
+            type="button"
+            key={key}
+            onClick={() => selectTab(key)}
+            role="tab"
+            aria-selected={activeTab === key}
+            aria-controls={`panel-receipts-${key}`}
+            className={`rounded-lg border px-3 py-2 text-center font-semibold ${
+              activeTab === key
+                ? "border-primary/50 bg-primary/10 text-primary"
+                : "border-border/40 bg-background/50"
+            }`}
+            data-testid={`tab-receipts-${key}`}
+          >
+            {label}
+          </button>
         ))}
       </div>
 
-      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 p-3 text-sm" data-testid="text-printer-configuration-warning">
-        Printer hardware must be configured before live printing or routing can run. Use Preview/Test Print to verify templates and clear setup errors before enabling auto-print.
-      </div>
+      {activeTab === "templates" && (
+        <div
+          id="panel-receipts-templates"
+          role="tabpanel"
+          className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
+          data-testid="panel-receipts-templates"
+        >
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+              Brand name (header)
+            </label>
+            <Input
+              value={settings.brandName}
+              onChange={(e) => update("brandName", e.target.value)}
+              placeholder="e.g. Alavont"
+              data-testid="input-receipt-brand"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+              Footer message
+            </label>
+            <Input
+              value={settings.footerMessage}
+              onChange={(e) => update("footerMessage", e.target.value)}
+              placeholder="e.g. Thank you for your order!"
+              data-testid="input-receipt-footer"
+            />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                Paper width
+              </label>
+              <select
+                value={settings.paperWidth}
+                onChange={(e) => update("paperWidth", e.target.value)}
+                className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+                data-testid="select-receipt-paper-width"
+              >
+                <option value="58mm">58mm</option>
+                <option value="80mm">80mm</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                Receipt template
+              </label>
+              <select
+                value={settings.receiptTemplateStyle}
+                onChange={(e) => update("receiptTemplateStyle", e.target.value)}
+                className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+                data-testid="select-receipt-template"
+              >
+                <option value="clean">Clean wordmark</option>
+                <option value="classic">Classic receipt</option>
+                <option value="compact">Compact no-logo</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                Label template
+              </label>
+              <select
+                value={settings.labelTemplateStyle}
+                onChange={(e) => update("labelTemplateStyle", e.target.value)}
+                className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
+                data-testid="select-label-template"
+              >
+                <option value="thank_you_personalized">
+                  Thank-you sticker + customer name
+                </option>
+              </select>
+            </div>
+          </div>
 
-      <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4">
-        <div>
-          <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Brand name (header)</label>
-          <Input
-            value={settings.brandName}
-            onChange={e => update("brandName", e.target.value)}
-            placeholder="e.g. Alavont"
-            data-testid="input-receipt-brand"
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+            <ToggleRow
+              label="Include logo"
+              checked={settings.includeLogo}
+              onChange={(v) => update("includeLogo", v)}
+              testId="toggle-receipt-logo"
+            />
+            <ToggleRow
+              label="Show operator name"
+              checked={settings.includeOperatorName}
+              onChange={(v) => update("includeOperatorName", v)}
+              testId="toggle-receipt-operator"
+            />
+            <ToggleRow
+              label="Discreet packaging notice"
+              checked={settings.showDiscreetNotice}
+              onChange={(v) => update("showDiscreetNotice", v)}
+              testId="toggle-receipt-discreet"
+            />
+            <ToggleRow
+              label="Auto-print receipts on payment"
+              checked={settings.autoPrintReceipts}
+              onChange={(v) => update("autoPrintReceipts", v)}
+              testId="toggle-receipt-autoprint"
+            />
+            <ToggleRow
+              label="Auto-print delivery thank-you labels"
+              checked={settings.autoPrintLabels}
+              onChange={(v) => update("autoPrintLabels", v)}
+              testId="toggle-label-autoprint"
+            />
+          </div>
+          <div className="rounded-lg border border-border/40 bg-background/40 p-3 flex items-center gap-3">
+            <img
+              src="/alavont-receipt-logo.png"
+              alt="Alavont Therapeutics receipt logo"
+              className="h-16 w-16 object-contain bg-black rounded-md border border-border/30"
+            />
+            <div className="text-xs text-muted-foreground leading-relaxed">
+              This image remains the brand reference, while thermal receipt text
+              now uses a clean centered wordmark for reliable 58mm/80mm
+              printing. Delivery labels use the thank-you sticker template with
+              the customer's first name superimposed.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "routing" && (
+        <div
+          id="panel-receipts-routing"
+          role="tabpanel"
+          className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
+          data-testid="panel-receipts-routing"
+        >
+          <div>
+            <h2 className="text-sm font-semibold">Automatic print routing</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              General printers use tenant-owned profiles. Location printers
+              require an authoritative active-shift assignment.
+            </p>
+          </div>
+          <ToggleRow
+            label="Auto-print receipts on payment"
+            checked={settings.autoPrintReceipts}
+            onChange={(v) => update("autoPrintReceipts", v)}
+            testId="toggle-routing-receipt-autoprint"
+          />
+          <ToggleRow
+            label="Auto-print delivery thank-you labels"
+            checked={settings.autoPrintLabels}
+            onChange={(v) => update("autoPrintLabels", v)}
+            testId="toggle-routing-label-autoprint"
           />
         </div>
-        <div>
-          <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Footer message</label>
-          <Input
-            value={settings.footerMessage}
-            onChange={e => update("footerMessage", e.target.value)}
-            placeholder="e.g. Thank you for your order!"
-            data-testid="input-receipt-footer"
-          />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Paper width</label>
-            <select
-              value={settings.paperWidth}
-              onChange={e => update("paperWidth", e.target.value)}
-              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
-              data-testid="select-receipt-paper-width"
-            >
-              <option value="58mm">58mm</option>
-              <option value="80mm">80mm</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Receipt template</label>
-            <select
-              value={settings.receiptTemplateStyle}
-              onChange={e => update("receiptTemplateStyle", e.target.value)}
-              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
-              data-testid="select-receipt-template"
-            >
-              <option value="clean">Clean wordmark</option>
-              <option value="classic">Classic receipt</option>
-              <option value="compact">Compact no-logo</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Label template</label>
-            <select
-              value={settings.labelTemplateStyle}
-              onChange={e => update("labelTemplateStyle", e.target.value)}
-              className="w-full h-10 rounded-lg bg-background/60 border border-border/40 px-3 text-sm"
-              data-testid="select-label-template"
-            >
-              <option value="thank_you_personalized">Thank-you sticker + customer name</option>
-            </select>
-          </div>
-        </div>
+      )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-          <ToggleRow label="Include logo" checked={settings.includeLogo}
-            onChange={v => update("includeLogo", v)} testId="toggle-receipt-logo" />
-          <ToggleRow label="Show operator name" checked={settings.includeOperatorName}
-            onChange={v => update("includeOperatorName", v)} testId="toggle-receipt-operator" />
-          <ToggleRow label="Discreet packaging notice" checked={settings.showDiscreetNotice}
-            onChange={v => update("showDiscreetNotice", v)} testId="toggle-receipt-discreet" />
-          <ToggleRow label="Auto-print receipts on payment" checked={settings.autoPrintReceipts}
-            onChange={v => update("autoPrintReceipts", v)} testId="toggle-receipt-autoprint" />
-          <ToggleRow label="Auto-print delivery thank-you labels" checked={settings.autoPrintLabels}
-            onChange={v => update("autoPrintLabels", v)} testId="toggle-label-autoprint" />
-        </div>
-        <div className="rounded-lg border border-border/40 bg-background/40 p-3 flex items-center gap-3">
-          <img src="/alavont-receipt-logo.png" alt="Alavont Therapeutics receipt logo" className="h-16 w-16 object-contain bg-black rounded-md border border-border/30" />
-          <div className="text-xs text-muted-foreground leading-relaxed">
-            This image remains the brand reference, while thermal receipt text now uses a clean centered wordmark for reliable 58mm/80mm printing. Delivery labels use the thank-you sticker template with the customer's first name superimposed.
+      {activeTab === "reprint" && (
+        <div
+          id="panel-receipts-reprint"
+          role="tabpanel"
+          className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold">Preview</div>
+              <div className="text-xs text-muted-foreground">
+                Renders a sample receipt using the current saved settings.
+              </div>
+            </div>
+            <Button
+              onClick={generatePreview}
+              disabled={previewing}
+              variant="outline"
+              size="sm"
+              className="gap-1.5 rounded-xl"
+              data-testid="button-receipts-preview"
+            >
+              {previewing ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Eye size={12} />
+              )}
+              {previewing ? "Rendering..." : "Render preview"}
+            </Button>
           </div>
+          {preview && (
+            <pre
+              className="text-xs font-mono bg-background/80 border border-border/40 rounded-lg p-4 whitespace-pre overflow-x-auto"
+              data-testid="text-receipts-preview"
+            >
+              {preview}
+            </pre>
+          )}
         </div>
-      </div>
+      )}
 
-      <div className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold">Preview</div>
-            <div className="text-xs text-muted-foreground">Renders a sample receipt using the current saved settings.</div>
-          </div>
-          <Button onClick={generatePreview} disabled={previewing} variant="outline" size="sm" className="gap-1.5 rounded-xl" data-testid="button-receipts-preview">
-            {previewing ? <Loader2 size={12} className="animate-spin" /> : <Eye size={12} />}
-            {previewing ? "Rendering..." : "Render preview"}
-          </Button>
+      {(activeTab === "printers" || activeTab === "test") && (
+        <div
+          id={`panel-receipts-${activeTab}`}
+          role="tabpanel"
+          data-testid={`panel-receipts-${activeTab}`}
+        >
+          <RegisteredPrintAdmin mode={activeTab} />
         </div>
-        {preview && (
-          <pre
-            className="text-xs font-mono bg-background/80 border border-border/40 rounded-lg p-4 whitespace-pre overflow-x-auto"
-            data-testid="text-receipts-preview"
-          >{preview}</pre>
-        )}
-      </div>
+      )}
     </div>
   );
 }
@@ -300,7 +492,7 @@ function ToggleRow({
       <input
         type="checkbox"
         checked={checked}
-        onChange={e => onChange(e.target.checked)}
+        onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 accent-primary"
         data-testid={testId}
       />

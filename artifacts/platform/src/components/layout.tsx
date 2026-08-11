@@ -1,8 +1,8 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
-import { useClerk } from "@clerk/react";
+import { useAuth, useClerk } from "@clerk/react";
 import { useBrand } from "@/contexts/BrandContext";
 import { 
   FlaskConical, 
@@ -63,6 +63,7 @@ function roleCanSee(roles: string[], userRole: string): boolean {
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
   const { signOut } = useClerk();
+  const { getToken } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     navigation: true,
@@ -88,6 +89,25 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
+  const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
+  const [queueStatus, setQueueStatus] = useState<{
+    activeShift: { clockedInAt: string } | null;
+    activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
+    queueCounts: { defaultQueue: number };
+  } | null>(null);
+
+  useEffect(() => {
+    if (!showOperationalQueueStatus) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch("/api/shift-queue/status", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !cancelled) setQueueStatus(await response.json());
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [getToken, showOperationalQueueStatus]);
 
   const navSections: NavSection[] = [
     {
@@ -97,11 +117,15 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
-          label: isCustomer ? "Order" : "Orders",
-          mobileLabel: isCustomer ? "Order" : "Orders",
+          label: isCustomer ? "My Order" : "Orders",
+          mobileLabel: isCustomer ? "My Order" : "Orders",
           icon: ShoppingCart,
           roles: ALL_ROLES,
           mobileShow: true,
+          children: isCustomer ? [
+            { href: "/orders", label: "My Orders", icon: ListTodo, roles: ALL_ROLES },
+            { href: "/orders/new", label: "Cart & Checkout", icon: ShoppingCart, roles: ALL_ROLES },
+          ] : undefined,
         },
         {
           href: "/ai-concierge",
@@ -487,6 +511,23 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
+              {showOperationalQueueStatus && queueStatus && (
+                <div className={`mb-5 rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${queueStatus.activeShift ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`} data-testid="queue-status-banner">
+                  <div>
+                    <div className="font-semibold" data-testid="queue-status-title">
+                      {queueStatus.activeShift ? "Active CSR" : "General Queue Active"}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {queueStatus.activeShift
+                        ? `${`${queueStatus.activeCsr?.firstName ?? ""} ${queueStatus.activeCsr?.lastName ?? ""}`.trim() || queueStatus.activeCsr?.email || "Assigned CSR"} · active since ${new Date(queueStatus.activeShift.clockedInAt).toLocaleString()}`
+                        : `${queueStatus.queueCounts.defaultQueue} open/unassigned order${queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}`}
+                    </div>
+                  </div>
+                  <Link href={queueStatus.activeShift ? "/staff" : "/staff?view=general"} className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
+                    {queueStatus.activeShift ? "View Shift/Queue" : "View General Queue"}
+                  </Link>
+                </div>
+              )}
               {children}
             </motion.div>
           </AnimatePresence>

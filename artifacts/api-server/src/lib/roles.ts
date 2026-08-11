@@ -114,6 +114,9 @@ export const PERMISSIONS = [
   "queue.view", "queue.claim", "queue.manage",
   "cash_sessions.view", "cash_sessions.join", "cash_sessions.manage",
   "cash_closeout.own", "cash_closeout.override",
+  "inventory.view", "inventory.manage",
+  "shift_settings.view", "shift_settings.manage",
+  "printers.view", "printers.manage",
   "customers.view", "customers.create", "customers.update", "customers.delete",
   "feedback.submit", "feedback.admin_view", "feedback.review", "feedback.archive", "feedback.create_ticket",
   "schedules.view_self", "schedules.view_team", "schedules.view_tenant", "schedules.create", "schedules.update", "schedules.approve", "schedules.publish",
@@ -132,11 +135,13 @@ const csrExtra = [
   "customers.view", "customers.create", "customers.update", "orders.create", "orders.update",
   "schedules.view_team", "reports.view_team", "queue.view", "queue.claim",
   "cash_sessions.view", "cash_sessions.join", "cash_closeout.own",
+  "inventory.view", "shift_settings.view",
 ] satisfies Permission[];
 const supervisorExtra = [
   "settings.view", "users.view_team", "users.manage_team", "schedules.create", "schedules.update",
   "schedules.approve", "timeclock.view_team", "timeclock.approve_team", "queue.manage",
-  "cash_sessions.manage", "cash_closeout.override",
+  "cash_sessions.manage", "cash_closeout.override", "inventory.manage",
+  "shift_settings.manage", "printers.view",
 ] satisfies Permission[];
 const adminExtra = PERMISSIONS.filter((p) => !p.startsWith("platform.")) as Permission[];
 

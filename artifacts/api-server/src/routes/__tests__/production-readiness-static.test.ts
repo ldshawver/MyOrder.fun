@@ -5,6 +5,7 @@ import { join } from "node:path";
 const root = join(__dirname, "../..");
 const api = (name: string) => readFileSync(join(root, "routes", name), "utf8");
 const page = (name: string) => readFileSync(join(root, "../../platform/src/pages", name), "utf8");
+const component = (name: string) => readFileSync(join(root, "../../platform/src/components", name), "utf8");
 
 describe("production readiness workflow coverage", () => {
   it("uses one canonical role-permissions router with legacy import compatibility", () => {
@@ -15,7 +16,7 @@ describe("production readiness workflow coverage", () => {
 
   it("exposes store-credit checkout UI states and cash closeout controls", () => {
     const orderDetail = page("order-detail.tsx");
-    for (const text of ["Apply Customer Credit", "Remaining Balance", "Partial Customer Credit", "Full Customer Credit", "Cash closeout"]) {
+    for (const text of ["Apply Customer Credit", "Remaining Balance", "Partial Customer Credit", "Full Customer Credit", "Close as Cash Paid"]) {
       expect(orderDetail).toContain(text);
     }
     expect(orderDetail).toContain('/api/payments/${order.id}/apply-credit');
@@ -39,9 +40,23 @@ describe("production readiness workflow coverage", () => {
 
   it("keeps backend cash closeout and stale archive endpoints available", () => {
     const orders = api("orders.ts");
-    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
+    expect(orders).toContain('paymentMethod: z.literal("cash")');
+    expect(orders).toContain("generalQueueCashSessionsTable");
     expect(orders).toContain('/orders/:id/closeout');
     expect(orders).toContain('/admin/orders/stale-submitted/archive');
     expect(orders).toContain('ORDER_STALE_SUBMITTED_ARCHIVED');
+  });
+
+  it("renders mutually exclusive authoritative queue states for supervisors and managers", () => {
+    const layout = component("layout.tsx");
+    const queue = api("shift-queue.ts");
+    expect(layout).toContain('["global_admin", "admin", "supervisor"].includes(userRole)');
+    expect(layout).toContain("General Queue Active");
+    expect(layout).toContain("Active CSR");
+    expect(layout).toContain("View General Queue");
+    expect(layout).toContain("View Shift/Queue");
+    expect(layout).toContain("/api/shift-queue/status");
+    expect(queue).toContain(': "General Queue Active"');
+    expect(queue).toContain("activeCsr:");
   });
 });

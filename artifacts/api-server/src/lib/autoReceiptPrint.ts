@@ -9,15 +9,8 @@
  * is never blocked by a printer being offline.
  */
 import { eq } from "drizzle-orm";
-import { db, ordersTable, orderItemsTable, printJobsTable, adminSettingsTable } from "@workspace/db";
-import {
-  buildCustomerReceiptBlocks,
-  renderBodyOnly,
-  getLogo,
-  charWidth,
-} from "./print/index";
-import { printReceiptEscPos } from "./escposPrinter";
-import { getSettings } from "./printService";
+import { db, ordersTable, orderItemsTable } from "@workspace/db";
+import { enqueueOrderPrintJobs, getSettings } from "./printService";
 import { logger as _logger } from "./logger";
 
 const log = _logger.child({ module: "autoReceiptPrint" });
@@ -44,86 +37,30 @@ export async function autoReceiptPrint(orderId: number): Promise<void> {
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, orderId));
 
-    const width = charWidth((s.paperWidth as string | undefined) ?? "80mm");
-    const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-
-    let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
-    try {
-      const [adminRow] = await db
-        .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
-        .from(adminSettingsTable)
-        .limit(1);
-      if (adminRow?.receiptLineNameMode) {
-        receiptLineNameMode = adminRow.receiptLineNameMode as typeof receiptLineNameMode;
-      }
-    } catch { /* use default */ }
-
-    const blocks = buildCustomerReceiptBlocks({
-      orderId: order.id,
-      orderNumber: String(order.id),
+    // The canonical tenant-scoped router is the only permitted automatic path.
+    // Never invoke local/system-default CUPS from order completion.
+    await enqueueOrderPrintJobs({
+      id: order.id,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      notes: order.notes,
+      subtotal: String(order.subtotal),
+      tax: String(order.tax),
+      total: String(order.total),
       createdAt: order.createdAt,
-      fulfillmentType: "Pickup",
-      paymentStatus: order.paymentStatus ?? undefined,
-      paymentMethod: (order as Record<string, unknown>).paymentMethod as string | undefined,
-      notes: order.notes ?? undefined,
-      items: items.map((i) => ({
-        name: i.receiptName ?? i.catalogItemName,
-        quantity: i.quantity,
-        unitPrice: parseFloat(String(i.unitPrice)),
-        totalPrice: parseFloat(String(i.totalPrice)),
+      tenantId: order.tenantId,
+      fulfillmentType: order.orderType,
+      shippingAddress: order.shippingAddress,
+      assignedShiftId: order.assignedShiftId,
+      items: items.map((item) => ({
+        quantity: item.quantity,
+        catalogItemName: item.catalogItemName,
+        unitPrice: String(item.unitPrice),
+        totalPrice: String(item.totalPrice),
+        alavontName: item.alavontName,
+        luciferCruzName: item.luciferCruzName,
       })),
-      subtotal: parseFloat(String(order.subtotal)),
-      tax: order.tax ? parseFloat(String(order.tax)) : undefined,
-      total: parseFloat(String(order.total)),
-      logoLines,
-      dualBrandName: (s.brandName as string | undefined) ?? undefined,
-      footerMessage: (s.footerMessage as string | undefined) ?? undefined,
-      showDiscreetNotice: Boolean(s.showDiscreetNotice),
-      showOperatorName: s.includeOperatorName !== false,
     });
-
-    const body = renderBodyOnly(blocks, width);
-    const iKey = `auto:${orderId}:receipt:${Date.now()}`;
-
-    const [job] = await db
-      .insert(printJobsTable)
-      .values({
-        orderId: order.id,
-        printerId: null,
-        jobType: "receipt",
-        status: "queued",
-        idempotencyKey: iKey,
-        renderFormat: "escpos",
-        payloadJson: { orderId, source: "auto", receiptLineNameMode },
-        renderedText: body,
-        operatorUserId: null,
-      })
-      .returning();
-
-    const printerEnabled = process.env.RECEIPT_PRINT_ENABLED === "true";
-    if (!printerEnabled) {
-      await db
-        .update(printJobsTable)
-        .set({ status: "failed", errorMessage: "RECEIPT_PRINT_ENABLED is not true" })
-        .where(eq(printJobsTable.id, job.id));
-      return;
-    }
-
-    try {
-      await printReceiptEscPos(body);
-      await db
-        .update(printJobsTable)
-        .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
-        .where(eq(printJobsTable.id, job.id));
-      log.info({ orderId, jobId: job.id }, "Auto-receipt printed");
-    } catch (printErr) {
-      const msg = (printErr as Error).message;
-      await db
-        .update(printJobsTable)
-        .set({ status: "failed", errorMessage: msg })
-        .where(eq(printJobsTable.id, job.id));
-      log.warn({ orderId, jobId: job.id, err: msg }, "Auto-receipt print failed (order saved)");
-    }
   } catch (err) {
     log.warn({ orderId, err }, "autoReceiptPrint: unexpected error (non-fatal)");
   }

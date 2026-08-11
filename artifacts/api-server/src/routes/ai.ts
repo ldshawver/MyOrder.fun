@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { and, asc, or, like, eq, sql, inArray } from "drizzle-orm";
+import { and, asc, or, ilike, eq, sql, inArray } from "drizzle-orm";
 import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
 import {
   AiConciergeChatBody,
@@ -80,7 +80,7 @@ function mapCatalogItem(i: typeof catalogItemsTable.$inferSelect) {
       ? parseInt(String(i.stockQuantity), 10)
       : undefined,
     isAvailable: i.isAvailable,
-    imageUrl: i.alavontImageUrl ?? i.imageUrl,
+    imageUrl: i.alavontImageUrl ?? i.imageUrl ?? undefined,
     tags: i.tags ?? [],
     metadata: i.metadata,
     createdAt: i.createdAt,
@@ -369,9 +369,9 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
         sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`,
         sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`,
         or(
-              like(catalogItemsTable.alavontName, `%${q}%`),
-          like(catalogItemsTable.alavontCategory, `%${q}%`),
-          like(catalogItemsTable.alavontDescription, `%${q}%`),
+          ilike(catalogItemsTable.alavontName, `%${q}%`),
+          ilike(catalogItemsTable.alavontCategory, `%${q}%`),
+          ilike(catalogItemsTable.alavontDescription, `%${q}%`),
         )
       ))
       .orderBy(asc(catalogItemsTable.alavontName))

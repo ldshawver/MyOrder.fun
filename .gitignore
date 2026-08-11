@@ -68,3 +68,4 @@ client_secret*.json
 artifacts/checkout-conversion-proof/*.png
 artifacts/platform/test-results/
 artifacts/platform/playwright-report/
+artifacts/platform/artifacts/platform/playwright/.auth/

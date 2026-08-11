@@ -23,7 +23,9 @@ const dbState: {
   catalog: Array<Record<string, unknown>>;
   inventoryLocations: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], disclaimerAcceptances: [] };
+  taxSnapshots: Array<Record<string, unknown>>;
+  disclaimerAcceptances: Array<Record<string, unknown>>;
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], disclaimerAcceptances: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -102,7 +104,6 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       .object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })
       .strict(),
     CHECKOUT_TAX_RATE: 0.08,
-    getCheckoutTaxSettings: async () => ({ taxRate: 0.08 }),
     normalizeCheckoutCart: async (items: Array<{ catalogItemId: number; quantity: number }> = [{ catalogItemId: 1, quantity: 1 }]) => (items.length ? items : [{ catalogItemId: 1, quantity: 1 }]).map((item) => ({
         catalog_item_id: item.catalogItemId,
         source_type: "local_mapped",
@@ -138,9 +139,9 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
     computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
       const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
-      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08 };
+      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08, taxMode: "added" };
     },
-    getCheckoutTaxSettings: async () => ({ rate: 0.08 }),
+    getCheckoutTaxSettings: async () => ({ taxRate: 0.08, taxMode: "added" }),
     buildMerchantPayloadLines: () => [],
     buildReceiptLines: () => [],
   };
@@ -175,6 +176,7 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
+  const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -188,6 +190,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
+    if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
     return [];
   }
 
@@ -203,14 +206,41 @@ vi.mock("@workspace/db", () => {
   const select = vi.fn((cols?: Record<string, unknown>) => {
     let pred: Pred = null;
     let target: { __t: string } | null = null;
+    let joinUsers = false;
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: { __t: string }) => { target = t; return chain; });
-    chain.innerJoin = vi.fn(() => chain);
+    chain.innerJoin = vi.fn((t: { __t: string }) => { joinUsers = t.__t === "users"; return chain; });
     chain.where = vi.fn((p: unknown) => {
       pred = (row) => matchesPredicate(row, p);
       return chain;
     });
-    const resolveRows = () => target ? tableFor(target).filter(r => pred ? pred(r) : true) : [];
+    const resolveRows = () => {
+      if (!target) return [];
+      const rows = tableFor(target)
+        .map((row) => {
+          if (!joinUsers || target?.__t !== "shifts") return row;
+          const user = dbState.users.find((candidate) => candidate.id === row.techId) ?? {};
+          return {
+            ...row,
+            userId: row.techId,
+            shiftId: row.id,
+            userTenantId: user.tenantId,
+            userIsActive: user.isActive,
+            userStatus: user.status,
+            role: user.role,
+          };
+        })
+        .filter(r => pred ? pred(r) : true);
+      if (!cols) return rows;
+      if (joinUsers && target.__t === "shifts") {
+        return rows.map((row) => Object.fromEntries(
+          Object.keys(cols).map((alias) => [alias, row[alias]]),
+        ));
+      }
+      return rows.map((row) => Object.fromEntries(
+        Object.entries(cols).map(([alias, column]) => [alias, row[String(column)]]),
+      ));
+    };
     chain.orderBy = vi.fn(() => {
       // orderBy is chainable (e.g. .orderBy().limit()) but also awaitable
       const p = Promise.resolve(resolveRows()) as unknown as Record<string, unknown>;
@@ -221,7 +251,7 @@ vi.mock("@workspace/db", () => {
     chain.groupBy = vi.fn(() => Promise.resolve([]));
     void cols;
     (chain as Record<string, unknown>).then = (resolve: (v: unknown) => unknown) =>
-      resolve(target ? tableFor(target).filter(r => pred ? pred(r) : true) : []);
+      resolve(resolveRows());
     return chain;
   });
 
@@ -266,7 +296,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve()) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -274,6 +304,7 @@ vi.mock("@workspace/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...a) => a),
+  isNull: vi.fn((col) => ({ col, val: null })),
   inArray: vi.fn((col, vals) => ({ col, vals })),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
@@ -358,8 +389,8 @@ beforeEach(() => {
   dbState.orders = [];
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved", tenantId: 1 },
-    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved" },
-    { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
+    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved", isActive: true, tenantId: 1 },
+    { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved", isActive: true, tenantId: 1 },
   ];
   dbState.shifts = [];
   dbState.settings = [{

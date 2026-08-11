@@ -115,7 +115,9 @@ export const labTechShiftsTable = pgTable("lab_tech_shifts", {
   csrDeliveryEarnings: numeric("csr_delivery_earnings", { precision: 10, scale: 2 }).default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("lab_tech_shifts_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 // A General Queue session is an alternative cash-accountability context for
 // orders claimed while no CSR shift is authoritative. It deliberately shares

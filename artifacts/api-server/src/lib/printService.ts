@@ -19,6 +19,7 @@ import {
   printJobAttemptsTable,
   printSettingsTable,
   adminSettingsTable,
+  shiftPrintAssignmentsTable,
 } from "@workspace/db";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { decodeStoredReceiptText, renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
@@ -28,6 +29,7 @@ import {
   selectActiveOperator,
   resolveReceiptPrinters,
   resolveLabelPrinter,
+  resolveExpoPrinter,
 } from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
 import { logger as _logger } from "./logger";
@@ -65,6 +67,9 @@ export async function getSettings() {
 // ── Job Creation ──────────────────────────────────────────────────────────────
 
 export async function createPrintJob(opts: {
+  tenantId: number;
+  locationId?: number | null;
+  shiftId?: number | null;
   orderId: number;
   printerId: number;
   jobType: "order_ticket" | "receipt" | "label";
@@ -79,6 +84,9 @@ export async function createPrintJob(opts: {
   if (existing.length) return existing[0];
 
   const [job] = await db.insert(printJobsTable).values({
+    tenantId: opts.tenantId,
+    locationId: opts.locationId ?? null,
+    shiftId: opts.shiftId ?? null,
     orderId: opts.orderId,
     printerId: opts.printerId,
     jobType: opts.jobType,
@@ -148,6 +156,12 @@ async function dispatchBridge(
 
   // Resolve printer name before the try block so it's accessible in catch
   const printerName = printer.bridgePrinterName ?? printer.name;
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(printerName)) {
+    return {
+      success: false,
+      error: `Invalid or empty bridge queue name "${printerName}"; refusing system-default CUPS fallback`,
+    };
+  }
 
   try {
     const controller = new AbortController();
@@ -184,7 +198,13 @@ async function dispatchBridge(
       text: fullText,
       copies: 1,
     };
-    if (imageBase64) bridgeBody.imageBase64 = imageBase64;
+    if (imageBase64) {
+      bridgeBody.imageBase64 = imageBase64;
+      // The installed Mac label stock and renderer are both exactly 2x2 inches.
+      // Pass the media explicitly so CUPS never uses an unrelated queue default.
+      bridgeBody.media = "Custom.2x2in";
+      bridgeBody.raw = false;
+    }
 
     const res = await fetch(`${printer.bridgeUrl}/print`, {
       method: "POST",
@@ -239,6 +259,7 @@ async function dispatchBridge(
 // ── Attempt Recording ─────────────────────────────────────────────────────────
 
 async function recordAttempt(opts: {
+  tenantId: number;
   jobId: number;
   attemptNumber: number;
   routeUsed: string;
@@ -249,6 +270,7 @@ async function recordAttempt(opts: {
   durationMs?: number;
 }) {
   await db.insert(printJobAttemptsTable).values({
+    tenantId: opts.tenantId,
     printJobId: opts.jobId,
     attemptNumber: opts.attemptNumber,
     routeUsed: opts.routeUsed,
@@ -260,12 +282,25 @@ async function recordAttempt(opts: {
   });
 }
 
+function printerMatchesJobScope(job: PrintJob, printer: PrintPrinter): boolean {
+  return printer.isActive && job.tenantId === printer.tenantId && (job.locationId === null
+    ? printer.routingScope === "general" && printer.locationId === null
+    : printer.routingScope === "location" && printer.locationId === job.locationId);
+}
+
+async function failClosedScopeMismatch(job: PrintJob, printer: PrintPrinter): Promise<boolean> {
+  if (printerMatchesJobScope(job, printer)) return false;
+  await db.update(printJobsTable).set({ status: "failed", errorMessage: "Printer is inactive or outside the job tenant/location scope" }).where(and(eq(printJobsTable.tenantId, job.tenantId), eq(printJobsTable.id, job.id)));
+  return true;
+}
+
 // ── Full Dispatch with Failover ────────────────────────────────────────────────
 
 /**
  * Dispatch a receipt job: ethernet_direct → pi_bridge → mark retrying.
  */
 export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  if (await failClosedScopeMismatch(job, printer)) return;
   await db.update(printJobsTable)
     .set({ status: "sending", lastAttemptAt: new Date() })
     .where(eq(printJobsTable.id, job.id));
@@ -284,6 +319,7 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
   }
 
   await recordAttempt({
+    tenantId: job.tenantId,
     jobId: job.id,
     attemptNumber: attemptBase,
     routeUsed: printer.connectionType,
@@ -319,6 +355,7 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
  * Dispatch a label job via the resolved bridge printer → queue on failure.
  */
 export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  if (await failClosedScopeMismatch(job, printer)) return;
   await db.update(printJobsTable)
     .set({ status: "sending", lastAttemptAt: new Date() })
     .where(eq(printJobsTable.id, job.id));
@@ -330,6 +367,7 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
   const result = await dispatchBridge(job, printer);
 
   await recordAttempt({
+    tenantId: job.tenantId,
     jobId: job.id,
     attemptNumber,
     routeUsed: printer.connectionType,
@@ -362,6 +400,7 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
 
 /** Generic dispatch — routes by jobType then connectionType. */
 export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  if (await failClosedScopeMismatch(job, printer)) return;
   if (job.jobType === "label") {
     return dispatchLabelJob(job, printer);
   }
@@ -389,10 +428,17 @@ export async function enqueueOrderPrintJobs(order: {
     luciferCruzName?: string | null;
   }[];
   customerName?: string;
+  customerFirstName?: string | null;
   fulfillmentType?: string;
   tenantId?: number | null;
   shippingAddress?: string | null;
+  assignedShiftId?: number | null;
 }) {
+  if (!order.tenantId) {
+    pLog.error({ event: "printing_blocked_missing_tenant", orderId: order.id }, "printing failed closed: order has no tenant ownership");
+    return;
+  }
+  const tenantId = order.tenantId;
   const settings = await getSettings();
   if (!settings.autoPrintOrders && !settings.autoPrintReceipts && !settings.autoPrintLabels) return;
 
@@ -401,15 +447,16 @@ export async function enqueueOrderPrintJobs(order: {
   try {
     const [adminSettings] = await db.select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
       .from(adminSettingsTable)
-      .limit(1);
+      .where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
     if (adminSettings?.receiptLineNameMode) {
       receiptLineNameMode = adminSettings.receiptLineNameMode as typeof receiptLineNameMode;
     }
   } catch { /* non-critical — use default */ }
 
   // Resolve operator
-  const operator = await selectActiveOperator();
+  const operator = await selectActiveOperator(tenantId);
   const profile = operator?.profile ?? null;
+  const [orderAssignment] = order.assignedShiftId ? await db.select().from(shiftPrintAssignmentsTable).where(and(eq(shiftPrintAssignmentsTable.tenantId, tenantId), eq(shiftPrintAssignmentsTable.shiftId, order.assignedShiftId))).limit(1) : [];
   const operatorName = operator
     ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email || undefined
     : undefined;
@@ -454,7 +501,8 @@ export async function enqueueOrderPrintJobs(order: {
   };
 
   // ── Receipt ───────────────────────────────────────────────────────────────
-  const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
+  const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
+  const { primary: receiptPrinter } = await resolveReceiptPrinters(profile, routeContext);
 
   if ((settings.autoPrintReceipts || settings.autoPrintOrders) && !receiptPrinter) {
     const renderedText = renderCustomerReceipt(printOrder);
@@ -463,6 +511,7 @@ export async function enqueueOrderPrintJobs(order: {
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
     if (!existing.length) {
       await db.insert(printJobsTable).values({
+        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
         orderId: order.id,
         printerId: null,
         jobType: "customer_receipt",
@@ -487,6 +536,7 @@ export async function enqueueOrderPrintJobs(order: {
     let job = existing[0];
     if (!job) {
       [job] = await db.insert(printJobsTable).values({
+        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
         orderId: order.id,
         printerId: receiptPrinter.id,
         jobType: "customer_receipt",
@@ -504,13 +554,7 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Kitchen ticket ────────────────────────────────────────────────────────
   // Falls back to any active kitchen/expo printer if no profile
-  const kitchenPrinters = settings.autoPrintOrders
-    ? await db.select().from(printPrintersTable)
-        .where(and(
-          eq(printPrintersTable.isActive, true),
-          eq(printPrintersTable.role, "kitchen"),
-        )).limit(3)
-    : [];
+  const kitchenPrinters: PrintPrinter[] = [];
 
   for (const kp of kitchenPrinters) {
     const renderedText = renderKitchenTicket(printOrder);
@@ -520,6 +564,7 @@ export async function enqueueOrderPrintJobs(order: {
 
     if (!existing.length) {
       const [job] = await db.insert(printJobsTable).values({
+        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
         orderId: order.id,
         printerId: kp.id,
         jobType: "expo_ticket",
@@ -536,13 +581,9 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Expo ticket ───────────────────────────────────────────────────────────
   // Expo printers get the same kitchen ticket as a bump-screen / pass station.
-  const expoPrinters = settings.autoPrintOrders
-    ? await db.select().from(printPrintersTable)
-        .where(and(
-          eq(printPrintersTable.isActive, true),
-          eq(printPrintersTable.role, "expo"),
-        )).limit(3)
-    : [];
+  const assignedExpo = settings.autoPrintOrders && routeContext.locationId && routeContext.shiftId
+    ? await resolveExpoPrinter({ tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId }) : null;
+  const expoPrinters = assignedExpo ? [assignedExpo] : [];
 
   for (const ep of expoPrinters) {
     const renderedText = renderKitchenTicket(printOrder);
@@ -552,6 +593,7 @@ export async function enqueueOrderPrintJobs(order: {
 
     if (!existing.length) {
       const [job] = await db.insert(printJobsTable).values({
+        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
         orderId: order.id,
         printerId: ep.id,
         jobType: "expo_ticket",
@@ -583,15 +625,19 @@ export async function enqueueOrderPrintJobs(order: {
 
       // If routing resolver found no bridge profiles, fall back to legacy resolution
       if (!labelPrinter && routingDecision.selectedBridgeProfileId === null && !routingDecision.blockedReason) {
-        labelPrinter = await resolveLabelPrinter(profile);
+        labelPrinter = await resolveLabelPrinter(profile, tenantId);
       }
 
       if (!labelPrinter && routingDecision.blockedReason) {
         // Routing explicitly blocked label (e.g. operator not on Mac network, no Pi label bridge)
         pLog.warn({ event: "label_blocked", orderId: order.id, reason: routingDecision.blockedReason }, "label blocked by routing policy");
       } else if (labelPrinter) {
-        const customerName = order.customerName ?? "Walk-in";
-        const customerFirstName = customerName.trim().split(/\s+/)[0] || "Friend";
+        const customerName = order.customerName ?? "";
+        const { resolveLabelFirstName } = await import("./print/templates/thankYouLabel.js");
+        const customerFirstName = resolveLabelFirstName({
+          canonicalFirstName: order.customerFirstName,
+          validatedFullName: customerName,
+        });
         const labelData = {
           id: order.id,
           customerName,
@@ -608,6 +654,7 @@ export async function enqueueOrderPrintJobs(order: {
 
         if (!existing.length) {
           const [job] = await db.insert(printJobsTable).values({
+            tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
             orderId: order.id,
             printerId: labelPrinter.id,
             jobType: "label",
@@ -649,7 +696,7 @@ export function startPrintWorker() {
       for (const job of retrying) {
         if (!job.printerId) continue;
         const [printer] = await db.select().from(printPrintersTable)
-          .where(eq(printPrintersTable.id, job.printerId)).limit(1);
+          .where(and(eq(printPrintersTable.tenantId, job.tenantId), eq(printPrintersTable.id, job.printerId))).limit(1);
         if (printer) {
           await dispatchJob(job, printer).catch(() => {});
         }

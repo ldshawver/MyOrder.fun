@@ -7,6 +7,7 @@ import {
   inventoryLocationsTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
@@ -205,7 +206,7 @@ router.get(
 // ─── GET /api/admin/inventory/health ─────────────────────────────────────────
 router.get(
   "/admin/inventory/health",
-  requireRole("global_admin", "admin", "supervisor"),
+  requirePermission("inventory.view"),
   async (req, res): Promise<void> => {
     const tenantId = await resolveInventoryTenantId(req);
     const report = await getInventoryHealthReport(tenantId);
@@ -236,7 +237,7 @@ router.post(
 // inventory_balances, plus the list of active locations and petty cash total.
 router.get(
   "/admin/inventory",
-  requireRole("global_admin", "admin"),
+  requirePermission("inventory.view"),
   async (req, res): Promise<void> => {
     const houseTenantId = await resolveInventoryTenantId(req);
     await ensureStandardLocations(houseTenantId);
@@ -263,9 +264,9 @@ router.get(
 // Admin-visible quarantine/report for balances that are not active sellable catalog stock.
 router.get(
   "/admin/inventory/orphans",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  requirePermission("inventory.view"),
+  async (req, res): Promise<void> => {
+    const houseTenantId = await resolveInventoryTenantId(req);
     const items = await getOrphanInventoryBalanceReport(houseTenantId);
     res.json({ items, count: items.length });
   }
@@ -283,9 +284,9 @@ router.patch(
 // ─── GET /api/admin/inventory/locations ──────────────────────────────────────
 router.get(
   "/admin/inventory/locations",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  requirePermission("inventory.view"),
+  async (req, res): Promise<void> => {
+    const houseTenantId = await resolveInventoryTenantId(req);
     await ensureStandardLocations(houseTenantId);
     const locations = await db
       .select()

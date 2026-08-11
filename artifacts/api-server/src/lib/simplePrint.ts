@@ -232,6 +232,15 @@ export async function printViaBridge(
   timeoutMs: number = BRIDGE_REQUEST_TIMEOUT_MS,
   healthTimeoutMs: number = getBridgeHealthTimeoutMs(),
 ): Promise<PrintAttemptResult> {
+  if (!isValidQueueName(printerName)) {
+    return {
+      ok: false,
+      mode: "bridge",
+      printerName,
+      message: `Invalid bridge queue name "${printerName}"; refusing system-default fallback.`,
+    };
+  }
+
   const health = await probeBridge(bridgeUrl, healthTimeoutMs);
   if (!health.ok) {
     return { ok: false, mode: "bridge", printerName, message: health.message };
@@ -258,7 +267,10 @@ export async function printViaBridge(
     });
     const latencyMs = Date.now() - started;
     const text = await res.text();
-    if (!res.ok) {
+    type BridgePrintResponse = { success?: boolean; error?: string };
+    let responseBody: BridgePrintResponse | undefined;
+    try { responseBody = JSON.parse(text) as BridgePrintResponse; } catch { /* non-JSON bridge response */ }
+    if (!res.ok || responseBody?.success === false) {
       return {
         ok: false,
         mode: "bridge",
@@ -267,7 +279,7 @@ export async function printViaBridge(
         latencyMs,
         message:
           `Bridge rejected the job (${res.status}) for queue "${printerName}". ` +
-          `Details: ${text.slice(0, 200) || "no body"}.`,
+          `Details: ${responseBody?.error ?? (text.slice(0, 200) || "no body")}.`,
       };
     }
     return {
@@ -293,6 +305,86 @@ export async function printViaBridge(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Send a normalized 2x2 PNG label through the bridge/CUPS driver path. */
+export async function printPngLabelViaBridge(
+  printerName: string,
+  png: Buffer,
+  bridgeUrl: string = getBridgeUrl(),
+): Promise<PrintAttemptResult> {
+  if (!isValidQueueName(printerName)) {
+    return { ok: false, mode: "bridge", printerName, message: "Invalid label queue; refusing default-printer fallback." };
+  }
+  const health = await probeBridge(bridgeUrl, getBridgeHealthTimeoutMs());
+  if (!health.ok) return { ok: false, mode: "bridge", printerName, message: health.message };
+  const apiKey = process.env.PRINT_BRIDGE_API_KEY ?? "";
+  try {
+    const res = await fetch(`${bridgeUrl}/print`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+      },
+      body: JSON.stringify({
+        role: "label",
+        printerName,
+        format: "png",
+        imageBase64: png.toString("base64"),
+        media: "Custom.2x2in",
+        raw: false,
+        copies: 1,
+      }),
+    });
+    const body = await res.json().catch(() => ({})) as { success?: boolean; error?: string };
+    const ok = res.ok && body.success === true;
+    return {
+      ok,
+      mode: "bridge",
+      printerName,
+      bridgeStatus: res.status,
+      message: ok
+        ? `Sent rendered 2x2 PNG to bridge queue "${printerName}".`
+        : `Bridge rejected rendered label for "${printerName}": ${body.error ?? `HTTP ${res.status}`}`,
+    };
+  } catch (err) {
+    return { ok: false, mode: "bridge", printerName, message: `Bridge label request failed: ${(err as Error).message}` };
+  }
+}
+
+/** Submit the normalized PNG directly to an explicitly named local CUPS queue. */
+export function printPngLabelViaCups(printerName: string, png: Buffer): Promise<PrintAttemptResult> {
+  return new Promise(resolve => {
+    if (!isValidQueueName(printerName)) {
+      resolve({ ok: false, mode: "local_cups", printerName, message: "Invalid label queue; refusing default-printer fallback." });
+      return;
+    }
+    const args = ["-d", printerName, "-o", "media=Custom.2x2in", "-o", "fit-to-page"];
+    const proc = spawn("lp", args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    proc.on("error", (err: Error) => resolve({
+      ok: false, mode: "local_cups", printerName,
+      message: `Could not submit rendered label to CUPS: ${err.message}`,
+    }));
+    proc.on("close", (code: number | null) => resolve({
+      ok: code === 0,
+      mode: "local_cups",
+      printerName,
+      command: `lp -d ${printerName} -o media=Custom.2x2in -o fit-to-page`,
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
+      exitCode: code,
+      message: code === 0
+        ? `Sent rendered 2x2 PNG to CUPS queue "${printerName}".`
+        : `CUPS rejected rendered label for "${printerName}": ${stderr.trim() || `exit ${code}`}`,
+    }));
+    proc.stdin.on("error", () => {});
+    proc.stdin.write(png);
+    proc.stdin.end();
+  });
 }
 
 /**

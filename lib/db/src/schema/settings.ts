@@ -20,6 +20,9 @@ export const adminSettingsTable = pgTable("admin_settings", {
   checkoutConversionPreview: boolean("checkout_conversion_preview").notNull().default(false),
   salesTaxMode: text("sales_tax_mode").notNull().default("added"),
   salesTaxRate: numeric("sales_tax_rate", { precision: 6, scale: 5 }).notNull().default("0.08"),
+  cashDiscountEnabled: boolean("cash_discount_enabled").notNull().default(false),
+  cashDiscountType: text("cash_discount_type").notNull().default("percentage"),
+  cashDiscountValue: numeric("cash_discount_value", { precision: 12, scale: 4 }).notNull().default("0"),
   merchantImageEnabled: boolean("merchant_image_enabled").notNull().default(true),
   merchantProcessorConfig: text("merchant_processor_config"),
   // Printing

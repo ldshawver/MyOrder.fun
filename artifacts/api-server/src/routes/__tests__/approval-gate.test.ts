@@ -463,6 +463,13 @@ describe("Approval gate — print endpoints", () => {
     const res = await supertest(app).get("/api/print/routing");
     expect(res.status).toBe(401);
   });
+
+  it("rejects an approved non-admin from printer routing administration", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "user" });
+    const app = buildApp(printRouter);
+    const res = await supertest(app).get("/api/print/routing");
+    expect(res.status).toBe(403);
+  });
 });
 
 describe("Approval gate — admin endpoints", () => {

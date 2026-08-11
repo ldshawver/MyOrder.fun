@@ -17,8 +17,9 @@ import {
   usersTable,
   operatorPrintProfilesTable,
   printPrintersTable,
+  shiftPrintAssignmentsTable,
 } from "@workspace/db";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import type { PrintPrinter, OperatorPrintProfile } from "@workspace/db";
 import { normalizeRole } from "./auth";
 
@@ -28,16 +29,24 @@ export type ActiveOperator = {
   firstName: string | null;
   lastName: string | null;
   role: string;
+  tenantId: number;
+  shiftId: number | null;
+  locationId: number | null;
   source: "shift" | "admin_fallback";
   profile: OperatorPrintProfile | null;
 };
+
+/** Prefer a profile-specific credential, otherwise use the centrally managed one. */
+export function resolveBridgeApiKey(profileApiKey: string | null | undefined): string {
+  return profileApiKey || process.env.PRINT_BRIDGE_API_KEY || "";
+}
 
 /**
  * Find the active operator:
  * 1. Most-recent active shift (any role — lab_tech, business_sitter, etc.)
  * 2. Fallback: first global_admin / admin / business_sitter
  */
-export async function selectActiveOperator(): Promise<ActiveOperator | null> {
+export async function selectActiveOperator(tenantId: number): Promise<ActiveOperator | null> {
   // 1. Active lab tech shift
   const shifts = await db
     .select({
@@ -46,22 +55,28 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
       firstName: usersTable.firstName,
       lastName: usersTable.lastName,
       role: usersTable.role,
+      shiftId: labTechShiftsTable.id,
     })
     .from(labTechShiftsTable)
     .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
-    .where(eq(labTechShiftsTable.status, "active"))
+    .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active")))
     .orderBy(desc(labTechShiftsTable.clockedInAt))
     .limit(1);
 
   if (shifts.length > 0) {
     const tech = shifts[0];
-    const profile = await getOperatorProfile(tech.techId);
+    const [assignment] = await db.select().from(shiftPrintAssignmentsTable)
+      .where(and(eq(shiftPrintAssignmentsTable.tenantId, tenantId), eq(shiftPrintAssignmentsTable.shiftId, tech.shiftId))).limit(1);
+    const profile = await getOperatorProfile(tenantId, tech.techId, null, null);
     return {
       userId: tech.techId,
       email: tech.email ?? "",
       firstName: tech.firstName ?? null,
       lastName: tech.lastName ?? null,
       role: tech.role,
+      tenantId,
+      shiftId: tech.shiftId,
+      locationId: assignment?.locationId ?? null,
       source: "shift",
       profile,
     };
@@ -74,6 +89,7 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
     .where(
       and(
         eq(usersTable.isActive, true),
+        eq(usersTable.tenantId, tenantId),
       )
     )
     .limit(10);
@@ -84,69 +100,95 @@ export async function selectActiveOperator(): Promise<ActiveOperator | null> {
 
   if (!admin) return null;
 
-  const profile = await getOperatorProfile(admin.id);
+  const profile = await getOperatorProfile(tenantId, admin.id, null, null);
   return {
     userId: admin.id,
     email: admin.email ?? "",
     firstName: admin.firstName ?? null,
     lastName: admin.lastName ?? null,
     role: admin.role,
+    tenantId,
+    shiftId: null,
+    locationId: null,
     source: "admin_fallback",
     profile,
   };
 }
 
 /** Load operator's print profile (or null if not configured). */
-export async function getOperatorProfile(userId: number): Promise<OperatorPrintProfile | null> {
+export async function getOperatorProfile(tenantId: number, userId: number, locationId: number | null = null, shiftId: number | null = null): Promise<OperatorPrintProfile | null> {
   const rows = await db
     .select()
     .from(operatorPrintProfilesTable)
-    .where(eq(operatorPrintProfilesTable.userId, userId))
+    .where(and(
+      eq(operatorPrintProfilesTable.tenantId, tenantId),
+      eq(operatorPrintProfilesTable.userId, userId),
+      locationId === null ? sql`${operatorPrintProfilesTable.locationId} IS NULL` : eq(operatorPrintProfilesTable.locationId, locationId),
+      shiftId === null ? sql`${operatorPrintProfilesTable.shiftId} IS NULL` : eq(operatorPrintProfilesTable.shiftId, shiftId),
+    ))
     .limit(1);
   return rows[0] ?? null;
 }
 
 /** Resolve receipt printer chain for an operator: [primary, fallback]. */
 export async function resolveReceiptPrinters(
-  profile: OperatorPrintProfile | null
+  profile: OperatorPrintProfile | null,
+  context: { tenantId: number; locationId?: number | null; shiftId?: number | null },
 ): Promise<{ primary: PrintPrinter | null; fallback: PrintPrinter | null }> {
   const fetch = async (id: number | null | undefined): Promise<PrintPrinter | null> => {
     if (!id) return null;
-    const rows = await db.select().from(printPrintersTable).where(eq(printPrintersTable.id, id)).limit(1);
+    const rows = await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.id, id), eq(printPrintersTable.tenantId, context.tenantId), eq(printPrintersTable.isActive, true),
+      context.locationId == null
+        ? and(eq(printPrintersTable.routingScope, "general"), sql`${printPrintersTable.locationId} IS NULL`)
+        : and(eq(printPrintersTable.routingScope, "location"), eq(printPrintersTable.locationId, context.locationId)),
+    )).limit(1);
     return rows[0] ?? null;
   };
 
+  if (context.shiftId && context.locationId) {
+    const [assignment] = await db.select().from(shiftPrintAssignmentsTable).where(and(
+      eq(shiftPrintAssignmentsTable.tenantId, context.tenantId),
+      eq(shiftPrintAssignmentsTable.shiftId, context.shiftId),
+      eq(shiftPrintAssignmentsTable.locationId, context.locationId),
+    )).limit(1);
+    return { primary: await fetch(assignment?.receiptPrinterId), fallback: null };
+  }
+
   if (!profile) {
-    // No profile — find any active receipt-role printer (ethernet_direct preferred, then bridge)
-    const allActive = await db.select().from(printPrintersTable)
-      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.role, "receipt")));
-    const primary = allActive.find(p => p.connectionType === "ethernet_direct")
-      ?? allActive.find(p => ["bridge", "mac_bridge"].includes(p.connectionType))
-      ?? allActive[0]
-      ?? null;
-    const fallback = allActive.find(p => p.connectionType === "pi_bridge") ?? null;
-    return { primary, fallback };
+    return { primary: null, fallback: null };
   }
 
   return {
     primary: await fetch(profile.receiptPrinterId),
-    fallback: await fetch(profile.fallbackReceiptPrinterId),
+    fallback: null,
   };
+}
+
+export async function resolveExpoPrinter(context: { tenantId: number; locationId: number; shiftId: number }): Promise<PrintPrinter | null> {
+  const [assignment] = await db.select().from(shiftPrintAssignmentsTable).where(and(
+    eq(shiftPrintAssignmentsTable.tenantId, context.tenantId), eq(shiftPrintAssignmentsTable.shiftId, context.shiftId),
+    eq(shiftPrintAssignmentsTable.locationId, context.locationId), eq(shiftPrintAssignmentsTable.printExpoTickets, true),
+  )).limit(1);
+  if (!assignment?.expoPrinterId) return null;
+  const [printer] = await db.select().from(printPrintersTable).where(and(
+    eq(printPrintersTable.tenantId, context.tenantId), eq(printPrintersTable.locationId, context.locationId),
+    eq(printPrintersTable.routingScope, "location"), eq(printPrintersTable.role, "expo"),
+    eq(printPrintersTable.id, assignment.expoPrinterId), eq(printPrintersTable.isActive, true),
+  )).limit(1);
+  return printer ?? null;
 }
 
 /** Resolve label printer for an operator. */
 export async function resolveLabelPrinter(
-  profile: OperatorPrintProfile | null
+  profile: OperatorPrintProfile | null,
+  tenantId: number,
 ): Promise<PrintPrinter | null> {
   if (!profile?.labelPrinterId) {
-    // find any active label-role printer (bridge, mac_bridge, or ethernet_direct)
-    const rows = await db.select().from(printPrintersTable)
-      .where(and(eq(printPrintersTable.isActive, true), eq(printPrintersTable.role, "label")))
-      .limit(1);
-    return rows[0] ?? null;
+    return null;
   }
   const rows = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.id, profile.labelPrinterId)).limit(1);
+    .where(and(eq(printPrintersTable.id, profile.labelPrinterId), eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.isActive, true), eq(printPrintersTable.routingScope, "general"), sql`${printPrintersTable.locationId} IS NULL`)).limit(1);
   return rows[0] ?? null;
 }
 

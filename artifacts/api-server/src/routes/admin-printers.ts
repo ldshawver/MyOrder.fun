@@ -12,15 +12,13 @@ import { Router, type IRouter, type Request, type Response, type NextFunction } 
 import { db, printSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 import {
-  DEFAULT_BRIDGE_URL,
   buildReceiptTestPayload,
-  buildLabelTestPayload,
   getBridgeUrl,
   isValidQueueName,
   printViaCups,
   printViaBridge,
-  probeBridge,
-  probeCupsQueues,
+  printPngLabelViaBridge,
+  printPngLabelViaCups,
   type PrintMethod,
   type PrintRole,
 } from "../lib/simplePrint";
@@ -42,7 +40,7 @@ const wrap = (h: AsyncHandler) => (req: Request, res: Response, next: NextFuncti
   });
 };
 
-const VALID_METHODS: ReadonlySet<PrintMethod> = new Set(["local_cups", "bridge"]);
+const VALID_METHODS: ReadonlySet<PrintMethod> = new Set(["bridge"]);
 
 interface SimpleSettings {
   receiptEnabled: boolean;
@@ -114,7 +112,7 @@ router.patch(
     const setMethod = (k: "receiptMethod" | "labelMethod", col: string) => {
       if (body[k] !== undefined) {
         const v = String(body[k]);
-        if (!VALID_METHODS.has(v as PrintMethod)) errors.push(`${k} must be local_cups or bridge`);
+        if (!VALID_METHODS.has(v as PrintMethod)) errors.push(`${k} must use the registered bridge path`);
         else updates[col] = v;
       }
     };
@@ -136,6 +134,9 @@ router.patch(
     setMethod("labelMethod", "labelMethod");
     setName("labelPrinterName", "labelPrinterName");
     setBool("autoPrintReceipts", "autoPrintReceipts");
+    if (body.receiptPrinterName !== undefined || body.labelPrinterName !== undefined) {
+      errors.push("Printer queues are selected only from tenant-owned registered printers");
+    }
 
     if (errors.length) {
       res.status(400).json({ ok: false, errors });
@@ -176,6 +177,8 @@ async function recordLastTest(role: PrintRole, mode: PrintMethod, ok: boolean, m
 }
 
 async function runTest(role: PrintRole, req: Request, res: Response) {
+  res.status(410).json({ ok: false, role, error: "Legacy direct test printing is disabled; use the tenant-scoped registered-printer test endpoint" });
+  return;
   const settings = projectSettings(await loadOrCreateSettings());
   const enabled = role === "receipt" ? settings.receiptEnabled : settings.labelEnabled;
   const method = role === "receipt" ? settings.receiptMethod : settings.labelMethod;
@@ -188,11 +191,19 @@ async function runTest(role: PrintRole, req: Request, res: Response) {
     return;
   }
 
-  const payload = role === "receipt" ? buildReceiptTestPayload() : buildLabelTestPayload();
-  const result =
-    method === "bridge"
+  let result;
+  if (role === "label") {
+    const { generateThankYouLabelTest } = await import("../lib/print/templates/thankYouLabel.js");
+    const png = await generateThankYouLabelTest();
+    result = method === "bridge"
+      ? await printPngLabelViaBridge(name, png)
+      : await printPngLabelViaCups(name, png);
+  } else {
+    const payload = buildReceiptTestPayload();
+    result = method === "bridge"
       ? await printViaBridge(role, name, payload)
       : await printViaCups(name, payload);
+  }
 
   await recordLastTest(role, method, result.ok, result.message);
   req.log?.info(
@@ -222,12 +233,7 @@ router.get(
   "/admin/printers/status",
   adminOnly,
   wrap(async (_req, res) => {
-    const [cups, bridge] = await Promise.all([probeCupsQueues(), probeBridge()]);
-    res.json({
-      ok: true,
-      cups,
-      bridge: { ...bridge, url: getBridgeUrl(), defaultUrl: DEFAULT_BRIDGE_URL },
-    });
+    res.status(410).json({ ok: false, error: "Unrestricted CUPS discovery is disabled; use tenant-owned registered printer health" });
   }),
 );
 
