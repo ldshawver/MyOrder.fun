@@ -30,6 +30,11 @@ import {
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+// Legacy Stripe endpoints are retained only for API compatibility. PayPal is
+// the sole online provider for this release; never mock or fall back to Stripe.
+router.use(["/payments/tokenize", "/payments/:orderId/confirm"], (_req, res) => {
+  res.status(503).json({ error: "LEGACY_PAYMENT_PROVIDER_DISABLED" });
+});
 let creditSchemaEnsured = false;
 class PaymentInventoryError extends Error {
   constructor(public readonly catalogItemId: number) {
@@ -51,7 +56,7 @@ type PaymentDeductionAuditContext = {
   ipAddress?: string;
 };
 
-async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: PaymentDeductionAuditContext): Promise<void> {
+export async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: PaymentDeductionAuditContext): Promise<void> {
   const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
   if (method === "cash") return;
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;

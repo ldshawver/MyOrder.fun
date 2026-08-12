@@ -134,6 +134,13 @@
       "when": 1786424277000,
       "tag": "0041_role_permissions_compatibility",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786510800000,
+      "tag": "0042_provider_payments",
+      "breakpoints": true
     }
   ]
 }

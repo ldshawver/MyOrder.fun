@@ -114,7 +114,7 @@ const DEFAULT_MERCHANT_PROCESSOR_CONFIG: MerchantProcessorConfig = Object.fromEn
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
   showOutOfStock: false,
-  enabledProcessors: ["stripe"],
+  enabledProcessors: ["paypal"],
   checkoutConversionPreview: false,
   merchantImageEnabled: true,
   merchantProcessorConfig: DEFAULT_MERCHANT_PROCESSOR_CONFIG,

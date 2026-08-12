@@ -59,6 +59,12 @@ services:
       OPENAI_API_KEY: ""
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:?PAYMENT_PROVIDER is required}
+      PAYMENT_MODE: ${PAYMENT_MODE:?PAYMENT_MODE is required}
+      PAYPAL_ENVIRONMENT: ${PAYPAL_ENVIRONMENT:?PAYPAL_ENVIRONMENT is required}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:?PAYPAL_CLIENT_ID is required}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:?PAYPAL_CLIENT_SECRET is required}
+      PAYPAL_WEBHOOK_ID: ${PAYPAL_WEBHOOK_ID:?PAYPAL_WEBHOOK_ID is required}
       TWILIO_ACCOUNT_SID: ""
       TWILIO_AUTH_TOKEN: ""
       TWILIO_PHONE_NUMBER: ""
@@ -81,7 +87,6 @@ services:
       EMAIL_ENABLED: "false"
       PUSH_ENABLED: "false"
       LIVE_PAYMENTS_ENABLED: "false"
-      PAYMENT_MODE: test
     volumes:
       - uploads:/app/uploads
       - app_data:/app/data

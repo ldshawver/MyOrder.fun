@@ -11,6 +11,11 @@ import twilioVoiceRouter from "./routes/twilio-voice";
 import twilioSmsRouter from "./routes/twilio-sms";
 import { logger } from "./lib/logger";
 import { submitOnboardingRequestHandler } from "./routes/onboarding";
+import { loadPaymentConfig } from "./payments/config";
+
+// Validate once at startup. Invalid/contradictory payment configuration must
+// stop the application before it can accept traffic.
+loadPaymentConfig();
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -84,6 +89,7 @@ app.use(cors({ credentials: true, origin: true }));
 
 // ── Raw body for Clerk webhooks (must precede the JSON parser) ───────────────
 app.use("/api/webhooks/clerk", express.raw({ type: "application/json" }));
+app.use("/api/webhooks/paypal", express.raw({ type: "application/json", limit: "256kb" }));
 
 // ── Body parsers ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "2mb" }));

@@ -5,8 +5,6 @@ import {
   useGetOrderNotes,
   useAddOrderNote,
   useUpdateOrderStatus,
-  useTokenizePayment,
-  useConfirmPayment,
   getGetOrderQueryKey,
   getGetOrderNotesQueryKey,
   OrderPaymentStatus,
@@ -28,6 +26,7 @@ import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
+import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 
 type OrderWithTracking = Order & {
   trackingUrl?: string | null;
@@ -448,8 +447,6 @@ export default function OrderDetail() {
 
   const addNoteMutation = useAddOrderNote();
   const updateStatusMutation = useUpdateOrderStatus();
-  const tokenizeMutation = useTokenizePayment();
-  const confirmMutation = useConfirmPayment();
 
   const handleAddNote = () => {
     if (!noteContent.trim()) return;
@@ -471,25 +468,6 @@ export default function OrderDetail() {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
           notifyOrderStatusChange(id, status);
-        }
-      }
-    );
-  };
-
-  const handlePay = () => {
-    if (!order) return;
-    tokenizeMutation.mutate(
-      { data: { orderId: order.id, amount: order.total } },
-      {
-        onSuccess: (res) => {
-          confirmMutation.mutate(
-            { orderId: id, data: { paymentIntentId: res.paymentIntentId } },
-            {
-              onSuccess: () => {
-                queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
-              }
-            }
-          );
         }
       }
     );
@@ -1076,37 +1054,8 @@ export default function OrderDetail() {
                   )}
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
-                  {/* Card via Stripe */}
-                  <Button
-                    className="w-full rounded-xl font-semibold text-xs h-10"
-                    onClick={handlePay}
-                    disabled={tokenizeMutation.isPending || confirmMutation.isPending}
-                    data-testid="button-pay"
-                  >
-                    <CreditCard size={14} className="mr-2" />
-                    {tokenizeMutation.isPending || confirmMutation.isPending ? "Processing..." : "Pay with Card"}
-                  </Button>
-
-                  <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-border/40" />
-                    </div>
-                    <div className="relative flex justify-center">
-                      <span className="px-2 bg-card text-[10px] text-muted-foreground uppercase tracking-widest">or send directly</span>
-                    </div>
-                  </div>
-
-                  {/* PayPal */}
-                  <a
-                    href={`https://www.paypal.com/paypalme/LuciferCruz/${order.total.toFixed(2)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#003087]/40 text-[#009cde] bg-[#003087]/10 hover:bg-[#003087]/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-paypal"
-                  >
-                    <ExternalLink size={12} />
-                    PayPal · ${order.total.toFixed(2)}
-                  </a>
+                  {/* Provider-verified PayPal checkout */}
+                  <PayPalCheckoutButton orderId={order.id} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
 
                   {/* Venmo */}
                   <a

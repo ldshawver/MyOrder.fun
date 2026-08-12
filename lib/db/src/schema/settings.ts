@@ -16,7 +16,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   menuImportEnabled: boolean("menu_import_enabled").notNull().default(true),
   showOutOfStock: boolean("show_out_of_stock").notNull().default(false),
   // Checkout
-  enabledProcessors: text("enabled_processors").array().notNull().default(["stripe"]),
+  enabledProcessors: text("enabled_processors").array().notNull().default(["paypal"]),
   checkoutConversionPreview: boolean("checkout_conversion_preview").notNull().default(false),
   salesTaxMode: text("sales_tax_mode").notNull().default("added"),
   salesTaxRate: numeric("sales_tax_rate", { precision: 6, scale: 5 }).notNull().default("0.08"),

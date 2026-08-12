@@ -285,7 +285,7 @@ describe("POS order closeout cash-bank safeguards", () => {
     expect(orderDetail).toContain("Close as Cash Paid");
     expect(orderDetail).toContain("Trusted amount due");
     expect(orderDetail).toContain("Calculated change");
-    expect(orderDetail).toContain("Pay with Card");
+    expect(orderDetail).toContain("PayPalCheckoutButton");
     expect(orderDetail).toContain("Apply Customer Credit");
   });
 

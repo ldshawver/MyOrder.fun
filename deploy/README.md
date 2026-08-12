@@ -39,11 +39,22 @@ Edit `deploy/ecosystem.config.cjs` and fill in all the empty `""` values:
 
 - `DATABASE_URL` — your PostgreSQL connection string
 - `CLERK_SECRET_KEY` — from Clerk dashboard
-- `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` — from Stripe dashboard
+- `PAYMENT_PROVIDER=paypal`
+- `PAYMENT_MODE=disabled|sandbox|live` — fail-closed online-payment mode
+- `PAYPAL_ENVIRONMENT=sandbox|live` — must exactly match `PAYMENT_MODE` when enabled
+- `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` — REST application credentials
+- `PAYPAL_WEBHOOK_ID` — ID assigned to the configured `/api/webhooks/paypal` webhook
 - `OPENAI_API_KEY`
 - Twilio credentials
 - WooCommerce credentials
 - `PRINT_BRIDGE_API_KEY`
+
+Do not configure a PayPal API base URL. The application selects the Sandbox or
+live host internally. Staging must use `PAYMENT_MODE=sandbox` and
+`PAYPAL_ENVIRONMENT=sandbox`; startup rejects live payments in staging.
+
+Stripe is not an online payment provider for this release. Its legacy API
+routes fail closed and the Stripe environment variables remain empty.
 
 ---
 

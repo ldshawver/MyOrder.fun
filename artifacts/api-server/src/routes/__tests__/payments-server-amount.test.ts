@@ -210,8 +210,8 @@ beforeEach(() => {
   delete process.env.STRIPE_SECRET_KEY;
 });
 
-describe("Task #13 — /payments/tokenize ignores client amount", () => {
-  it("uses server-derived amount even when client tries to send $0.01", async () => {
+describe("legacy Stripe payment endpoints fail closed", () => {
+  it("rejects tokenization even when client sends an amount", async () => {
     dbState.orders.push({
       id: 555,
       customerId: 1,
@@ -228,10 +228,9 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       .post("/api/payments/tokenize")
       .send({ orderId: 555, amount: 0.01 });
 
-    expect(res.status).toBe(200);
-    expect(stripePayloadCalls).toHaveLength(1);
-    // Server-trusted total (43.20) — NOT the $0.01 the client tried to send.
-    expect(stripePayloadCalls[0].amount).toBeCloseTo(43.2, 2);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("LEGACY_PAYMENT_PROVIDER_DISABLED");
+    expect(stripePayloadCalls).toHaveLength(0);
   });
 
     it("rejects unconverted tokenization requests with 422", async () => {
@@ -250,8 +249,8 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       .post("/api/payments/tokenize")
       .send({ orderId: 557, amount: 43.2 });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted before checkout|converted before payment/i);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("LEGACY_PAYMENT_PROVIDER_DISABLED");
     expect(stripePayloadCalls).toHaveLength(0);
   });
 
@@ -262,8 +261,8 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       .post("/api/payments/558/confirm")
       .send({ paymentIntentId: "pi_sandbox_unconverted" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted/i);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("LEGACY_PAYMENT_PROVIDER_DISABLED");
   });
 
   it("rejects unconverted apply-credit requests with 422", async () => {
@@ -310,7 +309,7 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
     expect(dbState.credits.filter(c => c.source === "order_credit_application" && c.reason === "Applied to order #563")).toHaveLength(1);
   });
 
-  it("falls back to order.total when an order has no line items", async () => {
+  it("does not create a mock provider payment when an order has no line items", async () => {
     dbState.orders.push({
       id: 556,
       customerId: 1,
@@ -325,8 +324,8 @@ describe("Task #13 — /payments/tokenize ignores client amount", () => {
       .post("/api/payments/tokenize")
       .send({ orderId: 556, amount: 9999 });
 
-    expect(res.status).toBe(200);
-    expect(stripePayloadCalls).toHaveLength(1);
-    expect(stripePayloadCalls[0].amount).toBeCloseTo(100, 2);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("LEGACY_PAYMENT_PROVIDER_DISABLED");
+    expect(stripePayloadCalls).toHaveLength(0);
   });
 });
