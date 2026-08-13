@@ -13,6 +13,7 @@ import NdaModal from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPolicy";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -64,35 +65,7 @@ const clerkProxyUrl = import.meta.env.PROD && !isClerkDevelopmentInstance
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-type AppRole = "global_admin" | "admin" | "supervisor" | "csr" | "user";
-
-function normalizeAppRole(role?: string | null): AppRole {
-  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
-
-  if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
-  if (normalized === "supervisor") return "supervisor";
-
-  if (
-    normalized === "customer_service_rep" ||
-    normalized === "staff" ||
-    normalized === "customer_service_representative" ||
-    normalized === "customer_service" ||
-    normalized === "customer_service_specialist" ||
-    normalized === "customer_success" ||
-    normalized === "service_rep" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
-    normalized === "business_sitter" ||
-    normalized === "sales_rep" ||
-    normalized === "lab_tech" ||
-    normalized === "lab_technician"
-  ) {
-    return "csr";
-  }
-
-  return "user";
-}
+const normalizeAppRole = normalizeApplicationRole;
 
 function stripBase(path: string): string {
   return basePath && path.startsWith(basePath)
@@ -485,7 +458,7 @@ function AuthenticatedApp() {
   const normalizedRole = normalizeNotificationRole(user.role);
   const isGlobalAdmin = normalizedRole === "global_admin";
   const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
-  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+  const isStaff = canAccessStaffRoute(user.role);
   const appRole = normalizeAppRole(user.role);
 
 
@@ -529,6 +502,11 @@ function AuthenticatedApp() {
           <Route path="/orders/:id">{() => protect(<OrderDetail />)}</Route>
 
           <Route path="/ai-concierge" component={AiConcierge} />
+
+          {/* Keep this direct route ahead of conditional route fragments. Wouter's
+              Switch treats a fragment as a candidate, which previously shadowed
+              /staff for supervisor and admin sessions. */}
+          {isStaff && <Route path="/staff">{() => protect(<StaffQueue />)}</Route>}
 
           {appRole === "global_admin" && (
             <>
@@ -577,7 +555,6 @@ function AuthenticatedApp() {
 
           {isStaff && (
             <>
-              <Route path="/staff">{() => protect(<StaffQueue />)}</Route>
               <Route path="/csr-settings" component={CsrSettings} />
               <Route path="/csr-settings/:section" component={CsrSettings} />
             </>

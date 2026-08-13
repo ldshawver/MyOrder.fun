@@ -19,6 +19,7 @@ function src(relativePath: string): string {
 
 const appSrc = src("App.tsx");
 const layoutSrc = src("components/layout.tsx");
+const routingPolicySrc = src("lib/routingPolicy.ts");
 const integrationsSrc = src("pages/global-admin/integrations.tsx");
 const routesDir = resolve(__dirname, "..");
 const routesIndexSrc = readFileSync(resolve(routesDir, "index.ts"), "utf8");
@@ -42,8 +43,8 @@ describe("MyOrder active navigation reconciliation", () => {
   });
 
   it("keeps current MyOrder admin routes visible to admin/global-admin without supervisor escalation", () => {
-    expect(appSrc).toMatch(/normalized === "tenant_admin"[\s\S]*return "admin"/);
-    expect(appSrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
+    expect(routingPolicySrc).toMatch(/normalized === "tenant_admin"[\s\S]*return "admin"/);
+    expect(routingPolicySrc).toMatch(/if \(normalized === "supervisor"\) return "supervisor"/);
     expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/settings">\{\(\) => protect\(<AdminSettingsPage \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/receipts">\{\(\) => protect\(<AdminReceipts \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/\["global_admin", "admin"\]\.includes\(appRole\)[\s\S]*<Route path="\/admin\/web-editor" component=\{AdminWebEditor\} \/>/);
@@ -52,7 +53,8 @@ describe("MyOrder active navigation reconciliation", () => {
   });
 
   it("keeps supervisor and CSR workflows available without granting admin-only routes", () => {
-    expect(appSrc).toMatch(/const isStaff = \["global_admin", "admin", "supervisor", "csr"\]\.includes\(normalizedRole\)/);
+    expect(appSrc).toContain("const isStaff = canAccessStaffRoute(user.role)");
+    expect(routingPolicySrc).toContain('["global_admin", "admin", "supervisor", "csr"]');
     expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/staff">\{\(\) => protect\(<StaffQueue \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/csr-settings" component=\{CsrSettings\} \/>/);
     expect(layoutSrc).toContain("normalizeNotificationRole(user.role)");

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, Mail, CheckCircle2, XCircle, ShieldAlert } from "lucide-react";
+import { assignableRolesForActor, canAssignRoleFromUserManagement } from "@/lib/userManagementPolicy";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
@@ -386,7 +387,7 @@ export default function AdminUsers() {
   const [pendingRoleById, setPendingRoleById] = useState<Record<number, SetUserApprovalBodyRole>>({});
 
   const handleRoleChange = (id: number, newRole: string) => {
-    if (["global_admin", "admin", "supervisor", "csr", "user"].includes(newRole)) {
+    if (canAssignRoleFromUserManagement(currentUser?.role, newRole)) {
       updateRoleMutation.mutate(
         { id, data: { role: newRole as UpdateUserRoleBodyRole } },
         {
@@ -421,6 +422,9 @@ export default function AdminUsers() {
   };
 
   const allUsers = data?.users ?? [];
+  const assignableRoleOptions = ROLE_OPTIONS.filter((option) =>
+    assignableRolesForActor(currentUser?.role).includes(option.value),
+  );
   // Treat retired role values as their replacements for historical rows.
   const matchesRoleTab = (userRole: string | undefined, tab: RoleFilter): boolean => {
     if (tab === "all") return true;
@@ -603,7 +607,7 @@ export default function AdminUsers() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="rounded-sm">
-                                {ROLE_OPTIONS.filter((r) => currentUser?.role === "global_admin" || !r.globalOnly).map((r) => (
+                                {assignableRoleOptions.map((r) => (
                                   <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">
                                     {r.label}
                                   </SelectItem>
@@ -625,7 +629,7 @@ export default function AdminUsers() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent className="rounded-sm">
-                                {ROLE_OPTIONS.filter((r) => currentUser?.role === "global_admin" || !r.globalOnly).map((r) => (
+                                {assignableRoleOptions.map((r) => (
                                   <SelectItem key={r.value} value={r.value} className="text-xs font-mono uppercase tracking-wider">{r.label}</SelectItem>
                                 ))}
                               </SelectContent>
