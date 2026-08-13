@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { catalogProductDraftIsValid, createCatalogProductPayload, sanitizedCatalogError, validateCatalogProductDraft } from "@/lib/catalogProductForm";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -76,7 +77,7 @@ function EditDialog({
 }: {
   item: Partial<CatalogProduct> | null;
   onClose: () => void;
-  onSave: (data: Record<string, unknown>) => void;
+  onSave: (data: Record<string, unknown>) => Promise<void>;
   isSaving: boolean;
 }) {
   const isNew = !item?.id;
@@ -103,51 +104,58 @@ function EditDialog({
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
   });
+  const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
+  const requestPending = isSaving || submitting;
 
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }));
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const value = e.target.value;
+    setForm(f => ({ ...f, [k]: value }));
+    const errorKey = k === "alavontName" ? "name" : k === "alavontCategory" ? "category" : k;
+    setFieldErrors(errors => ({ ...errors, [errorKey]: undefined }));
+    setSubmitError(null);
+  };
 
-  function handleSave() {
-    const payload: Record<string, unknown> = {
-      name: form.name || form.alavontName || "Unnamed Product",
-      alavontName: form.alavontName || null,
-      luciferCruzName: form.luciferCruzName || null,
-      luciferCruzCategory: form.luciferCruzCategory || null,
-      luciferCruzDescription: form.luciferCruzDescription || null,
-      luciferCruzImageUrl: form.luciferCruzImageUrl || null,
-      customerSafeName: form.customerSafeName || null,
-      customerSafeDescription: form.customerSafeDescription || null,
-      category: form.category || form.alavontCategory || "General",
-      alavontCategory: form.alavontCategory || null,
-      description: form.description || null,
-      alavontDescription: form.alavontDescription || null,
-      price: parseFloat(String(form.price)) || 0,
-      regularPrice: form.regularPrice ? parseFloat(String(form.regularPrice)) : null,
-      imageUrl: form.imageUrl || null,
-      alavontImageUrl: form.alavontImageUrl || null,
-      labName: form.labName || null,
-      sku: form.sku || null,
-      isAvailable: form.isAvailable,
-    };
-    onSave(payload);
+  async function handleSave() {
+    if (submitLock.current) return;
+    const errors = validateCatalogProductDraft(form);
+    setFieldErrors(errors);
+    setSubmitError(null);
+    if (Object.keys(errors).length > 0) return;
+    submitLock.current = true;
+    setSubmitting(true);
+    const payload = createCatalogProductPayload(form);
+    try {
+      await onSave(payload);
+    } catch (error) {
+      setSubmitError(sanitizedCatalogError(error));
+    } finally {
+      submitLock.current = false;
+      setSubmitting(false);
+    }
   }
 
   const input = (label: string, key: string, disabled = false, type = "text") => (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-muted-foreground font-medium">{label}</span>
+      <span className="text-xs text-muted-foreground font-medium">{label}{["alavontName", "alavontCategory", "price"].includes(key) ? " *" : ""}</span>
       <Input
         type={type}
         value={fieldVal(form[key])}
         onChange={set(key)}
-        disabled={disabled || isSaving}
+        disabled={disabled || requestPending}
         className="text-sm"
         placeholder={disabled ? "WooCommerce managed" : undefined}
       />
+      {(key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]) && (
+        <span className="text-xs text-red-400">{key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]}</span>
+      )}
     </label>
   );
 
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={(open) => { if (!open && !requestPending) onClose(); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -165,8 +173,9 @@ function EditDialog({
             </div>
             <div className="grid grid-cols-2 gap-3">
               {input("Alavont Name", "alavontName", isWoo)}
-              {input("Internal Name (base)", "name", isWoo)}
+              {input("Internal Name (base, optional)", "name", isWoo)}
               {input("Alavont Category", "alavontCategory", isWoo)}
+              {input("Internal Category (base, optional)", "category", isWoo)}
               {input("Alavont Image URL", "alavontImageUrl", isWoo)}
               {input("Lab Name / Internal", "labName", isWoo)}
               {input("SKU", "sku")}
@@ -178,7 +187,7 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.alavontDescription)}
                 onChange={(e) => setForm(f => ({ ...f, alavontDescription: e.target.value }))}
-                disabled={isWoo || isSaving}
+                disabled={isWoo || requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -201,7 +210,7 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.luciferCruzDescription)}
                 onChange={(e) => setForm(f => ({ ...f, luciferCruzDescription: e.target.value }))}
-                disabled={isSaving}
+                disabled={requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -226,7 +235,7 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.customerSafeDescription)}
                 onChange={(e) => setForm(f => ({ ...f, customerSafeDescription: e.target.value }))}
-                disabled={isSaving}
+                disabled={requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -242,7 +251,7 @@ function EditDialog({
                   type="checkbox"
                   checked={Boolean(form.isAvailable)}
                   onChange={e => setForm(f => ({ ...f, isAvailable: e.target.checked }))}
-                  disabled={isSaving}
+                  disabled={requestPending}
                   className="w-4 h-4"
                 />
                 <span className="text-sm">Available for ordering</span>
@@ -251,14 +260,15 @@ function EditDialog({
           )}
 
           <div className="flex gap-2 pt-2">
-            <Button onClick={handleSave} disabled={isSaving} className="flex-1">
-              {isSaving ? <Loader2 size={14} className="animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
-              {isNew ? "Create Product" : "Save Changes"}
+            <Button type="button" onClick={() => void handleSave()} disabled={requestPending || !catalogProductDraftIsValid(form)} className="flex-1">
+              {requestPending ? <Loader2 size={14} className="animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
+              {requestPending ? (isNew ? "Creating…" : "Saving…") : (isNew ? "Create Product" : "Save Changes")}
             </Button>
-            <Button variant="outline" onClick={onClose} disabled={isSaving}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={requestPending}>
               Cancel
             </Button>
           </div>
+          {submitError && <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{submitError}</div>}
         </div>
       </DialogContent>
     </Dialog>
@@ -305,7 +315,11 @@ export default function AdminEditCatalog() {
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
-    onSuccess: () => { setEditItem(null); qc.invalidateQueries({ queryKey: ["edit-catalog"] }); },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["edit-catalog"] });
+      await refetch();
+      setEditItem(null);
+    },
   });
 
   const deleteMutation = useMutation({
@@ -510,7 +524,7 @@ export default function AdminEditCatalog() {
         <EditDialog
           item={editItem}
           onClose={() => setEditItem(null)}
-          onSave={data => saveMutation.mutate({ id: editItem.id, data })}
+          onSave={async data => { await saveMutation.mutateAsync({ id: editItem.id, data }); }}
           isSaving={saveMutation.isPending}
         />
       )}

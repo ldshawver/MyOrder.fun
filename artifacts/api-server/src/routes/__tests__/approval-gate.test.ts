@@ -66,6 +66,9 @@ vi.mock("@workspace/db", () => {
   };
   const labTechShiftsTable = {};
   const inventoryTemplatesTable = {
+    id: "inventory_id_col",
+    tenantId: "inventory_tenantId_col",
+    displayOrder: "inventory_displayOrder_col",
     isActive: "inventory_isActive_col",
     catalogItemId: "inventory_catalogItemId_col",
     rowType: "inventory_rowType_col",
@@ -162,7 +165,7 @@ vi.mock("../../lib/printRouter", () => ({
 // ---------------------------------------------------------------------------
 // Import mocked db so we can configure it per test
 // ---------------------------------------------------------------------------
-import { db } from "@workspace/db";
+import { db, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -264,6 +267,46 @@ describe("Approval gate — catalog endpoints", () => {
     const app = buildApp(catalogRouter);
     const res = await supertest(app).get("/api/catalog");
     expect(res.status).toBe(401);
+  });
+
+  it.each(["user", "csr", "supervisor"])("rejects %s product creation without writing", async (role) => {
+    configureDbForUser({ ...makeApprovedUser(), role, tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: "Test", category: "Staging", price: 1 });
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid required values without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: " ", category: "", price: 0 });
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("creates exactly one catalog row in the authenticated admin tenant", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const catalogValues = vi.fn((values: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: 41, ...values }]),
+    }));
+    const templateValues = vi.fn().mockResolvedValue(undefined);
+    (db.insert as ReturnType<typeof vi.fn>).mockImplementation((table: unknown) => ({
+      values: table === catalogItemsTable ? catalogValues : templateValues,
+    }));
+
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({
+      name: " Tenant Seven Product ", category: " Staging ", price: 1.25, tenantId: 999,
+    });
+
+    expect(res.status).toBe(201);
+    expect(catalogValues).toHaveBeenCalledTimes(1);
+    expect(catalogValues).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 7, name: "Tenant Seven Product", category: "Staging", price: "1.25",
+    }));
+    expect(templateValues).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalledWith(inventoryTemplatesTable);
   });
 });
 

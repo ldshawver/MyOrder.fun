@@ -562,15 +562,24 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const tenantId = await getHouseTenantId();
+  const name = body.data.name.trim();
+  const category = body.data.category.trim();
+  if (!name || !category || !Number.isFinite(body.data.price) || body.data.price <= 0) {
+    res.status(400).json({ error: "Name, category, and a price greater than zero are required" });
+    return;
+  }
+  const actor = req.dbUser!;
+  const tenantId = actor.tenantId ?? (normalizeRole(actor.role) === "global_admin" ? await getHouseTenantId() : null);
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required" }); return; }
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
   const { costBasis, ...createData } = body.data;
   const [row] = await db.insert(catalogItemsTable).values({
     ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
-    name: body.data.name,
-    alavontName: body.data.alavontName ?? body.data.name,
+    name,
+    category,
+    alavontName: body.data.alavontName ?? name,
     alavontDescription: body.data.alavontDescription ?? body.data.description ?? null,
     alavontCategory: body.data.alavontCategory ?? body.data.category,
     alavontImageUrl: body.data.alavontImageUrl ?? body.data.imageUrl ?? null,
