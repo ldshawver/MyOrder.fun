@@ -285,6 +285,17 @@ describe("Approval gate — catalog endpoints", () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  it("rejects an invalid nonblank image URL without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({
+      name: "Test", category: "Staging", price: 1, imageUrl: "not-a-url",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/url/i);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it("rejects an unscoped tenant admin without writing", async () => {
     configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: null });
     const app = buildApp(catalogRouter);
@@ -294,7 +305,7 @@ describe("Approval gate — catalog endpoints", () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it("creates exactly one catalog row in the authenticated admin tenant", async () => {
+  it("creates one complete minimal product with blank optional fields normalized", async () => {
     configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
     const catalogValues = vi.fn((values: Record<string, unknown>) => ({
       returning: vi.fn().mockResolvedValue([{ id: 41, ...values }]),
@@ -307,15 +318,20 @@ describe("Approval gate — catalog endpoints", () => {
     const app = buildApp(catalogRouter);
     const res = await supertest(app).post("/api/catalog").send({
       name: " Tenant Seven Product ", category: " Staging ", price: 1.25, tenantId: 999,
+      description: null, imageUrl: null, sku: null, alavontImageUrl: " ", luciferCruzImageUrl: null,
     });
 
     expect(res.status).toBe(201);
+    expect(JSON.stringify(res.body)).not.toContain("invalid_type");
     expect(catalogValues).toHaveBeenCalledTimes(1);
     expect(catalogValues).toHaveBeenCalledWith(expect.objectContaining({
       tenantId: 7, name: "Tenant Seven Product", category: "Staging", price: "1.25",
+      description: undefined, imageUrl: undefined, sku: undefined,
+      alavontImageUrl: null, luciferCruzImageUrl: null,
     }));
     expect(templateValues).toHaveBeenCalledTimes(1);
     expect(db.insert).toHaveBeenCalledWith(inventoryTemplatesTable);
+    expect(db.insert).toHaveBeenCalledTimes(2);
   });
 });
 

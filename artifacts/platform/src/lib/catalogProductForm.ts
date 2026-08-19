@@ -1,8 +1,21 @@
 export type CatalogProductDraft = Record<string, string | boolean | number>;
-export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price", string>>;
+export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price" | "imageUrl" | "alavontImageUrl" | "luciferCruzImageUrl", string>>;
 
 function canonicalText(form: CatalogProductDraft, primary: string, fallback: string): string {
   return String(form[primary] || form[fallback] || "").trim();
+}
+
+function optionalText(form: CatalogProductDraft, key: string): string | undefined {
+  return String(form[key] || "").trim() || undefined;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 export function validateCatalogProductDraft(form: CatalogProductDraft): CatalogProductFieldErrors {
@@ -11,6 +24,10 @@ export function validateCatalogProductDraft(form: CatalogProductDraft): CatalogP
   if (!canonicalText(form, "category", "alavontCategory")) errors.category = "Category is required.";
   const price = Number(form.price);
   if (!Number.isFinite(price) || price <= 0) errors.price = "Price must be greater than zero.";
+  for (const key of ["imageUrl", "alavontImageUrl", "luciferCruzImageUrl"] as const) {
+    const value = optionalText(form, key);
+    if (value && !isHttpUrl(value)) errors[key] = "Image URL must be a valid HTTP or HTTPS URL.";
+  }
   return errors;
 }
 
@@ -26,14 +43,14 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     customerSafeDescription: String(form.customerSafeDescription || "").trim() || null,
     category: canonicalText(form, "category", "alavontCategory"),
     alavontCategory: String(form.alavontCategory || "").trim() || null,
-    description: String(form.description || "").trim() || null,
+    description: optionalText(form, "description"),
     alavontDescription: String(form.alavontDescription || "").trim() || null,
     price: Number(form.price),
     regularPrice: form.regularPrice ? Number(form.regularPrice) : null,
-    imageUrl: String(form.imageUrl || "").trim() || null,
+    imageUrl: optionalText(form, "imageUrl"),
     alavontImageUrl: String(form.alavontImageUrl || "").trim() || null,
     labName: String(form.labName || "").trim() || null,
-    sku: String(form.sku || "").trim() || null,
+    sku: optionalText(form, "sku"),
     isAvailable: form.isAvailable !== false,
   };
 }

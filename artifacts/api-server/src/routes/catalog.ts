@@ -21,6 +21,25 @@ const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
+const optionalBlankText = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? undefined : value,
+  z.string().trim().optional(),
+);
+const optionalBlankHttpUrl = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? undefined : value,
+  z.string().trim().url().refine(value => value.startsWith("http://") || value.startsWith("https://"), "Expected an HTTP or HTTPS URL").optional(),
+);
+const nullableBlankHttpUrl = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? null : value,
+  z.string().trim().url().refine(value => value.startsWith("http://") || value.startsWith("https://"), "Expected an HTTP or HTTPS URL").nullable().optional(),
+);
+const createCatalogItemRequest = CreateCatalogItemBody.extend({
+  description: optionalBlankText,
+  sku: optionalBlankText,
+  imageUrl: optionalBlankHttpUrl,
+  alavontImageUrl: nullableBlankHttpUrl,
+  luciferCruzImageUrl: nullableBlankHttpUrl,
+});
 const catalogDisplayUpdateSchema = z.object({
   displayName: z.string().trim().max(160).nullable().optional(),
   displayDescription: z.string().trim().max(4000).nullable().optional(),
@@ -557,7 +576,7 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
 
 // POST /api/catalog
 router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const body = CreateCatalogItemBody.safeParse(req.body);
+  const body = createCatalogItemRequest.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;

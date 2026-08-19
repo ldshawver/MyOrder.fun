@@ -19,6 +19,24 @@ describe("catalog product submission", () => {
     }));
   });
 
+  it("omits optional blank non-nullable fields from a minimal create request", () => {
+    const payload = createCatalogProductPayload({ ...valid, description: " ", imageUrl: "", sku: "" });
+    const requestBody = JSON.parse(JSON.stringify(payload));
+    expect(requestBody).not.toHaveProperty("description");
+    expect(requestBody).not.toHaveProperty("imageUrl");
+    expect(requestBody).not.toHaveProperty("sku");
+  });
+
+  it("accepts blank image URLs but rejects invalid nonblank image URLs", () => {
+    expect(validateCatalogProductDraft({ ...valid, imageUrl: "", alavontImageUrl: " " })).toEqual({});
+    expect(validateCatalogProductDraft({ ...valid, imageUrl: "not-a-url" })).toEqual({
+      imageUrl: "Image URL must be a valid HTTP or HTTPS URL.",
+    });
+    expect(validateCatalogProductDraft({ ...valid, alavontImageUrl: "ftp://example.test/image.png" })).toEqual({
+      alavontImageUrl: "Image URL must be a valid HTTP or HTTPS URL.",
+    });
+  });
+
   it("valid input sends exactly one request despite rapid repeated clicks", async () => {
     const post = vi.fn(async () => ({ item: valid }));
     const submit = createSingleFlightSubmit(post);
