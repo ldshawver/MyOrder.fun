@@ -285,6 +285,15 @@ describe("Approval gate — catalog endpoints", () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  it("rejects an unscoped tenant admin without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: null });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: "Test", category: "Staging", price: 1 });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Tenant assignment required");
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   it("creates exactly one catalog row in the authenticated admin tenant", async () => {
     configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
     const catalogValues = vi.fn((values: Record<string, unknown>) => ({
