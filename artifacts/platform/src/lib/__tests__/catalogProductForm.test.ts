@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { catalogProductDraftIsValid, createCatalogProductPayload, createSingleFlightSubmit, sanitizedCatalogError, validateCatalogProductDraft } from "../catalogProductForm";
+import { readFileSync } from "node:fs";
 
 const valid = { name: "Staging Item", category: "Test", price: "1.00" };
 
@@ -57,5 +58,13 @@ describe("catalog product submission", () => {
 
   it("returns the successfully created product", async () => {
     await expect(createSingleFlightSubmit(async () => ({ item: valid }))()).resolves.toEqual({ item: valid });
+  });
+
+  it("places the saved response in cache before one active refetch", () => {
+    const source = readFileSync(new URL("../../pages/admin/edit-catalog.tsx", import.meta.url), "utf8");
+    expect(source).toContain("qc.setQueryData<CatalogProduct[]>");
+    expect(source).toContain('setSaveConfirmation(`Product ${saved.id} saved.`)');
+    expect(source).toContain('refetchType: "active"');
+    expect(source).not.toContain("await refetch();\n      setEditItem(null)");
   });
 });

@@ -284,6 +284,7 @@ export default function AdminEditCatalog() {
   const [showWoo, setShowWoo] = useState(false);
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [saveConfirmation, setSaveConfirmation] = useState<string | null>(null);
 
   const fetchCatalog = useCallback(async (): Promise<CatalogProduct[]> => {
     const token = await getToken();
@@ -313,12 +314,16 @@ export default function AdminEditCatalog() {
         body: JSON.stringify(data),
       });
       if (!r.ok) throw new Error(await r.text());
-      return r.json();
+      return r.json() as Promise<CatalogProduct>;
     },
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["edit-catalog"] });
-      await refetch();
+    onSuccess: async (saved) => {
+      qc.setQueryData<CatalogProduct[]>(["edit-catalog"], current => {
+        const withoutSaved = (current ?? []).filter(item => item.id !== saved.id);
+        return [...withoutSaved, saved];
+      });
+      setSaveConfirmation(`Product ${saved.id} saved.`);
       setEditItem(null);
+      await qc.invalidateQueries({ queryKey: ["edit-catalog"], refetchType: "active" });
     },
   });
 
@@ -382,6 +387,11 @@ export default function AdminEditCatalog() {
       </div>
 
       {/* Search + filters */}
+      {saveConfirmation && (
+        <div role="status" className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300">
+          {saveConfirmation}
+        </div>
+      )}
       <div className="flex gap-3 flex-wrap">
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />

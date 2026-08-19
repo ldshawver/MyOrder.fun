@@ -14,4 +14,9 @@ describe("catalog creation security", () => {
     expect(source).toContain("const tenantId = actor.tenantId ?? (normalizeRole(actor.role) === \"global_admin\"");
     expect(source).toContain('res.status(403).json({ error: "Tenant assignment required" })');
   });
+
+  it("normalizes nullable database text before parsing catalog responses", () => {
+    expect(source).toContain("description: i.description ?? undefined");
+    expect(source).toContain("sku: i.sku ?? undefined");
+  });
 });
