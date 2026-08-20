@@ -4,10 +4,13 @@ import { z } from "zod";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { loadPaymentConfig, requireOnlinePayments } from "../payments/config";
-import { PayPalProvider } from "../payments/paypal";
+import { PayPalProvider, PayPalProviderError } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
 import type { PayPalTransmissionHeaders } from "../payments/provider";
-import { deductPaidOrderInventory } from "./payments";
+import { deductPaidOrderInventory } from "../payments/inventory";
+import { db, ordersTable } from "@workspace/db";
+import { and, eq } from "drizzle-orm";
+import { releaseCustomerCredit } from "../payments/customerCredit";
 
 const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Payment requests rate-limited" } });
@@ -32,14 +35,35 @@ router.get("/payments/config", (_req, res) => {
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
 
+router.get("/payments/paypal/browser-token", ...auth, async (_req, res) => {
+  try { const config = requireOnlinePayments(loadPaymentConfig()); const token = await new PayPalProvider(config).browserSafeClientToken(); res.setHeader("Cache-Control", "no-store"); res.json(token); }
+  catch (error) { fail(res, error); }
+});
+
 router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
   try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().create({ tenantId: actor.tenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
   catch (error) { fail(res, error); }
 });
 
 router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res) => {
-  try { const body = Capture.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().capture({ tenantId: actor.tenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: actor.tenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
-  catch (error) { fail(res, error); }
+  let body: z.infer<typeof Capture> | undefined; let orderId: number | undefined;
+  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().capture({ tenantId: actor.tenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: actor.tenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
+  catch (error) {
+    const actor = req.dbUser!;
+    // Release only on a definitive decline. Unknown outcomes retain the
+    // reservation until provider reconciliation prevents double spending.
+    if (body && orderId && error instanceof PayPalProviderError && error.failureClass === "declined") {
+      await db.transaction(async tx => {
+        const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, actor.tenantId!), eq(ordersTable.id, orderId!), eq(ordersTable.customerId, actor.id))).limit(1);
+        const amountCents = Math.round(Number(order?.customerCreditApplied ?? 0) * 100);
+        if (order && amountCents > 0) {
+          await releaseCustomerCredit(tx, { tenantId: actor.tenantId!, customerId: actor.id, actorUserId: actor.id, orderId: order.id, amountCents, idempotencyKey: `release:declined:${body!.attemptId}`, reason: "PayPal capture declined" });
+          await tx.update(ordersTable).set({ customerCreditApplied: "0.00", remainingTenderAmount: String(Number(order.total).toFixed(2)) }).where(and(eq(ordersTable.tenantId, actor.tenantId!), eq(ordersTable.id, order.id)));
+        }
+      }).catch(() => undefined);
+    }
+    fail(res, error);
+  }
 });
 
 router.post("/admin/payments/paypal/orders/:orderId/refund", ...auth, requirePermission("orders.refund"), async (req, res) => {

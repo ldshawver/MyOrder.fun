@@ -11,10 +11,17 @@ export type ListOrdersStatus = typeof ListOrdersStatus[keyof typeof ListOrdersSt
 
 export const ListOrdersStatus = {
   pending: 'pending',
+  submitted: 'submitted',
   confirmed: 'confirmed',
+  accepted: 'accepted',
   processing: 'processing',
+  preparing: 'preparing',
   ready: 'ready',
   shipped: 'shipped',
   delivered: 'delivered',
+  completed: 'completed',
   cancelled: 'cancelled',
+  voided: 'voided',
+  archived: 'archived',
+  refunded: 'refunded',
 } as const;

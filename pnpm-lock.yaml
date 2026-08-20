@@ -246,9 +246,6 @@ importers:
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
-      stripe:
-        specifier: ^21.0.1
-        version: 21.0.1(@types/node@25.6.0)
       svix:
         specifier: ^1.90.0
         version: 1.90.0
@@ -4885,15 +4882,6 @@ packages:
   strip-json-comments@5.0.3:
     resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
     engines: {node: '>=14.16'}
-
-  stripe@21.0.1:
-    resolution: {integrity: sha512-ocv0j7dWttswDWV2XL/kb6+yiLpDXNXL3RQAOB5OB2kr49z0cEatdQc12+zP/j5nrXk6rAsT4N3y/NUvBbK7Pw==}
-    engines: {node: '>=18'}
-    peerDependencies:
-      '@types/node': '>=18'
-    peerDependenciesMeta:
-      '@types/node':
-        optional: true
 
   stylis@4.4.0:
     resolution: {integrity: sha512-5Z9ZpRzfuH6l/UAvCPAPUo3665Nk2wLaZU3x+TLHKVzIz33+sbJqbtrYoC3KD4/uVOr2Zp+L0LySezP9OHV9yA==}
@@ -9919,10 +9907,6 @@ snapshots:
   strip-final-newline@4.0.0: {}
 
   strip-json-comments@5.0.3: {}
-
-  stripe@21.0.1(@types/node@25.6.0):
-    optionalDependencies:
-      '@types/node': 25.6.0
 
   stylis@4.4.0: {}
 

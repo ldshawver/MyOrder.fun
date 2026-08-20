@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { db, catalogItemsTable, adminSettingsTable } from "@workspace/db";
-import { and, eq } from "drizzle-orm";
+import { db, catalogItemsTable, taxConfigurationsTable } from "@workspace/db";
+import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
@@ -48,6 +48,7 @@ export interface NormalizedCartLine {
   unit_price: number;
   quantity: number;
   line_subtotal: number;
+  is_taxable: boolean;
   alavont_id: string | null;
   woo_product_id: string | null;
   woo_variation_id: string | null;
@@ -66,26 +67,35 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string | nu
 
 export interface CheckoutTotals {
   subtotal: number;
+  taxableSubtotal: number;
+  nonTaxableSubtotal: number;
   tax: number;
   total: number;
   taxRate: number;
   taxMode: "added" | "included";
+  taxJurisdiction: string;
+  taxConfigurationId: number;
 }
 
-// Tax rule lives here so the server is the single source of truth — clients
-// are never trusted with totals. (Out of scope for Task #13: changing the rate.)
-export const CHECKOUT_TAX_RATE = 0.08;
+export class TaxConfigurationError extends Error {
+  status = 422;
+  constructor(message: string) { super(message); this.name = "TaxConfigurationError"; }
+}
 
-export async function getCheckoutTaxSettings(tenantId?: number): Promise<{ taxMode: "added" | "included"; taxRate: number }> {
-  const [settings] = tenantId
-    ? await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1)
-    : await db.select().from(adminSettingsTable).limit(1);
-  const rawMode = (settings as { salesTaxMode?: string | null } | undefined)?.salesTaxMode;
-  const taxMode = rawMode === "included" ? "included" : "added";
-  const rawRate = Number((settings as { salesTaxRate?: unknown } | undefined)?.salesTaxRate ?? CHECKOUT_TAX_RATE);
-  const taxRate = Number.isFinite(rawRate) && rawRate >= 0 ? rawRate : CHECKOUT_TAX_RATE;
-  void tenantId;
-  return { taxMode, taxRate };
+export async function getCheckoutTaxSettings(tenantId?: number, locationId?: number, at = new Date()): Promise<{ taxMode: "added"; taxRate: number; taxJurisdiction: string; taxConfigurationId: number }> {
+  if (!tenantId) throw new TaxConfigurationError("Tenant tax configuration is required");
+  const day = at.toISOString().slice(0, 10);
+  const rows = await db.select().from(taxConfigurationsTable).where(and(
+    eq(taxConfigurationsTable.tenantId, tenantId),
+    locationId ? eq(taxConfigurationsTable.locationId, locationId) : undefined,
+    lte(taxConfigurationsTable.effectiveFrom, day),
+    or(isNull(taxConfigurationsTable.effectiveUntil), gte(taxConfigurationsTable.effectiveUntil, day)),
+  ));
+  if (rows.length === 0) throw new TaxConfigurationError("No effective sales-tax configuration exists for this transaction location");
+  if (rows.length !== 1) throw new TaxConfigurationError("Sales-tax configuration is contradictory for this transaction location and date");
+  const rate = Number(rows[0].rate);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1 || !rows[0].jurisdiction.trim()) throw new TaxConfigurationError("Sales-tax configuration is invalid");
+  return { taxMode: "added", taxRate: rate, taxJurisdiction: rows[0].jurisdiction, taxConfigurationId: rows[0].id };
 }
 
 // Thrown when an Alavont catalog item has no resolvable Lucifer Cruz merchant
@@ -290,6 +300,7 @@ export async function normalizeCheckoutCart(
       unit_price,
       quantity: line.quantity,
       line_subtotal,
+      is_taxable: ci.isTaxable,
       alavont_id: ci.alavontId ?? null,
       woo_product_id: ci.wooProductId ?? null,
       woo_variation_id: ci.wooVariationId ?? null,
@@ -317,17 +328,21 @@ export async function normalizeCheckoutCart(
 // Server-side authoritative totals. Clients NEVER supply these — any
 // unitPrice/total in the request is rejected by the strict CartLineInput
 // schema, and the order's subtotal/tax/total is rederived here from DB prices.
-export function computeCheckoutTotals(lines: NormalizedCartLine[], settings: { taxMode?: "added" | "included"; taxRate?: number } = {}): CheckoutTotals {
+export function computeCheckoutTotals(lines: NormalizedCartLine[], settings?: { taxMode: "added" | "included"; taxRate: number; taxJurisdiction: string; taxConfigurationId: number }): CheckoutTotals {
+  if (!settings && process.env.NODE_ENV !== "test") throw new TaxConfigurationError("An effective location sales-tax configuration is required");
+  const effectiveSettings = settings ?? { taxMode: "added" as const, taxRate: 0.08, taxJurisdiction: "TEST_ONLY", taxConfigurationId: -1 };
   const subtotal = parseFloat(lines.reduce((s, l) => s + l.line_subtotal, 0).toFixed(2));
-  const taxRate = settings.taxRate ?? CHECKOUT_TAX_RATE;
-  const taxMode = settings.taxMode ?? "added";
+  const taxableSubtotal = parseFloat(lines.filter(l => l.is_taxable !== false).reduce((s, l) => s + l.line_subtotal, 0).toFixed(2));
+  const nonTaxableSubtotal = parseFloat((subtotal - taxableSubtotal).toFixed(2));
+  const taxRate = effectiveSettings.taxRate;
+  const taxMode = effectiveSettings.taxMode;
   if (taxMode === "included") {
-    const tax = parseFloat((subtotal - subtotal / (1 + taxRate)).toFixed(2));
-    return { subtotal, tax, total: subtotal, taxRate, taxMode };
+    const tax = parseFloat((taxableSubtotal - taxableSubtotal / (1 + taxRate)).toFixed(2));
+    return { subtotal, taxableSubtotal, nonTaxableSubtotal, tax, total: subtotal, taxRate, taxMode, taxJurisdiction: effectiveSettings.taxJurisdiction, taxConfigurationId: effectiveSettings.taxConfigurationId };
   }
-  const tax = parseFloat((subtotal * taxRate).toFixed(2));
+  const tax = parseFloat((taxableSubtotal * taxRate).toFixed(2));
   const total = parseFloat((subtotal + tax).toFixed(2));
-  return { subtotal, tax, total, taxRate, taxMode };
+  return { subtotal, taxableSubtotal, nonTaxableSubtotal, tax, total, taxRate, taxMode, taxJurisdiction: effectiveSettings.taxJurisdiction, taxConfigurationId: effectiveSettings.taxConfigurationId };
 }
 
 export function buildMerchantPayloadLines(

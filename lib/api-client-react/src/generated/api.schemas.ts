@@ -10,7 +10,6 @@ export interface HealthStatus {
   sha?: string;
   uptime?: number;
 }
-
 export interface OnboardingRequestBody {
   companyName: string;
   contactName: string;
@@ -167,6 +166,7 @@ export interface CatalogItem {
   compareAtPrice?: number;
   stockQuantity?: number;
   isAvailable: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: CatalogItemMediaGalleryItem[];
   tags?: string[];
@@ -223,6 +223,7 @@ export interface CreateCatalogItemBody {
   homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
@@ -293,6 +294,7 @@ export interface UpdateCatalogItemBody {
   homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
@@ -347,6 +349,8 @@ export interface CatalogCategoriesResponse {
   categories: string[];
 }
 
+export type OrderItemInventoryDeductionsItem = { [key: string]: unknown };
+
 export interface OrderItem {
   id: number;
   catalogItemId: number;
@@ -354,32 +358,27 @@ export interface OrderItem {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
-  inventoryDeductions?: Array<{
-    locationId: number;
-    locationName: string | null;
-    quantity: number;
-    remainingStock: number;
-  }>;
+  inventoryDeductions?: OrderItemInventoryDeductionsItem[];
 }
 
 export type OrderStatus = typeof OrderStatus[keyof typeof OrderStatus];
 
 
 export const OrderStatus = {
-  draft: 'draft',
+  pending: 'pending',
   submitted: 'submitted',
-  in_progress: 'in_progress',
+  confirmed: 'confirmed',
+  accepted: 'accepted',
+  processing: 'processing',
   preparing: 'preparing',
   ready: 'ready',
-  completed: 'completed',
-  cancelled: 'cancelled',
-  refunded: 'refunded',
-  reconciliation_required: 'reconciliation_required',
-  pending: 'pending',
-  confirmed: 'confirmed',
-  processing: 'processing',
   shipped: 'shipped',
   delivered: 'delivered',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  voided: 'voided',
+  archived: 'archived',
+  refunded: 'refunded',
 } as const;
 
 export type OrderPaymentStatus = typeof OrderPaymentStatus[keyof typeof OrderPaymentStatus];
@@ -389,21 +388,21 @@ export const OrderPaymentStatus = {
   unpaid: 'unpaid',
   pending: 'pending',
   paid: 'paid',
+  partially_refunded: 'partially_refunded',
   refunded: 'refunded',
   failed: 'failed',
 } as const;
+
+export type OrderTaxSnapshot = { [key: string]: unknown };
 
 export type OrderCheckoutConfirmationPaymentMethod = typeof OrderCheckoutConfirmationPaymentMethod[keyof typeof OrderCheckoutConfirmationPaymentMethod];
 
 
 export const OrderCheckoutConfirmationPaymentMethod = {
   cash: 'cash',
-  cash_app: 'cash_app',
-  stripe: 'stripe',
   paypal: 'paypal',
-  venmo: 'venmo',
-  gift_card: 'gift_card',
-  manual: 'manual',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
 } as const;
 
 export type OrderCheckoutConfirmation = {
@@ -427,16 +426,12 @@ export type OrderFulfillmentStatus = typeof OrderFulfillmentStatus[keyof typeof 
 
 
 export const OrderFulfillmentStatus = {
-  draft: 'draft',
   submitted: 'submitted',
-  in_progress: 'in_progress',
   accepted: 'accepted',
   preparing: 'preparing',
   ready: 'ready',
   completed: 'completed',
   cancelled: 'cancelled',
-  refunded: 'refunded',
-  reconciliation_required: 'reconciliation_required',
 } as const;
 
 export type DeliveryQuoteSelectionProvider = typeof DeliveryQuoteSelectionProvider[keyof typeof DeliveryQuoteSelectionProvider];
@@ -520,14 +515,24 @@ export interface Order {
   subtotal: number;
   tax?: number;
   total: number;
+  grossSubtotal?: number;
+  discountTotal?: number;
+  taxableSubtotal?: number;
+  nonTaxableSubtotal?: number;
+  customerCreditApplied: number;
+  remainingTenderAmount: number;
+  amountTendered?: number | null;
+  changeGiven?: number | null;
+  taxSnapshot?: OrderTaxSnapshot;
   shippingAddress?: string;
   deliveryMethod?: string | null;
-  orderType?: 'WALK_IN' | 'CSR' | 'ONLINE';
   deliveryQuoteId?: string | null;
   deliveryFee?: number | null;
   deliveryCurrency?: string | null;
   deliveryQuote?: DeliveryQuote | null;
   notes?: string;
+  selectedPaymentMethod?: string;
+  paymentMethod?: string;
   checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];
   assignedCsrUserId?: number | null;
@@ -548,6 +553,28 @@ export interface Order {
   updatedAt: string;
 }
 
+export type CreateOrderBodyCheckoutConversionSnapshot = { [key: string]: unknown };
+
+export type CreateOrderBodySelectedPaymentMethod = typeof CreateOrderBodySelectedPaymentMethod[keyof typeof CreateOrderBodySelectedPaymentMethod];
+
+
+export const CreateOrderBodySelectedPaymentMethod = {
+  cash: 'cash',
+  paypal: 'paypal',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
+} as const;
+
+export type CreateOrderBodyPaymentMethod = typeof CreateOrderBodyPaymentMethod[keyof typeof CreateOrderBodyPaymentMethod];
+
+
+export const CreateOrderBodyPaymentMethod = {
+  cash: 'cash',
+  paypal: 'paypal',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
+} as const;
+
 export type CreateOrderBodyItemsItem = {
   /** @minimum 1 */
   catalogItemId: number;
@@ -560,12 +587,9 @@ export type CreateOrderBodyCheckoutConfirmationPaymentMethod = typeof CreateOrde
 
 export const CreateOrderBodyCheckoutConfirmationPaymentMethod = {
   cash: 'cash',
-  cash_app: 'cash_app',
-  stripe: 'stripe',
   paypal: 'paypal',
-  venmo: 'venmo',
-  gift_card: 'gift_card',
-  manual: 'manual',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
 } as const;
 
 export type CreateOrderBodyCheckoutConfirmation = {
@@ -589,20 +613,29 @@ export const CreateOrderBodyDeliveryMethod = {
   csr_delivery: 'csr_delivery',
 } as const;
 
+export type CreateOrderBodyOrderType = typeof CreateOrderBodyOrderType[keyof typeof CreateOrderBodyOrderType] | null;
+
+
+export const CreateOrderBodyOrderType = {
+  WALK_IN: 'WALK_IN',
+  CSR: 'CSR',
+  ONLINE: 'ONLINE',
+} as const;
+
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
-  orderType?: 'WALK_IN' | 'CSR' | 'ONLINE';
+  checkoutConversionToken?: string;
+  checkoutConversionSnapshot?: CreateOrderBodyCheckoutConversionSnapshot;
+  selectedPaymentMethod?: CreateOrderBodySelectedPaymentMethod;
+  paymentMethod?: CreateOrderBodyPaymentMethod;
+  csrDeliveryDistanceMiles?: number | null;
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
-  checkoutConversionToken?: string;
-  checkoutConversionSnapshot?: unknown;
-  selectedPaymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
-  paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
-  csrDeliveryDistanceMiles?: number | null;
+  orderType?: CreateOrderBodyOrderType;
 }
 
 export type CreateDeliveryQuoteBodyItemsItem = {
@@ -623,20 +656,20 @@ export type UpdateOrderStatusBodyStatus = typeof UpdateOrderStatusBodyStatus[key
 
 
 export const UpdateOrderStatusBodyStatus = {
-  draft: 'draft',
+  pending: 'pending',
   submitted: 'submitted',
-  in_progress: 'in_progress',
+  confirmed: 'confirmed',
+  accepted: 'accepted',
+  processing: 'processing',
   preparing: 'preparing',
   ready: 'ready',
-  completed: 'completed',
-  cancelled: 'cancelled',
-  refunded: 'refunded',
-  reconciliation_required: 'reconciliation_required',
-  pending: 'pending',
-  confirmed: 'confirmed',
-  processing: 'processing',
   shipped: 'shipped',
   delivered: 'delivered',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  voided: 'voided',
+  archived: 'archived',
+  refunded: 'refunded',
 } as const;
 
 export interface UpdateOrderStatusBody {
@@ -1119,7 +1152,7 @@ export interface TokenizePaymentBody {
      * DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
   server-side from the normalized order lines + tax rule. Provided
   here only for legacy clients; mismatches are logged but do not
-  change the amount sent to Stripe.
+  change the amount for this retired endpoint.
 
      * @minimum 0
      */
@@ -1175,20 +1208,20 @@ export type ListOrdersStatus = typeof ListOrdersStatus[keyof typeof ListOrdersSt
 
 
 export const ListOrdersStatus = {
-  draft: 'draft',
+  pending: 'pending',
   submitted: 'submitted',
-  in_progress: 'in_progress',
+  confirmed: 'confirmed',
+  accepted: 'accepted',
+  processing: 'processing',
   preparing: 'preparing',
   ready: 'ready',
-  completed: 'completed',
-  cancelled: 'cancelled',
-  refunded: 'refunded',
-  reconciliation_required: 'reconciliation_required',
-  pending: 'pending',
-  confirmed: 'confirmed',
-  processing: 'processing',
   shipped: 'shipped',
   delivered: 'delivered',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  voided: 'voided',
+  archived: 'archived',
+  refunded: 'refunded',
 } as const;
 
 export type AdjustOrderEtaBody = {

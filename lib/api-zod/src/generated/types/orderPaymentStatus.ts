@@ -13,6 +13,7 @@ export const OrderPaymentStatus = {
   unpaid: 'unpaid',
   pending: 'pending',
   paid: 'paid',
+  partially_refunded: 'partially_refunded',
   refunded: 'refunded',
   failed: 'failed',
 } as const;

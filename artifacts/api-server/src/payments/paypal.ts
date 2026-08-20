@@ -10,6 +10,14 @@ export class PayPalProvider implements PaymentProvider {
   private accessToken?: { value: string; expiresAt: number };
   constructor(private readonly config: EnabledPaymentConfig, private readonly fetchImpl: typeof fetch = fetch) {}
 
+  async browserSafeClientToken(): Promise<{ accessToken: string; expiresIn: number }> {
+    const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
+    const response = await this.fetchImpl(`${this.config.apiOrigin}/v1/oauth2/token`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials&response_type=client_token&intent=sdk_init", signal: AbortSignal.timeout(10_000) });
+    const body = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number };
+    if (!response.ok || !body.access_token) throw new PayPalProviderError("provider_error", "PayPal browser token request failed");
+    return { accessToken: body.access_token, expiresIn: Math.min(900, Math.max(60, body.expires_in ?? 900)) };
+  }
+
   private async token(): Promise<string> {
     if (this.accessToken && this.accessToken.expiresAt > Date.now() + 30_000) return this.accessToken.value;
     const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
@@ -55,12 +63,14 @@ export class PayPalProvider implements PaymentProvider {
     const body = await this.request(`/v2/payments/captures/${encodeURIComponent(id)}`, { method: "GET" });
     const amount = body.amount as Json | undefined; const related = (body.supplementary_data as Json | undefined)?.related_ids as Json | undefined;
     if (typeof body.id !== "string" || typeof body.status !== "string" || typeof amount?.value !== "string" || typeof amount.currency_code !== "string" || typeof related?.order_id !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
-    return { orderId: related.order_id, captureId: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code } };
+    const source = body.payment_source as Json | undefined;
+    return { orderId: related.order_id, captureId: body.id, status: body.status, amount: { value: amount.value, currency: amount.currency_code }, fundingSource: source?.card ? "card" : source?.paypal ? "paypal" : undefined };
   }
   private parseCapture(body: Json, orderId: string): ProviderCapture {
     const unit = (body.purchase_units as Array<Json> | undefined)?.[0]; const payments = unit?.payments as Json | undefined; const capture = (payments?.captures as Array<Json> | undefined)?.[0]; const amount = capture?.amount as Json | undefined;
     if (typeof capture?.id !== "string" || typeof capture.status !== "string" || typeof amount?.value !== "string" || typeof amount.currency_code !== "string") throw new PayPalProviderError("invalid_response", "PayPal capture response invalid");
-    return { orderId, captureId: capture.id, status: capture.status, amount: { value: amount.value, currency: amount.currency_code } };
+    const source = body.payment_source as Json | undefined;
+    return { orderId, captureId: capture.id, status: capture.status, amount: { value: amount.value, currency: amount.currency_code }, fundingSource: source?.card ? "card" : source?.paypal ? "paypal" : undefined };
   }
   async refundCapture(id: string, amount: Money, requestId: string, note: string): Promise<ProviderRefund> {
     const body = await this.request(`/v2/payments/captures/${encodeURIComponent(id)}/refund`, { method: "POST", body: JSON.stringify({ amount: { value: amount.value, currency_code: amount.currency }, note_to_payer: note.slice(0, 255) }) }, requestId);

@@ -15,3 +15,4 @@ export * from "./visual-editor";
 export * from "./permissions";
 export * from "./tenant-settings";
 export * from "./payments";
+export * from "./tax";

@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
-import { desc, sql } from "drizzle-orm";
-import { db, labTechShiftsTable, orderItemsTable, ordersTable, usersTable } from "@workspace/db";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
+import { buildSalesTaxReportFromRows } from "../lib/salesTaxReport";
 
 const router: IRouter = Router();
 const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin")] as const;
@@ -219,6 +220,35 @@ router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"myorder-reports.csv\"");
   res.send(`${lines.join("\n")}\n`);
+});
+
+async function salesTaxReport(tenantId: number, query: Record<string, unknown>) {
+  const from = typeof query.dateFrom === "string" ? new Date(`${query.dateFrom}T00:00:00.000Z`) : new Date("1970-01-01T00:00:00.000Z");
+  const to = typeof query.dateTo === "string" ? new Date(`${query.dateTo}T23:59:59.999Z`) : new Date();
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) throw Object.assign(new Error("Invalid reporting date range"), { status: 400 });
+  const locationId = typeof query.locationId === "string" && query.locationId ? Number(query.locationId) : null;
+  const rows = await db.select({ order: ordersTable, tax: orderTaxSnapshotsTable }).from(ordersTable).innerJoin(orderTaxSnapshotsTable, and(eq(orderTaxSnapshotsTable.tenantId, ordersTable.tenantId), eq(orderTaxSnapshotsTable.orderId, ordersTable.id))).where(and(
+    eq(ordersTable.tenantId, tenantId), gte(ordersTable.createdAt, from), lte(ordersTable.createdAt, to),
+    locationId ? eq(orderTaxSnapshotsTable.locationId, locationId) : undefined,
+  ));
+  return buildSalesTaxReportFromRows(rows.filter(({ order }) => ["paid", "refunded", "partially_refunded"].includes(order.paymentStatus)).map(({ order, tax }) => ({
+    id: order.id, total: money(order.total), grossSales: money(tax.grossSales), discounts: money(tax.discountAmount), taxableSales: money(tax.taxableSubtotal), nonTaxableSales: money(tax.nonTaxableSubtotal),
+    taxCalculated: money(tax.taxCalculated), taxCollected: money(tax.taxCollected), taxRefunded: money(tax.taxRefunded), jurisdiction: tax.jurisdiction ?? "UNSPECIFIED", taxRate: money(tax.taxRate),
+    paymentMethod: order.paymentMethod ?? "unknown", customerCreditApplied: money(order.customerCreditApplied), voided: Boolean(order.voidedAt), refundAmount: order.paymentStatus === "refunded" ? money(order.total) : 0,
+  })));
+}
+
+router.get("/admin/reports/sales-tax", ...authChain, async (req, res): Promise<void> => {
+  try { res.json(await salesTaxReport(req.dbUser!.tenantId!, req.query)); }
+  catch (error) { res.status((error as { status?: number }).status ?? 500).json({ error: (error as Error).message }); }
+});
+
+router.get("/admin/reports/sales-tax.csv", ...authChain, async (req, res): Promise<void> => {
+  try {
+    const report = await salesTaxReport(req.dbUser!.tenantId!, req.query);
+    const lines = [["order_id", "payment_method", "total", "tax_calculated", "tax_collected", "tax_refunded"].join(","), ...report.transactions.map(row => [row.orderId, row.paymentMethod, row.total.toFixed(2), row.taxCalculated.toFixed(2), row.taxCollected.toFixed(2), row.taxRefunded.toFixed(2)].map(csvEscape).join(","))];
+    res.setHeader("Content-Type", "text/csv; charset=utf-8"); res.setHeader("Content-Disposition", "attachment; filename=\"sales-tax-detail.csv\""); res.send(`${lines.join("\n")}\n`);
+  } catch (error) { res.status((error as { status?: number }).status ?? 500).json({ error: (error as Error).message }); }
 });
 
 export default router;

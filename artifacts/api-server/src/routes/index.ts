@@ -29,10 +29,13 @@ import visualEditorRouter from "./visual-editor";
 import rolePermissionsRouter from "./role-permissions";
 import privacyRouter from "./privacy";
 import pwaPushRouter from "./pwa-push";
+import taxConfigurationsRouter from "./tax-configurations";
+import stagingStickerBridgeRouter from "./staging-sticker-bridge";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
+router.use(stagingStickerBridgeRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);
 router.use(tenantsRouter);
@@ -56,6 +59,7 @@ router.use(feedbackRouter);
 router.use(integrationsRouter);
 router.use(creditsRouter);
 router.use(reportsRouter);
+router.use(taxConfigurationsRouter);
 router.use(visualEditorRouter);
 router.use(rolePermissionsRouter);
 router.use(privacyRouter);

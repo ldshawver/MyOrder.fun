@@ -93,10 +93,6 @@ type AdminSettings = {
 const AI_PROMPT_MAX_CHARS = 8000;
 
 const PAYMENT_PROCESSORS = [
-  { id: "stripe", label: "Stripe" },
-  { id: "apple_pay", label: "Apple Pay" },
-  { id: "cashapp", label: "Cash App" },
-  { id: "venmo", label: "Venmo" },
   { id: "paypal", label: "PayPal" },
   { id: "cash", label: "Cash" },
 ];

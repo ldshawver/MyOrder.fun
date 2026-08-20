@@ -897,11 +897,10 @@ function ShiftSummaryModal({ summary, onClose }: {
   const hasProblems = flaggedItems.length > 0 || hasCashDisc;
   const hasActualCounts = safeInventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
   const paymentTotals = safeSummaryStats.paymentTotals ?? {};
-  const cashAppSales = paymentTotals.cashapp ?? 0;
-  const venmoSales = paymentTotals.venmo ?? 0;
-  const applePaySales = paymentTotals.apple_pay ?? 0;
-  const zelleSales = paymentTotals.zelle ?? 0;
   const paypalSales = paymentTotals.paypal ?? 0;
+  const paypalCardSales = paymentTotals.paypal_card ?? 0;
+  const customerCreditSales = paymentTotals.customer_credit ?? 0;
+  const splitSales = paymentTotals.split ?? 0;
   const differenceAmount = summary.differenceAmount ?? safeSummaryStats.totalRevenue;
 
 
@@ -972,12 +971,11 @@ function ShiftSummaryModal({ summary, onClose }: {
             <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
               Payment Method Totals
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-border/20 text-sm">
-              <PaymentStat label="Cash App" amount={cashAppSales} />
-              <PaymentStat label="Venmo" amount={venmoSales} />
-              <PaymentStat label="Apple Pay" amount={applePaySales} />
-              <PaymentStat label="Zelle" amount={zelleSales} />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-border/20 text-sm">
               <PaymentStat label="PayPal" amount={paypalSales} />
+              <PaymentStat label="PayPal Card" amount={paypalCardSales} />
+              <PaymentStat label="Customer Credit" amount={customerCreditSales} />
+              <PaymentStat label="Split tender" amount={splitSales} />
             </div>
           </div>
 
@@ -1503,7 +1501,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
               {order.paymentStatus === "paid" ? "PAID" : order.paymentStatus?.toUpperCase()}
             </span>
             {order.paymentMethod && (
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentMethod === "card" ? "bg-blue-500/15 text-blue-400 border-blue-500/20" : order.paymentMethod === "comp" ? "bg-purple-500/15 text-purple-400 border-purple-500/20" : "bg-green-500/15 text-green-400 border-green-500/20"}`}>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentMethod.includes("paypal_card") ? "bg-blue-500/15 text-blue-400 border-blue-500/20" : order.paymentMethod.includes("customer_credit") ? "bg-purple-500/15 text-purple-400 border-purple-500/20" : "bg-green-500/15 text-green-400 border-green-500/20"}`}>
                 {order.paymentMethod.toUpperCase()}
               </span>
             )}

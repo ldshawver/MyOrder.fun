@@ -1,8 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable } from "@workspace/db";
+import { db, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable } from "@workspace/db";
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
+import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
 
 const CURRENCY = "USD";
 const money = (value: unknown) => Number(value).toFixed(2);
@@ -28,7 +29,8 @@ export class PaymentService {
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
 
-      const amount = money(order.total);
+      const amount = money(order.remainingTenderAmount ?? order.total);
+      if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
       let providerOrder;
       try { providerOrder = await this.provider.createOrder({ amount: { value: amount, currency: CURRENCY }, requestId: `create-${attempt.id}`, internalOrderId: input.orderId }); }
@@ -58,8 +60,11 @@ export class PaymentService {
       await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
       try { await input.finalize(order); }
       catch (error) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: "paypal_verified", selectedPaymentMethod: "paypal_verified", paymentIntentId: capture.captureId }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
-      await tx.update(paymentAttemptsTable).set({ state: "captured", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
+      const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
+      if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
+      const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
+      await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: creditCents > 0 ? `customer_credit+${tender}` : tender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
+      await tx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { status: "captured", captureId: capture.captureId, replayed: false };
     });
   }
@@ -67,6 +72,8 @@ export class PaymentService {
   async refund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
     return db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
+      const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
+      if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.state, "captured"))).limit(1);
       if (!attempt) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
       const [capture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
@@ -82,7 +89,22 @@ export class PaymentService {
       catch (error) { await tx.update(paymentRefundsTable).set({ state: "reconciliation_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentRefundsTable.id, row.id)); throw error; }
       const completedState = refund.status === "COMPLETED" ? "completed" : "reconciliation_required";
       await tx.update(paymentRefundsTable).set({ providerRefundId: refund.refundId, state: completedState }).where(eq(paymentRefundsTable.id, row.id));
-      if (completedState === "completed") { const full = refunded + amount === Number(capture.amount); await tx.update(paymentCapturesTable).set({ state: full ? "refunded" : "partially_refunded" }).where(eq(paymentCapturesTable.id, capture.id)); await tx.update(paymentAttemptsTable).set({ state: full ? "refunded" : "partially_refunded" }).where(eq(paymentAttemptsTable.id, attempt.id)); await tx.update(ordersTable).set(full ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, input.orderId)); }
+      if (completedState === "completed") {
+        const fullProviderRefund = refunded + amount === Number(capture.amount);
+        const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
+        if (fullProviderRefund && creditCents > 0) await restoreCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, paymentRefundId: row.id, idempotencyKey: `restore:refund:${row.id}`, reason: "Original-tender refund restoration" });
+        const fullOrderRefund = fullProviderRefund;
+        const [tax] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, input.orderId))).limit(1);
+        if (tax) {
+          const priorTaxRefunded = Number(tax.taxRefunded); const orderTotal = Number(order.total);
+          const economicRefund = amount + (fullProviderRefund ? creditCents / 100 : 0);
+          const taxRefund = fullOrderRefund ? Number(tax.taxCollected) : Math.round(Number(tax.taxCollected) * economicRefund / orderTotal * 100) / 100;
+          await tx.update(orderTaxSnapshotsTable).set({ taxRefunded: Math.min(Number(tax.taxCollected), priorTaxRefunded + taxRefund).toFixed(2) }).where(eq(orderTaxSnapshotsTable.id, tax.id));
+        }
+        await tx.update(paymentCapturesTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentCapturesTable.id, capture.id));
+        await tx.update(paymentAttemptsTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        await tx.update(ordersTable).set(fullOrderRefund ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, input.orderId));
+      }
       return { status: completedState, refundId: refund.refundId, replayed: false };
     });
   }

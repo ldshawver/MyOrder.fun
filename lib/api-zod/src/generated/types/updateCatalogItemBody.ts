@@ -19,6 +19,7 @@ export interface UpdateCatalogItemBody {
   homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;

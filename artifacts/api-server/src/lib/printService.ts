@@ -72,11 +72,12 @@ export async function createPrintJob(opts: {
   shiftId?: number | null;
   orderId: number;
   printerId: number;
-  jobType: "order_ticket" | "receipt" | "label";
+  jobType: "order_ticket" | "receipt" | "label" | "thank_you_sticker";
   payloadJson: object;
   renderedText: string;
   operatorUserId?: number;
   renderFormat?: "text" | "png";
+  artworkChecksum?: string | null;
 }): Promise<PrintJob> {
   const key = makeIdempotencyKey(opts.orderId, opts.printerId, opts.jobType);
   const existing = await db.select().from(printJobsTable)
@@ -95,6 +96,7 @@ export async function createPrintJob(opts: {
     renderFormat: opts.renderFormat ?? "text",
     payloadJson: opts.payloadJson,
     renderedText: opts.renderedText,
+    artworkChecksum: opts.artworkChecksum ?? null,
     operatorUserId: opts.operatorUserId ?? null,
   }).returning();
   return job;
@@ -197,12 +199,12 @@ async function dispatchBridge(
       format: job.renderFormat,
       text: fullText,
       copies: 1,
+      role: job.jobType,
     };
     if (imageBase64) {
       bridgeBody.imageBase64 = imageBase64;
-      // The installed Mac label stock and renderer are both exactly 2x2 inches.
-      // Pass the media explicitly so CUPS never uses an unrelated queue default.
-      bridgeBody.media = "Custom.2x2in";
+      const requestedMedia = (job.payloadJson as Record<string, unknown>)?.media;
+      if (typeof requestedMedia === "string" && requestedMedia.trim()) bridgeBody.media = requestedMedia;
       bridgeBody.raw = false;
     }
 
@@ -306,7 +308,7 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
     .where(eq(printJobsTable.id, job.id));
 
   const attemptBase = (job.retryCount ?? 0) + 1;
-  const maxRetries = job.maxRetries ?? 5;
+  const maxRetries = job.jobType === "thank_you_sticker" ? 1 : (job.maxRetries ?? 5);
 
   // ── Try primary printer (ethernet_direct or bridge) ──────────────────────
   const t0 = Date.now();
@@ -361,7 +363,7 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
     .where(eq(printJobsTable.id, job.id));
 
   const attemptNumber = (job.retryCount ?? 0) + 1;
-  const maxRetries = job.maxRetries ?? 5;
+  const maxRetries = job.jobType === "thank_you_sticker" ? 1 : (job.maxRetries ?? 5);
 
   const t0 = Date.now();
   const result = await dispatchBridge(job, printer);
@@ -400,6 +402,9 @@ export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Pr
 
 /** Generic dispatch — routes by jobType then connectionType. */
 export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
+  // Thank You stickers are claimed only by the outbound staging pull bridge.
+  // The API must never push them to an inbound bridge or a local/default queue.
+  if (job.jobType === "thank_you_sticker") return;
   if (await failClosedScopeMismatch(job, printer)) return;
   if (job.jobType === "label") {
     return dispatchLabelJob(job, printer);
@@ -690,7 +695,7 @@ export function startPrintWorker() {
   async function tick() {
     try {
       const retrying = await db.select().from(printJobsTable)
-        .where(inArray(printJobsTable.status, ["queued", "retrying"]))
+        .where(and(inArray(printJobsTable.status, ["queued", "retrying"]), sql`${printJobsTable.jobType} <> 'thank_you_sticker'`))
         .limit(10);
 
       for (const job of retrying) {

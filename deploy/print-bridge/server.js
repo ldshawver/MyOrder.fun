@@ -48,6 +48,7 @@ const USB_DEVICE = process.env.USB_DEVICE ?? "";
 const CUPS_RAW = String(process.env.CUPS_RAW ?? "false").toLowerCase() === "true";
 const MAX_COPIES = parseInt(process.env.MAX_COPIES ?? "5", 10);
 const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES ?? String(2 * 1024 * 1024), 10);
+const THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2";
 
 if (!API_KEY) {
   console.error("PRINT_BRIDGE_API_KEY is required");
@@ -340,6 +341,17 @@ async function handlePrint(req, res) {
   const printableText = text || decodedText;
   const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
 
+  // Thank You stickers are a dedicated, fail-closed CUPS image workflow.
+  // Never use a configured/system default, raw socket, USB, receipt, or label printer.
+  if (role === "thank_you_sticker") {
+    if (printerName !== THANK_YOU_STICKER_QUEUE) {
+      return respond(res, 422, { success: false, error: "THANK_YOU_STICKER_PRINTER_MISMATCH" });
+    }
+    if (printableText || (!imagePath && !imageBase64)) {
+      return respond(res, 422, { success: false, error: "THANK_YOU_STICKER_IMAGE_REQUIRED" });
+    }
+  }
+
   if (!printableText && !imagePath && !imageBase64) {
     return respond(res, 400, {
       success: false,
@@ -393,7 +405,7 @@ async function handlePrint(req, res) {
   });
 
   // 1) Direct raw socket: text only
-  if (printableText && DIRECT_PRINTER_IP) {
+  if (role !== "thank_you_sticker" && printableText && DIRECT_PRINTER_IP) {
     try {
       const payload = Buffer.from(printableText.repeat(safeCopies), "binary");
       await printRawSocket(payload);

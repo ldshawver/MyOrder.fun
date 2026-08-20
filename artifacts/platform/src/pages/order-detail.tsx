@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "wouter";
 import {
   useGetOrder,
@@ -412,6 +412,7 @@ export default function OrderDetail() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
+  const creditIdempotencyKey = useRef(`customer-credit:${id}:${crypto.randomUUID()}`);
   const [closeoutBusy, setCloseoutBusy] = useState<string | null>(null);
   const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
   const [showCashCloseout, setShowCashCloseout] = useState(false);
@@ -492,7 +493,7 @@ export default function OrderDetail() {
       const token = await getToken();
       const res = await fetch(`/api/payments/${order.id}/apply-credit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": creditIdempotencyKey.current, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ amount: Number(creditAmount) }),
       });
       const data = await res.json().catch(() => ({}));
@@ -500,6 +501,7 @@ export default function OrderDetail() {
       setCreditAmount("");
       setCreditBalance(Number(data.remainingBalance ?? 0));
       setCreditMessage(`Applied $${Number(data.applied ?? 0).toFixed(2)} credit.`);
+      creditIdempotencyKey.current = `customer-credit:${id}:${crypto.randomUUID()}`;
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
     } catch (err) {
       setCreditMessage(err instanceof Error ? err.message : "Failed to apply credit");
@@ -608,8 +610,9 @@ export default function OrderDetail() {
   }
 
   const requestedCredit = Number(creditAmount) || 0;
-  const maxApplicableCredit = Math.min(creditBalance ?? 0, order.total);
-  const remainingAfterCredit = Math.max(order.total - Math.min(requestedCredit, maxApplicableCredit), 0);
+  const unpaidBalance = order.remainingTenderAmount ?? order.total;
+  const maxApplicableCredit = Math.min(creditBalance ?? 0, unpaidBalance);
+  const remainingAfterCredit = Math.max(unpaidBalance - Math.min(requestedCredit, maxApplicableCredit), 0);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -1026,15 +1029,15 @@ export default function OrderDetail() {
                     </div>
                   )}
 
-                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(order.total).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
                     <Banknote size={14} className="mr-2" /> Close as Cash Paid
                   </Button>
                   {showCashCloseout && (
                     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="cash-closeout-dialog">
                       <div className="font-semibold text-sm">Confirm cash payment for order #{order.id}</div>
                       <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div>Trusted amount due<br /><strong className="text-base">${Number(order.total).toFixed(2)}</strong></div>
-                        <div>Calculated change<br /><strong className="text-base">${Math.max(0, Number(amountTendered || 0) - Number(order.total)).toFixed(2)}</strong></div>
+                        <div>Trusted amount due<br /><strong className="text-base">${Number(unpaidBalance).toFixed(2)}</strong></div>
+                        <div>Calculated change<br /><strong className="text-base">${Math.max(0, Number(amountTendered || 0) - Number(unpaidBalance)).toFixed(2)}</strong></div>
                       </div>
                       <Label htmlFor="cash-tendered">Amount tendered</Label>
                       <Input id="cash-tendered" inputMode="decimal" value={amountTendered} onChange={(event) => setAmountTendered(event.target.value)} data-testid="input-cash-tendered" />
@@ -1042,7 +1045,7 @@ export default function OrderDetail() {
                       <Textarea id="cash-note" maxLength={500} value={cashInternalNote} onChange={(event) => setCashInternalNote(event.target.value)} data-testid="input-cash-note" />
                       <p className="text-xs text-amber-300">Confirm only after physically receiving the tendered cash. This creates an audited cash-ledger entry and cannot be undone here.</p>
                       <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) < Number(order.total)} data-testid="button-confirm-cash-closeout">Confirm Cash Paid</Button>
+                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) < Number(unpaidBalance)} data-testid="button-confirm-cash-closeout">Confirm Cash Paid</Button>
                         <Button variant="outline" onClick={() => setShowCashCloseout(false)}>Cancel</Button>
                         {closeoutMessage?.includes("General Queue cash session") && canManageRouting && (
                           <Link href={`/staff?openGeneralQueue=1&returnOrder=${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-2 text-xs font-semibold" data-testid="button-open-general-queue-session">
@@ -1057,27 +1060,6 @@ export default function OrderDetail() {
                   {/* Provider-verified PayPal checkout */}
                   <PayPalCheckoutButton orderId={order.id} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
 
-                  {/* Venmo */}
-                  <a
-                    href={`venmo://paycharge?txn=pay&recipients=LuciferCruz&amount=${order.total.toFixed(2)}&note=Order%20%23${order.id}`}
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#3D95CE]/40 text-[#3D95CE] bg-[#3D95CE]/10 hover:bg-[#3D95CE]/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-venmo"
-                  >
-                    <ExternalLink size={12} />
-                    Venmo · ${order.total.toFixed(2)}
-                  </a>
-
-                  {/* CashApp */}
-                  <a
-                    href={`https://cash.app/$LuciferCruz/${order.total.toFixed(2)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-cashapp"
-                  >
-                    <ExternalLink size={12} />
-                    Cash App · ${order.total.toFixed(2)}
-                  </a>
                 </div>
               )}
 

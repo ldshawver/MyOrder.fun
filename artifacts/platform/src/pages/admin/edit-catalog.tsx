@@ -33,6 +33,7 @@ type CatalogProduct = {
   imageUrl: string | null;
   alavontImageUrl: string | null;
   isAvailable: boolean;
+  isTaxable: boolean;
   isWooManaged: boolean;
   isLocalAlavont: boolean;
   sku: string | null;
@@ -41,7 +42,7 @@ type CatalogProduct = {
   stockQuantity: number | null;
 };
 
-const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isWooManaged: boolean } = {
+const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isTaxable: boolean; isWooManaged: boolean } = {
   name: "",
   alavontName: "",
   luciferCruzName: "",
@@ -60,6 +61,7 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   customerSafeDescription: "",
   labName: "",
   isAvailable: true,
+  isTaxable: true,
   isWooManaged: false,
 };
 
@@ -103,6 +105,7 @@ function EditDialog({
     labName: fieldVal(item?.labName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
+    isTaxable: item?.isTaxable !== false,
   });
   const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -255,6 +258,10 @@ function EditDialog({
                   className="w-4 h-4"
                 />
                 <span className="text-sm">Available for ordering</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isTaxable)} onChange={e => setForm(f => ({ ...f, isTaxable: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Taxable at the transaction location</span>
               </label>
             </div>
           )}

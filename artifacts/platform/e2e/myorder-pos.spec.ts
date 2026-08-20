@@ -17,7 +17,7 @@ const publicCatalog = [
 ];
 
 async function mockPosApi(page: Page, overrides: { processors?: string[]; archived?: boolean } = {}) {
-  const processors = overrides.processors ?? ["stripe"];
+  const processors = overrides.processors ?? ["paypal"];
   const catalog = overrides.archived ? [] : publicCatalog;
   await page.route("**/api/**", async route => {
     const url = new URL(route.request().url());
@@ -42,7 +42,7 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
           zappyMessage: "Safe merchant checkout ready.",
           paymentMethods: [
             { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
-            { id: "stripe", label: "Stripe card", promoted: false },
+            { id: "paypal", label: "PayPal", promoted: false },
           ],
           items: [{ catalogItemId: 354, displayName: "LC Safe Item", customerSafeName: "LC Safe Item", customerSafeDescription: "Safe merchant description", customerSafeCategory: "Self Care", customerSafeImage: "/safe-calm.png", displayCategory: "Self Care", displayImage: "/safe-calm.png", merchantBrandName: "Lucifer Cruz", marketingCopy: "Safe copy", quantity: 1, unitPrice: 24, lineSubtotal: 24 }],
         },
@@ -71,8 +71,8 @@ async function mockPosApi(page: Page, overrides: { processors?: string[]; archiv
 }
 
 test.describe("MyOrder.fun POS browser verification", () => {
-  test("customer catalog → cart → safe checkout transformation → Stripe payment", async ({ page }) => {
-    await mockPosApi(page, { processors: ["stripe"] });
+  test("customer catalog → cart → safe checkout transformation → PayPal payment", async ({ page }) => {
+    await mockPosApi(page, { processors: ["paypal"] });
     await page.goto("/catalog");
     await expect(page.getByText("Calm Drops")).toBeVisible();
     await expect(page.getByText(/LC Safe Item|merchant_sku|margin|supplier|box/i)).toHaveCount(0);
@@ -172,7 +172,7 @@ test.describe("MyOrder.fun POS browser verification", () => {
   });
 
   test("supervisor import/archive and payment settings change checkout UI", async ({ page }) => {
-    await mockPosApi(page, { processors: ["stripe", "paypal", "cashapp"] });
+    await mockPosApi(page, { processors: ["paypal"] });
     await page.goto("/orders/9001");
     await expect(page.getByTestId("button-pay")).toBeVisible();
     await expect(page.getByTestId("button-paypal")).toBeVisible();

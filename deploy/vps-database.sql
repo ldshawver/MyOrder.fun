@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.admin_settings (
     tenant_id integer NOT NULL,
     menu_import_enabled boolean DEFAULT true NOT NULL,
     show_out_of_stock boolean DEFAULT false NOT NULL,
-    enabled_processors text[] DEFAULT '{stripe}'::text[] NOT NULL,
+    enabled_processors text[] DEFAULT '{paypal}'::text[] NOT NULL,
     checkout_conversion_preview boolean DEFAULT false NOT NULL,
     merchant_image_enabled boolean DEFAULT true NOT NULL,
     auto_print_on_payment boolean DEFAULT false NOT NULL,

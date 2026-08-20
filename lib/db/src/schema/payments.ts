@@ -8,6 +8,7 @@ export const paymentAttemptsTable = pgTable("payment_attempts", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   orderId: integer("order_id").notNull(), provider: text("provider").notNull(), providerEnvironment: text("provider_environment").notNull(),
   providerOrderId: text("provider_order_id"), idempotencyKey: text("idempotency_key").notNull(),
+  fundingSource: text("funding_source"),
   requestedAmount: numeric("requested_amount", { precision: 12, scale: 2 }).notNull(), requestedCurrency: text("requested_currency").notNull(),
   capturedAmount: numeric("captured_amount", { precision: 12, scale: 2 }), capturedCurrency: text("captured_currency"),
   state: text("state").notNull().default("creating"), reconciliationState: text("reconciliation_state").notNull().default("not_required"),

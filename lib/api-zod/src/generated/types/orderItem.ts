@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { OrderItemInventoryDeductionsItem } from './orderItemInventoryDeductionsItem';
 
 export interface OrderItem {
   id: number;
@@ -13,4 +14,5 @@ export interface OrderItem {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  inventoryDeductions?: OrderItemInventoryDeductionsItem[];
 }

@@ -37,7 +37,7 @@ async function ensureAdminSettingsSchema(): Promise<void> {
   const statements = [
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "menu_import_enabled" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "show_out_of_stock" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['stripe']::text[]`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "enabled_processors" text[] NOT NULL DEFAULT ARRAY['paypal']::text[]`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "checkout_conversion_preview" boolean NOT NULL DEFAULT false`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "sales_tax_mode" text NOT NULL DEFAULT 'added'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "sales_tax_rate" numeric(6, 5) NOT NULL DEFAULT '0.08'`,
@@ -226,10 +226,6 @@ function parseDeliveryOptions(raw: string | null | undefined) {
 }
 
 const DEFAULT_MERCHANT_PROCESSOR_CONFIG: Record<string, Record<string, unknown>> = {
-  stripe: { displayName: "Stripe", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
-  apple_pay: { displayName: "Apple Pay", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
-  cashapp: { displayName: "Cash App", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
-  venmo: { displayName: "Venmo", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
   paypal: { displayName: "PayPal", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
   cash: { displayName: "Cash", accountId: "", publicKey: "", webhookConfigured: false, notes: "Cash is collected by the active CSR and reconciled at shift close." },
 };

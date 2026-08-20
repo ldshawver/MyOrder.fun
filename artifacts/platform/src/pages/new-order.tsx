@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
-import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, useTokenizePayment, useConfirmPayment, type CatalogItem } from "@workspace/api-client-react";
+import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, type CatalogItem } from "@workspace/api-client-react";
 import { useCart } from "@/contexts/CartContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -160,8 +160,6 @@ export default function NewOrder() {
   );
 
   const createOrderMutation = useCreateOrder();
-  const tokenizeMutation = useTokenizePayment();
-  const confirmMutation = useConfirmPayment();
   const upsellMutation = useAiUpsellSuggestions();
 
   useEffect(() => {
@@ -276,7 +274,7 @@ export default function NewOrder() {
     if (requiresDeliveryAddress && !shippingAddress.trim()) return;
 
     setOrderSubmitError(null);
-    const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "paypal" | "venmo" | "gift_card" | "manual";
+    const paymentMethod = paymentMethodOverride as "cash" | "paypal" | "paypal_card" | "customer_credit";
 
     try {
       const checkoutConversionToken = conversionPreview.conversionToken;
@@ -304,11 +302,6 @@ export default function NewOrder() {
           checkoutConfirmation,
         }
       });
-
-      if (paymentMethod === "stripe") {
-        const tokenized = await tokenizeMutation.mutateAsync({ data: { orderId: order.id, amount: order.total } });
-        await confirmMutation.mutateAsync({ orderId: order.id, data: { paymentIntentId: tokenized.paymentIntentId } });
-      }
 
       notifyOrderPlaced(order.id, user?.firstName || undefined);
       await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
@@ -363,7 +356,7 @@ export default function NewOrder() {
     || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
-  const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
+  const paymentBusy = createOrderMutation.isPending;
   const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
 
@@ -715,7 +708,7 @@ export default function NewOrder() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {conversionPreview.converted.paymentMethods.map(method => {
-                      const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
+                      const Icon = method.id === "cash" ? Banknote : method.id === "paypal_card" ? CreditCard : method.id === "customer_credit" ? Gift : CheckCircle2;
                       const active = selectedPaymentMethod === method.id;
                       return (
                         <button

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import { db, ordersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { computeCheckoutTotals, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
+import { computeCheckoutTotals, getCheckoutTaxSettings, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
 
 export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Cart must be converted before checkout";
 export const CHECKOUT_CONVERSION_TTL_MS = 15 * 60 * 1000;
@@ -48,7 +48,7 @@ export async function requireVerifiedCheckoutConversion(input: { tenantId: numbe
     if (itemsKey(payload.items) !== itemsKey(input.requestedItems)) throw new CheckoutConversionRequiredError();
     if (!input.snapshot || hashConversionSnapshot(input.snapshot) !== payload.snapshotHash) throw new CheckoutConversionRequiredError();
     const lines = await normalizeCheckoutCart(input.requestedItems, undefined, true, input.tenantId);
-    const totals = computeCheckoutTotals(lines);
+    const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(input.tenantId));
     return { lines, totals, conversionExpiresAt: expiresAt, snapshot: input.snapshot };
   } catch (err) { if (err instanceof CheckoutConversionRequiredError) throw err; throw new CheckoutConversionRequiredError(); }
 }

@@ -161,7 +161,7 @@ describe("print job status integrity", () => {
     expect(String(updateSets.at(-1)?.errorMessage)).toContain("system-default CUPS fallback");
   });
 
-  it("submits rendered labels as non-raw PNG with explicit 2x2 media", async () => {
+  it("submits ordinary rendered labels as non-raw PNG without borrowing sticker media", async () => {
     let requestBody: Record<string, unknown> = {};
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       requestBody = JSON.parse(String(init?.body));
@@ -196,9 +196,9 @@ describe("print job status integrity", () => {
     expect(requestBody).toMatchObject({
       printerName: "Label_Themal_Printer",
       format: "png",
-      media: "Custom.2x2in",
       raw: false,
     });
+    expect(requestBody).not.toHaveProperty("media");
     expect(requestBody.imageBase64).toBeTruthy();
     expect(requestBody).not.toHaveProperty("payloadBase64");
   });

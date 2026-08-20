@@ -17,4 +17,19 @@ describe("immutable server-side order financial snapshots", () => {
     const result = computeOrderFinancialSnapshot({ grossSubtotal: 100, taxRate: 0.08, taxMode: "added", tender: "card", cashDiscount: { enabled: true, type: "percentage", value: 10 } });
     expect(result).toMatchObject({ taxableSubtotal: 100, taxCollected: 8, cashDiscountAmount: 0 });
   });
+
+  it.each(["cash", "paypal", "paypal_card", "customer_credit"])("calculates identical tax for %s tender", tender => {
+    const result = computeOrderFinancialSnapshot({ grossSubtotal: 20, taxRate: 0.0875, taxMode: "added", tender, cashDiscount: { enabled: false, type: "fixed", value: 0 } });
+    expect(result.taxCollected).toBe(1.75); expect(result.merchandiseTotal).toBe(21.75);
+  });
+
+  it("taxes only taxable merchandise in a mixed basket", () => {
+    const result = computeOrderFinancialSnapshot({ grossSubtotal: 20, taxableSubtotal: 12, nonTaxableSubtotal: 8, taxRate: 0.0875, taxMode: "added", tender: "customer_credit", cashDiscount: { enabled: false, type: "fixed", value: 0 } });
+    expect(result).toMatchObject({ taxableSubtotal: 12, nonTaxableSubtotal: 8, taxCollected: 1.05, merchandiseTotal: 21.05 });
+  });
+
+  it("uses round-half-away-from-zero at the order level", () => {
+    const result = computeOrderFinancialSnapshot({ grossSubtotal: 0.06, taxRate: 0.0875, taxMode: "added", tender: "paypal", cashDiscount: { enabled: false, type: "fixed", value: 0 } });
+    expect(result.taxCollected).toBe(0.01); expect(result.taxSnapshot.roundingPolicy).toBe("round_half_away_from_zero_per_order");
+  });
 });

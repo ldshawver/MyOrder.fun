@@ -13,6 +13,7 @@ import type { OrderItem } from './orderItem';
 import type { OrderPaymentStatus } from './orderPaymentStatus';
 import type { OrderRouteSource } from './orderRouteSource';
 import type { OrderStatus } from './orderStatus';
+import type { OrderTaxSnapshot } from './orderTaxSnapshot';
 
 export interface Order {
   id: number;
@@ -26,6 +27,15 @@ export interface Order {
   subtotal: number;
   tax?: number;
   total: number;
+  grossSubtotal?: number;
+  discountTotal?: number;
+  taxableSubtotal?: number;
+  nonTaxableSubtotal?: number;
+  customerCreditApplied: number;
+  remainingTenderAmount: number;
+  amountTendered?: number | null;
+  changeGiven?: number | null;
+  taxSnapshot?: OrderTaxSnapshot;
   shippingAddress?: string;
   deliveryMethod?: string | null;
   deliveryQuoteId?: string | null;
@@ -33,6 +43,8 @@ export interface Order {
   deliveryCurrency?: string | null;
   deliveryQuote?: DeliveryQuote | null;
   notes?: string;
+  selectedPaymentMethod?: string;
+  paymentMethod?: string;
   checkoutConfirmation?: OrderCheckoutConfirmation;
   items: OrderItem[];
   assignedCsrUserId?: number | null;

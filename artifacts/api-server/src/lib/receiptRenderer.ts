@@ -35,7 +35,19 @@ interface PrintOrder {
   items: OrderItem[];
   subtotal?: number;
   tax?: number;
+  discount?: number;
+  taxableSubtotal?: number;
+  taxRate?: number;
+  taxJurisdiction?: string;
   total?: number;
+  customerCreditApplied?: number;
+  remainingPaymentMethod?: string;
+  remainingPaymentAmount?: number;
+  cashTendered?: number;
+  changeGiven?: number;
+  providerCaptureReference?: string;
+  remainingCustomerCreditBalance?: number;
+  adjustmentTotal?: number;
   paymentStatus?: string;
   paymentMethod?: string;
   createdAt?: string | Date;
@@ -113,7 +125,19 @@ export function renderKitchenTicket(order: PrintOrder): string {
     items: resolvedItems,
     subtotal: order.subtotal ?? 0,
     tax: order.tax,
+    discount: order.discount,
+    taxableSubtotal: order.taxableSubtotal,
+    taxRate: order.taxRate,
+    taxJurisdiction: order.taxJurisdiction,
     total: order.total ?? 0,
+    customerCreditApplied: order.customerCreditApplied,
+    remainingPaymentMethod: order.remainingPaymentMethod,
+    remainingPaymentAmount: order.remainingPaymentAmount,
+    cashTendered: order.cashTendered,
+    changeGiven: order.changeGiven,
+    providerCaptureReference: order.providerCaptureReference,
+    remainingCustomerCreditBalance: order.remainingCustomerCreditBalance,
+    adjustmentTotal: order.adjustmentTotal,
     logoLines,
     dualBrandName: order.dualBrandName,
     footerMessage: order.footerMessage,

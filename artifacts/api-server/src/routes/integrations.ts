@@ -20,7 +20,6 @@
  */
 import { Router, type IRouter } from "express";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
-import { logger } from "../lib/logger";
 import { hasUberDirectConfig } from "../lib/uberDirect";
 
 const router: IRouter = Router();
@@ -28,7 +27,7 @@ const router: IRouter = Router();
 type IntegrationStatus = "connected" | "missing_config" | "error";
 
 interface IntegrationResult {
-  stripe: IntegrationStatus;
+  paypal: IntegrationStatus;
   airtable: IntegrationStatus;
   github: IntegrationStatus;
   woocommerce: IntegrationStatus;
@@ -44,33 +43,8 @@ function hasEnv(...keys: string[]): boolean {
   });
 }
 
-/**
- * Attempt a lightweight live check against Stripe's API.
- * Uses the /v1/balance endpoint — minimal permissions, cheap, stable.
- * Falls back to "connected" (config-only) if the fetch itself errors out
- * for an unexpected reason (network unavailable, etc.) to avoid false
- * negatives in environments where outbound traffic is restricted.
- */
-async function checkStripe(): Promise<IntegrationStatus> {
-  if (!hasEnv("STRIPE_SECRET_KEY")) return "missing_config";
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch("https://api.stripe.com/v1/balance", {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${process.env["STRIPE_SECRET_KEY"]}`,
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    // 200 = connected; 401 = key invalid (error); anything else treat as error.
-    return res.ok ? "connected" : "error";
-  } catch (err) {
-    logger.warn({ err }, "integrations/health: Stripe live check failed");
-    // Network issue ≠ misconfiguration; treat as "error" so operators can see it.
-    return "error";
-  }
+function checkPayPal(): IntegrationStatus {
+  return hasEnv("PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID") ? "connected" : "missing_config";
 }
 
 /**
@@ -102,7 +76,7 @@ function checkWooCommerce(): IntegrationStatus {
 
 /**
  * RevenueCat: optional SaaS licensing / entitlement gating.
- * Not used for order payments (Stripe is the payment authority).
+ * This integration is unrelated to the PayPal order-payment authority.
  */
 function checkRevenueCat(): IntegrationStatus {
   return hasEnv("REVENUECAT_SECRET_KEY") ? "connected" : "missing_config";
@@ -132,10 +106,8 @@ router.get(
   async (_req, res): Promise<void> => {
     // Run all checks concurrently; individual check failures are caught
     // internally and return "error" rather than throwing.
-    const [stripe] = await Promise.all([checkStripe()]);
-
     const result: IntegrationResult = {
-      stripe,
+      paypal: checkPayPal(),
       airtable: checkAirtable(),
       github: checkGitHub(),
       woocommerce: checkWooCommerce(),

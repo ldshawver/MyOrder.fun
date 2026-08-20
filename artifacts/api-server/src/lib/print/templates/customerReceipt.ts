@@ -22,7 +22,19 @@ export interface CustomerReceiptData {
   items: ReceiptOrderItem[];
   subtotal: number | string;
   tax?: number | string | null;
+  discount?: number | string | null;
+  taxableSubtotal?: number | string | null;
+  taxRate?: number | string | null;
+  taxJurisdiction?: string | null;
   total: number | string;
+  customerCreditApplied?: number | string | null;
+  remainingPaymentMethod?: string | null;
+  remainingPaymentAmount?: number | string | null;
+  cashTendered?: number | string | null;
+  changeGiven?: number | string | null;
+  providerCaptureReference?: string | null;
+  remainingCustomerCreditBalance?: number | string | null;
+  adjustmentTotal?: number | string | null;
   // ── Branding ────────────────────────────────────────────────────────────────
   logoLines?: string[];       // pre-rendered logo (from getLogo); when absent, no logo block
   dualBrandName?: string | null; // second brand shown under logo (e.g. "LUCIFER CRUZ ADULT BOUTIQUE")
@@ -137,14 +149,37 @@ export function buildCustomerReceiptBlocks(data: CustomerReceiptData): PrintBloc
   blocks.push({ type: "divider", char: "-" });
   blocks.push({ type: "totalLine", label: "Subtotal", amount: data.subtotal });
 
+  const discount = Number(data.discount ?? 0);
+  if (discount > 0) blocks.push({ type: "totalLine", label: "Discount", amount: -discount });
+
+  if (data.taxableSubtotal !== undefined && data.taxableSubtotal !== null) {
+    blocks.push({ type: "totalLine", label: "Taxable subtotal", amount: data.taxableSubtotal });
+  }
+
   const taxAmt = Number(data.tax ?? 0);
   if (taxAmt > 0) {
-    blocks.push({ type: "totalLine", label: "Tax", amount: taxAmt });
+    const rate = Number(data.taxRate ?? 0);
+    const rateLabel = rate > 0 ? ` ${(rate * 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%` : "";
+    const jurisdiction = data.taxJurisdiction?.trim() ? ` · ${data.taxJurisdiction.trim()}` : "";
+    blocks.push({ type: "totalLine", label: `Sales tax${rateLabel}${jurisdiction}`, amount: taxAmt });
   }
 
   blocks.push({ type: "divider", char: "=" });
   blocks.push({ type: "totalLine", label: "TOTAL", amount: data.total, strong: true });
   blocks.push({ type: "divider", char: "=" });
+
+  const credit = Number(data.customerCreditApplied ?? 0);
+  if (credit > 0) blocks.push({ type: "totalLine", label: "Customer Credit", amount: -credit });
+  const remaining = Number(data.remainingPaymentAmount ?? 0);
+  if (remaining > 0) blocks.push({ type: "totalLine", label: data.remainingPaymentMethod ?? "Remaining payment", amount: remaining });
+  if (data.cashTendered !== undefined && data.cashTendered !== null) blocks.push({ type: "totalLine", label: "Cash tendered", amount: data.cashTendered });
+  if (Number(data.changeGiven ?? 0) > 0) blocks.push({ type: "totalLine", label: "Change", amount: Number(data.changeGiven ?? 0) });
+  if (data.providerCaptureReference?.trim()) {
+    const safeRef = data.providerCaptureReference.trim().slice(-8);
+    blocks.push({ type: "kv", left: "  Provider capture", right: `…${safeRef}` });
+  }
+  if (data.remainingCustomerCreditBalance !== undefined && data.remainingCustomerCreditBalance !== null) blocks.push({ type: "totalLine", label: "Customer Credit balance", amount: data.remainingCustomerCreditBalance });
+  if (Number(data.adjustmentTotal ?? 0) !== 0) blocks.push({ type: "totalLine", label: "Refund/void adjustments", amount: Number(data.adjustmentTotal ?? 0) });
 
   // ═══════════════════════════════════════════════════════
   // FOOTER

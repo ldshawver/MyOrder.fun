@@ -53,8 +53,25 @@ Do not configure a PayPal API base URL. The application selects the Sandbox or
 live host internally. Staging must use `PAYMENT_MODE=sandbox` and
 `PAYPAL_ENVIRONMENT=sandbox`; startup rejects live payments in staging.
 
-Stripe is not an online payment provider for this release. Its legacy API
-routes fail closed and the Stripe environment variables remain empty.
+Stripe is retired as an online payment provider. Legacy API routes fail closed,
+and Stripe environment variables are not part of active deployment configuration.
+
+### Isolated staging Thank You sticker bridge
+
+The MARKLIFE integration is an outbound-polling Mac bridge. The staging API does
+not connect to CUPS and macOS must not expose port 631. Provision
+`STAGING_STICKER_BRIDGE_ID` and `STAGING_STICKER_BRIDGE_SECRET` in the staging
+secret store, then transfer the same values to Luke's Mac Studio through the
+approved secret manager as `deploy/print-bridge/.env.staging-sticker` (mode 600).
+Never paste the credential into a terminal transcript, ticket, log, or chat.
+
+Run `deploy/print-bridge/install-staging-sticker-mac.sh` on the Mac. It performs
+only queue/device preflight and starts the staging poller; it does not submit a
+print. The bridge accepts only an approved `thank_you_sticker` job routed to the
+exact `MARKLIFE_X2` queue. Receipt and ordinary-label flags must remain false.
+An ambiguous CUPS submission is terminal and requires a newly authorized linked
+replacement job; automatic physical retries and default-printer fallback are
+prohibited.
 
 ---
 

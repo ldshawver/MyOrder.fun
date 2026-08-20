@@ -41,6 +41,12 @@ export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
   // receipt | label | both
   supportedRoles: text("supported_roles").notNull().default("both"),
   notes: text("notes"),
+  bridgeId: text("bridge_id"),
+  environment: text("environment").notNull().default("production"),
+  allowedJobType: text("allowed_job_type"),
+  credentialHash: text("credential_hash"),
+  bridgeVersion: text("bridge_version"),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
@@ -80,6 +86,9 @@ export const printPrintersTable = pgTable("print_printers", {
   paperWidth: text("paper_width").notNull().default("80mm"),
   supportsCut: boolean("supports_cut").notNull().default(true),
   supportsCashDrawer: boolean("supports_cash_drawer").notNull().default(false),
+  expectedDeviceUriHash: text("expected_device_uri_hash"),
+  receiptCapable: boolean("receipt_capable").notNull().default(true),
+  labelCapable: boolean("label_capable").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({
@@ -201,7 +210,7 @@ export const printJobsTable = pgTable("print_jobs", {
   printerId: integer("printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
   // which operator was active when the job was created
   operatorUserId: integer("operator_user_id").references(() => usersTable.id, { onDelete: "set null" }),
-  jobType: text("job_output").notNull().default("order_ticket"), // order_ticket | receipt | label
+  jobType: text("job_output").notNull().default("order_ticket"), // order_ticket | receipt | label | thank_you_sticker
   status: text("status").notNull().default("queued"),          // queued | sending | printed | retrying | failed
   idempotencyKey: text("idempotency_key").notNull().unique(),
   renderFormat: text("render_format").notNull().default("text"), // text | png
@@ -211,6 +220,20 @@ export const printJobsTable = pgTable("print_jobs", {
   renderedImagePath: text("rendered_image_path"),
   templateId: integer("template_id"),
   templateVersion: integer("template_version"),
+  artworkChecksum: text("artwork_checksum"),
+  bridgeProfileId: integer("bridge_profile_id"),
+  approvalState: text("approval_state").notNull().default("not_required"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  submittingAt: timestamp("submitting_at", { withTimezone: true }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  cupsJobId: integer("cups_job_id"),
+  cupsRequestId: text("cups_request_id"),
+  finalCupsState: text("final_cups_state"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failureReason: text("failure_reason"),
+  copyCount: integer("copy_count").notNull().default(1),
+  media: text("media"), resolution: text("resolution"), bridgeVersion: text("bridge_version"),
+  submissionAttempts: integer("submission_attempts").notNull().default(0),
   // Which method succeeded (ethernet_direct | mac_bridge | pi_bridge | queued)
   printedVia: text("printed_via"),
   errorMessage: text("error_message"),
@@ -250,6 +273,23 @@ export const printJobAttemptsTable = pgTable("print_job_attempts", {
   jobIndex: index("print_job_attempts_tenant_job_idx").on(table.tenantId, table.printJobId),
 }));
 
+export const printRoutesTable = pgTable("print_routes", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  locationId: integer("location_id").notNull(),
+  jobType: text("job_type").notNull(),
+  bridgeProfileId: integer("bridge_profile_id").notNull(),
+  printerId: integer("printer_id").notNull(),
+  isActive: boolean("is_active").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, table => ({
+  routeUnique: unique("print_routes_scope_job_uq").on(table.tenantId, table.locationId, table.jobType),
+  locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  bridgeFk: foreignKey({ columns: [table.tenantId, table.bridgeProfileId], foreignColumns: [printBridgeProfilesTable.tenantId, printBridgeProfilesTable.id] }),
+  printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+}));
+
 export const shiftPrintAssignmentsTable = pgTable("shift_print_assignments", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
@@ -275,12 +315,18 @@ export const orderTaxSnapshotsTable = pgTable("order_tax_snapshots", {
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   orderId: integer("order_id").notNull(),
   jurisdiction: text("jurisdiction"),
+  locationId: integer("location_id"),
+  taxConfigurationId: integer("tax_configuration_id"),
   taxRate: numeric("tax_rate", { precision: 9, scale: 8 }).notNull(),
+  grossSales: numeric("gross_sales", { precision: 12, scale: 2 }).notNull().default("0"),
   taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }).notNull(),
   nonTaxableSubtotal: numeric("non_taxable_subtotal", { precision: 12, scale: 2 }).notNull().default("0"),
   discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   cashDiscountAmount: numeric("cash_discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   taxCollected: numeric("tax_collected", { precision: 12, scale: 2 }).notNull(),
+  taxCalculated: numeric("tax_calculated", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxRefunded: numeric("tax_refunded", { precision: 12, scale: 2 }).notNull().default("0"),
+  roundingPolicy: text("rounding_policy").notNull().default("round_half_away_from_zero_per_order"),
   tender: text("tender"),
   exemptionReason: text("exemption_reason"),
   snapshotJson: jsonb("snapshot_json").notNull(),

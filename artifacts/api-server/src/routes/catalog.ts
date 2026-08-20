@@ -259,6 +259,7 @@ function mapItem(
     compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
+    isTaxable: i.isTaxable,
     imageUrl: resolvedImageUrl,
     mediaGallery,
     tags: i.tags ?? [],

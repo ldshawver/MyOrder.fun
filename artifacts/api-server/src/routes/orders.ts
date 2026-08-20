@@ -56,6 +56,7 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
+import { consumeCustomerCredit } from "../payments/customerCredit";
 
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
@@ -276,12 +277,9 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
       zappyMessage: "I transformed the internal cart into customer-ready merchandise, checked the merchant mapping, and prepared payment options. Cash orders may qualify for exclusive discounts when enabled.",
       paymentMethods: [
         { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
-        { id: "cash_app", label: "Cash App", promoted: false },
-        { id: "stripe", label: "Stripe card", promoted: false },
         { id: "paypal", label: "PayPal", promoted: false },
-        { id: "venmo", label: "Venmo", promoted: false },
-        { id: "gift_card", label: "Gift Card", promoted: false },
-        { id: "manual", label: "Other/manual", promoted: false },
+        { id: "paypal_card", label: "Credit/debit card (processed by PayPal)", promoted: false, message: "Shown only when PayPal confirms Card Fields eligibility." },
+        { id: "customer_credit", label: "Customer Credit", promoted: false },
       ],
       items: lines.map(line => ({
         originalCatalogItemId: line.original_catalog_item_id ?? line.catalog_item_id,
@@ -595,9 +593,20 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     status: order.status,
     paymentStatus: order.paymentStatus,
     paymentToken: order.paymentToken ?? "",
+    paymentMethod: order.paymentMethod ?? "cash",
+    selectedPaymentMethod: order.selectedPaymentMethod ?? order.paymentMethod ?? "cash",
     subtotal: parseFloat(order.subtotal as string),
     tax: parseFloat((order.tax as string) ?? "0"),
     total: parseFloat(order.total as string),
+    grossSubtotal: parseFloat((order.grossSubtotal ?? order.subtotal) as string),
+    discountTotal: parseFloat(order.discountTotal as string),
+    taxableSubtotal: parseFloat((order.taxableSubtotal ?? order.subtotal) as string),
+    nonTaxableSubtotal: parseFloat(order.nonTaxableSubtotal as string),
+    customerCreditApplied: parseFloat(order.customerCreditApplied as string),
+    remainingTenderAmount: parseFloat((order.remainingTenderAmount ?? order.total) as string),
+    amountTendered: order.amountTendered == null ? null : parseFloat(order.amountTendered as string),
+    changeGiven: order.changeGiven == null ? null : parseFloat(order.changeGiven as string),
+    taxSnapshot: (order.taxSnapshot as Record<string, unknown> | null) ?? {},
     shippingAddress: order.shippingAddress ?? undefined,
     deliveryMethod: order.deliveryMethod ?? null,
     orderType: order.orderType ?? "ONLINE",
@@ -762,12 +771,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     cashDiscountValue: adminSettingsTable.cashDiscountValue,
   }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
   const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const subtotal = financial.taxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
   const cashDiscountAmount = financial.cashDiscountAmount;
-  const { taxSnapshot, cashDiscountSnapshot } = financial;
+  const { taxSnapshot, cashDiscountSnapshot, nonTaxableSubtotal } = financial;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
   const deliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
@@ -894,6 +903,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         subtotal: String(subtotal.toFixed(2)),
         tax: String(tax.toFixed(2)),
         total: String(finalTotal.toFixed(2)),
+        grossSubtotal: String(trustedTotals.subtotal.toFixed(2)),
+        discountTotal: String(cashDiscountAmount.toFixed(2)),
+        taxableSubtotal: String(subtotal.toFixed(2)),
+        nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        customerCreditApplied: "0.00",
+        remainingTenderAmount: String(finalTotal.toFixed(2)),
+        financialFinalizedAt: now,
         shippingAddress: body.data.shippingAddress ?? null,
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
@@ -926,10 +942,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }).returning();
 
       await tx.insert(orderTaxSnapshotsTable).values({
-        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: null,
-        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(subtotal.toFixed(2)), nonTaxableSubtotal: "0.00",
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: trustedTotals.taxJurisdiction,
+        locationId: targetLocationId, taxConfigurationId: trustedTotals.taxConfigurationId,
+        grossSales: String(trustedTotals.subtotal.toFixed(2)),
+        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(subtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
-        taxCollected: String(tax.toFixed(2)), tender, exemptionReason: null,
+        taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
         snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
       });
 
@@ -1072,7 +1090,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     throw err;
   }
 
-  // Merchant payload audit: log LC-safe line items that would go to Stripe/WooCommerce
+  // Merchant payload audit: log provider-safe line items without sensitive content.
   try {
     const merchantLines = buildSafeMerchantPayloadLines(normalizedLines);
     logger.info(
@@ -1434,7 +1452,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
     if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
-    const dueCents = moneyToCents(order.total);
+    const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
     if (dueCents == null || tenderedCents == null) return { status: 422, error: "Invalid authoritative order balance or tender" } as const;
     if (tenderedCents < dueCents) return { status: 422, error: "Amount tendered is insufficient" } as const;
@@ -1490,8 +1508,11 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
 
     const now = new Date();
+    const creditCents = moneyToCents(order.customerCreditApplied) ?? 0;
+    if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
     const [updated] = await tx.update(ordersTable).set({
-      paymentStatus: "paid", paymentMethod: "cash", selectedPaymentMethod: "cash",
+      paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
+      amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
       paymentToken: null, status: "completed", fulfillmentStatus: "completed",
       completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();

@@ -882,7 +882,7 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
   const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cash_app: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
+    cash: 0, paypal: 0, paypal_card: 0, customer_credit: 0, split: 0, other: 0,
   };
 
   for (const order of shiftOrders) {
@@ -890,9 +890,10 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
     const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
     const orderTotal = parseFloat(order.total as string);
-    if (method in paymentTotals) {
+    if (method.includes("+")) {
+      paymentTotals.split += orderTotal;
+    } else if (method in paymentTotals) {
       paymentTotals[method] += orderTotal;
-      if (method === "cash_app") paymentTotals.cashapp += orderTotal;
     } else {
       paymentTotals.other += orderTotal;
     }

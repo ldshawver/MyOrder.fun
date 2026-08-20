@@ -34,6 +34,7 @@ export const catalogItemsTable = pgTable("catalog_items", {
   compareAtPrice: numeric("compare_at_price", { precision: 10, scale: 2 }),
   stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
   isAvailable: boolean("is_available").notNull().default(true),
+  isTaxable: boolean("is_taxable").notNull().default(true),
   imageUrl: text("image_url"),
   mediaGallery: jsonb("media_gallery").default([]),
   tags: text("tags").array().default([]),

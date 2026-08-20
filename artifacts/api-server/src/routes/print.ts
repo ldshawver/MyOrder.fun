@@ -471,6 +471,11 @@ router.patch(
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     const tenantId = requestTenantId(req);
+    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    if (protectedPrinter?.role === "thank_you_sticker") {
+      res.status(409).json({ error: "Use the staging sticker route workflow for this protected printer" });
+      return;
+    }
     const b = req.body ?? {};
     const updates: Record<string, unknown> = {};
     if (b.name !== undefined) updates.name = String(b.name);
@@ -559,6 +564,11 @@ router.delete(
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     const tenantId = requestTenantId(req);
+    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    if (protectedPrinter?.role === "thank_you_sticker") {
+      res.status(409).json({ error: "Protected staging sticker printers cannot be deleted through the generic endpoint" });
+      return;
+    }
     await db
       .delete(printPrintersTable)
       .where(
@@ -1216,6 +1226,10 @@ router.post(
       res.status(404).json({ error: "Job not found" });
       return;
     }
+    if (job.jobType === "thank_you_sticker") {
+      res.status(409).json({ error: "Thank You sticker retries are prohibited; a separately authorized linked replacement job is required" });
+      return;
+    }
     if (!job.printerId) {
       res.status(400).json({ error: "Job has no printer" });
       return;
@@ -1282,6 +1296,10 @@ router.post(
       .limit(1);
     if (!job) {
       res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    if (job.jobType === "thank_you_sticker") {
+      res.status(409).json({ error: "Thank You sticker reprints require a separately authorized linked replacement job" });
       return;
     }
     if (!job.printerId) {

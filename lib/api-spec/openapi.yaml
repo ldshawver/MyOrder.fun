@@ -345,7 +345,7 @@ paths:
           name: status
           schema:
             type: string
-            enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
+            enum: [pending, submitted, confirmed, accepted, processing, preparing, ready, shipped, delivered, completed, cancelled, voided, archived, refunded]
         - in: query
           name: customerId
           schema:
@@ -1512,6 +1512,8 @@ components:
           type: integer
         isAvailable:
           type: boolean
+        isTaxable:
+          type: boolean
         imageUrl:
           type: string
         mediaGallery:
@@ -1626,6 +1628,8 @@ components:
         stockQuantity:
           type: integer
         isAvailable:
+          type: boolean
+        isTaxable:
           type: boolean
         imageUrl:
           type: string
@@ -1785,6 +1789,8 @@ components:
         stockQuantity:
           type: integer
         isAvailable:
+          type: boolean
+        isTaxable:
           type: boolean
         imageUrl:
           type: string
@@ -1959,6 +1965,11 @@ components:
           type: number
         totalPrice:
           type: number
+        inventoryDeductions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
       required: [id, catalogItemId, catalogItemName, quantity, unitPrice, totalPrice]
 
     Order:
@@ -1976,10 +1987,10 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
+          enum: [pending, submitted, confirmed, accepted, processing, preparing, ready, shipped, delivered, completed, cancelled, voided, archived, refunded]
         paymentStatus:
           type: string
-          enum: [unpaid, pending, paid, refunded, failed]
+          enum: [unpaid, pending, paid, partially_refunded, refunded, failed]
         paymentToken:
           type: string
         subtotal:
@@ -1988,6 +1999,27 @@ components:
           type: number
         total:
           type: number
+        grossSubtotal:
+          type: number
+        discountTotal:
+          type: number
+        taxableSubtotal:
+          type: number
+        nonTaxableSubtotal:
+          type: number
+        customerCreditApplied:
+          type: number
+        remainingTenderAmount:
+          type: number
+        amountTendered:
+          type: number
+          nullable: true
+        changeGiven:
+          type: number
+          nullable: true
+        taxSnapshot:
+          type: object
+          additionalProperties: true
         shippingAddress:
           type: string
         deliveryMethod:
@@ -2007,6 +2039,10 @@ components:
           nullable: true
         notes:
           type: string
+        selectedPaymentMethod:
+          type: string
+        paymentMethod:
+          type: string
         checkoutConfirmation:
           type: object
           additionalProperties: false
@@ -2022,7 +2058,7 @@ components:
               minLength: 1
             paymentMethod:
               type: string
-              enum: [cash, cash_app, stripe, paypal, venmo, gift_card, manual]
+              enum: [cash, paypal, paypal_card, customer_credit]
           required: [acceptedAllSalesFinal, legalDisclaimerText]
         items:
           type: array
@@ -2083,7 +2119,7 @@ components:
         updatedAt:
           type: string
           format: date-time
-      required: [id, tenantId, customerId, status, paymentStatus, subtotal, total, items, createdAt, updatedAt]
+      required: [id, tenantId, customerId, status, paymentStatus, subtotal, total, customerCreditApplied, remainingTenderAmount, items, createdAt, updatedAt]
 
     HandoffChecklist:
       type: object
@@ -2107,6 +2143,20 @@ components:
           type: string
         notes:
           type: string
+        checkoutConversionToken:
+          type: string
+        checkoutConversionSnapshot:
+          type: object
+          additionalProperties: true
+        selectedPaymentMethod:
+          type: string
+          enum: [cash, paypal, paypal_card, customer_credit]
+        paymentMethod:
+          type: string
+          enum: [cash, paypal, paypal_card, customer_credit]
+        csrDeliveryDistanceMiles:
+          type: number
+          nullable: true
         items:
           type: array
           minItems: 1
@@ -2135,7 +2185,7 @@ components:
               minLength: 1
             paymentMethod:
               type: string
-              enum: [cash, cash_app, stripe, paypal, venmo, gift_card, manual]
+              enum: [cash, paypal, paypal_card, customer_credit]
             tipAmount:
               type: number
               nullable: true
@@ -2148,6 +2198,10 @@ components:
         deliveryMethod:
           type: string
           enum: [pickup, manual_delivery, uber_direct, uber_courier, csr_delivery]
+          nullable: true
+        orderType:
+          type: string
+          enum: [WALK_IN, CSR, ONLINE]
           nullable: true
       required: [items]
 
@@ -2242,7 +2296,7 @@ components:
       properties:
         status:
           type: string
-          enum: [pending, confirmed, processing, ready, shipped, delivered, cancelled]
+          enum: [pending, submitted, confirmed, accepted, processing, preparing, ready, shipped, delivered, completed, cancelled, voided, archived, refunded]
         notes:
           type: string
       required: [status]
@@ -2877,7 +2931,7 @@ components:
             DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
             server-side from the normalized order lines + tax rule. Provided
             here only for legacy clients; mismatches are logged but do not
-            change the amount sent to Stripe.
+            change the amount for this retired endpoint.
         currency:
           type: string
           default: usd

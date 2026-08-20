@@ -292,7 +292,7 @@ describe("POS order closeout cash-bank safeguards", () => {
   it("closes out cash in a transaction without trusting client box totals", () => {
     expect(orders).toContain('await db.transaction(async (tx) => {');
     expect(orders).toContain("await tx.execute(sql`select pg_advisory_xact_lock");
-    expect(orders).toContain("moneyToCents(order.total)");
+    expect(orders).toContain("moneyToCents(order.remainingTenderAmount ?? order.total)");
     expect(orders).toContain("amountTendered: (tenderedCents / 100).toFixed(2)");
     expect(orders).toContain("generalQueueSessionId: session?.id ?? null");
     expect(orders).toContain("CASH_CLOSEOUT_COMPLETED");

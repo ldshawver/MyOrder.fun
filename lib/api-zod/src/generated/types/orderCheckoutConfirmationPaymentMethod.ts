@@ -11,9 +11,7 @@ export type OrderCheckoutConfirmationPaymentMethod = typeof OrderCheckoutConfirm
 
 export const OrderCheckoutConfirmationPaymentMethod = {
   cash: 'cash',
-  cash_app: 'cash_app',
-  stripe: 'stripe',
-  venmo: 'venmo',
-  gift_card: 'gift_card',
-  manual: 'manual',
+  paypal: 'paypal',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
 } as const;

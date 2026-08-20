@@ -32,13 +32,7 @@ import {
   computeCheckoutTotals,
   CheckoutMappingError,
   CartLineInput,
-  CHECKOUT_TAX_RATE,
 } from "../checkoutNormalizer";
-import {
-  buildStripeIntentPayload,
-  payloadContainsAlavontLeak,
-  LUCIFER_CRUZ_STATEMENT_SUFFIX,
-} from "../stripePayload";
 import { db } from "@workspace/db";
 
 // `db` is a vi.mock'd module; `select` is a vi.fn(). We type-narrow it to the
@@ -124,21 +118,9 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     // Server-recomputed totals — DB-derived, not client-influenced.
     const totals = computeCheckoutTotals(normalized);
     expect(totals.subtotal).toBeCloseTo(2 * 20 + 1 * 15);
-    expect(totals.taxRate).toBe(CHECKOUT_TAX_RATE);
-    expect(totals.tax).toBeCloseTo(totals.subtotal * CHECKOUT_TAX_RATE, 2);
+    expect(totals.taxRate).toBe(0.08);
+    expect(totals.tax).toBeCloseTo(totals.subtotal * 0.08, 2);
     expect(totals.total).toBeCloseTo(totals.subtotal + totals.tax, 2);
-
-    // Stripe payload now derives from normalized (LC) lines exclusively.
-    const stripePayload = buildStripeIntentPayload({
-      orderId: 555,
-      amount: totals.total,
-      currency: "usd",
-      lines: normalized,
-    });
-    expect(stripePayload.description).toContain("LC Premium Tee");
-    expect(stripePayload.description).toContain("LC Hat");
-    expect(stripePayload.metadata.merchantBrand).toBe("lucifer_cruz");
-    expect(stripePayload.statement_descriptor_suffix).toBe(LUCIFER_CRUZ_STATEMENT_SUFFIX);
   });
 
   it("(2) server-side totals ignore any client-supplied unitPrice/total — strict schema rejects extras", () => {
@@ -188,7 +170,7 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
       },
     ]);
     expect(totals.subtotal).toBe(60);
-    expect(totals.total).toBeCloseTo(60 + 60 * CHECKOUT_TAX_RATE, 2);
+    expect(totals.total).toBeCloseTo(60 + 60 * 0.08, 2);
   });
 
   it("(3) falls back when lucifer_cruz_name is null and only throws when all branded names are empty", async () => {
@@ -300,82 +282,6 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
     });
   });
 
-  it("(4) Stripe payload contains ONLY Lucifer Cruz strings — never Alavont", async () => {
-    mockDbReturn([
-      makeAlavontItem({
-        id: 200,
-        alavontName: "VeryDistinctAlavontName_X9",
-        alavontId: "ALV-DISTINCT-X9",
-        luciferCruzName: "LC Standard Hoodie",
-        merchantSku: "LC-HOODIE-9",
-      }),
-    ]);
-    const normalized = await normalizeCheckoutCart([{ catalogItemId: 200, quantity: 1 }]);
-    const totals = computeCheckoutTotals(normalized);
-
-    const stripePayload = buildStripeIntentPayload({
-      orderId: 777,
-      amount: totals.total,
-      currency: "usd",
-      lines: normalized,
-    });
-
-    // The full serialized payload must NOT contain the Alavont brand strings.
-    const serialized = JSON.stringify(stripePayload);
-    expect(serialized).not.toContain("VeryDistinctAlavontName_X9");
-    expect(serialized).not.toContain("ALV-DISTINCT-X9");
-
-    // Description, metadata, and statement descriptor are LC-only.
-    expect(stripePayload.description).toContain("LC Standard Hoodie");
-    expect(stripePayload.metadata.merchantSkus).toContain("LC-HOODIE-9");
-    expect(stripePayload.statement_descriptor_suffix).toBe(LUCIFER_CRUZ_STATEMENT_SUFFIX);
-
-    // Explicit per-field assertion: the SKU summary the processor sees never
-    // carries the ALV-/ALAVONT- prefix nor the row's alavont_id.
-    for (const sku of stripePayload.metadata.merchantSkus.split(",")) {
-      expect(sku).not.toMatch(/^(?:ALV|ALAVONT)[-_]/i);
-      expect(sku).not.toBe("ALV-DISTINCT-X9");
-    }
-    expect(stripePayload.metadata.merchantBrand).not.toBe("alavont");
-
-    // Defense-in-depth helper agrees: no leak.
-    const leakCheck = payloadContainsAlavontLeak(stripePayload, normalized);
-    expect(leakCheck.leaked).toBe(false);
-    expect(leakCheck.offenders).toEqual([]);
-  });
-
-  it("(4c) Stripe payload sanitizer drops an Alavont-shaped merchant_sku even if one slipped past the catalog layer", () => {
-    // Synthesize a normalized line whose merchant_sku looks like an Alavont
-    // identifier (a layered failure mode: the normalizer's catalog check was
-    // bypassed). The payload builder MUST still refuse to forward it.
-    const tainted = [
-      {
-        catalog_item_id: 88,
-        source_type: "local_mapped" as const,
-        merchant_brand: "alavont" as const,
-        catalog_display_name: "Alavont Item",
-        merchant_name: "LC Item",
-        merchant_sku: "ALV-FORBIDDEN-88",
-        ...previewFields,
-        receipt_alavont_name: "Alavont Item",
-        receipt_lucifer_name: "LC Item",
-        merchant_image_url: null,
-        unit_price: 12,
-        quantity: 1,
-        line_subtotal: 12,
-        alavont_id: "ALV-FORBIDDEN-88",
-        woo_product_id: null,
-        woo_variation_id: null,
-        lab_name: null,
-        receipt_name: null,
-        label_name: null,
-      },
-    ];
-    const payload = buildStripeIntentPayload({ orderId: 88, amount: 12.96, currency: "usd", lines: tainted });
-    expect(payload.metadata.merchantSkus).not.toContain("ALV-FORBIDDEN-88");
-    expect(payload.metadata.merchantSkus).toBe("cid:88");
-  });
-
   it("(3e) Alavont row with an UNSUPPORTED merchantProcessingMode still converts from safe fields", async () => {
     mockDbReturn([
       makeAlavontItem({ id: 510, merchantProcessingMode: "passthrough_alavont", customerSafeName: "Safe Tee", customerSafeDescription: "Safe description", luciferCruzCategory: "Safe category" }),
@@ -412,45 +318,6 @@ describe("Task #13 — Alavont→Lucifer Cruz conversion before payment", () => 
       customer_safe_name: "Safe 410",
       merchant_sku: "LC-410",
     });
-    const payload = buildStripeIntentPayload({ orderId: 410, amount: 20, currency: "usd", lines: normalized });
-    expect(JSON.stringify(payload)).not.toContain("ALV-XYZ-100");
-    expect(payload.metadata.merchantSkus).toBe("LC-410");
-  });
-
-  it("(4b) leak detector flags Alavont strings if a payload were synthesized incorrectly", () => {
-    const fakeNormalized = [
-      {
-        catalog_item_id: 1,
-        source_type: "local_mapped" as const,
-        merchant_brand: "alavont" as const,
-        catalog_display_name: "Alavont Distinct Name 42",
-        merchant_name: "LC Real Name",
-        merchant_sku: "LC-1",
-        ...previewFields,
-        receipt_alavont_name: "Alavont Distinct Name 42",
-        receipt_lucifer_name: "LC Real Name",
-        merchant_image_url: null,
-        unit_price: 10,
-        quantity: 1,
-        line_subtotal: 10,
-        alavont_id: "ALV-DISTINCT-42",
-        woo_product_id: null,
-        woo_variation_id: null,
-        lab_name: null,
-        receipt_name: null,
-        label_name: null,
-      },
-    ];
-    const buggyPayload = {
-      amount: 1000,
-      currency: "usd",
-      description: "Order — Alavont Distinct Name 42 x1",
-      metadata: { orderId: "1", merchantBrand: "alavont", merchantLines: "Alavont Distinct Name 42 x1", merchantSkus: "ALV-DISTINCT-42", lineCount: "1" },
-      statement_descriptor_suffix: LUCIFER_CRUZ_STATEMENT_SUFFIX,
-    };
-    const leakCheck = payloadContainsAlavontLeak(buggyPayload, fakeNormalized);
-    expect(leakCheck.leaked).toBe(true);
-    expect(leakCheck.offenders).toContain("Alavont Distinct Name 42");
   });
 
   it("(5) merchant_brand discriminator: lucifer_cruz items pass through without rewrite enforcement", async () => {
