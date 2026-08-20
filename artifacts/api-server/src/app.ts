@@ -229,12 +229,13 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, _next) => {
         ? (err as { statusCode: number }).statusCode
         : 500;
 
-  const message =
+  const internalMessage =
     err instanceof Error
       ? err.message
       : typeof err === "string"
         ? err
         : "Internal Server Error";
+  const message = status >= 500 ? "Internal Server Error" : internalMessage;
 
   // Log with the request-scoped logger so we keep request id correlation.
   if (req.log) {
@@ -252,7 +253,7 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     error: message,
     requestId: req.id,
   };
-  if (process.env["NODE_ENV"] !== "production" && err instanceof Error && err.stack) {
+  if (process.env["NODE_ENV"] === "development" && err instanceof Error && err.stack) {
     body["stack"] = err.stack;
   }
 

@@ -8,6 +8,8 @@ const policy = readFileSync(resolve(root, "artifacts/api-server/src/lib/stagingS
 const bridge = readFileSync(resolve(root, "deploy/print-bridge/staging-pull-bridge.js"), "utf8");
 const cupsCore = readFileSync(resolve(root, "deploy/print-bridge/staging-pull-core.js"), "utf8");
 const migration = readFileSync(resolve(root, "lib/db/drizzle/0044_staging_sticker_pull_bridge.sql"), "utf8");
+const constraintRepair = readFileSync(resolve(root, "lib/db/drizzle/0045_sticker_print_job_constraints.sql"), "utf8");
+const app = readFileSync(resolve(root, "artifacts/api-server/src/app.ts"), "utf8");
 
 describe("staging outbound MARKLIFE bridge invariants", () => {
   it("authenticates a staging-only pull bridge without storing or returning plaintext credentials", () => {
@@ -57,5 +59,13 @@ describe("staging outbound MARKLIFE bridge invariants", () => {
     expect(bridge).not.toContain('createServer');
     expect(bridge).not.toContain('listen(');
     expect(bridge).not.toContain('631');
+  });
+
+  it("permits sticker lifecycle states and sanitizes staging 5xx responses", () => {
+    expect(constraintRepair).toContain("'thank_you_sticker'");
+    for (const state of ["claimed", "submitting", "submitted", "completed", "submission_unknown"]) expect(constraintRepair).toContain(`'${state}'`);
+    expect(app).toContain('status >= 500 ? "Internal Server Error" : internalMessage');
+    expect(app).toContain('process.env["NODE_ENV"] === "development"');
+    expect(app).toContain("requestId: req.id");
   });
 });
