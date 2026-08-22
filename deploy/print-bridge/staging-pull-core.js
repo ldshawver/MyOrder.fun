@@ -24,7 +24,8 @@ function extractCupsJobRecord(history, requestId) {
 function classifyCupsStatus(active, completed) {
   const current = String(active ?? ""); const history = String(completed ?? "");
   if (/cancel/i.test(current) || /cancel/i.test(history)) return "canceled";
-  if (/unable to send data to printer|printer-stopped|abort|failed|stopped|filter failed/i.test(current) || /unable to send data to printer|printer-stopped|abort|failed|stopped|filter failed/i.test(history)) return "cups_failed";
+  const failed = /unable to send data to printer|printer-stopped|processing-to-stop-point|abort|failed|stopped|filter failed/i;
+  if (failed.test(current) || failed.test(history)) return "cups_failed";
   if (current.trim()) return "pending";
   if (/MARKLIFE_X2-[0-9]+/.test(history)) return "completed";
   return "unknown";

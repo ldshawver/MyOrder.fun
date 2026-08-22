@@ -29,6 +29,7 @@ describe("MARKLIFE CUPS lifecycle parsing", () => {
   it("classifies stopped and backend-send failures without retrying", () => {
     expect(core.classifyCupsStatus("MARKLIFE_X2-953\n Status: Unable to send data to printer.", "")).toBe("cups_failed");
     expect(core.classifyCupsStatus("MARKLIFE_X2-953\n Alerts: printer-stopped", "")).toBe("cups_failed");
+    expect(core.classifyCupsStatus("", "MARKLIFE_X2-960\n Alerts: processing-to-stop-point")).toBe("cups_failed");
   });
   it("keeps missing or unrelated history unknown", () => {
     expect(core.extractCupsJobRecord("MARKLIFE_X2-954 operator 1024", "MARKLIFE_X2-953")).toBe("");
