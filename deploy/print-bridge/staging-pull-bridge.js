@@ -6,7 +6,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { parseCupsSubmission, classifyCupsStatus } = require("./staging-pull-core");
+const { parseCupsSubmission, extractCupsJobRecord, classifyCupsStatus } = require("./staging-pull-core");
 
 const VERSION = "staging-marklife-pull-v1";
 const ENVIRONMENT = "staging";
@@ -75,11 +75,13 @@ function submit(job) {
 async function waitForCups(requestId) {
   const deadline = Date.now() + STATUS_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    let active = ""; try { active = run("lpstat", ["-W", "not-completed", "-l", "-o", requestId]); } catch {}
+    let activeHistory = ""; try { activeHistory = run("lpstat", ["-W", "not-completed", "-l", "-o", QUEUE]); } catch {}
+    const active = extractCupsJobRecord(activeHistory, requestId);
     const activeState = classifyCupsStatus(active, "");
     if (activeState === "canceled" || activeState === "cups_failed") return activeState;
     if (activeState === "pending") { await sleep(2000); continue; }
-    let completed = ""; try { completed = run("lpstat", ["-W", "completed", "-l", "-o", requestId]); } catch {}
+    let completedHistory = ""; try { completedHistory = run("lpstat", ["-W", "completed", "-l", "-o", QUEUE]); } catch {}
+    const completed = extractCupsJobRecord(completedHistory, requestId);
     const finalState = classifyCupsStatus("", completed);
     if (finalState !== "unknown") return finalState;
     await sleep(2000);

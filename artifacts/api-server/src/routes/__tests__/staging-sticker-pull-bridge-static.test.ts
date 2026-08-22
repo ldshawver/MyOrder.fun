@@ -49,8 +49,9 @@ describe("staging outbound MARKLIFE bridge invariants", () => {
 
   it("tracks exact CUPS request completion and differentiated terminal states", () => {
     expect(cupsCore).toContain('request id is\\s+(MARKLIFE_X2-(\\d+))');
-    expect(bridge).toContain('["-W", "not-completed", "-l", "-o", requestId]');
-    expect(bridge).toContain('["-W", "completed", "-l", "-o", requestId]');
+    expect(bridge).toContain('["-W", "not-completed", "-l", "-o", QUEUE]');
+    expect(bridge).toContain('["-W", "completed", "-l", "-o", QUEUE]');
+    expect(bridge).toContain("extractCupsJobRecord(activeHistory, requestId)");
     for (const state of ["printer_unavailable", "submission_unknown", "cups_failed", "canceled", "timed_out"]) expect(bridge).toContain(state);
   });
 
