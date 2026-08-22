@@ -47,6 +47,9 @@ export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
   credentialHash: text("credential_hash"),
   bridgeVersion: text("bridge_version"),
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  lastPrinterAvailability: text("last_printer_availability"),
+  lastPrinterReason: text("last_printer_reason"),
+  lastPrinterCheckedAt: timestamp("last_printer_checked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => ({

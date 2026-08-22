@@ -8,7 +8,7 @@ const os = require("os");
 const path = require("path");
 const { parseCupsSubmission, extractCupsJobRecord, classifyCupsStatus } = require("./staging-pull-core");
 
-const VERSION = "staging-marklife-pull-v1";
+const VERSION = "staging-marklife-pull-v2";
 const ENVIRONMENT = "staging";
 const QUEUE = "MARKLIFE_X2";
 const DEVICE_URI = "usb://MARKLIFE/X2?location=8343000";
@@ -38,13 +38,23 @@ const api = async (route, body) => {
   return result;
 };
 
-function preflight() {
-  const queues = run("lpstat", ["-p", QUEUE, "-l"]);
-  if (!/printer MARKLIFE_X2 is idle/i.test(queues) || /disabled|stopped|error/i.test(queues)) throw Object.assign(new Error("MARKLIFE_X2 is not idle and healthy"), { state: "printer_unavailable" });
-  const accepting = run("lpstat", ["-a", QUEUE]);
-  if (!/MARKLIFE_X2 accepting requests/i.test(accepting)) throw Object.assign(new Error("MARKLIFE_X2 is not accepting jobs"), { state: "printer_unavailable" });
-  const devices = run("lpstat", ["-v", QUEUE]);
-  if (!devices.includes(DEVICE_URI)) throw Object.assign(new Error("MARKLIFE_X2 device identity mismatch"), { state: "rejected" });
+function inspectPrinter() {
+  const read = args => { try { return run("lpstat", args); } catch { return ""; } };
+  const queueState = read(["-p", QUEUE, "-l"]);
+  const acceptingState = read(["-a", QUEUE]);
+  const deviceState = read(["-v", QUEUE]);
+  const deviceUri = deviceState.match(/device for MARKLIFE_X2:\s*(\S+)/i)?.[1] ?? "";
+  const identityVerified = deviceUri === DEVICE_URI;
+  const idle = /printer MARKLIFE_X2 is idle/i.test(queueState) && !/disabled|stopped|error/i.test(queueState);
+  const accepting = /MARKLIFE_X2 accepting requests/i.test(acceptingState);
+  if (identityVerified && idle && accepting) return { availability: "available", reason: "ready", deviceUri, identityVerified };
+  if (identityVerified && (queueState || acceptingState)) return { availability: "degraded", reason: idle ? "not_accepting" : "queue_stopped_or_unhealthy", deviceUri, identityVerified };
+  return { availability: "unavailable", reason: deviceUri ? "device_identity_mismatch" : "queue_or_device_not_discoverable", deviceUri, identityVerified };
+}
+
+function preflight(status = inspectPrinter()) {
+  if (!status.identityVerified) throw Object.assign(new Error("MARKLIFE_X2 device identity mismatch or unavailable"), { state: "rejected" });
+  if (status.availability !== "available") throw Object.assign(new Error("MARKLIFE_X2 is not operational"), { state: "printer_unavailable" });
 }
 
 function validateJob(job) {
@@ -90,8 +100,9 @@ async function waitForCups(requestId) {
 }
 
 async function cycle() {
-  preflight();
-  await api("/api/print-bridge/v1/heartbeat", { environment: ENVIRONMENT, queue: QUEUE, deviceUri: DEVICE_URI, bridgeVersion: VERSION });
+  const printer = inspectPrinter();
+  await api("/api/print-bridge/v1/heartbeat", { environment: ENVIRONMENT, queue: QUEUE, deviceUri: printer.deviceUri, deviceIdentityVerified: printer.identityVerified, printerAvailability: printer.availability, printerReason: printer.reason, bridgeVersion: VERSION });
+  if (printer.availability !== "available" || !printer.identityVerified) return;
   const job = await api("/api/print-bridge/v1/claim", { bridgeVersion: VERSION });
   if (!job) return;
   try {

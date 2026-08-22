@@ -9,6 +9,7 @@ const bridge = readFileSync(resolve(root, "deploy/print-bridge/staging-pull-brid
 const cupsCore = readFileSync(resolve(root, "deploy/print-bridge/staging-pull-core.js"), "utf8");
 const migration = readFileSync(resolve(root, "lib/db/drizzle/0044_staging_sticker_pull_bridge.sql"), "utf8");
 const constraintRepair = readFileSync(resolve(root, "lib/db/drizzle/0045_sticker_print_job_constraints.sql"), "utf8");
+const printerHealthMigration = readFileSync(resolve(root, "lib/db/drizzle/0046_print_bridge_printer_health.sql"), "utf8");
 const app = readFileSync(resolve(root, "artifacts/api-server/src/app.ts"), "utf8");
 
 describe("staging outbound MARKLIFE bridge invariants", () => {
@@ -60,6 +61,16 @@ describe("staging outbound MARKLIFE bridge invariants", () => {
     expect(bridge).not.toContain('createServer');
     expect(bridge).not.toContain('listen(');
     expect(bridge).not.toContain('631');
+  });
+
+  it("reports bridge liveness separately from printer health and never claims while degraded", () => {
+    expect(bridge).toContain('const printer = inspectPrinter()');
+    expect(bridge.indexOf('/api/print-bridge/v1/heartbeat')).toBeLessThan(bridge.indexOf('/api/print-bridge/v1/claim'));
+    expect(bridge).toContain('if (printer.availability !== "available" || !printer.identityVerified) return');
+    expect(bridge).toContain('printerAvailability: printer.availability');
+    expect(api).toContain('"available", "degraded", "unavailable"');
+    expect(api).toContain('printerAvailability === "available" && !deviceIdentityVerified');
+    expect(printerHealthMigration).toContain('last_printer_availability');
   });
 
   it("permits sticker lifecycle states and sanitizes staging 5xx responses", () => {

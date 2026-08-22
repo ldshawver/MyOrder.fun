@@ -34,9 +34,13 @@ const bridgeAuth: RequestHandler = async (req, res, next) => {
 router.post("/print-bridge/v1/heartbeat", bridgeAuth, async (req, res): Promise<void> => {
   const bridge = res.locals.stickerBridge as Bridge;
   if (req.body?.queue !== THANK_YOU_STICKER_QUEUE || req.body?.environment !== STAGING) { res.status(422).json({ error: "BRIDGE_IDENTITY_MISMATCH" }); return; }
-  if (secretHash(String(req.body?.deviceUri ?? "")) !== DEVICE_URI_HASH) { res.status(422).json({ error: "PRINTER_DEVICE_MISMATCH" }); return; }
-  await db.update(printBridgeProfilesTable).set({ lastHeartbeatAt: new Date(), bridgeVersion: safeReason(req.body?.bridgeVersion) }).where(and(eq(printBridgeProfilesTable.tenantId, bridge.tenantId), eq(printBridgeProfilesTable.id, bridge.id)));
-  res.json({ ok: true, bridgeId: bridge.bridgeId, acceptedJobType: "thank_you_sticker" });
+  const printerAvailability = String(req.body?.printerAvailability ?? "");
+  if (!new Set(["available", "degraded", "unavailable"]).has(printerAvailability)) { res.status(422).json({ error: "INVALID_PRINTER_AVAILABILITY" }); return; }
+  const deviceIdentityVerified = secretHash(String(req.body?.deviceUri ?? "")) === DEVICE_URI_HASH && req.body?.deviceIdentityVerified === true;
+  if (printerAvailability === "available" && !deviceIdentityVerified) { res.status(422).json({ error: "PRINTER_DEVICE_MISMATCH" }); return; }
+  const now = new Date();
+  await db.update(printBridgeProfilesTable).set({ lastHeartbeatAt: now, bridgeVersion: safeReason(req.body?.bridgeVersion), lastPrinterAvailability: printerAvailability, lastPrinterReason: safeReason(req.body?.printerReason), lastPrinterCheckedAt: now }).where(and(eq(printBridgeProfilesTable.tenantId, bridge.tenantId), eq(printBridgeProfilesTable.id, bridge.id)));
+  res.json({ ok: true, bridgeId: bridge.bridgeId, acceptedJobType: "thank_you_sticker", printerAvailability, deviceIdentityVerified });
 });
 
 router.post("/print-bridge/v1/claim", bridgeAuth, async (req, res): Promise<void> => {
