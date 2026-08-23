@@ -882,7 +882,7 @@ export default function Catalog() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Hero/header: banner sits behind the title and brand buttons. */}
-      <div className="relative overflow-hidden rounded-3xl border border-border/30 bg-background/95 min-h-[180px] sm:min-h-[220px] md:min-h-[280px] catalog-hero" data-testid="catalog-hero-banner">
+      <div className="relative aspect-[3/1] w-full overflow-hidden rounded-3xl border border-border/30 bg-background/95 catalog-hero" data-testid="catalog-hero-banner">
         {!isLC && (
           <div className="absolute inset-0 z-0">
             {getSafeImageSources(bannerImages).map((src, index) => (
@@ -890,7 +890,7 @@ export default function Catalog() {
                 key={src}
                 src={src}
                 alt=""
-                className="absolute inset-0 h-full w-full object-contain catalog-hero-frame"
+                className="absolute inset-x-0 top-0 block h-auto w-full catalog-hero-frame"
                 style={{ animationDelay: `${index * 10}s` }}
               />
             ))}
@@ -899,7 +899,7 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="relative z-10 flex min-h-[180px] sm:min-h-[220px] md:min-h-[280px] flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
+        <div className="relative z-10 flex h-full flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
           <div className="flex justify-end">
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
               <button
@@ -929,17 +929,23 @@ export default function Catalog() {
       </div>
 
       {/* Filters */}
-      <div className="relative z-30 -mt-24 flex gap-2 flex-wrap items-center rounded-2xl border border-border/30 bg-background/90 p-3 shadow-xl backdrop-blur-md sm:-mt-28 md:-mt-32">
-        <div className="relative min-w-[180px] max-w-xs">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="pl-9 h-9 rounded-xl text-sm bg-background/50"
-            data-testid="input-search"
-          />
-        </div>
+      <div className="relative z-30 -mt-16 flex flex-wrap items-center gap-2 bg-transparent p-3 sm:-mt-20 md:-mt-24" data-testid="catalog-search-wrapper">
+        <form className="flex min-w-0 max-w-md flex-1 gap-2 sm:min-w-[260px]" role="search" onSubmit={event => event.preventDefault()}>
+          <div className="relative min-w-0 flex-1">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="Search catalogue"
+              placeholder="Search..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="h-9 rounded-xl bg-background pl-9 text-sm shadow-sm"
+              data-testid="input-search"
+            />
+          </div>
+          <Button type="submit" className="h-9 shrink-0 rounded-xl bg-primary px-4 text-primary-foreground shadow-sm" aria-label="Search catalogue">
+            Search
+          </Button>
+        </form>
         <div className="flex gap-1.5 flex-wrap">
           {categories.map(cat => (
             <button
@@ -959,27 +965,6 @@ export default function Catalog() {
           ))}
         </div>
       </div>
-
-      {/* LC branded banner */}
-      {isLC && (
-        <div
-          className="rounded-2xl p-4 border flex items-center gap-3"
-          style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.04)" }}
-        >
-          <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
-          <p className="text-xs" style={{ color: "#C0C0C0" }}>
-            All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
-      {!isLC && (
-        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
-          <p className="text-xs text-muted-foreground">
-            Alavont fulfilled by Lucifer Cruz. All transactions are private and discreet.
-          </p>
-        </div>
-      )}
 
       {/* Grid */}
       {isLoading ? (
@@ -1050,7 +1035,6 @@ export default function Catalog() {
         </div>
       )}
 
-      <div className="mt-8 rounded-2xl border border-border/30 bg-background/80 p-3 text-center text-xs text-muted-foreground">Alavont fulfilled by Lucifer Cruz</div>
 
       <CatalogNotice className="mt-4" />
 
