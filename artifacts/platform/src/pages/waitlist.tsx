@@ -193,17 +193,16 @@ export default function WaitlistPage() {
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4 max-w-sm">
         <div className="flex flex-col items-center gap-3 mb-2">
           <img
-            src={`${basePath}/lc-icon.png`}
-            alt="Lucifer Cruz"
-            className="w-12 h-12 object-contain"
-            style={{ filter: "invert(1) brightness(1.2)" }}
+            src={`${basePath}/myorder-logo-mobile.png`}
+            alt="MyOrder.fun"
+            className="h-20 w-auto object-contain"
           />
           <div className="text-center">
             <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>
-              LUCIFER CRUZ
+              MYORDER.FUN
             </div>
             <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Adult Boutique · 18+
+              Secure commerce platform
             </div>
           </div>
         </div>

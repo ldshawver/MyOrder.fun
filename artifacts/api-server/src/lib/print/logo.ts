@@ -1,7 +1,7 @@
 import { centerText } from "./formatter";
 
-const PRIMARY = "ALAVONT";
-const TAGLINE = "THERAPEUTICS";
+const PRIMARY = "MYORDER.FUN";
+const TAGLINE = "SECURE COMMERCE";
 
 /**
  * Returns a clean centered text logo for thermal receipt printers.
@@ -20,5 +20,5 @@ export function getLogo(width: number): string[] {
 
 /** Returns the primary brand name for fallback text usage. */
 export function getPrimaryBrandName(): string {
-  return "ALAVONT THERAPEUTICS";
+  return "MYORDER.FUN";
 }

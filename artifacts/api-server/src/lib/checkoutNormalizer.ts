@@ -106,7 +106,7 @@ export class CheckoutMappingError extends Error {
   public readonly reason: string;
   public readonly missingSafeFields?: string[];
   constructor(catalogItemId: number, reason: string, message?: string, missingSafeFields?: string[]) {
-    super(message ?? `Catalog item ${catalogItemId} cannot be mapped to a Lucifer Cruz merchant line: ${reason}`);
+    super(message ?? `Catalog item ${catalogItemId} cannot be mapped to a supplier merchant line: ${reason}`);
     this.name = "CheckoutMappingError";
     this.catalogItemId = catalogItemId;
     this.reason = reason;
@@ -236,7 +236,7 @@ export async function normalizeCheckoutCart(
     const display_description = firstNonEmpty(ci.alavontDescription, ci.displayDescription, ci.description) ?? "Curated by Zappy for a premium checkout experience.";
     const display_category = firstNonEmpty(ci.alavontCategory, ci.displayCategory, ci.category) ?? ci.category;
     const display_image = firstNonEmpty(ci.alavontImageUrl, ci.displayImage, ci.imageUrl);
-    const merchant_brand_name = firstNonEmpty(ci.merchantBrandName, ci.merchantName, "Lucifer Cruz") ?? "Lucifer Cruz";
+    const merchant_brand_name = firstNonEmpty(ci.merchantBrandName, ci.merchantName, "Supplier") ?? "Supplier";
     const marketing_copy = firstNonEmpty(
       ci.marketingCopy,
       ci.upsellCopy,

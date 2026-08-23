@@ -86,7 +86,7 @@ export default function Orders() {
           <p className="text-sm text-muted-foreground max-w-xs mb-6">
             {isCustomer
               ? "Orders placed from your signed-in account will appear here."
-              : "Place your first order to get started with Alavont Therapeutics."}
+              : "Place your first order to get started."}
           </p>
           <Link
             href="/orders/new"

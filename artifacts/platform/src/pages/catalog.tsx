@@ -808,7 +808,7 @@ export default function Catalog() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [bannerImages, setBannerImages] = useState(DEFAULT_CATALOG_BANNERS);
-  const { brand, setBrand } = useBrand();
+  const { brand, setBrand, branding } = useBrand();
   const [menuMode, setMenuMode] = useState<MenuMode>(() =>
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
   );
@@ -910,7 +910,7 @@ export default function Catalog() {
                 data-testid="tab-alavont"
               >
                 <FlaskConical size={12} />
-                Alavont Therapeutics
+                {branding.customer.displayName}
               </button>
               <button
                 onClick={() => setMenuMode("lucifer")}
@@ -921,7 +921,7 @@ export default function Catalog() {
                 data-testid="tab-lucifer"
               >
                 <Flame size={12} />
-                Lucifer Cruz
+                {branding.supplier.displayName ?? "Supplier catalog"}
               </button>
             </div>
           </div>
@@ -984,7 +984,7 @@ export default function Catalog() {
           {/* "Hidden by LC filter" message */}
           {hiddenByLCFilter && (
             <>
-              <div className="text-sm font-semibold mb-1">Products exist but have no Lucifer Cruz names</div>
+              <div className="text-sm font-semibold mb-1">Products exist but have no {branding.supplier.displayName ?? "supplier"} names</div>
               <div className="text-xs text-muted-foreground max-w-xs">
                 {allItems.length} product{allItems.length !== 1 ? "s" : ""} are in the database but none have a <code className="font-mono bg-muted/30 px-1 rounded">lucifer_cruz_name</code> assigned.
                 {canEdit && " Re-import your CSV with the lucifer_cruz_name column populated, or check Edit Catalog."}
@@ -1009,7 +1009,7 @@ export default function Catalog() {
           {trulyEmpty && !hiddenByLCFilter && !hiddenBySearchOrCategory && (
             <>
               <div className="text-sm font-semibold mb-1">
-                {isLC ? "No Lucifer Cruz items found" : "No products imported"}
+                {isLC ? `No ${branding.supplier.displayName ?? "supplier"} items found` : "No products imported"}
               </div>
               <div className="text-xs text-muted-foreground max-w-xs">
                 {isLC

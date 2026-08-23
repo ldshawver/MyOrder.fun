@@ -60,10 +60,9 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
 
       <div className="relative z-10 flex flex-col items-center gap-6 w-full max-w-md px-6 text-center">
         <img
-          src="/lc-icon.png"
-          alt="Lucifer Cruz"
-          className="w-14 h-14 object-contain"
-          style={{ filter: "invert(1) brightness(1.2)" }}
+          src="/myorder-logo-mobile.png"
+          alt="MyOrder.fun"
+          className="h-20 w-auto object-contain"
         />
 
         <div>
@@ -71,13 +70,13 @@ export default function PendingPage({ status = "pending", userEmail, onCheckStat
             className="font-bold tracking-[0.2em] text-base mb-1"
             style={{ color: "#C0C0C0" }}
           >
-            LUCIFER CRUZ
+            MYORDER.FUN
           </div>
           <div
             className="text-[10px] font-mono tracking-[0.35em] uppercase"
             style={{ color: "#8B0000" }}
           >
-            Adult Boutique · 18+
+            Secure commerce platform
           </div>
         </div>
 

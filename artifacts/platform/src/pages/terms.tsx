@@ -93,7 +93,7 @@ export default function TermsPage() {
         <AlertBox icon={ShieldCheck} color="#DC143C" title="Non-Disclosure Acknowledgment (NDA)">
           By accessing or using this Platform, you enter into a binding non-disclosure obligation. All content,
           workflows, pricing logic, product data, and operational information visible within the Platform is
-          strictly confidential and proprietary to Alavont Therapeutics / Lucifer Cruz Adult Boutique. You may
+          strictly confidential and proprietary to MyOrder.fun or the applicable tenant. You may
           not record, screenshot, screen-share, reproduce, or disclose any portion of this Platform to any
           unauthorized party. This obligation survives account termination and continues indefinitely.
         </AlertBox>
@@ -234,7 +234,7 @@ export default function TermsPage() {
         </Section>
 
         <Section number="12" title="Indemnification">
-          <p>You agree to indemnify, defend, and hold harmless MyOrder.fun, Alavont Therapeutics, and Lucifer Cruz Adult Boutique and their operators from any claims, liabilities, damages, or expenses (including attorney's fees) arising from your misuse of the Platform, security breaches caused by your actions, or violations of these Terms.</p>
+          <p>You agree to indemnify, defend, and hold harmless MyOrder.fun and the applicable tenant and their operators from any claims, liabilities, damages, or expenses (including attorney's fees) arising from your misuse of the Platform, security breaches caused by your actions, or violations of these Terms.</p>
         </Section>
 
         <Section number="13" title="Modifications">
@@ -319,7 +319,7 @@ export default function TermsPage() {
 
         {/* Footer */}
         <div className="mt-14 pt-8 border-t text-center space-y-2" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
-          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN &nbsp;·&nbsp; LUCIFER CRUZ ADULT BOUTIQUE &nbsp;·&nbsp; ALAVONT THERAPEUTICS</div>
+          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN</div>
           <div className="text-[10px] font-mono" style={{ color: "#2a2a2a" }}>Effective {EFFECTIVE_DATE} &nbsp;·&nbsp; All rights reserved</div>
           <div className="mt-4">
             <div className="flex items-center justify-center gap-3 flex-wrap">

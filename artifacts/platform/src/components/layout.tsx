@@ -71,8 +71,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     admin: false,
     platform: false,
   });
-  const { brand } = useBrand();
+  const { brand, branding } = useBrand();
   const isLC = brand === "lucifer_cruz";
+  const activeDisplayName = isLC ? (branding.supplier.displayName ?? "Supplier catalog") : branding.customer.displayName;
+  const activeLogo = isLC ? (branding.supplier.logoUrl ?? branding.platform.mobileLogoUrl) : branding.customer.logoUrl;
 
   const userRole = normalizeNotificationRole(user.role);
   const notificationRole = userRole;
@@ -305,26 +307,13 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         {/* Logo */}
         <div className="p-5 border-b border-border/40">
           <Link href="/catalog" className="flex items-center gap-3 group">
-            {isLC ? (
-              <img
-                src="/lc-icon.png"
-                alt="Lucifer Cruz"
-                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-                style={{ filter: "invert(1) brightness(1.15)" }}
-              />
-            ) : (
-              <img
-                src="/alavont-logo-glow.png"
-                alt="Alavont"
-                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-              />
-            )}
+            <img src={activeLogo} alt={activeDisplayName} className="h-10 w-auto max-w-24 object-contain group-hover:scale-105 transition-transform" />
             <div>
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
-                {isLC ? "LUCIFER CRUZ" : "ALAVONT"}
+                {activeDisplayName}
               </div>
               <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                {isLC ? "Adult Boutique" : "Premium Platform"}
+                {isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}
               </div>
             </div>
           </Link>
@@ -395,14 +384,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           <div className="relative w-72 bg-sidebar border-r border-border/50 flex flex-col h-full shadow-2xl">
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
               <Link href="/catalog" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
-                {isLC ? (
-                  <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-                ) : (
-                  <img src="/alavont-logo-glow.png" alt="Alavont" className="w-8 h-8 object-contain" />
-                )}
+                <img src={activeLogo} alt={activeDisplayName} className="h-9 w-auto max-w-20 object-contain" />
                 <div>
-                  <div className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Adult Boutique" : "Premium Platform"}</div>
+                  <div className="font-bold text-sm tracking-wide">{activeDisplayName}</div>
+                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -472,12 +457,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <Menu size={22} />
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
-            {isLC ? (
-              <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-            ) : (
-              <img src="/alavont-logo-glow.png" alt="Alavont" className="w-7 h-7 object-contain" />
-            )}
-            <span className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</span>
+            <img src={activeLogo} alt={activeDisplayName} className="h-8 w-auto max-w-20 object-contain" />
+            <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
           </Link>
           <Link href="/notifications" className="relative text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />

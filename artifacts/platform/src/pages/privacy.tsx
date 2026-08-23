@@ -306,7 +306,7 @@ export default function PrivacyPage() {
         <Section number="14" title="Contact">
           <p>For privacy or security inquiries, contact the Platform operator through your designated account representative or the administrative contact on file for your organization.</p>
           <div className="mt-4 rounded-xl border p-5" style={{ borderColor: "rgba(220,20,60,0.15)", background: "rgba(220,20,60,0.04)" }}>
-            <div className="text-xs font-mono" style={{ color: "#777" }}>MyOrder.fun &nbsp;·&nbsp; Lucifer Cruz Adult Boutique &nbsp;·&nbsp; Alavont Therapeutics</div>
+            <div className="text-xs font-mono" style={{ color: "#777" }}>MyOrder.fun</div>
             <div className="text-xs font-mono mt-1" style={{ color: "#444" }}>Privacy &amp; Security Office &nbsp;·&nbsp; Contact via Platform administrator</div>
           </div>
         </Section>
@@ -329,7 +329,7 @@ export default function PrivacyPage() {
 
         {/* Footer */}
         <div className="mt-14 pt-8 border-t text-center space-y-2" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
-          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN &nbsp;·&nbsp; LUCIFER CRUZ ADULT BOUTIQUE &nbsp;·&nbsp; ALAVONT THERAPEUTICS</div>
+          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN</div>
           <div className="text-[10px] font-mono" style={{ color: "#2a2a2a" }}>Effective {EFFECTIVE_DATE} &nbsp;·&nbsp; All rights reserved</div>
           <div className="mt-4">
             <Link href="/" className="inline-flex items-center gap-2 text-xs font-mono px-4 py-2 rounded-lg border transition-colors" style={{ borderColor: "rgba(220,20,60,0.2)", color: "#555" }}>

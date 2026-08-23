@@ -1,5 +1,5 @@
 import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { BrandProvider } from "@/contexts/BrandContext";
+import { BrandProvider, useBrand } from "@/contexts/BrandContext";
 import { CartProvider } from "@/contexts/CartContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
@@ -109,23 +109,22 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
         <div className="flex flex-col items-center gap-3 mb-2">
           <img
-            src="/lc-icon.png"
-            alt="Lucifer Cruz"
-            className="w-12 h-12 object-contain"
-            style={{ filter: "invert(1) brightness(1.2)" }}
+            src="/myorder-logo-mobile.png"
+            alt="MyOrder.fun"
+            className="h-16 w-auto object-contain"
           />
           <div className="text-center">
-            <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>
-              LUCIFER CRUZ
+            <div className="font-bold tracking-[0.12em] text-base" style={{ color: "#C0C0C0" }}>
+              MYORDER.FUN
             </div>
             <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Adult Boutique · 18+
+              Secure commerce platform
             </div>
           </div>
         </div>
         {children}
         <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>
-          ADULTS ONLY · 18+ · DISCREET · SECURE
+          TENANT-AWARE · SECURE · AUDITED
         </p>
       </div>
     </div>
@@ -199,10 +198,9 @@ const LoadingScreen = () => (
     style={{ background: "#0A0000" }}
   >
     <img
-      src="/lc-icon.png"
-      alt="Lucifer Cruz"
-      className="w-14 h-14 object-contain animate-pulse"
-      style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }}
+      src="/myorder-logo-mobile.png"
+      alt="MyOrder.fun"
+      className="h-20 w-auto object-contain animate-pulse"
     />
     <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>
       Loading...
@@ -249,7 +247,7 @@ function AuthErrorScreen({
       className="h-screen w-full flex flex-col items-center justify-center gap-6"
       style={{ background: "#0A0000" }}
     >
-      <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-10 h-10 object-contain" style={{ filter: "invert(1)" }} />
+      <img src="/myorder-logo-mobile.png" alt="MyOrder.fun" className="h-16 w-auto object-contain" />
       <div className="text-center flex flex-col gap-1">
         <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>
           Unable to load your account.
@@ -287,6 +285,7 @@ function AuthenticatedApp() {
   const { signOut } = useClerk();
   const { getToken } = useAuth();
   const [authTokenReady, setAuthTokenReady] = useState(false);
+  const { setBranding } = useBrand();
 
   useEffect(() => {
     let cancelled = false;
@@ -332,6 +331,17 @@ function AuthenticatedApp() {
   });
 
   const clerkEmail = clerkUser?.primaryEmailAddress?.emailAddress;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authTokenReady || !user) return;
+    getToken()
+      .then((token) => fetch("/api/branding", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then((response) => response.ok ? response.json() : null)
+      .then((branding) => { if (!cancelled && branding) setBranding(branding); })
+      .catch(() => { /* platform defaults remain active */ });
+    return () => { cancelled = true; };
+  }, [authTokenReady, getToken, setBranding, user]);
 
   const [disclaimer, setDisclaimer] = useState<{ text: string; version: number; required: boolean } | null>(null);
   const [disclaimerLoading, setDisclaimerLoading] = useState(false);

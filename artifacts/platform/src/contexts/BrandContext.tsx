@@ -1,15 +1,20 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from "react";
+import { resolveBranding, type BrandingInput, type ResolvedBranding } from "@/lib/branding";
 
 export type Brand = "alavont" | "lucifer_cruz";
 
 interface BrandContextValue {
   brand: Brand;
   setBrand: (b: Brand) => void;
+  branding: ResolvedBranding;
+  setBranding: (branding: BrandingInput | null) => void;
 }
 
 const BrandContext = createContext<BrandContextValue>({
   brand: "alavont",
   setBrand: () => {},
+  branding: resolveBranding(),
+  setBranding: () => {},
 });
 
 const ALAVONT_VARS: Record<string, string> = {
@@ -76,15 +81,35 @@ const LUCIFER_VARS: Record<string, string> = {
   "--sidebar-ring": "0 78% 48%",
 };
 
-function applyBrandVars(brand: Brand) {
+function hexToHsl(value: string): string | null {
+  const match = /^#([0-9a-f]{6})$/i.exec(value);
+  if (!match) return null;
+  const n = Number.parseInt(match[1], 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), light = (max + min) / 2;
+  const delta = max - min;
+  let hue = 0;
+  if (delta) hue = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+  const saturation = delta ? delta / (1 - Math.abs(2 * light - 1)) : 0;
+  return `${Math.round((hue * 60 + 360) % 360)} ${Math.round(saturation * 100)}% ${Math.round(light * 100)}%`;
+}
+
+function applyBrandVars(brand: Brand, branding: ResolvedBranding) {
   const vars = brand === "lucifer_cruz" ? LUCIFER_VARS : ALAVONT_VARS;
   const root = document.documentElement;
   for (const [k, v] of Object.entries(vars)) {
     root.style.setProperty(k, v);
   }
+  if (brand !== "lucifer_cruz") {
+    const primary = hexToHsl(branding.customer.primaryColor);
+    const secondary = hexToHsl(branding.customer.secondaryColor);
+    if (primary) root.style.setProperty("--primary", primary);
+    if (secondary) root.style.setProperty("--secondary", secondary);
+  }
 }
 
 export function BrandProvider({ children }: { children: ReactNode }) {
+  const [branding, setResolvedBranding] = useState<ResolvedBranding>(() => resolveBranding());
   const [brand, setBrandState] = useState<Brand>(() => {
     try {
       const saved = localStorage.getItem("orderflow_brand");
@@ -95,16 +120,26 @@ export function BrandProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    applyBrandVars(brand);
-  }, [brand]);
+    applyBrandVars(brand, branding);
+  }, [brand, branding]);
+
+  useEffect(() => {
+    document.title = branding.customer.displayName;
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (favicon) favicon.href = branding.customer.faviconUrl;
+  }, [branding]);
 
   function setBrand(b: Brand) {
     setBrandState(b);
     try { localStorage.setItem("orderflow_brand", b); } catch { /* storage unavailable */ }
   }
 
+  const setBranding = useCallback((value: BrandingInput | null) => {
+    setResolvedBranding(resolveBranding(value));
+  }, []);
+
   return (
-    <BrandContext.Provider value={{ brand, setBrand }}>
+    <BrandContext.Provider value={{ brand, setBrand, branding, setBranding }}>
       {children}
     </BrandContext.Provider>
   );

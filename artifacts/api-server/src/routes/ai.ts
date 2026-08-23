@@ -17,7 +17,7 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
-export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly AI order concierge for Lucifer Cruz Adult Boutique. Your job is to help customers find what they need.
+export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly MyOrder.fun order concierge. Your job is to help customers find what they need from their tenant's catalogue.
 
 CURRENT CATALOG ({{itemCount}} items available):
 {{catalog}}

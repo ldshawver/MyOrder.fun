@@ -39,6 +39,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
+import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
   computeCheckoutTotals,
@@ -248,6 +249,7 @@ const PreviewConversionBody = z.object({
 
 async function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"], tenantId?: number) {
   const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(tenantId));
+  const branding = tenantId ? await getBranding(tenantId) : null;
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -272,7 +274,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
     },
     converted: {
       stage: "customer_facing_product_conversion",
-      brandName: lines[0]?.merchant_brand_name ?? "Lucifer Cruz",
+      brandName: lines[0]?.merchant_brand_name ?? branding?.supplier.displayName ?? branding?.customer.displayName ?? "MyOrder.fun",
       headline: "Your order has been converted into a branded checkout experience.",
       zappyMessage: "I transformed the internal cart into customer-ready merchandise, checked the merchant mapping, and prepared payment options. Cash orders may qualify for exclusive discounts when enabled.",
       paymentMethods: [

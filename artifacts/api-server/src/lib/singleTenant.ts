@@ -31,7 +31,7 @@ export async function getHouseTenantId(): Promise<number> {
   const [seeded] = await db
     .insert(tenantsTable)
     .values({
-      name: "Lucifer Cruz",
+      name: "MyOrder.fun",
       slug: "house",
       status: "active",
       plan: "standard",

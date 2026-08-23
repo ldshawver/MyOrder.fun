@@ -43,7 +43,7 @@ function StatusBadge({ status }: { status: string }) {
 function MiniAssistant() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiChatMessage[]>([
-    { role: "assistant", content: "Hi! I'm your Alavont shopping assistant. Ask me about our products, pricing, or anything else — I'll help you find exactly what you need." }
+    { role: "assistant", content: "Hi! I'm your shopping assistant. Ask me about the catalogue, pricing, or anything else — I'll help you find exactly what you need." }
   ]);
   const [suggested, setSuggested] = useState<CatalogItem[]>([]);
   const chatMutation = useAiConciergeChat();
@@ -82,7 +82,7 @@ function MiniAssistant() {
         </div>
         <div>
           <div className="text-sm font-bold">AI Shopping Assistant</div>
-          <div className="text-[10px] text-muted-foreground font-mono">Alavont Therapeutics · Online</div>
+          <div className="text-[10px] text-muted-foreground font-mono">MyOrder.fun · Online</div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-primary/70">
           <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
@@ -236,7 +236,7 @@ export default function Dashboard() {
           </div>
           <h1 className="text-3xl font-bold tracking-tight mb-2" data-testid="text-dashboard-title">Platform Dashboard</h1>
           <p className="text-muted-foreground" data-testid="text-dashboard-subtitle">
-            Welcome to the Alavont Therapeutics global administration center.
+            Welcome to the MyOrder.fun global administration center.
           </p>
         </div>
         <Link
@@ -267,10 +267,9 @@ function CustomerHome({ user }: { user: UserProfile }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <img
-            src="/lc-icon.png"
-            alt="Lucifer Cruz"
-            className="w-14 h-14 object-contain"
-            style={{ filter: "invert(1) brightness(1.1)" }}
+            src="/myorder-logo-mobile.png"
+            alt="MyOrder.fun"
+            className="h-20 w-auto object-contain"
             onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
           <div>
@@ -278,7 +277,7 @@ function CustomerHome({ user }: { user: UserProfile }) {
             <h1 className="text-2xl font-bold tracking-tight" data-testid="text-dashboard-title">
               {user?.firstName || (user as UserProfile & { contactName?: string })?.contactName || "Valued Client"}
             </h1>
-            <div className="text-xs text-primary/80 font-medium tracking-wide mt-0.5">Lucifer Cruz · Adult Boutique</div>
+            <div className="text-xs text-primary/80 font-medium tracking-wide mt-0.5">MyOrder.fun</div>
           </div>
         </div>
         <Link
@@ -350,7 +349,7 @@ function AdminDashboard() {
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest mb-1">Lucifer Cruz</div>
+          <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest mb-1">MyOrder.fun</div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-dashboard-title">Overview</h1>
           <p className="text-muted-foreground text-sm mt-1" data-testid="text-dashboard-subtitle">Real-time performance metrics</p>
         </div>

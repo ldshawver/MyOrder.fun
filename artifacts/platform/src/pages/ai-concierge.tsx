@@ -193,7 +193,7 @@ const DEFAULT_STEPS: IntroStep[] = [
   {
     emoji: "⚡",
     title: "Hey! I'm Zappy",
-    body: "Your personal shopping buddy for everything at Alavont & Lucifer Cruz. No judgment, no awkwardness — just me helping you find what you need. I know this menu inside and out.",
+    body: "Your personal shopping buddy for your tenant catalogue. No judgment, no awkwardness — just help finding what you need.",
     cta: "Let's go!",
   },
   {
