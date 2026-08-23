@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request } from "express";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { hasPermission } from "../lib/roles";
 import { createBusinessSettingsPatchSchema } from "../config/configSchemas";
+import { createBrandingPatchSchema } from "../config/configSchemas";
 import { changedBusinessFieldNames, compactUserAgent, hashForAudit } from "../config/configRedaction";
 import { getTenantSettings, updateTenantBusinessSettings } from "../config/tenantConfig";
 
@@ -42,6 +43,40 @@ router.get("/settings", async (req, res): Promise<void> => {
     return;
   }
   res.json(settings);
+});
+
+router.get("/branding", async (req, res): Promise<void> => {
+  const tenantId = actorTenantId(req);
+  if (!tenantId) return void res.status(403).json({ error: "Tenant-scoped branding requires an assigned tenant" });
+  const { getBranding } = await import("../config/brandingConfig");
+  const branding = await getBranding(tenantId);
+  if (!branding) return void res.status(404).json({ error: "Tenant not found" });
+  res.json(branding);
+});
+
+router.patch("/settings/branding", async (req, res): Promise<void> => {
+  const tenantId = actorTenantId(req);
+  if (!tenantId) return void res.status(403).json({ error: "Tenant-scoped branding requires an assigned tenant" });
+  if (!(await hasPermission(req.dbUser, "settings.edit_business", tenantId))) {
+    return void res.status(403).json({ error: "Forbidden: missing permission", permission: "settings.edit_business" });
+  }
+  const parsed = createBrandingPatchSchema({ runtimeEnvironment: runtimeEnvironment() }).safeParse(req.body ?? {});
+  if (!parsed.success) return void res.status(400).json({ error: "Invalid branding settings", fieldErrors: zodError(parsed.error) });
+  const { updateBranding } = await import("../config/brandingConfig");
+  const updated = await updateBranding(tenantId, parsed.data);
+  if (!updated) return void res.status(404).json({ error: "Tenant not found" });
+  await writeAuditLog({
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email,
+    actorRole: req.dbUser!.role,
+    tenantId,
+    action: "tenant_settings.branding_updated",
+    resourceType: "tenant_branding",
+    resourceId: String(tenantId),
+    metadata: { sections: Object.keys(parsed.data), fields: Object.values(parsed.data).flatMap((value) => Object.keys(value ?? {})) },
+    ipAddress: req.ip,
+  });
+  res.json(updated);
 });
 
 router.patch("/settings/business", async (req, res): Promise<void> => {

@@ -130,3 +130,35 @@ export function createBusinessSettingsPatchSchema(options: { runtimeEnvironment?
 }
 
 export type BusinessSettingsPatch = z.infer<ReturnType<typeof createBusinessSettingsPatchSchema>>;
+
+const color = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, "color must be a six-digit hex value");
+const assetPath = z.string().trim().max(2048).refine((value) => value.startsWith("/") || value.startsWith("https://"), "asset must be an absolute application path or HTTPS URL");
+
+export function createBrandingPatchSchema(options: { runtimeEnvironment?: string } = {}) {
+  return z.object({
+    customer: z.object({
+      displayName: optionalPlainText(120, "displayName"),
+      legalName: optionalPlainText(160, "legalName"),
+      logoUrl: assetPath.nullable().optional(),
+      faviconUrl: assetPath.nullable().optional(),
+      primaryColor: color.nullable().optional(),
+      secondaryColor: color.nullable().optional(),
+      supportEmail: nullableEmail(),
+      supportPhone: optionalPlainText(40, "supportPhone"),
+      websiteUrl: nullableUrl(options.runtimeEnvironment),
+      checkoutDescriptor: optionalPlainText(22, "checkoutDescriptor"),
+      termsDisclaimer: optionalPlainText(4000, "termsDisclaimer"),
+      privacyNotice: optionalPlainText(4000, "privacyNotice"),
+      customDomain: z.string().trim().max(253).refine(isValidPublicDnsHostname, "customDomain must be a public DNS hostname").nullable().optional(),
+    }).strict().optional(),
+    supplier: z.object({
+      displayName: optionalPlainText(120, "supplier.displayName"),
+      logoUrl: assetPath.nullable().optional(),
+      attribution: optionalPlainText(1000, "supplier.attribution"),
+      disclaimer: optionalPlainText(4000, "supplier.disclaimer"),
+      showAttribution: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict().refine((value) => value.customer || value.supplier, "branding patch must contain customer or supplier settings");
+}
+
+export type BrandingPatch = z.infer<ReturnType<typeof createBrandingPatchSchema>>;

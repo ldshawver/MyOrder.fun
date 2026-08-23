@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { resolveBranding, type ResolvedBranding } from "@/lib/branding";
 
 
 type BusinessAddress = {
@@ -167,16 +168,20 @@ export default function AdminSettingsPage() {
   const [businessError, setBusinessError] = useState<string | null>(null);
   const [businessFieldErrors, setBusinessFieldErrors] = useState<Record<string, string>>({});
   const [businessConflict, setBusinessConflict] = useState<string | null>(null);
+  const [branding, setBranding] = useState<ResolvedBranding>(() => resolveBranding());
+  const [brandingSaving, setBrandingSaving] = useState(false);
+  const [brandingMessage, setBrandingMessage] = useState<string | null>(null);
 
 
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        const [genRes, wcRes, tenantRes] = await Promise.all([
+        const [genRes, wcRes, tenantRes, brandingRes] = await Promise.all([
           fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/branding", { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         let merged: Partial<AdminSettings> = {};
         if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
@@ -184,6 +189,7 @@ export default function AdminSettingsPage() {
           const tenantSettings = await tenantRes.json();
           setBusiness({ ...EMPTY_BUSINESS, ...(tenantSettings.business ?? {}) });
         }
+        if (brandingRes.ok) setBranding(resolveBranding(await brandingRes.json()));
         if (wcRes.ok) {
           const wc = await wcRes.json();
           merged = {
@@ -272,6 +278,28 @@ export default function AdminSettingsPage() {
       setBusinessError((e as Error)?.message ?? "Network error");
     } finally {
       setBusinessSaving(false);
+    }
+  }
+
+  async function saveBranding() {
+    setBrandingSaving(true);
+    setBrandingMessage(null);
+    try {
+      const token = await getToken();
+      const customer = Object.fromEntries(Object.entries(branding.customer).filter(([key]) => key !== "domainVerificationState"));
+      const res = await fetch("/api/settings/branding", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ customer, supplier: branding.supplier }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Branding save failed");
+      setBranding(resolveBranding(data));
+      setBrandingMessage("Branding saved");
+    } catch (error) {
+      setBrandingMessage(error instanceof Error ? error.message : "Branding save failed");
+    } finally {
+      setBrandingSaving(false);
     }
   }
 
@@ -443,6 +471,7 @@ export default function AdminSettingsPage() {
       <Tabs defaultValue="business">
         <TabsList className="rounded-xl bg-muted/30 border border-border/40 mb-2 flex flex-wrap h-auto justify-start">
           <TabsTrigger value="business" className="rounded-lg text-xs">Business</TabsTrigger>
+          <TabsTrigger value="branding" className="rounded-lg text-xs">Branding</TabsTrigger>
           <TabsTrigger value="products" className="rounded-lg text-xs">Products</TabsTrigger>
           <TabsTrigger value="checkout" className="rounded-lg text-xs">Checkout</TabsTrigger>
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
@@ -490,6 +519,42 @@ export default function AdminSettingsPage() {
               {businessSaving ? <RefreshCw size={14} className="animate-spin" /> : businessSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
               {businessSaved ? "Business saved" : businessSaving ? "Saving..." : "Save Business Settings"}
             </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="branding">
+          <div className="space-y-5">
+            <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+              <div><div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer-facing tenant brand</div><p className="mt-1 text-xs text-muted-foreground">Blank fields fall back to MyOrder.fun. Domain verification state is server-controlled.</p></div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <BusinessField label="Display name"><Input value={branding.customer.displayName} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, displayName: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Legal/business name"><Input value={branding.customer.legalName ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, legalName: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Logo path or HTTPS URL"><Input value={branding.customer.logoUrl} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, logoUrl: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Favicon path or HTTPS URL"><Input value={branding.customer.faviconUrl} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, faviconUrl: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Primary color"><Input value={branding.customer.primaryColor} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, primaryColor: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Secondary color"><Input value={branding.customer.secondaryColor} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, secondaryColor: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Support email"><Input value={branding.customer.supportEmail ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, supportEmail: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Support phone"><Input value={branding.customer.supportPhone ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, supportPhone: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Website"><Input value={branding.customer.websiteUrl ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, websiteUrl: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Checkout descriptor"><Input maxLength={22} value={branding.customer.checkoutDescriptor ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, checkoutDescriptor: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Custom domain"><Input value={branding.customer.customDomain ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, customDomain: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Verification state"><Input readOnly value={branding.customer.domainVerificationState} /></BusinessField>
+              </div>
+              <BusinessField label="Customer-facing terms/disclaimer"><Textarea rows={3} value={branding.customer.termsDisclaimer ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, termsDisclaimer: e.target.value || null } }))} /></BusinessField>
+              <BusinessField label="Privacy/discretion notice"><Textarea rows={3} value={branding.customer.privacyNotice ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, privacyNotice: e.target.value || null } }))} /></BusinessField>
+            </div>
+            <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Supplier / fulfillment brand</div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <BusinessField label="Display name"><Input value={branding.supplier.displayName ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, displayName: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Logo path or HTTPS URL"><Input value={branding.supplier.logoUrl ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, logoUrl: e.target.value || null } }))} /></BusinessField>
+              </div>
+              <BusinessField label="Attribution wording"><Textarea rows={2} value={branding.supplier.attribution ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, attribution: e.target.value || null } }))} /></BusinessField>
+              <BusinessField label="Supplier disclaimer"><Textarea rows={3} value={branding.supplier.disclaimer ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, disclaimer: e.target.value || null } }))} /></BusinessField>
+              <SettingRow label="Display supplier attribution" description="When disabled or empty, no wrapper or spacing is rendered."><Switch checked={branding.supplier.showAttribution} onCheckedChange={value => setBranding(v => ({ ...v, supplier: { ...v.supplier, showAttribution: value } }))} /></SettingRow>
+            </div>
+            {brandingMessage && <div className="text-xs text-muted-foreground">{brandingMessage}</div>}
+            <Button onClick={() => void saveBranding()} disabled={brandingSaving} className="gap-2 rounded-xl"><Save size={14} />{brandingSaving ? "Saving..." : "Save Branding"}</Button>
           </div>
         </TabsContent>
 
