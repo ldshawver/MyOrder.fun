@@ -53,6 +53,10 @@ LABEL org.opencontainers.image.revision=$DEPLOY_SHA \
 
 COPY --from=builder /app/artifacts/platform/dist /usr/share/nginx/html
 
+# rsync/Docker COPY preserve source modes. Normalize the generated public tree
+# so the unprivileged nginx worker can traverse directories and read assets.
+RUN chmod -R a+rX /usr/share/nginx/html
+
 COPY deploy/nginx-spa.conf /etc/nginx/conf.d/default.conf
 
 ARG ENABLE_CLERK_DEV_FAPI=false

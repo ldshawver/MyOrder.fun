@@ -8,7 +8,7 @@ import { Link } from "wouter";
 import { useCart } from "@/contexts/CartContext";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
-const ZAPPY_HERO_IMAGE = "/zappy-new-animated.gif";
+const ZAPPY_HERO_IMAGE = "/assets/media/happy-animated.gif";
 const ZAPPY_AVATAR_IMAGE = "/zappy-new.png";
 
 // ─── Background Particle Field ────────────────────────────────────────────────
