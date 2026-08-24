@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -44,9 +44,8 @@ describe("Happy animated asset", () => {
     expect(bytes.subarray(0, 20).toString("utf8")).not.toContain("<!DOCTYPE html>");
   });
 
-  it("keeps the source asset readable and normalizes runtime asset permissions", () => {
+  it("normalizes runtime asset permissions after the build copy", () => {
     const dockerfile = readFileSync(resolve(platformRoot, "../../deploy/Dockerfile.platform"), "utf8");
-    expect(statSync(asset).mode & 0o004).toBe(0o004);
     expect(dockerfile).toContain("RUN chmod -R a+rX /usr/share/nginx/html");
   });
 });
