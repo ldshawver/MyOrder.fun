@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request } from "express";
-import { eq, desc, inArray, and, sql } from "drizzle-orm";
+import { eq, desc, inArray, and, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
@@ -29,6 +29,7 @@ import {
   printTemplateVersionsTable,
   inventoryLocationsTable,
   shiftPrintAssignmentsTable,
+  printRoutesTable,
 } from "@workspace/db";
 import {
   requireAuth,
@@ -55,6 +56,7 @@ import { receiptTemplateLayoutSchema } from "../lib/printTemplateSchema";
 import multer from "multer";
 import sharp from "sharp";
 import crypto from "node:crypto";
+import { z } from "zod";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { resolve, join } from "node:path";
 
@@ -79,6 +81,16 @@ const rasterFormats = new Map([
   ["jpeg", ["image/jpeg", "jpg"]],
   ["webp", ["image/webp", "webp"]],
 ] as const);
+
+const inactiveMacReceiptSetupBody = z.object({}).strict();
+const INACTIVE_MAC_RECEIPT = {
+  bridgeName: "Mac Studio receipt bridge",
+  bridgeType: "mac_studio",
+  bridgeUrl: "http://100.104.253.117:3100",
+  printerName: "Caysn POS80 1.0",
+  queue: "Brightek_POS80",
+  deviceUri: "usb://Brightek/POS80?serial=MHTP80E",
+} as const;
 
 router.get("/print/assets", adminOnly, async (req, res): Promise<void> => {
   const assets = await db
@@ -123,11 +135,9 @@ router.post(
       metadata.width > 4096 ||
       metadata.height > 4096
     ) {
-      res
-        .status(400)
-        .json({
-          error: "Only PNG, JPEG, or WebP images up to 4096×4096 are allowed",
-        });
+      res.status(400).json({
+        error: "Only PNG, JPEG, or WebP images up to 4096×4096 are allowed",
+      });
       return;
     }
     if (req.file.mimetype !== format[0]) {
@@ -169,24 +179,22 @@ router.post(
         set: { isActive: true },
       })
       .returning();
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_ASSET_UPLOADED",
-        resourceType: "print_asset",
-        resourceId: String(asset.id),
-        metadata: {
-          mimeType: asset.mimeType,
-          sizeBytes: asset.sizeBytes,
-          widthPx: asset.widthPx,
-          heightPx: asset.heightPx,
-          sha256: digest,
-        },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_ASSET_UPLOADED",
+      resourceType: "print_asset",
+      resourceId: String(asset.id),
+      metadata: {
+        mimeType: asset.mimeType,
+        sizeBytes: asset.sizeBytes,
+        widthPx: asset.widthPx,
+        heightPx: asset.heightPx,
+        sha256: digest,
+      },
+    });
     res.status(201).json({ asset });
   },
 );
@@ -224,18 +232,16 @@ router.delete(
       .limit(1);
     if (!references.length)
       await unlink(join(assetRoot, asset.storagePath)).catch(() => undefined);
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_ASSET_DEACTIVATED",
-        resourceType: "print_asset",
-        resourceId: String(id),
-        metadata: { retainedForTemplateReference: references.length > 0 },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_ASSET_DEACTIVATED",
+      resourceType: "print_asset",
+      resourceId: String(id),
+      metadata: { retainedForTemplateReference: references.length > 0 },
+    });
     res.json({ ok: true });
   },
 );
@@ -334,6 +340,294 @@ router.get("/print/printers", adminOnly, async (req, res): Promise<void> => {
   res.json({ printers: rows });
 });
 
+// Restores the one audited Mac receipt destination without making it routable.
+// The physical identity is server-owned so a browser cannot select a tenant,
+// role, permission, route, bridge type, queue, or device URI.
+router.post(
+  "/print/setup/inactive-mac-receipt",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    if (
+      process.env.NODE_ENV !== "staging" ||
+      req.get("X-MyOrder-Environment") !== "staging"
+    ) {
+      res.status(403).json({ error: "STAGING_ONLY" });
+      return;
+    }
+    const parsed = inactiveMacReceiptSetupBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Request body must be empty" });
+      return;
+    }
+    const idempotencyKey = req.get("Idempotency-Key")?.trim() ?? "";
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) {
+      res
+        .status(400)
+        .json({ error: "A valid Idempotency-Key header is required" });
+      return;
+    }
+
+    const tenantId = requestTenantId(req);
+    const result = await db
+      .transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 8040)`);
+
+        const bridges = await tx
+          .select()
+          .from(printBridgeProfilesTable)
+          .where(
+            and(
+              eq(printBridgeProfilesTable.tenantId, tenantId),
+              eq(
+                printBridgeProfilesTable.name,
+                INACTIVE_MAC_RECEIPT.bridgeName,
+              ),
+            ),
+          )
+          .limit(2);
+        if (bridges.length > 1) throw new Error("AMBIGUOUS_MAC_RECEIPT_BRIDGE");
+
+        let bridge = bridges[0];
+        let changed = false;
+        if (!bridge) {
+          [bridge] = await tx
+            .insert(printBridgeProfilesTable)
+            .values({
+              tenantId,
+              locationId: null,
+              routingScope: "general",
+              name: INACTIVE_MAC_RECEIPT.bridgeName,
+              bridgeType: INACTIVE_MAC_RECEIPT.bridgeType,
+              bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+              apiKey: "",
+              isActive: false,
+              priority: 10,
+              supportedRoles: "receipt",
+              environment: "staging",
+              allowedJobType: "completed_order_receipt",
+            })
+            .returning();
+          changed = true;
+        } else {
+          const bridgeNeedsRestore =
+            bridge.locationId !== null ||
+            bridge.routingScope !== "general" ||
+            bridge.bridgeType !== INACTIVE_MAC_RECEIPT.bridgeType ||
+            bridge.bridgeUrl !== INACTIVE_MAC_RECEIPT.bridgeUrl ||
+            bridge.isActive ||
+            bridge.supportedRoles !== "receipt" ||
+            bridge.environment !== "staging" ||
+            bridge.allowedJobType !== "completed_order_receipt";
+          if (bridgeNeedsRestore) {
+            [bridge] = await tx
+              .update(printBridgeProfilesTable)
+              .set({
+                locationId: null,
+                routingScope: "general",
+                bridgeType: INACTIVE_MAC_RECEIPT.bridgeType,
+                bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+                isActive: false,
+                supportedRoles: "receipt",
+                environment: "staging",
+                allowedJobType: "completed_order_receipt",
+              })
+              .where(
+                and(
+                  eq(printBridgeProfilesTable.tenantId, tenantId),
+                  eq(printBridgeProfilesTable.id, bridge.id),
+                ),
+              )
+              .returning();
+            changed = true;
+          }
+        }
+
+        const printers = await tx
+          .select()
+          .from(printPrintersTable)
+          .where(
+            and(
+              eq(printPrintersTable.tenantId, tenantId),
+              eq(
+                printPrintersTable.bridgePrinterName,
+                INACTIVE_MAC_RECEIPT.queue,
+              ),
+            ),
+          )
+          .limit(2);
+        if (
+          printers.length > 1 ||
+          (printers[0] && printers[0].bridgeProfileId !== bridge.id)
+        ) {
+          throw new Error("AMBIGUOUS_MAC_RECEIPT_PRINTER");
+        }
+
+        const expectedDeviceUriHash = crypto
+          .createHash("sha256")
+          .update(INACTIVE_MAC_RECEIPT.deviceUri)
+          .digest("hex");
+        let printer = printers[0];
+        if (printer) {
+          const [printRoute, operatorRoute, shiftRoute] = await Promise.all([
+            tx
+              .select({ id: printRoutesTable.id })
+              .from(printRoutesTable)
+              .where(
+                and(
+                  eq(printRoutesTable.tenantId, tenantId),
+                  eq(printRoutesTable.printerId, printer.id),
+                ),
+              )
+              .limit(1),
+            tx
+              .select({ id: operatorPrintProfilesTable.id })
+              .from(operatorPrintProfilesTable)
+              .where(
+                and(
+                  eq(operatorPrintProfilesTable.tenantId, tenantId),
+                  or(
+                    eq(operatorPrintProfilesTable.receiptPrinterId, printer.id),
+                    eq(operatorPrintProfilesTable.labelPrinterId, printer.id),
+                    eq(operatorPrintProfilesTable.expoPrinterId, printer.id),
+                    eq(
+                      operatorPrintProfilesTable.fallbackReceiptPrinterId,
+                      printer.id,
+                    ),
+                  ),
+                ),
+              )
+              .limit(1),
+            tx
+              .select({ id: shiftPrintAssignmentsTable.id })
+              .from(shiftPrintAssignmentsTable)
+              .where(
+                and(
+                  eq(shiftPrintAssignmentsTable.tenantId, tenantId),
+                  or(
+                    eq(shiftPrintAssignmentsTable.receiptPrinterId, printer.id),
+                    eq(shiftPrintAssignmentsTable.expoPrinterId, printer.id),
+                  ),
+                ),
+              )
+              .limit(1),
+          ]);
+          if (printRoute.length || operatorRoute.length || shiftRoute.length) {
+            throw new Error("MAC_RECEIPT_PRINTER_HAS_ROUTE");
+          }
+          const printerNeedsRestore =
+            printer.name !== INACTIVE_MAC_RECEIPT.printerName ||
+            printer.locationId !== null ||
+            printer.routingScope !== "general" ||
+            printer.role !== "receipt" ||
+            printer.connectionType !== "mac_bridge" ||
+            printer.isActive ||
+            printer.receiptCapable !== true ||
+            printer.labelCapable !== false ||
+            printer.expectedDeviceUriHash !== expectedDeviceUriHash;
+          if (printerNeedsRestore) {
+            [printer] = await tx
+              .update(printPrintersTable)
+              .set({
+                name: INACTIVE_MAC_RECEIPT.printerName,
+                locationId: null,
+                routingScope: "general",
+                role: "receipt",
+                connectionType: "mac_bridge",
+                bridgeProfileId: bridge.id,
+                bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+                bridgePrinterName: INACTIVE_MAC_RECEIPT.queue,
+                isActive: false,
+                paperWidth: "80mm",
+                expectedDeviceUriHash,
+                receiptCapable: true,
+                labelCapable: false,
+              })
+              .where(
+                and(
+                  eq(printPrintersTable.tenantId, tenantId),
+                  eq(printPrintersTable.id, printer.id),
+                ),
+              )
+              .returning();
+            changed = true;
+          }
+        } else {
+          [printer] = await tx
+            .insert(printPrintersTable)
+            .values({
+              tenantId,
+              locationId: null,
+              routingScope: "general",
+              name: INACTIVE_MAC_RECEIPT.printerName,
+              role: "receipt",
+              connectionType: "mac_bridge",
+              bridgeProfileId: bridge.id,
+              bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+              bridgePrinterName: INACTIVE_MAC_RECEIPT.queue,
+              apiKey: null,
+              isActive: false,
+              paperWidth: "80mm",
+              expectedDeviceUriHash,
+              receiptCapable: true,
+              labelCapable: false,
+            })
+            .returning();
+          changed = true;
+        }
+
+        if (changed) {
+          await tx.insert(auditLogsTable).values({
+            tenantId,
+            actorId: req.dbUser!.id,
+            actorEmail: req.dbUser!.email ?? "",
+            actorRole: req.dbUser!.role,
+            action: "INACTIVE_MAC_RECEIPT_SETUP_RESTORED",
+            resourceType: "print_printer",
+            resourceId: String(printer.id),
+            metadata: {
+              bridgeId: bridge.id,
+              queue: INACTIVE_MAC_RECEIPT.queue,
+              active: false,
+              receiptCapable: true,
+              routeCount: 0,
+              idempotencyKeySha256: crypto
+                .createHash("sha256")
+                .update(idempotencyKey)
+                .digest("hex"),
+            },
+          });
+        }
+
+        return { bridge, printer, replayed: !changed };
+      })
+      .catch((error: unknown) => {
+        const code = error instanceof Error ? error.message : "";
+        if (
+          code === "AMBIGUOUS_MAC_RECEIPT_BRIDGE" ||
+          code === "AMBIGUOUS_MAC_RECEIPT_PRINTER" ||
+          code === "MAC_RECEIPT_PRINTER_HAS_ROUTE"
+        )
+          return { conflict: code } as const;
+        throw error;
+      });
+
+    if ("conflict" in result) {
+      res.status(409).json({ error: result.conflict });
+      return;
+    }
+    res.status(result.replayed ? 200 : 201).json({
+      bridgeId: result.bridge.id,
+      printerId: result.printer.id,
+      bridgeActive: false,
+      printerActive: false,
+      queue: INACTIVE_MAC_RECEIPT.queue,
+      receiptCapable: true,
+      routeCount: 0,
+      replayed: result.replayed,
+    });
+  },
+);
+
 const VALID_ROLES = ["kitchen", "receipt", "expo", "label", "bar"];
 const VALID_CONN_TYPES = [
   "ethernet_direct",
@@ -357,11 +651,9 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
     return;
   }
   if (b.connectionType && !VALID_CONN_TYPES.includes(b.connectionType)) {
-    res
-      .status(400)
-      .json({
-        error: `connectionType must be one of: ${VALID_CONN_TYPES.join(", ")}`,
-      });
+    res.status(400).json({
+      error: `connectionType must be one of: ${VALID_CONN_TYPES.join(", ")}`,
+    });
     return;
   }
   const connType: string = b.connectionType ?? "bridge";
@@ -444,23 +736,21 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
       isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
     })
     .returning();
-  await db
-    .insert(auditLogsTable)
-    .values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "PRINT_PRINTER_CREATED",
-      resourceType: "print_printer",
-      resourceId: String(printer.id),
-      metadata: {
-        locationId,
-        routingScope,
-        role: printer.role,
-        bridgeProfileId: printer.bridgeProfileId,
-      },
-    });
+  await db.insert(auditLogsTable).values({
+    tenantId,
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email ?? "",
+    actorRole: req.dbUser!.role,
+    action: "PRINT_PRINTER_CREATED",
+    resourceType: "print_printer",
+    resourceId: String(printer.id),
+    metadata: {
+      locationId,
+      routingScope,
+      role: printer.role,
+      bridgeProfileId: printer.bridgeProfileId,
+    },
+  });
   res.status(201).json({ printer });
 });
 
@@ -471,9 +761,23 @@ router.patch(
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     const tenantId = requestTenantId(req);
-    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    const [protectedPrinter] = await db
+      .select({ role: printPrintersTable.role })
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+        ),
+      )
+      .limit(1);
     if (protectedPrinter?.role === "thank_you_sticker") {
-      res.status(409).json({ error: "Use the staging sticker route workflow for this protected printer" });
+      res
+        .status(409)
+        .json({
+          error:
+            "Use the staging sticker route workflow for this protected printer",
+        });
       return;
     }
     const b = req.body ?? {};
@@ -489,12 +793,10 @@ router.patch(
       b.bridgeUrl !== undefined ||
       b.apiKey !== undefined
     ) {
-      res
-        .status(400)
-        .json({
-          error:
-            "Ownership, scope, bridge URL, and credentials cannot be changed through this endpoint",
-        });
+      res.status(400).json({
+        error:
+          "Ownership, scope, bridge URL, and credentials cannot be changed through this endpoint",
+      });
       return;
     }
     if (b.bridgeProfileId !== undefined) {
@@ -541,18 +843,16 @@ router.patch(
       res.status(404).json({ error: "Printer not found" });
       return;
     }
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_PRINTER_UPDATED",
-        resourceType: "print_printer",
-        resourceId: String(row.id),
-        metadata: { fields: Object.keys(updates) },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_PRINTER_UPDATED",
+      resourceType: "print_printer",
+      resourceId: String(row.id),
+      metadata: { fields: Object.keys(updates) },
+    });
     res.json({ printer: row });
   },
 );
@@ -564,9 +864,23 @@ router.delete(
   async (req, res): Promise<void> => {
     const id = parseInt(String(req.params.id), 10);
     const tenantId = requestTenantId(req);
-    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    const [protectedPrinter] = await db
+      .select({ role: printPrintersTable.role })
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+        ),
+      )
+      .limit(1);
     if (protectedPrinter?.role === "thank_you_sticker") {
-      res.status(409).json({ error: "Protected staging sticker printers cannot be deleted through the generic endpoint" });
+      res
+        .status(409)
+        .json({
+          error:
+            "Protected staging sticker printers cannot be deleted through the generic endpoint",
+        });
       return;
     }
     await db
@@ -577,18 +891,16 @@ router.delete(
           eq(printPrintersTable.id, id),
         ),
       );
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_PRINTER_DELETED",
-        resourceType: "print_printer",
-        resourceId: String(id),
-        metadata: {},
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_PRINTER_DELETED",
+      resourceType: "print_printer",
+      resourceId: String(id),
+      metadata: {},
+    });
     res.json({ ok: true });
   },
 );
@@ -607,12 +919,10 @@ router.post(
     }
     const body = req.body ?? {};
     if (Object.keys(body).some((key) => key !== "testId")) {
-      res
-        .status(400)
-        .json({
-          error:
-            "Only a testId may be supplied; content and routing are server-controlled",
-        });
+      res.status(400).json({
+        error:
+          "Only a testId may be supplied; content and routing are server-controlled",
+      });
       return;
     }
     const [printer] = await db
@@ -631,20 +941,16 @@ router.post(
       return;
     }
     if (printer.role !== "receipt") {
-      res
-        .status(400)
-        .json({
-          error: "UI controlled test requires an active receipt printer",
-        });
+      res.status(400).json({
+        error: "UI controlled test requires an active receipt printer",
+      });
       return;
     }
     if (printer.routingScope !== "general" || printer.locationId !== null) {
-      res
-        .status(409)
-        .json({
-          error:
-            "Location printers must be exercised through an authoritative active shift assignment",
-        });
+      res.status(409).json({
+        error:
+          "Location printers must be exercised through an authoritative active shift assignment",
+      });
       return;
     }
     if (!printer.bridgeProfileId) {
@@ -672,12 +978,10 @@ router.post(
 
     const bridgePrinterName = printer.bridgePrinterName ?? printer.name;
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(bridgePrinterName)) {
-      res
-        .status(409)
-        .json({
-          error:
-            "Registered explicit queue is invalid; refusing default queue fallback",
-        });
+      res.status(409).json({
+        error:
+          "Registered explicit queue is invalid; refusing default queue fallback",
+      });
       return;
     }
     const requestedTestId =
@@ -723,18 +1027,16 @@ router.post(
         maxRetries: 1,
       })
       .returning();
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_UI_TEST_SUBMITTED",
-        resourceType: "print_job",
-        resourceId: String(job.id),
-        metadata: { printerId: printer.id, bridgeProfileId: bridge.id, testId },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_UI_TEST_SUBMITTED",
+      resourceType: "print_job",
+      resourceId: String(job.id),
+      metadata: { printerId: printer.id, bridgeProfileId: bridge.id, testId },
+    });
 
     // Await the full dispatch so we can report the actual result
     await dispatchJob(job, printer).catch(() => {});
@@ -850,12 +1152,9 @@ router.post("/print/profiles", adminOnly, async (req, res): Promise<void> => {
         ),
       );
     if (printers.length !== new Set(printerIds).size) {
-      res
-        .status(400)
-        .json({
-          error:
-            "Every selected printer must be active and owned by this tenant",
-        });
+      res.status(400).json({
+        error: "Every selected printer must be active and owned by this tenant",
+      });
       return;
     }
   }
@@ -946,12 +1245,10 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
   }
   const parsed = receiptTemplateLayoutSchema.safeParse(b.templateJson ?? []);
   if (!parsed.success) {
-    res
-      .status(400)
-      .json({
-        error: "Invalid declarative template layout",
-        details: parsed.error.issues,
-      });
+    res.status(400).json({
+      error: "Invalid declarative template layout",
+      details: parsed.error.issues,
+    });
     return;
   }
   const parsedLayout = parsed.data;
@@ -991,31 +1288,27 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
       isDefault: Boolean(b.isDefault),
     })
     .returning();
-  await db
-    .insert(printTemplateVersionsTable)
-    .values({
-      tenantId,
-      templateId: t.id,
-      version: 1,
-      schemaVersion: 1,
-      templateJson: parsedLayout,
-      backgroundAssetId: t.backgroundAssetId,
-      paperWidth: t.paperWidth,
-      paperHeight: t.paperHeight,
-      createdByUserId: req.dbUser!.id,
-    });
-  await db
-    .insert(auditLogsTable)
-    .values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "PRINT_TEMPLATE_CREATED",
-      resourceType: "print_template",
-      resourceId: String(t.id),
-      metadata: { version: 1, jobType: t.jobType },
-    });
+  await db.insert(printTemplateVersionsTable).values({
+    tenantId,
+    templateId: t.id,
+    version: 1,
+    schemaVersion: 1,
+    templateJson: parsedLayout,
+    backgroundAssetId: t.backgroundAssetId,
+    paperWidth: t.paperWidth,
+    paperHeight: t.paperHeight,
+    createdByUserId: req.dbUser!.id,
+  });
+  await db.insert(auditLogsTable).values({
+    tenantId,
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email ?? "",
+    actorRole: req.dbUser!.role,
+    action: "PRINT_TEMPLATE_CREATED",
+    resourceType: "print_template",
+    resourceId: String(t.id),
+    metadata: { version: 1, jobType: t.jobType },
+  });
   res.status(201).json({ template: t });
 });
 
@@ -1070,12 +1363,10 @@ router.patch(
     if (b.templateJson !== undefined) {
       const parsed = receiptTemplateLayoutSchema.safeParse(b.templateJson);
       if (!parsed.success) {
-        res
-          .status(400)
-          .json({
-            error: "Invalid declarative template layout",
-            details: parsed.error.issues,
-          });
+        res.status(400).json({
+          error: "Invalid declarative template layout",
+          details: parsed.error.issues,
+        });
         return;
       }
       updates.templateJson = parsed.data;
@@ -1100,31 +1391,27 @@ router.patch(
       res.status(404).json({ error: "Template not found" });
       return;
     }
-    await db
-      .insert(printTemplateVersionsTable)
-      .values({
-        tenantId,
-        templateId: t.id,
-        version: t.version,
-        schemaVersion: t.schemaVersion,
-        templateJson: t.templateJson,
-        backgroundAssetId: t.backgroundAssetId,
-        paperWidth: t.paperWidth,
-        paperHeight: t.paperHeight,
-        createdByUserId: req.dbUser!.id,
-      });
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_TEMPLATE_UPDATED",
-        resourceType: "print_template",
-        resourceId: String(t.id),
-        metadata: { version: t.version, fields: Object.keys(updates) },
-      });
+    await db.insert(printTemplateVersionsTable).values({
+      tenantId,
+      templateId: t.id,
+      version: t.version,
+      schemaVersion: t.schemaVersion,
+      templateJson: t.templateJson,
+      backgroundAssetId: t.backgroundAssetId,
+      paperWidth: t.paperWidth,
+      paperHeight: t.paperHeight,
+      createdByUserId: req.dbUser!.id,
+    });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_TEMPLATE_UPDATED",
+      resourceType: "print_template",
+      resourceId: String(t.id),
+      metadata: { version: t.version, fields: Object.keys(updates) },
+    });
     res.json({ template: t });
   },
 );
@@ -1144,18 +1431,16 @@ router.delete(
           eq(printTemplatesTable.id, id),
         ),
       );
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_TEMPLATE_DEACTIVATED",
-        resourceType: "print_template",
-        resourceId: String(id),
-        metadata: {},
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_TEMPLATE_DEACTIVATED",
+      resourceType: "print_template",
+      resourceId: String(id),
+      metadata: {},
+    });
     res.json({ ok: true });
   },
 );
@@ -1227,7 +1512,12 @@ router.post(
       return;
     }
     if (job.jobType === "thank_you_sticker") {
-      res.status(409).json({ error: "Thank You sticker retries are prohibited; a separately authorized linked replacement job is required" });
+      res
+        .status(409)
+        .json({
+          error:
+            "Thank You sticker retries are prohibited; a separately authorized linked replacement job is required",
+        });
       return;
     }
     if (!job.printerId) {
@@ -1257,18 +1547,16 @@ router.post(
         and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, id)),
       );
 
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_JOB_REPRINT_REQUESTED",
-        resourceType: "print_job",
-        resourceId: String(id),
-        metadata: { printerId: printer.id, originalOrderId: job.orderId },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_JOB_REPRINT_REQUESTED",
+      resourceType: "print_job",
+      resourceId: String(id),
+      metadata: { printerId: printer.id, originalOrderId: job.orderId },
+    });
 
     const fresh = {
       ...job,
@@ -1299,7 +1587,12 @@ router.post(
       return;
     }
     if (job.jobType === "thank_you_sticker") {
-      res.status(409).json({ error: "Thank You sticker reprints require a separately authorized linked replacement job" });
+      res
+        .status(409)
+        .json({
+          error:
+            "Thank You sticker reprints require a separately authorized linked replacement job",
+        });
       return;
     }
     if (!job.printerId) {
@@ -1349,22 +1642,20 @@ router.post(
         operatorUserId: job.operatorUserId ?? null,
       })
       .returning();
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_JOB_REPRINT_CREATED",
-        resourceType: "print_job",
-        resourceId: String(newJob.id),
-        metadata: {
-          originalJobId: job.id,
-          orderId: job.orderId,
-          printerId: printer.id,
-        },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_JOB_REPRINT_CREATED",
+      resourceType: "print_job",
+      resourceId: String(newJob.id),
+      metadata: {
+        originalJobId: job.id,
+        orderId: job.orderId,
+        printerId: printer.id,
+      },
+    });
 
     dispatchJob(newJob, printer).catch(() => {});
     res.json({ ok: true, jobId: newJob.id });
@@ -1859,18 +2150,16 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
       operatorUserId: operator?.userId ?? null,
     })
     .returning();
-  await db
-    .insert(auditLogsTable)
-    .values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "ORDER_RECEIPT_REPRINTED",
-      resourceType: "print_job",
-      resourceId: String(job.id),
-      metadata: { orderId, printerId: receiptPrinter.id },
-    });
+  await db.insert(auditLogsTable).values({
+    tenantId,
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email ?? "",
+    actorRole: req.dbUser!.role,
+    action: "ORDER_RECEIPT_REPRINTED",
+    resourceType: "print_job",
+    resourceId: String(job.id),
+    metadata: { orderId, printerId: receiptPrinter.id },
+  });
 
   await dispatchReceiptJob(job, receiptPrinter).catch(() => {});
 
@@ -1971,18 +2260,16 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
       operatorUserId: operator?.userId ?? null,
     })
     .returning();
-  await db
-    .insert(auditLogsTable)
-    .values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "ORDER_LABEL_REPRINTED",
-      resourceType: "print_job",
-      resourceId: String(job.id),
-      metadata: { orderId, printerId: labelPrinter.id },
-    });
+  await db.insert(auditLogsTable).values({
+    tenantId,
+    actorId: req.dbUser!.id,
+    actorEmail: req.dbUser!.email ?? "",
+    actorRole: req.dbUser!.role,
+    action: "ORDER_LABEL_REPRINTED",
+    resourceType: "print_job",
+    resourceId: String(job.id),
+    metadata: { orderId, printerId: labelPrinter.id },
+  });
 
   await dispatchLabelJob(job, labelPrinter).catch(() => {});
 
@@ -2103,12 +2390,10 @@ router.get(
   "/print/bridge/printers",
   adminOnly,
   async (req, res): Promise<void> => {
-    res
-      .status(410)
-      .json({
-        error:
-          "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
-      });
+    res.status(410).json({
+      error:
+        "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
+    });
     return;
     const pid = req.query.printerId
       ? parseInt(String(req.query.printerId), 10)
@@ -2245,22 +2530,20 @@ router.post(
         notes: b.notes ? String(b.notes) : null,
       })
       .returning();
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_BRIDGE_CREATED",
-        resourceType: "print_bridge",
-        resourceId: String(row.id),
-        metadata: {
-          locationId,
-          routingScope: row.routingScope,
-          bridgeType: row.bridgeType,
-        },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_BRIDGE_CREATED",
+      resourceType: "print_bridge",
+      resourceId: String(row.id),
+      metadata: {
+        locationId,
+        routingScope: row.routingScope,
+        bridgeType: row.bridgeType,
+      },
+    });
     res.status(201).json(row);
   },
 );
@@ -2311,18 +2594,16 @@ router.patch(
       res.status(404).json({ error: "Bridge profile not found" });
       return;
     }
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_BRIDGE_UPDATED",
-        resourceType: "print_bridge",
-        resourceId: String(row.id),
-        metadata: { fields: Object.keys(updates) },
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_BRIDGE_UPDATED",
+      resourceType: "print_bridge",
+      resourceId: String(row.id),
+      metadata: { fields: Object.keys(updates) },
+    });
     res.json(row);
   },
 );
@@ -2343,18 +2624,16 @@ router.delete(
           eq(printBridgeProfilesTable.id, id),
         ),
       );
-    await db
-      .insert(auditLogsTable)
-      .values({
-        tenantId,
-        actorId: req.dbUser!.id,
-        actorEmail: req.dbUser!.email ?? "",
-        actorRole: req.dbUser!.role,
-        action: "PRINT_BRIDGE_DEACTIVATED",
-        resourceType: "print_bridge",
-        resourceId: String(id),
-        metadata: {},
-      });
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_BRIDGE_DEACTIVATED",
+      resourceType: "print_bridge",
+      resourceId: String(id),
+      metadata: {},
+    });
     res.json({ success: true });
   },
 );
@@ -2420,12 +2699,10 @@ router.post(
   "/print/bridge-profiles/:id/list-printers",
   adminOnly,
   async (req, res): Promise<void> => {
-    res
-      .status(410)
-      .json({
-        error:
-          "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
-      });
+    res.status(410).json({
+      error:
+        "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
+    });
     return;
     const id = parseInt(String(req.params.id), 10);
     const rows = await db
@@ -2509,12 +2786,10 @@ router.post(
   "/print/printers/seed-defaults",
   adminOnly,
   async (req, res): Promise<void> => {
-    res
-      .status(410)
-      .json({
-        error:
-          "Unscoped printer seeding is disabled; register an explicit tenant bridge and printer",
-      });
+    res.status(410).json({
+      error:
+        "Unscoped printer seeding is disabled; register an explicit tenant bridge and printer",
+    });
     return;
     const body = req.body ?? {};
     const piHost = process.env.PRINT_SERVER_HOST ?? "100.83.99.2";
@@ -2663,12 +2938,10 @@ router.post(
   "/print/receipt/order/:orderId",
   staffOrAbove,
   async (req, res): Promise<void> => {
-    res
-      .status(410)
-      .json({
-        error:
-          "Direct local CUPS printing is disabled; use the tenant-scoped registered-printer receipt endpoint",
-      });
+    res.status(410).json({
+      error:
+        "Direct local CUPS printing is disabled; use the tenant-scoped registered-printer receipt endpoint",
+    });
     return;
     const orderId = parseInt(String(req.params.orderId), 10);
     if (isNaN(orderId)) {
@@ -2801,12 +3074,10 @@ router.post(
   "/print/receipt/jobs/:jobId/reprint",
   adminOnly,
   async (req, res): Promise<void> => {
-    res
-      .status(410)
-      .json({
-        error:
-          "Direct local CUPS reprinting is disabled; use the tenant-scoped registered-printer reprint endpoint",
-      });
+    res.status(410).json({
+      error:
+        "Direct local CUPS reprinting is disabled; use the tenant-scoped registered-printer reprint endpoint",
+    });
     return;
     const jobId = parseInt(String(req.params.jobId), 10);
     if (isNaN(jobId)) {
@@ -2832,12 +3103,10 @@ router.post(
     }
     const originalRenderedText = String(original.renderedText);
     if (original.renderFormat !== "escpos") {
-      res
-        .status(400)
-        .json({
-          error:
-            "Job was not printed via lp_cups — use the standard reprint endpoint",
-        });
+      res.status(400).json({
+        error:
+          "Job was not printed via lp_cups — use the standard reprint endpoint",
+      });
       return;
     }
 
