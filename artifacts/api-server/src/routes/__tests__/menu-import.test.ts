@@ -4,10 +4,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { inArray, sql } from "drizzle-orm";
 import * as XLSX from "xlsx";
 
+const authState = vi.hoisted(() => ({ id: 1, tenantId: 1, role: "admin", status: "approved", email: "a@b.com", clerkId: "user-clerk-id" }));
+
 vi.mock("@clerk/express", () => ({ clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(), getAuth: vi.fn(() => ({ userId: "user-clerk-id" })) }));
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
-  loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 1, tenantId: 1, role: "admin", status: "approved", email: "a@b.com", clerkId: "user-clerk-id" }; next(); },
+  loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { ...authState }; next(); },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -30,7 +32,7 @@ vi.mock("drizzle-orm", () => {
   };
 });
 
-const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[]; executeRowsObject: boolean; failBalanceInsertAt: number | null; balanceInsertAttempts: number } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [], executeRowsObject: false, failBalanceInsertAt: null, balanceInsertAttempts: 0 };
+const state: { catalog: Record<string, unknown>[]; inventory: Record<string, unknown>[]; balances: Record<string, unknown>[]; locations: Record<string, unknown>[]; audit: Record<string, unknown>[]; snapshots: Record<string, unknown>[]; previewTokens: Record<string, unknown>[]; executeRowsObject: boolean; failBalanceInsertAt: number | null; balanceInsertAttempts: number } = { catalog: [], inventory: [], balances: [], locations: [{ id: 1, tenantId: 1, name: "Box 1", isActive: true }, { id: 2, tenantId: 1, name: "Box 2", isActive: true }, { id: 3, tenantId: 1, name: "Storefront", isActive: true }, { id: 4, tenantId: 1, name: "Backstock", isActive: true }], audit: [], snapshots: [], previewTokens: [], executeRowsObject: false, failBalanceInsertAt: null, balanceInsertAttempts: 0 };
 
 
 vi.mock("@workspace/db", () => {
@@ -89,6 +91,19 @@ vi.mock("@workspace/db", () => {
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
+      if (text.includes("INSERT INTO catalog_import_preview_tokens")) {
+        const [tokenSha256, tenantId, actorId, workbookSha256, previewRequestId, expectedInserted, expectedUpdated, expectedVisible, expectedHeld, expectedDuplicates, expectedErrors, sourceStateSha256, expiresAt] = values;
+        state.previewTokens.push({ id: state.previewTokens.length + 1, token_sha256: tokenSha256, tenant_id: tenantId, actor_id: actorId, workbook_sha256: workbookSha256, preview_request_id: previewRequestId, expected_inserted: expectedInserted, expected_updated: expectedUpdated, expected_visible: expectedVisible, expected_held: expectedHeld, expected_duplicates: expectedDuplicates, expected_errors: expectedErrors, source_state_sha256: sourceStateSha256, expires_at: expiresAt, consumed_at: null });
+        return Promise.resolve(wrap([]));
+      }
+      if (text.includes("FROM catalog_import_preview_tokens WHERE token_sha256")) return Promise.resolve(wrap(state.previewTokens.filter(row => row.token_sha256 === values[0]).slice(0, 1)));
+      if (text.includes("UPDATE catalog_import_preview_tokens") && text.includes("RETURNING id")) {
+        const [confirmationRequestId, id] = values;
+        const token = state.previewTokens.find(row => row.id === id && row.consumed_at == null && new Date(String(row.expires_at)).getTime() > Date.now());
+        if (!token) return Promise.resolve(wrap([]));
+        token.consumed_at = new Date(); token.confirmation_request_id = confirmationRequestId;
+        return Promise.resolve(wrap([{ id }]));
+      }
       if (text.includes("FROM inventory_balances") && text.includes("FOR UPDATE")) {
         if (text.includes("tenant_id")) {
           const [tenantId, productId, locationId] = values;
@@ -127,11 +142,23 @@ vi.mock("@workspace/db", () => {
 });
 
 const importRouter = (await import("../import")).default;
-function buildApp() { const app = express(); app.use(express.json()); app.use("/api", importRouter); return app; }
+let nextRequestId = 1;
+function buildApp() { const app = express(); app.use((req, _res, next) => { req.id = `test-request-${nextRequestId++}`; next(); }); app.use(express.json()); app.use("/api", importRouter); return app; }
 const headers = "Regular Price,Sale Price,Active Sale,Alavont Category,Alavont Name,Alavont Image,Alavont Description,Alavont SKU,Safe Category,Safe Name,Safe Image,Safe Description,Box 1 Inventory,Box 2 Inventory,Storefront Inventory,Backstock Inventory,Box 1 PAR,Box 2 PAR,Storefront PAR,Backstock PAR";
 const goodCsv = `${headers}\n12.50,9.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,1,2,3,9,2,2,3,9\n`;
 
-beforeEach(() => { vi.clearAllMocks(); state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; state.executeRowsObject = false; state.failBalanceInsertAt = null; state.balanceInsertAttempts = 0; });
+beforeEach(() => { vi.clearAllMocks(); Object.assign(authState, { id: 1, tenantId: 1, role: "admin", status: "approved", email: "a@b.com", clerkId: "user-clerk-id" }); nextRequestId = 1; state.catalog = []; state.inventory = []; state.balances = []; state.audit = []; state.snapshots = []; state.previewTokens = []; state.executeRowsObject = false; state.failBalanceInsertAt = null; state.balanceInsertAttempts = 0; });
+
+async function previewImport(file: Buffer, filename: string, endpoint = "/api/admin/products/import") {
+  return supertest(buildApp()).post(`${endpoint}?confirm=false`).attach("file", file, filename);
+}
+
+async function previewAndConfirm(file: Buffer, filename: string, endpoint = "/api/admin/products/import") {
+  const preview = await previewImport(file, filename, endpoint);
+  expect(preview.status).toBe(409);
+  expect(preview.body.previewConfirmationToken).toEqual(expect.any(String));
+  return supertest(buildApp()).post(`${endpoint}?confirm=true`).field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", file, filename);
+}
 
 describe("safe catalog import/export", () => {
   it("template matches accepted headers and includes a sample row", async () => {
@@ -150,10 +177,74 @@ describe("safe catalog import/export", () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import").attach("file", Buffer.from(goodCsv), "catalog.csv");
     expect(res.status).toBe(409);
     expect(res.body.requiresConfirmation).toBe(true);
+    expect(res.body.previewConfirmationToken).toEqual(expect.any(String));
     expect(state.catalog).toHaveLength(0);
   });
-  it("imports a new catalog product in a transaction when confirmed", async () => {
+  it("rejects confirmation without a preview token", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_REQUIRED");
+    expect(state.catalog).toHaveLength(0);
+  });
+  it("rejects an invalid preview token", async () => {
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", "invalid-token").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_INVALID");
+    expect(state.catalog).toHaveLength(0);
+  });
+  it("rejects an expired preview token", async () => {
+    const preview = await previewImport(Buffer.from(goodCsv), "catalog.csv");
+    state.previewTokens[0].expires_at = new Date(Date.now() - 1);
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_EXPIRED");
+  });
+  it("binds preview tokens to the authenticated actor", async () => {
+    const preview = await previewImport(Buffer.from(goodCsv), "catalog.csv");
+    authState.id = 2;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_ACTOR_MISMATCH");
+  });
+  it("binds preview tokens to the tenant", async () => {
+    const preview = await previewImport(Buffer.from(goodCsv), "catalog.csv");
+    authState.tenantId = 2;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_TENANT_MISMATCH");
+  });
+  it("binds preview tokens to the exact workbook bytes", async () => {
+    const preview = await previewImport(Buffer.from(goodCsv), "catalog.csv");
+    const changed = Buffer.from(goodCsv.replace("Safe desc", "Different safe description"));
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", changed, "catalog.csv");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("PREVIEW_TOKEN_WORKBOOK_MISMATCH");
+  });
+  it("commits a valid token once, rejects replay, and correlates request IDs in the audit", async () => {
+    const file = Buffer.from(goodCsv);
+    const preview = await previewImport(file, "catalog.csv");
+    const token = preview.body.previewConfirmationToken;
+    const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", token).attach("file", file, "catalog.csv");
+    expect(first.status).toBe(200);
+    expect(state.catalog).toHaveLength(1);
+    const importAudit = state.audit.find(row => row.action === "catalog_import");
+    expect(importAudit?.metadata).toMatchObject({ previewRequestId: "test-request-1", confirmationRequestId: "test-request-2" });
+    const replay = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", token).attach("file", file, "catalog.csv");
+    expect(replay.status).toBe(409);
+    expect(replay.body.code).toBe("PREVIEW_TOKEN_CONSUMED");
+    expect(state.catalog).toHaveLength(1);
+  });
+  it("rejects confirmation when source catalogue state changed after preview", async () => {
+    const file = Buffer.from(goodCsv);
+    const preview = await previewImport(file, "catalog.csv");
+    state.catalog.push({ id: 99, tenantId: 1, sku: "OTHER", alavontId: "OTHER", merchantSku: "OTHER", updatedAt: new Date() });
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", file, "catalog.csv");
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("PREVIEW_STATE_CHANGED");
+    expect(state.catalog).toHaveLength(1);
+  });
+  it("imports a new catalog product in a transaction when confirmed", async () => {
+    const res = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
     expect(state.catalog[0]).toMatchObject({ tenantId: 1, sku: "SKU-1", price: "9.99", regularPrice: "12.50" });
@@ -173,7 +264,7 @@ describe("safe catalog import/export", () => {
   });
 
   it("supports the Product Master import compatibility endpoint without redirecting multipart uploads", async () => {
-    const res = await supertest(buildApp()).post("/api/admin/import/product-master?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    const res = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv", "/api/admin/import/product-master");
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
@@ -187,7 +278,7 @@ describe("safe catalog import/export", () => {
       "10.00", "8.00", "true", "Cat", `Name ${i}`, "https://example.com/a.jpg", "Desc", `SKU-${i}`,
       "Safe Cat", `Safe ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4", "1", "2", "3", "4",
     ].join(","));
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
+    const res = await previewAndConfirm(Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
@@ -202,7 +293,7 @@ describe("safe catalog import/export", () => {
 
 
   it("creates inventory rows tied to the imported catalog item during confirmed catalog import", async () => {
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    const res = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
 
     expect(res.status).toBe(200);
     expect(state.catalog).toHaveLength(1);
@@ -240,7 +331,7 @@ describe("safe catalog import/export", () => {
       "Safe Cat", `Safe Fresh ${i}`, "https://example.com/s.jpg", "Safe Desc", "1", "2", "3", "4", "1", "2", "3", "4",
     ].join(","));
 
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
+    const res = await previewAndConfirm(Buffer.from(`${headers}\n${rows.join("\n")}\n`), "Alavont-N-Safe-Full-Inventory-import.csv");
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(35);
@@ -256,7 +347,7 @@ describe("safe catalog import/export", () => {
     const csv = `${headers}
 10.00,,false,Cat,Unique,https://example.com/a.jpg,Desc,SKU-UNIQUE,Safe Cat,Safe,https://example.com/s.jpg,Safe Desc,0,0,0,0,0,0,0,0
 `;
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "catalog.csv");
+    const res = await previewAndConfirm(Buffer.from(csv), "catalog.csv");
 
     expect(res.status).toBe(200);
     expect(res.body.inserted).toBe(1);
@@ -277,12 +368,12 @@ describe("safe catalog import/export", () => {
   });
 
   it("uploading the same file twice updates the original product row and preserves inventory references", async () => {
-    const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    const first = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
     expect(first.status).toBe(200);
     const productCount = state.catalog.length;
     const inventoryRowCount = state.balances.length;
     const secondCsv = `${headers}\n12.50,10.99,true,Cat,Name,https://example.com/a.jpg,Desc,SKU-1,Safe cat,Safe,https://example.com/s.jpg,Safe desc,7,2,3,9,4,2,3,9\n`;
-    const second = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(secondCsv), "catalog.csv");
+    const second = await previewAndConfirm(Buffer.from(secondCsv), "catalog.csv");
 
     expect(second.status).toBe(200);
     expect(second.body.updated).toBe(1);
@@ -301,7 +392,7 @@ describe("safe catalog import/export", () => {
       metadata: { importTemplate: "alavont_safe_inventory_v2", archived: true, safeOnlyDuplicate: true, mergedIntoCatalogItemId: 99, complianceHold: true, unrelated: "keep-me" },
     });
 
-    const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    const first = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ inserted: 0, updated: 1 });
     expect(state.catalog[0]).toMatchObject({
@@ -313,7 +404,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog[0].metadata).not.toHaveProperty("safeOnlyDuplicate");
     expect(state.catalog[0].metadata).not.toHaveProperty("mergedIntoCatalogItemId");
 
-    const second = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    const second = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
     expect(second.status).toBe(200);
     expect(state.catalog).toHaveLength(1);
     expect(second.body).toMatchObject({ inserted: 0, updated: 1 });
@@ -329,10 +420,49 @@ describe("safe catalog import/export", () => {
   it("refreshes current compliance metadata and keeps a held existing row hidden", async () => {
     state.catalog.push({ id: 1, tenantId: 1, sku: "HELD-1", alavontId: "HELD-1", merchantSku: "HELD-1", metadata: { importTemplate: "alavont_safe_inventory_v2", complianceHold: false, unrelated: 7 } });
     const heldCsv = `${headers}\n10.00,,false,Psychedelics,Psilocybin Product,https://example.com/a.jpg,Contains psilocybin,HELD-1,Safe Cat,Safe,https://example.com/s.jpg,Safe desc,1,0,0,0,1,0,0,0\n`;
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(heldCsv), "held.csv");
+    const res = await previewAndConfirm(Buffer.from(heldCsv), "held.csv");
     expect(res.status).toBe(200);
     expect(state.catalog[0]).toMatchObject({ isAvailable: false, alavontInStock: false, isLocalAlavont: true, isWooManaged: false, metadata: { complianceHold: true, unrelated: 7 } });
     expect(String((state.catalog[0].metadata as Record<string, unknown>).complianceReason)).toContain("psilocybin");
+  });
+
+  it("replaces stale SAFE source fields before persisting current compliance", async () => {
+    state.catalog.push({
+      id: 1,
+      tenantId: 1,
+      sku: "DMT-HALF-GRAM",
+      alavontId: "DMT-HALF-GRAM",
+      merchantSku: "DMT-HALF-GRAM",
+      name: "Realistic Cumming Dildo",
+      alavontName: "Realistic Cumming Dildo",
+      alavontCategory: "Dildo",
+      alavontDescription: "Stale SAFE workbook description",
+      isAvailable: true,
+      alavontInStock: true,
+      metadata: { importTemplate: "alavont_safe_inventory_v2", complianceHold: false },
+    });
+    const authoritativeCsv = `${headers}\n10.00,,false,Psychedelics & Hallucinogens,1/2 Gram DMT,https://example.com/dmt.jpg,Dimethyltryptamine psychedelic product,DMT-HALF-GRAM,Safe Category,Safe Name,https://example.com/safe.jpg,Safe description,1,0,0,0,1,0,0,0\n`;
+
+    const res = await previewAndConfirm(Buffer.from(authoritativeCsv), "menu_import_template-LS.xlsx");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ inserted: 0, updated: 1 });
+    expect(state.catalog[0]).toMatchObject({
+      sku: "DMT-HALF-GRAM",
+      alavontId: "DMT-HALF-GRAM",
+      merchantSku: "DMT-HALF-GRAM",
+      name: "1/2 Gram DMT",
+      alavontName: "1/2 Gram DMT",
+      alavontCategory: "Psychedelics & Hallucinogens",
+      alavontDescription: "Dimethyltryptamine psychedelic product",
+      isAvailable: false,
+      alavontInStock: false,
+      metadata: {
+        complianceHold: true,
+        complianceMatchedTerms: expect.arrayContaining(["psychedelic", "hallucinogen"]),
+      },
+    });
+    expect(String((state.catalog[0].metadata as Record<string, unknown>).complianceReason)).toContain("psychedelic");
   });
 
   it("parses a 37-row XLSX Product Master preview", async () => {
@@ -392,7 +522,7 @@ describe("safe catalog import/export", () => {
   });
   it("blank inactive sale uses regular price", async () => {
     const csv = `${headers}\n15.00,7.00,,Cat,Name,https://example.com/a.jpg,Desc,SKU-2,Safe cat,Safe,https://example.com/s.jpg,Safe desc,0,0,0,0\n`;
-    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "catalog.csv");
+    const res = await previewAndConfirm(Buffer.from(csv), "catalog.csv");
     expect(res.status).toBe(200);
     expect(state.catalog[0]).toMatchObject({ sku: "SKU-2", price: "15.00", regularPrice: "15.00" });
   });

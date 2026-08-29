@@ -121,6 +121,9 @@ type ImportConfirmation = {
   requiresConfirmation: true;
   wouldInsert: number;
   wouldUpdate: number;
+  previewConfirmationToken: string;
+  previewTokenExpiresAt: string;
+  previewRequestId: string;
   duplicateWarnings?: ImportDuplicateWarning[];
 };
 
@@ -702,6 +705,28 @@ export default function AdminImport() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<ImportConfirmation | null>(null);
+  const confirmationTokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    confirmationTokenRef.current = null;
+    setConfirmation(null);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!confirmation) return;
+    const remaining = Date.parse(confirmation.previewTokenExpiresAt) - Date.now();
+    if (remaining <= 0) {
+      confirmationTokenRef.current = null;
+      setConfirmation(null);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      confirmationTokenRef.current = null;
+      setConfirmation(null);
+      setError("Import preview expired. Run Import again before confirming.");
+    }, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [confirmation]);
 
   const loadImportSpec = useCallback(async () => {
     try {
@@ -773,6 +798,7 @@ export default function AdminImport() {
   function handleFile(f: File) {
     setResult(null);
     setError(null);
+    confirmationTokenRef.current = null;
     setConfirmation(null);
     setFile(f);
     setUserMapping({});
@@ -810,6 +836,17 @@ export default function AdminImport() {
 
   async function submitImport(confirmImport: boolean) {
     if (!file) return;
+    const previewConfirmationToken = confirmImport ? confirmationTokenRef.current : null;
+    if (confirmImport && !previewConfirmationToken) {
+      setError("Import preview is missing or expired. Run Import again before confirming.");
+      return;
+    }
+    if (confirmImport) {
+      confirmationTokenRef.current = null;
+      setConfirmation(null);
+    } else {
+      confirmationTokenRef.current = null;
+    }
     setImporting(true);
     setError(null);
     if (!confirmImport) setConfirmation(null);
@@ -827,6 +864,7 @@ export default function AdminImport() {
       if (Object.keys(serverMapping).length > 0) {
         formData.append("userMapping", JSON.stringify(serverMapping));
       }
+      if (previewConfirmationToken) formData.append("previewConfirmationToken", previewConfirmationToken);
 
       const endpoint = `/api/admin/products/import?dryRun=${dryRun}&confirm=${confirmImport}`;
       const res = await fetch(endpoint, {
@@ -855,13 +893,22 @@ export default function AdminImport() {
           } : null);
         }
         if (data.requiresConfirmation === true) {
-          setConfirmation({
+          const nextConfirmation: ImportConfirmation = {
             error: data.error ?? "Catalog import requires confirmation before writing changes.",
             requiresConfirmation: true,
             wouldInsert: Number(data.wouldInsert ?? 0),
             wouldUpdate: Number(data.wouldUpdate ?? 0),
+            previewConfirmationToken: String(data.previewConfirmationToken ?? ""),
+            previewTokenExpiresAt: String(data.previewTokenExpiresAt ?? ""),
+            previewRequestId: String(data.previewRequestId ?? ""),
             duplicateWarnings: data.duplicateWarnings,
-          });
+          };
+          if (nextConfirmation.previewConfirmationToken && Number.isFinite(Date.parse(nextConfirmation.previewTokenExpiresAt))) {
+            confirmationTokenRef.current = nextConfirmation.previewConfirmationToken;
+            setConfirmation(nextConfirmation);
+          } else {
+            setError("Server did not issue a valid import preview confirmation token.");
+          }
         } else {
           setError(data.error ?? `Import failed (${res.status})`);
           setResult(data.duplicateWarnings ? { inserted: 0, updated: 0, skipped: 0, errors: [], duplicateWarnings: data.duplicateWarnings } : null);
@@ -909,6 +956,7 @@ export default function AdminImport() {
   }
 
   function handleCancelConfirmation() {
+    confirmationTokenRef.current = null;
     setConfirmation(null);
   }
 

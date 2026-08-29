@@ -8,6 +8,7 @@ import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
 import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
 import multer from "multer";
 import * as XLSX from "xlsx";
+import { createHash, randomBytes } from "node:crypto";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -55,6 +56,7 @@ const IGNORED_LEGACY_HEADERS = new Set(["brand", "unit", "Unit", "quantity_size"
 const REQUIRED_HEADERS: CatalogImportHeader[] = ["Regular Price", "Alavont Name", "Alavont Category", "Alavont SKU"];
 const DANGEROUS_CELL = /^[=+\-@\t\r]/;
 const MAX_ROWS = 5000;
+const PREVIEW_TOKEN_TTL_MS = 10 * 60 * 1000;
 
 const HEADER_ALIASES: Record<string, CatalogImportHeader> = {
   "regular price": "Regular Price",
@@ -281,6 +283,75 @@ async function ensureSnapshotSchema(): Promise<void> {
   )`);
 }
 
+type PreviewTokenRecord = {
+  id: number;
+  tenant_id: number;
+  actor_id: number;
+  workbook_sha256: string;
+  preview_request_id: string;
+  expected_inserted: number;
+  expected_updated: number;
+  expected_visible: number;
+  expected_held: number;
+  expected_duplicates: number;
+  expected_errors: number;
+  source_state_sha256: string;
+  expires_at: string | Date;
+  consumed_at: string | Date | null;
+};
+
+async function ensurePreviewConfirmationSchema(): Promise<void> {
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS catalog_import_preview_tokens (
+    id bigserial PRIMARY KEY,
+    token_sha256 text NOT NULL UNIQUE,
+    tenant_id integer NOT NULL REFERENCES tenants(id),
+    actor_id integer NOT NULL REFERENCES users(id),
+    workbook_sha256 text NOT NULL,
+    preview_request_id text NOT NULL,
+    expected_inserted integer NOT NULL,
+    expected_updated integer NOT NULL,
+    expected_visible integer NOT NULL,
+    expected_held integer NOT NULL,
+    expected_duplicates integer NOT NULL,
+    expected_errors integer NOT NULL,
+    source_state_sha256 text NOT NULL,
+    issued_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    confirmation_request_id text,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS catalog_import_preview_tokens_expiry_idx
+    ON catalog_import_preview_tokens (expires_at) WHERE consumed_at IS NULL`);
+}
+
+function sha256(value: Buffer | string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function requestId(req: import("express").Request): string {
+  return String(req.id ?? req.get("x-request-id") ?? req.get("x-correlation-id") ?? "unknown");
+}
+
+function sourceStateHash(
+  rows: Array<typeof catalogItemsTable.$inferSelect>,
+  balances: Array<typeof inventoryBalancesTable.$inferSelect>,
+  templates: Array<typeof inventoryTemplatesTable.$inferSelect>,
+): string {
+  const catalog = rows
+    .map(row => ({
+      id: row.id,
+      sku: row.sku,
+      alavontId: row.alavontId,
+      merchantSku: row.merchantSku,
+      updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt,
+    }))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+  const inventory = balances.map(row => ({ id: row.id, productId: row.productId, locationId: row.locationId, quantityOnHand: row.quantityOnHand, parLevel: row.parLevel, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt })).sort((a, b) => Number(a.id) - Number(b.id));
+  const inventoryTemplates = templates.map(row => ({ id: row.id, catalogItemId: row.catalogItemId, currentStock: row.currentStock, parLevel: row.parLevel, updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt })).sort((a, b) => Number(a.id) - Number(b.id));
+  return sha256(JSON.stringify({ catalog, inventory, inventoryTemplates }));
+}
+
 async function findOrCreateImportLocation(tx: typeof db, tenantId: number, importName: string) {
   const locationNames = importName === "Box 1" ? ["CSR Sales Box 1", "Box 1"] : importName === "Box 2" ? ["CSR Sales Box 2", "Box 2"] : [importName];
   for (const name of locationNames) {
@@ -459,11 +530,14 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
   const catalogIds = allTenantCatalog.map(item => item.id);
   const inventoriedProductIds = new Set<number>();
+  let inventoriedRows: Array<typeof inventoryBalancesTable.$inferSelect> = [];
+  let inventoryTemplateRows: Array<typeof inventoryTemplatesTable.$inferSelect> = [];
   if (catalogIds.length > 0) {
-    const inventoriedRows = await db
-      .select({ productId: inventoryBalancesTable.productId })
+    inventoriedRows = await db
+      .select()
       .from(inventoryBalancesTable)
       .where(and(eq(inventoryBalancesTable.tenantId, tenantId), inArray(inventoryBalancesTable.productId, catalogIds)));
+    inventoryTemplateRows = await db.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), inArray(inventoryTemplatesTable.catalogItemId, catalogIds)));
     for (const row of inventoriedRows) inventoriedProductIds.add(row.productId);
   }
   const preferCanonical = (currentId: number | undefined, candidateId: number): number => {
@@ -488,16 +562,86 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, category: p.values.category, isAvailable: !compliance.complianceHold, alavontInStock: !compliance.complianceHold, complianceHold: compliance.complianceHold, complianceReason: compliance.complianceReason, complianceMatchedTerms: compliance.matchedTerms, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
+  const expectedCounts = {
+    inserted: prepared.length - matchedIds.size,
+    updated: matchedIds.size,
+    visible: preview.filter(item => item.isAvailable).length,
+    held: preview.filter(item => item.complianceHold).length,
+    duplicates: duplicateWarnings.length,
+    errors: errors.length,
+  };
+  const workbookSha256 = sha256(req.file.buffer);
+  const currentSourceStateSha256 = sourceStateHash(allTenantCatalog, inventoriedRows, inventoryTemplateRows);
   if (duplicateWarnings.length) {
     logger.warn({ tenantId, count: duplicateWarnings.length, first10Warnings: duplicateWarnings.slice(0, 10) }, "import_duplicate_block");
     res.status(409).json({ error: duplicateImportErrorMessage(duplicateWarnings), duplicateWarnings, preview, inserted: 0, updated: 0 });
     return;
   }
-  if ((matchedIds.size || !dryRun) && !confirmed && !dryRun) { res.status(409).json({ error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.", requiresConfirmation: true, preview, wouldInsert: prepared.length - matchedIds.size, wouldUpdate: matchedIds.size }); return; }
+  if (!confirmed && !dryRun) {
+    await ensurePreviewConfirmationSchema();
+    const opaqueToken = randomBytes(32).toString("base64url");
+    const tokenSha256 = sha256(opaqueToken);
+    const previewRequestId = requestId(req);
+    const expiresAt = new Date(Date.now() + PREVIEW_TOKEN_TTL_MS);
+    await db.execute(sql`INSERT INTO catalog_import_preview_tokens (
+      token_sha256, tenant_id, actor_id, workbook_sha256, preview_request_id,
+      expected_inserted, expected_updated, expected_visible, expected_held,
+      expected_duplicates, expected_errors, source_state_sha256, expires_at
+    ) VALUES (
+      ${tokenSha256}, ${tenantId}, ${actor.id}, ${workbookSha256}, ${previewRequestId},
+      ${expectedCounts.inserted}, ${expectedCounts.updated}, ${expectedCounts.visible}, ${expectedCounts.held},
+      ${expectedCounts.duplicates}, ${expectedCounts.errors}, ${currentSourceStateSha256}, ${expiresAt}
+    )`);
+    res.status(409).json({
+      error: "Catalog import can overwrite existing catalog, inventory, and par values. Re-submit with confirm=true after reviewing the preview.",
+      requiresConfirmation: true,
+      previewConfirmationToken: opaqueToken,
+      previewTokenExpiresAt: expiresAt.toISOString(),
+      previewRequestId,
+      preview,
+      wouldInsert: expectedCounts.inserted,
+      wouldUpdate: expectedCounts.updated,
+    });
+    return;
+  }
   if (dryRun || errors.length) { res.json({ dryRun: true, inserted: Math.max(0, prepared.length - matchedIds.size), updated: matchedIds.size, skipped: 0, errors, total: prepared.length, warnings: matchedIds.size ? [`${matchedIds.size} existing products would be updated.`] : [], duplicateWarnings, preview }); return; }
+
+  const opaqueToken = String(req.body?.previewConfirmationToken ?? "").trim();
+  const confirmationRequestId = requestId(req);
+  const rejectConfirmation = async (reason: string, status = 409) => {
+    await audit(req, "catalog_import_confirmation_rejected", tenantId, { reason, confirmationRequestId, workbookSha256 });
+    res.status(status).json({ error: "Import confirmation is invalid or expired. Run a new preview before confirming.", code: reason });
+  };
+  if (!opaqueToken) { await rejectConfirmation("PREVIEW_TOKEN_REQUIRED", 400); return; }
+  await ensurePreviewConfirmationSchema();
+  const tokenSha256 = sha256(opaqueToken);
+  const tokenRows = executeRows<PreviewTokenRecord>(await db.execute(sql`SELECT
+    id, tenant_id, actor_id, workbook_sha256, preview_request_id,
+    expected_inserted, expected_updated, expected_visible, expected_held,
+    expected_duplicates, expected_errors, source_state_sha256, expires_at, consumed_at
+    FROM catalog_import_preview_tokens WHERE token_sha256 = ${tokenSha256} LIMIT 1`));
+  const tokenRecord = tokenRows[0];
+  if (!tokenRecord) { await rejectConfirmation("PREVIEW_TOKEN_INVALID"); return; }
+  if (tokenRecord.consumed_at) { await rejectConfirmation("PREVIEW_TOKEN_CONSUMED"); return; }
+  if (new Date(tokenRecord.expires_at).getTime() <= Date.now()) { await rejectConfirmation("PREVIEW_TOKEN_EXPIRED"); return; }
+  if (tokenRecord.actor_id !== actor.id) { await rejectConfirmation("PREVIEW_TOKEN_ACTOR_MISMATCH", 403); return; }
+  if (tokenRecord.tenant_id !== tenantId) { await rejectConfirmation("PREVIEW_TOKEN_TENANT_MISMATCH", 403); return; }
+  if (tokenRecord.workbook_sha256 !== workbookSha256) { await rejectConfirmation("PREVIEW_TOKEN_WORKBOOK_MISMATCH"); return; }
+  const countsMatch = tokenRecord.expected_inserted === expectedCounts.inserted
+    && tokenRecord.expected_updated === expectedCounts.updated
+    && tokenRecord.expected_visible === expectedCounts.visible
+    && tokenRecord.expected_held === expectedCounts.held
+    && tokenRecord.expected_duplicates === expectedCounts.duplicates
+    && tokenRecord.expected_errors === expectedCounts.errors;
+  if (!countsMatch || tokenRecord.source_state_sha256 !== currentSourceStateSha256) { await rejectConfirmation("PREVIEW_STATE_CHANGED"); return; }
 
   try {
     const importResult = await db.transaction(async (tx: typeof db) => {
+      const consumed = executeRows<{ id: number }>(await tx.execute(sql`UPDATE catalog_import_preview_tokens
+        SET consumed_at = now(), confirmation_request_id = ${confirmationRequestId}
+        WHERE id = ${tokenRecord.id} AND consumed_at IS NULL AND expires_at > now()
+        RETURNING id`));
+      if (consumed.length !== 1) throw new Error("PREVIEW_TOKEN_ALREADY_USED");
       let inserted = 0;
       let updated = 0;
       for (const p of prepared) {
@@ -529,11 +673,33 @@ let catalogItemId = existingId;
         }
         await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.customerSafeName), Object.values(p.inventory).reduce((sum, qty) => sum + qty, 0), Object.values(p.par).reduce((sum, qty) => sum + qty, 0));
       }
+      await tx.insert(auditLogsTable).values({
+        actorId: actor.id,
+        actorEmail: actor.email ?? "",
+        actorRole: actor.role,
+        tenantId,
+        action: "catalog_import",
+        resourceType: "catalog_import",
+        metadata: {
+          fileName: uploadedFileName,
+          inserted,
+          updated,
+          total: prepared.length,
+          workbookSha256,
+          previewRequestId: tokenRecord.preview_request_id,
+          confirmationRequestId,
+          previewCounts: expectedCounts,
+          committedCounts: { inserted, updated },
+        },
+        ipAddress: req.ip ?? undefined,
+      });
       return { inserted, updated };
     });
-    await audit(req, "catalog_import", tenantId, { fileName: uploadedFileName, inserted: importResult.inserted, updated: importResult.updated, total: prepared.length });
     res.json({ inserted: importResult.inserted, updated: importResult.updated, skipped: 0, errors: [] });
-  } catch (e) { res.status(500).json({ error: `Import failed before completion and no catalog changes were committed: ${(e as Error).message}` }); }
+  } catch (e) {
+    if ((e as Error).message === "PREVIEW_TOKEN_ALREADY_USED") { await rejectConfirmation("PREVIEW_TOKEN_CONSUMED"); return; }
+    res.status(500).json({ error: `Import failed before completion and no catalog changes were committed: ${(e as Error).message}` });
+  }
 });
 
 router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
