@@ -45,6 +45,8 @@ export interface CatalogItem {
   wooVariationId?: string | null;
   receiptName?: string | null;
   labName?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

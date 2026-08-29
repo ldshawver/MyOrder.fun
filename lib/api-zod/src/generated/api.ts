@@ -7,6 +7,7 @@
  */
 import * as zod from 'zod';
 
+
 /**
  * @summary Health check
  */
@@ -15,6 +16,7 @@ export const HealthCheckResponse = zod.object({
   "sha": zod.string().optional(),
   "uptime": zod.number().optional()
 })
+
 
 /**
  * @summary Submit a new tenant onboarding request
@@ -271,6 +273,8 @@ export const ListCatalogItemsResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -391,6 +395,8 @@ export const GetCatalogItemResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -503,6 +509,8 @@ export const UpdateCatalogItemResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })
@@ -2017,6 +2025,8 @@ export const AiConciergeChatResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })).optional(),
@@ -2080,6 +2090,8 @@ export const AiCatalogSearchResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),
@@ -2137,6 +2149,8 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
   "labName": zod.string().nullish(),
+  "customerSafeName": zod.string().nullish(),
+  "customerSafeDescription": zod.string().nullish(),
   "createdAt": zod.coerce.date(),
   "updatedAt": zod.coerce.date()
 })),

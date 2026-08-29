@@ -1596,6 +1596,12 @@ components:
         labName:
           type: string
           nullable: true
+        customerSafeName:
+          type: string
+          nullable: true
+        customerSafeDescription:
+          type: string
+          nullable: true
         createdAt:
           type: string
           format: date-time

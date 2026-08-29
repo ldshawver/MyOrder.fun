@@ -20,6 +20,17 @@ describe("catalog product submission", () => {
     }));
   });
 
+  it("sends edited customer-safe presentation fields", () => {
+    expect(createCatalogProductPayload({
+      ...valid,
+      customerSafeName: "  Customer-safe name  ",
+      customerSafeDescription: "  Customer-safe description  ",
+    })).toMatchObject({
+      customerSafeName: "Customer-safe name",
+      customerSafeDescription: "Customer-safe description",
+    });
+  });
+
   it("omits optional blank non-nullable fields from a minimal create request", () => {
     const payload = createCatalogProductPayload({ ...valid, description: " ", imageUrl: "", sku: "" });
     const requestBody = JSON.parse(JSON.stringify(payload));
