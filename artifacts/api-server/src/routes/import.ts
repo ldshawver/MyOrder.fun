@@ -119,6 +119,45 @@ type ImportDuplicateWarning = {
 
 type CatalogImportUpsertValues = typeof catalogItemsTable.$inferInsert;
 
+const PRODUCT_MASTER_IMPORT_TEMPLATE = "alavont_safe_inventory_v2";
+const COMPLIANCE_RULES = [
+  ["cannabis", /\bcannabis\b/i], ["marijuana", /\bmarijuana\b/i], ["weed", /\bweed\b/i],
+  ["thc", /\bthc\b/i], ["cocaine", /\bcocaine?\b/i], ["meth", /\bmeth\b/i],
+  ["opioid", /\bopioids?\b/i], ["fentanyl", /\bfentanyl\b/i], ["psilocybin", /\bpsilocybin\b/i],
+  ["magic mushroom", /\bmagic\s+mushrooms?\b/i], ["lsd", /\blsd\b/i], ["mdma", /\bmdma\b/i],
+  ["controlled substance", /\bcontrolled\s+substances?\b/i], ["psychedelic", /\bpsychedelics?\b/i],
+  ["hallucinogen", /\bhallucinogens?\b/i], ["stimulant", /\bstimulants?\b/i], ["depressant", /\bdepressants?\b/i],
+] as const satisfies ReadonlyArray<readonly [string, RegExp]>;
+
+export function classifyProductMasterCompliance(input: { name: string; category: string; description: string }) {
+  const source = `${input.name} ${input.category} ${input.description}`;
+  const matchedTerms = COMPLIANCE_RULES.filter(([, pattern]) => pattern.test(source)).map(([term]) => term);
+  return {
+    complianceHold: matchedTerms.length > 0,
+    complianceReason: matchedTerms.length ? `Matched restricted term(s): ${matchedTerms.join(", ")}` : null,
+    matchedTerms,
+  };
+}
+
+function refreshedProductMasterMetadata(current: unknown, compliance: ReturnType<typeof classifyProductMasterCompliance>, activeSale: boolean) {
+  const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  const importManagedLifecycle = base.importTemplate === PRODUCT_MASTER_IMPORT_TEMPLATE || base.safeOnlyDuplicate === true || base.mergedIntoCatalogItemId != null;
+  const merged: Record<string, unknown> = {
+    ...base,
+    activeSale,
+    complianceHold: compliance.complianceHold,
+    complianceReason: compliance.complianceReason,
+    complianceMatchedTerms: compliance.matchedTerms,
+    importTemplate: PRODUCT_MASTER_IMPORT_TEMPLATE,
+  };
+  if (importManagedLifecycle) {
+    delete merged.archived;
+    delete merged.safeOnlyDuplicate;
+    delete merged.mergedIntoCatalogItemId;
+  }
+  return merged;
+}
+
 function executeRows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown[] }).rows)) return (result as { rows: T[] }).rows;
@@ -349,7 +388,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   if (v.duplicates.length) { res.status(400).json({ error: `Duplicate column(s): ${Array.from(new Set(v.duplicates)).join(", ")}`, duplicateColumns: v.duplicates }); return; }
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number> }> = [];
+  const prepared: Array<{ row: number; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; compliance: ReturnType<typeof classifyProductMasterCompliance>; activeSale: boolean }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const sku = safeText(rec["Alavont SKU"], "Alavont SKU", rowNum, errors, true);
@@ -376,13 +415,22 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const customerSafeName = safeText(rec["Safe Name"] || name, "Safe Name", rowNum, errors);
     const customerSafeDescription = safeText(rec["Safe Description"], "Safe Description", rowNum, errors) || null;
     const customerSafeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
-    const customerSafeCategoryLower = `${name} ${category} ${rec["Alavont Description"]}`.toLowerCase();
-    const complianceHold = /(cannabis|marijuana|weed|thc|cocaine|meth|opioid|fentanyl|psilocybin|mushroom|lsd|mdma|controlled substance|psychedelic|hallucinogen|stimulant|depressant)/i.test(customerSafeCategoryLower);
+    const compliance = classifyProductMasterCompliance({ name, category, description: rec["Alavont Description"] });
+    const { complianceHold } = compliance;
     const totalInventory = String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2));
-    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: customerSafeName, luciferCruzDescription: customerSafeDescription, luciferCruzCategory: customerSafeCategory, luciferCruzImageUrl: customerSafeImageUrl, customerSafeName: customerSafeName, customerSafeDescription: customerSafeDescription, merchantName: customerSafeName, merchantDescription: customerSafeDescription, merchantCategory: customerSafeCategory, merchantImage: customerSafeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: customerSafeName, labelName: customerSafeName, labName: sku, metadata: { activeSale, complianceHold, importTemplate: "alavont_safe_inventory_v2" } };
+    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: checkoutPrice.toFixed(2), regularPrice: regularPrice.toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: customerSafeName, luciferCruzDescription: customerSafeDescription, luciferCruzCategory: customerSafeCategory, luciferCruzImageUrl: customerSafeImageUrl, customerSafeName: customerSafeName, customerSafeDescription: customerSafeDescription, merchantName: customerSafeName, merchantDescription: customerSafeDescription, merchantCategory: customerSafeCategory, merchantImage: customerSafeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: customerSafeName, labelName: customerSafeName, labName: sku, metadata: refreshedProductMasterMetadata({}, compliance, activeSale) };
     const updateValues: Partial<CatalogImportUpsertValues> = {
       customerSafeName: customerSafeName,
       customerSafeDescription: customerSafeDescription,
+      name,
+      description: rec["Alavont Description"] || null,
+      category,
+      alavontName: name,
+      alavontDescription: rec["Alavont Description"] || null,
+      alavontCategory: category,
+      alavontImageUrl: imageUrl,
+      alavontId: sku,
+      externalMenuId: sku,
       luciferCruzName: customerSafeName,
       luciferCruzDescription: customerSafeDescription,
       luciferCruzCategory: customerSafeCategory,
@@ -393,6 +441,9 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       regularPrice: regularPrice.toFixed(2),
       compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null,
       isAvailable: !complianceHold,
+      alavontInStock: !complianceHold,
+      isLocalAlavont: true,
+      isWooManaged: false,
       inventoryAmount: totalInventory,
       stockQuantity: totalInventory,
       merchantName: customerSafeName,
@@ -402,7 +453,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
       merchantBrand: "alavont",
       updatedAt: new Date(),
     };
-    prepared.push({ row: rowNum, rec, inventory, par, values: importValues, updateValues });
+    prepared.push({ row: rowNum, rec, inventory, par, values: importValues, updateValues, compliance, activeSale });
   }
   const allTenantCatalog = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const duplicateWarnings = buildUploadDuplicateWarnings(prepared);
@@ -433,7 +484,8 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   const preview = prepared.map(p => {
     const skuKey = String(p.values.sku ?? "").trim().toLowerCase();
     const matchedId = bySku.get(skuKey) ?? byAlavontOrMerchantSku.get(skuKey) ?? null;
-    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.rows.includes(p.row)) };
+    const compliance = p.compliance;
+    return { row: p.row, oldProductId: matchedId, matchedProductId: matchedId, sku: p.values.sku, name: p.values.name, category: p.values.category, isAvailable: !compliance.complianceHold, alavontInStock: !compliance.complianceHold, complianceHold: compliance.complianceHold, complianceReason: compliance.complianceReason, complianceMatchedTerms: compliance.matchedTerms, parValues: p.par, duplicateWarnings: duplicateWarnings.filter(w => w.key === skuKey || w.rows.includes(p.row)) };
   });
   const matchedIds = new Set(preview.map(p => p.matchedProductId).filter((id): id is number => typeof id === "number"));
   if (duplicateWarnings.length) {
@@ -457,7 +509,11 @@ const existingId =
 
 let catalogItemId = existingId;
         if (catalogItemId) {
-          await tx.update(catalogItemsTable).set(p.updateValues).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
+          const existingRow = allTenantCatalog.find(item => item.id === catalogItemId);
+          await tx.update(catalogItemsTable).set({
+            ...p.updateValues,
+            metadata: refreshedProductMasterMetadata(existingRow?.metadata, p.compliance, p.activeSale),
+          }).where(and(eq(catalogItemsTable.id, catalogItemId), eq(catalogItemsTable.tenantId, tenantId)));
           updated++;
         } else {
           const [created] = await tx.insert(catalogItemsTable).values(p.values).returning({ id: catalogItemsTable.id });

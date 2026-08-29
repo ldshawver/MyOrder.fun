@@ -2,6 +2,7 @@ import express from "express";
 import supertest from "supertest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { inArray, sql } from "drizzle-orm";
+import * as XLSX from "xlsx";
 
 vi.mock("@clerk/express", () => ({ clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(), getAuth: vi.fn(() => ({ userId: "user-clerk-id" })) }));
 vi.mock("../../lib/auth", () => ({
@@ -55,7 +56,7 @@ vi.mock("@workspace/db", () => {
     then: (resolve: (v: unknown) => void) => resolve(rows),
   });
   const tableRows = (table: { _name?: string } | undefined, selection?: unknown) => {
-    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId })) : state.catalog;
+    if (table?._name === "catalog_items") return selection ? state.catalog.map(r => ({ id: r.id, sku: r.sku, name: r.name, luciferCruzName: r.luciferCruzName, merchantName: r.merchantName, customerSafeName: r.customerSafeName, alavontName: r.alavontName, alavontId: r.alavontId, merchantSku: r.merchantSku, tenantId: r.tenantId, metadata: r.metadata })) : state.catalog;
     if (table?._name === "inventory_templates") return selection ? state.inventory.map(r => ({ id: r.id, tenantId: r.tenantId, catalogItemId: r.catalogItemId })) : state.inventory;
     if (table?._name === "inventory_locations") return state.locations;
     if (table?._name === "inventory_balances") return selection ? state.balances.map(r => ({ id: r.id, tenantId: r.tenantId, productId: r.productId, locationId: r.locationId })) : state.balances;
@@ -290,6 +291,63 @@ describe("safe catalog import/export", () => {
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
     expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
     expect(state.balances).toHaveLength(inventoryRowCount);
+  });
+
+  it("restores an archived canonical Product Master row and preserves unrelated metadata idempotently", async () => {
+    state.catalog.push({
+      id: 1, tenantId: 1, sku: "SKU-1", alavontId: "SKU-1", merchantSku: "SKU-1",
+      name: "Stale", alavontName: "Stale", isAvailable: false, alavontInStock: false,
+      isLocalAlavont: false, isWooManaged: true,
+      metadata: { importTemplate: "alavont_safe_inventory_v2", archived: true, safeOnlyDuplicate: true, mergedIntoCatalogItemId: 99, complianceHold: true, unrelated: "keep-me" },
+    });
+
+    const first = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ inserted: 0, updated: 1 });
+    expect(state.catalog[0]).toMatchObject({
+      name: "Name", alavontName: "Name", alavontCategory: "Cat", alavontDescription: "Desc",
+      isAvailable: true, alavontInStock: true, isLocalAlavont: true, isWooManaged: false,
+      metadata: { importTemplate: "alavont_safe_inventory_v2", complianceHold: false, complianceReason: null, complianceMatchedTerms: [], unrelated: "keep-me" },
+    });
+    expect(state.catalog[0].metadata).not.toHaveProperty("archived");
+    expect(state.catalog[0].metadata).not.toHaveProperty("safeOnlyDuplicate");
+    expect(state.catalog[0].metadata).not.toHaveProperty("mergedIntoCatalogItemId");
+
+    const second = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(goodCsv), "catalog.csv");
+    expect(second.status).toBe(200);
+    expect(state.catalog).toHaveLength(1);
+    expect(second.body).toMatchObject({ inserted: 0, updated: 1 });
+    expect(state.catalog[0]).toMatchObject({ sku: "SKU-1", isAvailable: true, alavontInStock: true, metadata: { unrelated: "keep-me", complianceHold: false } });
+  });
+
+  it("keeps genuine psychedelic products held while allowing functional mushrooms", async () => {
+    const { classifyProductMasterCompliance } = await import("../import");
+    expect(classifyProductMasterCompliance({ name: "Reishi Blend", category: "Functional Mushrooms", description: "Reishi and Chaga wellness powder" })).toMatchObject({ complianceHold: false, matchedTerms: [] });
+    expect(classifyProductMasterCompliance({ name: "Mushroom Gummies", category: "Psychedelics & Hallucinogens", description: "Contains psilocybin" })).toMatchObject({ complianceHold: true, matchedTerms: expect.arrayContaining(["psilocybin", "psychedelic", "hallucinogen"]) });
+  });
+
+  it("refreshes current compliance metadata and keeps a held existing row hidden", async () => {
+    state.catalog.push({ id: 1, tenantId: 1, sku: "HELD-1", alavontId: "HELD-1", merchantSku: "HELD-1", metadata: { importTemplate: "alavont_safe_inventory_v2", complianceHold: false, unrelated: 7 } });
+    const heldCsv = `${headers}\n10.00,,false,Psychedelics,Psilocybin Product,https://example.com/a.jpg,Contains psilocybin,HELD-1,Safe Cat,Safe,https://example.com/s.jpg,Safe desc,1,0,0,0,1,0,0,0\n`;
+    const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(heldCsv), "held.csv");
+    expect(res.status).toBe(200);
+    expect(state.catalog[0]).toMatchObject({ isAvailable: false, alavontInStock: false, isLocalAlavont: true, isWooManaged: false, metadata: { complianceHold: true, unrelated: 7 } });
+    expect(String((state.catalog[0].metadata as Record<string, unknown>).complianceReason)).toContain("psilocybin");
+  });
+
+  it("parses a 37-row XLSX Product Master preview", async () => {
+    const workbookRows = Array.from({ length: 37 }, (_, index) => [
+      "10.00", "", "false", "General", `Product ${index + 1}`, "", "Description", `XLSX-${index + 1}`,
+      "Safe General", `Safe Product ${index + 1}`, "", "Safe description", "1", "2", "3", "4", "1", "2", "3", "4",
+    ]);
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([headers.split(","), ...workbookRows]), "Product Master");
+    const workbook = XLSX.write(book, { type: "buffer", bookType: "xlsx" });
+    const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", workbook, "menu_import_template-LS.xlsx");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ dryRun: true, total: 37, inserted: 37, updated: 0, errors: [], duplicateWarnings: [] });
+    expect(res.body.preview).toHaveLength(37);
+    expect(res.body.preview.every((row: { isAvailable: boolean; alavontInStock: boolean }) => row.isAvailable && row.alavontInStock)).toBe(true);
   });
 
   it("dry-run preview does not match changed SKU by normalized product name", async () => {
