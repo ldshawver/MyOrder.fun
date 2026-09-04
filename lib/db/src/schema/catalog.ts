@@ -89,6 +89,8 @@ export const catalogItemsTable = pgTable("catalog_items", {
   stockUnit: text("stock_unit").default("#"),
   // Par level — minimum desired stock; drives restock slip generation
   parLevel: numeric("par_level", { precision: 10, scale: 2 }).default("0"),
+  moq: numeric("moq", { precision: 10, scale: 3 }).notNull().default("0"),
+  preferredReorderQuantity: numeric("preferred_reorder_quantity", { precision: 10, scale: 3 }).notNull().default("0"),
   // ── Task #10: 14-column menu import spec ──
   externalMenuId: text("external_menu_id"),
   inventoryAmount: numeric("inventory_amount", { precision: 10, scale: 2 }),
