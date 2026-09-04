@@ -169,6 +169,55 @@
       "when": 1787418000000,
       "tag": "0046_print_bridge_printer_health",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787504400000,
+      "tag": "0047_inventory_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787508000000,
+      "tag": "0048_sales_tax_period_paid_amount",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788031800000,
+      "tag": "0049_catalog_import_preview_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788062400000,
+      "tag": "0050_tenant_wide_tax_configuration",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788066000000,
+      "tag": "0051_staging_inventory_receipts_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788069600000,
+      "tag": "0052_staging_sales_tax_paid_amount_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788535661740,
+      "tag": "0053_non_catalog_inventory",
+      "breakpoints": true
     }
   ]
 }
