@@ -1647,11 +1647,20 @@ function InventoryHealthTab({ getToken }: { getToken: () => Promise<string | nul
   );
 }
 
+function NonCatalogTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [sections, setSections] = useState<any[]>([]); const [items, setItems] = useState<any[]>([]); const [sectionName, setSectionName] = useState(""); const [itemName, setItemName] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => { const token = await getToken(); const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}; const [s, i] = await Promise.all([fetch("/api/admin/non-catalog/sections", { headers }), fetch("/api/admin/non-catalog/items", { headers })]); if (!s.ok || !i.ok) throw new Error("Unable to load non-catalog inventory"); setSections((await s.json()).sections ?? []); setItems((await i.json()).items ?? []); }, [getToken]);
+  useEffect(() => { void load().catch(e => setError(e instanceof Error ? e.message : "Load failed")); }, [load]);
+  async function createSection() { if (!sectionName.trim()) return; setBusy(true); try { const token = await getToken(); await fetch("/api/admin/non-catalog/sections", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ name: sectionName.trim() }) }); setSectionName(""); await load(); } finally { setBusy(false); } }
+  async function createItem() { if (!itemName.trim()) return; setBusy(true); try { const token = await getToken(); await fetch("/api/admin/non-catalog/items", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ name: itemName.trim(), parLevel: 0, moq: 0, preferredReorderQuantity: 0 }) }); setItemName(""); await load(); } finally { setBusy(false); } }
+  return <div className="space-y-4"><div className="flex gap-2"><Input placeholder="New section" value={sectionName} onChange={e => setSectionName(e.target.value)} /><Button disabled={busy} onClick={() => void createSection()}> <Plus size={14} /> Section</Button></div><div className="flex gap-2"><Input placeholder="New non-catalog item" value={itemName} onChange={e => setItemName(e.target.value)} /><Button disabled={busy} onClick={() => void createItem()}><Plus size={14} /> Item</Button></div>{error && <div className="text-sm text-red-400">{error}</div>}{sections.filter(s => s.isActive).map(s => <div key={s.id} className="rounded-xl border border-border/40 p-4"><div className="font-bold">▼ {s.name}</div>{items.filter(i => i.sectionId === s.id && i.isActive).map(i => <div key={i.id} className="mt-2 flex justify-between text-sm"><span className="font-semibold">{i.name}</span><span className="text-muted-foreground">Stock 0 · PAR {i.parLevel} · Minimum Order {i.moq}</span></div>)}</div>)}{sections.length === 0 && <div className="text-sm text-muted-foreground">No non-catalog sections yet.</div>}</div>;
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"stock" | "template" | "boxes" | "locations" | "stockgrid" | "health">("template");
+  const [tab, setTab] = useState<"stock" | "template" | "boxes" | "locations" | "stockgrid" | "health" | "noncatalog">("template");
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -1675,6 +1684,7 @@ export default function AdminInventory() {
           { key: "locations" as const, label: "Locations", icon: MapPin },
           { key: "stockgrid" as const, label: "Stock Grid", icon: BarChart3 },
           { key: "health" as const, label: "Health", icon: EyeOff },
+          { key: "noncatalog" as const, label: "Non-Catalog", icon: Package },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1702,6 +1712,8 @@ export default function AdminInventory() {
         <StockGridTab getToken={getToken} />
       ) : tab === "health" ? (
         <InventoryHealthTab getToken={getToken} />
+      ) : tab === "noncatalog" ? (
+        <NonCatalogTab getToken={getToken} />
       ) : (
         <StockLevelsTab getToken={getToken} />
       )}

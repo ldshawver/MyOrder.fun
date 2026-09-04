@@ -129,6 +129,26 @@ router.post("/admin/non-catalog/items", requirePermission("inventory.manage"), a
 router.patch("/admin/non-catalog/items/:id", requirePermission("inventory.manage"), async (req, res) => { const id = Number(req.params.id); const parsed = nonCatalogItemBody.partial().strict().safeParse(req.body); if (!Number.isInteger(id) || !parsed.success || Object.keys(parsed.data).length === 0) { res.status(400).json({ error: "Invalid item patch" }); return; } const p = parsed.data; const patch: Record<string, unknown> = { ...p, updatedAt: new Date() }; for (const key of ["parLevel", "moq", "preferredReorderQuantity", "unitCost"]) if (key in patch && patch[key] != null) patch[key] = String(patch[key]); const [item] = await db.update(nonCatalogInventoryItemsTable).set(patch).where(and(eq(nonCatalogInventoryItemsTable.id, id), eq(nonCatalogInventoryItemsTable.tenantId, nonCatalogTenant(req)))).returning(); if (!item) { res.status(404).json({ error: "Item not found" }); return; } res.json({ item }); });
 router.delete("/admin/non-catalog/items/:id", requirePermission("inventory.manage"), async (req, res) => { const [item] = await db.update(nonCatalogInventoryItemsTable).set({ isActive: false, updatedAt: new Date() }).where(and(eq(nonCatalogInventoryItemsTable.id, Number(req.params.id)), eq(nonCatalogInventoryItemsTable.tenantId, nonCatalogTenant(req)))).returning(); if (!item) { res.status(404).json({ error: "Item not found" }); return; } res.json({ item }); });
 router.get("/admin/non-catalog/balances", requirePermission("inventory.view"), async (req, res) => { const balances = await db.select().from(nonCatalogInventoryBalancesTable).where(eq(nonCatalogInventoryBalancesTable.tenantId, nonCatalogTenant(req))); res.json({ balances }); });
+router.post("/admin/non-catalog/balances/adjust", requirePermission("inventory.manage"), async (req, res) => {
+  const body = z.object({ itemId: z.number().int().positive(), locationId: z.number().int().positive(), quantityDelta: z.number().finite(), reason: z.enum(["INITIAL", "ADJUSTMENT"]), idempotencyKey: z.string().trim().min(8).max(120) }).strict().safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+  const tenantId = nonCatalogTenant(req); const { itemId, locationId, quantityDelta, reason, idempotencyKey } = body.data;
+  const result = await db.transaction(async (tx) => {
+    const existing = await tx.execute(sql`SELECT id, quantity_change, after_state FROM inventory_transaction_log WHERE transaction_id = ${`noncatalog:${tenantId}:${idempotencyKey}`} LIMIT 1`);
+    if (existing.rows.length) return { duplicate: true, balance: null };
+    const item = await tx.select({ id: nonCatalogInventoryItemsTable.id }).from(nonCatalogInventoryItemsTable).where(and(eq(nonCatalogInventoryItemsTable.id, itemId), eq(nonCatalogInventoryItemsTable.tenantId, tenantId), eq(nonCatalogInventoryItemsTable.isActive, true))).limit(1);
+    const location = await tx.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.id, locationId), eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))).limit(1);
+    if (!item.length || !location.length) throw Object.assign(new Error("Item or location not found"), { status: 404 });
+    const current = await tx.select().from(nonCatalogInventoryBalancesTable).where(and(eq(nonCatalogInventoryBalancesTable.tenantId, tenantId), eq(nonCatalogInventoryBalancesTable.itemId, itemId), eq(nonCatalogInventoryBalancesTable.locationId, locationId))).limit(1);
+    const before = Number(current[0]?.quantityOnHand ?? 0); const after = before + quantityDelta; if (after < 0) throw Object.assign(new Error("Insufficient stock"), { status: 409 });
+    let balance;
+    if (current.length) [balance] = await tx.update(nonCatalogInventoryBalancesTable).set({ quantityOnHand: String(after), updatedAt: new Date() }).where(eq(nonCatalogInventoryBalancesTable.id, current[0].id)).returning();
+    else [balance] = await tx.insert(nonCatalogInventoryBalancesTable).values({ tenantId, itemId, locationId, quantityOnHand: String(after) }).returning();
+    await tx.execute(sql`INSERT INTO inventory_transaction_log (transaction_id, type, quantity_change, before_state, after_state, created_at) VALUES (${`noncatalog:${tenantId}:${idempotencyKey}`}, ${reason.toLowerCase()}, ${String(quantityDelta)}, ${JSON.stringify({ quantityOnHand: before })}::jsonb, ${JSON.stringify({ quantityOnHand: after, itemId, locationId })}::jsonb, now())`);
+    return { duplicate: false, balance };
+  }).catch((error: unknown) => { const status = Number((error as { status?: number }).status) || 500; res.status(status).json({ error: error instanceof Error ? error.message : "Balance adjustment failed" }); return null; });
+  if (result) res.status(result.duplicate ? 200 : 201).json(result);
+});
 
 
 
