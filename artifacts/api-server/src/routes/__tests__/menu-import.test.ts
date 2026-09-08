@@ -114,6 +114,8 @@ vi.mock("@workspace/db", () => {
       }
       if (text.includes("INSERT INTO inventory_balances") && text.includes("VALUES")) {
         const [tenantId, productId, locationId, quantityOnHand, parLevel] = values;
+        const existing = state.balances.find(row => row.tenantId === tenantId && row.productId === productId && row.locationId === locationId);
+        if (existing) return Promise.resolve(wrap([existing]));
         state.balanceInsertAttempts += 1;
         if (state.failBalanceInsertAt === state.balanceInsertAttempts) throw new Error("simulated balance insert failure");
         const row = { id: state.balances.length + 1, tenantId, productId, locationId, quantityOnHand, parLevel };
@@ -251,7 +253,7 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(4);
     expect(state.balances.map(b => b.productId)).toEqual([1, 1, 1, 1]);
     expect(state.inventory).toHaveLength(1);
-    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "15", parLevel: "16" });
+    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "0", parLevel: "16" });
     const { db } = await import("@workspace/db");
     expect(db.transaction).toHaveBeenCalled();
   });

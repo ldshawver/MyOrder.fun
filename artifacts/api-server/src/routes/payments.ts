@@ -33,7 +33,7 @@ router.post("/payments/:orderId/apply-credit", requireCurrentCustomerDisclaimerA
       const reserved = await reserveCustomerCredit(tx, { tenantId: actor.tenantId!, customerId: actor.id, actorUserId: actor.id, orderId, amountCents, idempotencyKey: `reserve:${idempotencyKey}` });
       const remainingCents = Math.round(Number(order.total) * 100) - Math.round(Number(order.customerCreditApplied) * 100) - reserved.appliedCents;
       if (remainingCents === 0) {
-        await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip });
+        await deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
         const consumed = await consumeCustomerCredit(tx, { tenantId: actor.tenantId!, customerId: actor.id, actorUserId: actor.id, orderId, amountCents: reserved.appliedCents, idempotencyKey: `consume:${idempotencyKey}` });
         await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: "customer_credit", selectedPaymentMethod: "customer_credit", remainingTenderAmount: "0.00" }).where(and(eq(ordersTable.tenantId, actor.tenantId!), eq(ordersTable.id, orderId)));
         return { appliedCents: reserved.appliedCents, remainingCents, remainingCreditCents: Math.round(Number(consumed.account.balance) * 100), paid: true, replayed: reserved.idempotent };

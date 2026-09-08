@@ -8,7 +8,6 @@ import {
   usersTable,
   notificationsTable,
   labTechShiftsTable,
-  inventoryTemplatesTable,
   adminSettingsTable,
   inventoryLocationsTable,
   catalogItemsTable,
@@ -52,6 +51,7 @@ import { type InventoryOrderType } from "../lib/inventoryBalances";
 import {
   confirmInventoryReservationsForOrder,
   ensureInventoryReservationsTable,
+  releaseInventoryReservationsForOrder,
   reserveCheckoutInventoryByOrderType,
 } from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
@@ -647,29 +647,6 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   };
 }
 
-async function notifyLowStockIfNeeded(tmpl: typeof inventoryTemplatesTable.$inferSelect, newStock: number): Promise<void> {
-  const parLevel = tmpl.parLevel != null ? parseFloat(String(tmpl.parLevel)) : 0;
-  if (!Number.isFinite(parLevel) || parLevel <= 0 || newStock > parLevel) return;
-
-  const recipients = await db
-    .select({ id: usersTable.id })
-    .from(usersTable)
-    .where(and(
-      inArray(usersTable.role, ["global_admin", "admin"]),
-      eq(usersTable.isActive, true),
-    ));
-
-  if (!recipients.length) return;
-  await db.insert(notificationsTable).values(recipients.map(r => ({
-    userId: r.id,
-    type: "inventory_low_stock",
-    title: "Low stock alert",
-    message: `${tmpl.itemName} is at ${newStock.toFixed(2)} ${tmpl.unitType ?? ""} (par ${parLevel}).`,
-    resourceType: "inventory_template",
-    resourceId: tmpl.id,
-  })));
-}
-
 // GET /api/orders
 router.get("/orders", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -1026,7 +1003,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             .set({ inventoryDeductions: reservations })
             .where(eq(orderItemsTable.id, orderItem.id));
           const deductionDetails = shouldConfirmReservationImmediately
-            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id)).filter(deduction => deduction.productId === line.catalog_item_id)
+            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.productId === line.catalog_item_id)
             : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
           if (shouldConfirmReservationImmediately) {
             await tx.update(orderItemsTable)
@@ -1866,7 +1843,18 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     normalizedTarget === "reconciliation_required" ? { fulfillmentStatus: "reconciliation_required" } :
     status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
     { voidedAt: now, voidedByUserId: actor.id };
-  const [updated] = await db.update(ordersTable).set({ status: normalizedTarget, updatedAt: now, ...stamps }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).returning();
+  const [updated] = await db.transaction(async tx => {
+    // A reservation is a temporary availability hold, never a final stock
+    // movement. Cancelling an unpaid order must release it with the status
+    // change so a failed payment cannot leave stock unavailable.
+    if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
+      await releaseInventoryReservationsForOrder(tx, id);
+    }
+    return tx.update(ordersTable)
+      .set({ status: normalizedTarget, updatedAt: now, ...stamps })
+      .where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)))
+      .returning();
+  });
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -1941,44 +1929,8 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
     .where(eq(ordersTable.id, params.data.id))
     .returning();
 
-  // Auto-deduct raw material inventory when order is delivered
-  if (
-    body.data.status === "delivered" &&
-    order.status !== "delivered"
-  ) {
-    try {
-      const orderItems = await db
-        .select()
-        .from(orderItemsTable)
-        .where(eq(orderItemsTable.orderId, order.id));
-      for (const item of orderItems) {
-        if (!item.catalogItemId) continue;
-        const templates = await db
-          .select()
-          .from(inventoryTemplatesTable)
-          .where(
-            and(
-              eq(inventoryTemplatesTable.catalogItemId, item.catalogItemId),
-              eq(inventoryTemplatesTable.isActive, true),
-            )
-          );
-        for (const tmpl of templates) {
-          const deductPer = parseFloat(String(tmpl.deductionQuantityPerSale ?? 1));
-          const qty = parseFloat(String(item.quantity ?? 1));
-          const totalDeduct = deductPer * qty;
-          const currentStockVal = tmpl.currentStock != null
-            ? parseFloat(String(tmpl.currentStock))
-            : parseFloat(String(tmpl.startingQuantityDefault ?? 0));
-          const newStock = currentStockVal - totalDeduct;
-          await db
-            .update(inventoryTemplatesTable)
-            .set({ currentStock: String(newStock) })
-            .where(eq(inventoryTemplatesTable.id, tmpl.id));
-          await notifyLowStockIfNeeded(tmpl, newStock);
-        }
-      }
-    } catch { /* non-critical */ }
-  }
+  // Delivery is a fulfillment state, not a second inventory authority. Physical
+  // sale movements are posted exactly once when a reservation is confirmed.
 
   // In-app notification to customer. Channel opt-outs are enforced server-side so clients cannot force sends.
   try {

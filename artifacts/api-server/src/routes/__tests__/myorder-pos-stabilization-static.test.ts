@@ -91,7 +91,7 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
     expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
-    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id)");
+    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id,");
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
     expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
     expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");
@@ -132,7 +132,7 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 
 
-  it("keeps inventory balance writes centralized in inventoryAuthority", () => {
+  it("routes physical inventory writes through the canonical movement service", () => {
     const authority = api("lib/inventoryAuthority.ts");
     expect(authority).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
     expect(authority).toContain("upsertInventoryBalanceThroughAuthority");
@@ -151,8 +151,9 @@ describe("catalog/inventory/par/order source of truth", () => {
       expect(content, `${label} must not write inventory_balances outside inventoryAuthority`).not.toMatch(bypassPattern);
     }
 
-    expect(api("lib/inventoryReservations.ts")).toContain("deductInventoryBalanceThroughAuthority");
-    expect(api("routes/import.ts")).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(api("lib/inventoryReservations.ts")).toContain("postInventoryMovement");
+    expect(api("routes/import.ts")).toContain("postImportedInventoryBalanceCorrection");
+    expect(api("lib/inventoryMovementLedger.ts")).toContain("INSERT INTO inventory_movements");
     expect(api("lib/inventoryBalances.ts")).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
   });
 

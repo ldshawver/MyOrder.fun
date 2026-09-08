@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql } from "drizzle-orm";
+import { and, eq, asc, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
@@ -321,15 +321,14 @@ function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): b
 async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.$inferSelect): Promise<void> {
   if (!isLocalAlavontCatalogRow(row)) return;
 
-  const stockValue = row.inventoryAmount ?? row.stockQuantity ?? "0";
   const itemName = row.alavontName ?? row.displayName ?? row.name;
   const patch = {
     sectionName: row.alavontCategory ?? row.category ?? "Alavont",
     itemName,
     rowType: "item",
     unitType: row.stockUnit ?? row.unitMeasurement ?? "#",
-    startingQuantityDefault: String(stockValue ?? "0"),
-    currentStock: String(stockValue ?? "0"),
+    startingQuantityDefault: "0",
+    currentStock: null,
     menuPrice: String(row.price ?? "0"),
     payoutPrice: String(row.price ?? "0"),
     isActive: row.isAvailable !== false,
@@ -371,27 +370,30 @@ async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.
   });
 }
 
-async function getLinkedInventoryStockByCatalogId() {
-  const templateRows = await db
-    .select()
-    .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.isActive, true));
-
+async function getLinkedInventoryStockByCatalogId(tenantId: number) {
+  const balanceRows = await db
+    .select({
+      productId: inventoryBalancesTable.productId,
+      quantity: sql<string>`COALESCE(SUM(${inventoryBalancesTable.quantityOnHand}), 0)`,
+    })
+    .from(inventoryBalancesTable)
+    .innerJoin(
+      inventoryLocationsTable,
+      and(
+        eq(inventoryLocationsTable.tenantId, inventoryBalancesTable.tenantId),
+        eq(inventoryLocationsTable.id, inventoryBalancesTable.locationId),
+      ),
+    )
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryLocationsTable.isActive, true),
+      eq(inventoryBalancesTable.inventoryKind, "sellable_catalog"),
+      eq(inventoryBalancesTable.isSellable, true),
+      isNull(inventoryBalancesTable.quarantinedAt),
+    ))
+    .groupBy(inventoryBalancesTable.productId);
   const stockByCatalogId = new Map<number, number>();
-  for (const row of templateRows) {
-    if (!row.catalogItemId || (row.rowType !== "item" && row.rowType !== "cash")) continue;
-
-    const currentStock = row.currentStock != null
-      ? parseFloat(String(row.currentStock))
-      : parseFloat(String(row.startingQuantityDefault ?? 0));
-    const deductPerSale = parseFloat(String(row.deductionQuantityPerSale ?? 1));
-    const sellableUnits = deductPerSale > 0
-      ? Math.floor(currentStock / deductPerSale)
-      : Math.floor(currentStock);
-
-    const existing = stockByCatalogId.get(row.catalogItemId);
-    stockByCatalogId.set(row.catalogItemId, existing === undefined ? sellableUnits : Math.min(existing, sellableUnits));
-  }
+  for (const row of balanceRows) stockByCatalogId.set(row.productId, Math.max(0, Math.floor(Number(row.quantity ?? 0))));
 
   return stockByCatalogId;
 }
@@ -490,7 +492,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
     return a.name.localeCompare(b.name);
   });
 
-  const stockByCatalogId = await getLinkedInventoryStockByCatalogId();
+  const stockByCatalogId = await getLinkedInventoryStockByCatalogId(tenantId);
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
@@ -613,8 +615,8 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
-    stockQuantity: String(body.data.stockQuantity ?? 0),
-    inventoryAmount: String(body.data.stockQuantity ?? 0),
+    stockQuantity: "0",
+    inventoryAmount: "0",
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
   await syncCatalogItemToInventoryTemplate(row);
   res.status(201).json(mapItem(row));

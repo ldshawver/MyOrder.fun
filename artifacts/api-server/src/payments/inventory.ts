@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { db, inventoryReservationsTable, labTechShiftsTable, orderItemsTable, ordersTable } from "@workspace/db";
 import { writeAuditLog } from "../lib/auth";
 import { type InventoryOrderType } from "../lib/inventoryBalances";
+import { executeTransaction, type InventoryKernelExecutor } from "../lib/inventoryKernel";
 import { confirmInventoryReservationsForOrder, ensureInventoryReservationsTable, reserveCheckoutInventoryByOrderType } from "../lib/inventoryReservations";
 
 export class PaymentInventoryError extends Error {
@@ -14,16 +15,20 @@ function orderTypeForPaidDeduction(order: typeof ordersTable.$inferSelect): Inve
   return order.deliveryMethod === "csr_delivery" ? "CSR" : "ONLINE";
 }
 
-export async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string }): Promise<void> {
+export async function deductPaidOrderInventory(
+  order: typeof ordersTable.$inferSelect,
+  auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string },
+  executor: InventoryKernelExecutor = db,
+): Promise<void> {
   const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
   if (method === "cash") return;
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
   await ensureInventoryReservationsTable();
-  const [shift] = await db.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
+  const [shift] = await executor.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
   if (!shift?.boxAssignmentId) return;
-  const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+  const items = await executor.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
-  await db.transaction(async tx => {
+  await executeTransaction(executor, "payments.inventoryDeduct", async tx => {
     const existing = await tx.select({ id: inventoryReservationsTable.id }).from(inventoryReservationsTable).where(eq(inventoryReservationsTable.orderId, order.id)).limit(1);
     if (existing.length === 0) {
       for (const item of items) {
@@ -33,7 +38,8 @@ export async function deductPaidOrderInventory(order: typeof ordersTable.$inferS
         await tx.update(orderItemsTable).set({ inventoryDeductions: reservations }).where(eq(orderItemsTable.id, item.id));
       }
     }
-    const confirmed = await confirmInventoryReservationsForOrder(tx, order.id);
+    if (!auditContext) throw new Error("Inventory sale confirmation requires an audit actor");
+    const confirmed = await confirmInventoryReservationsForOrder(tx, order.id, { id: auditContext.actorId, email: auditContext.actorEmail, role: auditContext.actorRole, ipAddress: auditContext.ipAddress });
     for (const item of items) {
       if (!item.catalogItemId) continue;
       const orderType = orderTypeForPaidDeduction(order);

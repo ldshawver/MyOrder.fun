@@ -1,8 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db, inventoryLocationsTable, inventoryReservationsTable } from "@workspace/db";
+import { db, inventoryLocationsTable, inventoryReservationsTable, ordersTable } from "@workspace/db";
 import { type CheckoutInventoryLocationDeduction, type InventoryOrderType } from "./inventoryBalances";
-import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
 import { assertKernelCatalogItemId, executeTransaction, reservationIdempotencyKey } from "./inventoryKernel";
+import { postInventoryMovement, type InventoryMovementActor } from "./inventoryMovementLedger";
 
 type ReservationTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type ReservationExecutor = typeof db | ReservationTransaction;
@@ -156,6 +156,7 @@ export async function reserveCheckoutInventoryByOrderType(
 export async function confirmInventoryReservationsForOrder(
   executor: ReservationExecutor,
   orderId: number,
+  actor: InventoryMovementActor,
 ): Promise<Array<CheckoutInventoryLocationDeduction & { productId: number }>> {
   return executeTransaction(executor, "inventoryReservations.confirm", async tx => {
   await releaseExpiredInventoryReservations(tx);
@@ -193,24 +194,23 @@ export async function confirmInventoryReservationsForOrder(
   }
 
   const deductions: Array<CheckoutInventoryLocationDeduction & { productId: number }> = [];
+  const [order] = await tx.select({ tenantId: ordersTable.tenantId }).from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  if (!order) throw new Error(`Order ${orderId} was not found while confirming inventory`);
   for (const reservation of reservations) {
     await tx.update(inventoryReservationsTable)
       .set({ status: "confirmed", updatedAt: new Date() })
       .where(eq(inventoryReservationsTable.id, reservation.id));
-    const updated = await deductInventoryBalanceThroughAuthority(tx, {
-      productId: reservation.productId,
-      locationId: reservation.locationId,
-      context: "inventoryReservations.confirm",
-      quantity: reservation.quantity,
-      ignoreReservationIds: [reservation.id],
+    const movement = await postInventoryMovement(tx, {
+      tenantId: order.tenantId, actor, entityType: "catalog", itemId: reservation.productId, locationId: reservation.locationId,
+      movementType: "sale", quantity: String(reservation.quantity), sourceType: "order", sourceId: String(orderId), orderId,
+      reasonCode: "sale", reasonText: "Completed order inventory consumption", idempotencyKey: `sale:${orderId}:${reservation.id}`,
     });
-    if (!updated) throw new Error(`Reserved inventory could not be confirmed for catalogItemId ${reservation.productId}`);
     deductions.push({
       productId: reservation.productId,
       locationId: reservation.locationId,
       locationName: reservation.locationName,
       quantity: reservation.quantity,
-      remainingStock: updated.remainingStock,
+      remainingStock: Number(movement.postQuantity),
     });
   }
   return deductions;

@@ -218,6 +218,13 @@
       "when": 1788535661740,
       "tag": "0053_non_catalog_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788535661741,
+      "tag": "0054_inventory_movement_ledger",
+      "breakpoints": true
     }
   ]
 }

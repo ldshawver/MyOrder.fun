@@ -5,7 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } 
 import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
-import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
+import { postImportedInventoryBalanceCorrection, setCatalogBalanceParProjection, type InventoryMovementActor } from "../lib/inventoryMovementLedger";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { createHash, randomBytes } from "node:crypto";
@@ -362,22 +362,20 @@ async function findOrCreateImportLocation(tx: typeof db, tenantId: number, impor
   return created;
 }
 
-async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number) {
+async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number, actor: InventoryMovementActor, idempotencyKey: string) {
   assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryRow");
-  await upsertInventoryBalanceThroughAuthority(tx, {
-    tenantId,
-    productId: catalogItemId,
-    locationId,
-    quantityOnHand: quantity,
-    parLevel,
-    context: "import.upsertImportedInventoryRow",
+  const movement = await postImportedInventoryBalanceCorrection(tx, {
+    tenantId, actor, entityType: "catalog", itemId: catalogItemId, locationId, targetQuantity: String(quantity), sourceType: "inventory_import_baseline",
+    sourceId: idempotencyKey, idempotencyKey, reasonCode: "import_baseline", reasonText: "Confirmed catalog import",
   });
+  await setCatalogBalanceParProjection(tx, { tenantId, itemId: catalogItemId, locationId, parLevel: String(parLevel) });
+  return movement;
 }
 
 async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: number, parLevel: number) {
   assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryTemplate");
   const [existing] = await tx.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogItemId))).limit(1);
-  const values = { itemName, rowType: "item", unitType: "#", startingQuantityDefault: String(quantity), currentStock: String(quantity), parLevel: String(parLevel), isActive: true, updatedAt: new Date() };
+  const values = { itemName, rowType: "item", unitType: "#", startingQuantityDefault: "0", currentStock: null, parLevel: String(parLevel), isActive: true, updatedAt: new Date() };
   if (existing) await tx.update(inventoryTemplatesTable).set(values).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.id, existing.id)));
   else await tx.insert(inventoryTemplatesTable).values({ tenantId, catalogItemId, ...values });
 }
@@ -669,7 +667,7 @@ let catalogItemId = existingId;
         for (const [importName, quantity] of Object.entries(p.inventory)) {
           const location = await findOrCreateImportLocation(tx, tenantId, importName);
           const parLevel = p.par[importName] ?? 0;
-          await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, quantity, parLevel);
+          await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, quantity, parLevel, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, `import:${confirmationRequestId}:${resolvedCatalogItemId}:${location.id}`);
         }
         await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.customerSafeName), Object.values(p.inventory).reduce((sum, qty) => sum + qty, 0), Object.values(p.par).reduce((sum, qty) => sum + qty, 0));
       }

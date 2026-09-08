@@ -781,7 +781,7 @@ async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof 
         rowType: "item",
         unitType: item.stockUnit ?? item.unitMeasurement ?? "#",
         startingQuantityDefault: String(stockValue ?? "0"),
-        currentStock: String(stockValue ?? "0"),
+        currentStock: null,
         menuPrice: String(item.price ?? "0"),
         payoutPrice: String(item.price ?? "0"),
         displayOrder: currentMaxOrder + ((idx + 1) * 10),
@@ -1756,7 +1756,7 @@ router.patch(
       update.deductionQuantityPerSale = deductionQuantityPerSale != null ? String(deductionQuantityPerSale) : null;
     if (sectionName !== undefined) update.sectionName = sectionName;
     if (rowType !== undefined) update.rowType = rowType;
-    if (currentStock !== undefined) update.currentStock = currentStock != null ? String(currentStock) : null;
+    if (currentStock !== undefined) { res.status(409).json({ error: "Inventory template current stock is legacy; use a canonical inventory movement" }); return; }
     if (parLevel !== undefined) update.parLevel = parLevel != null ? String(parLevel) : "0";
 
     if (Object.keys(update).length === 0) {
@@ -1814,7 +1814,7 @@ router.post(
         isActive: true,
         catalogItemId: catalogItemId ?? null,
         deductionQuantityPerSale: String(deductionQuantityPerSale),
-        currentStock: String(startingQuantityDefault),
+        currentStock: null,
       })
       .returning();
 
@@ -1894,7 +1894,7 @@ router.post(
         rowType: "item",
         unitType: "#",
         startingQuantityDefault: String(item.startingQty),
-        currentStock: String(item.startingQty),
+        currentStock: null,
         menuPrice: String(item.menuPrice),
         payoutPrice: String(item.payoutPrice),
         displayOrder: (existing.length + idx) * 10,
@@ -1945,6 +1945,7 @@ router.post(
   "/admin/csr-boxes",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const { label, description, location, isActive = true, displayOrder = 0 } = req.body as {
       label?: string;
@@ -1973,6 +1974,7 @@ router.patch(
   "/admin/csr-boxes/:id",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -2009,6 +2011,7 @@ router.delete(
   "/admin/csr-boxes/:id",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -2048,23 +2051,15 @@ router.post(
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
-    const { name, type, csrBoxId, isActive = true, displayOrder = 0 } = req.body as {
-      name?: string;
-      type?: string;
-      csrBoxId?: number | null;
-      isActive?: boolean;
-      displayOrder?: number;
-    };
-    if (!name || String(name).trim() === "") { res.status(400).json({ error: "name is required" }); return; }
-    if (!type || !["csr_box", "storefront", "backstock"].includes(type)) {
-      res.status(400).json({ error: "type must be csr_box | storefront | backstock" }); return;
-    }
+    const parsed = z.object({ name: z.string().trim().min(1), type: z.enum(["csr_box", "storefront", "backstock"]), isActive: z.boolean().optional(), displayOrder: z.number().int().optional() }).strict().safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map(issue => issue.path.join(".") || "location").join(", ") + " is invalid" }); return; }
+    const { name, type, isActive = true, displayOrder = 0 } = parsed.data;
     const houseTenantId = await getHouseTenantId();
     const [created] = await db.insert(inventoryLocationsTable).values({
       tenantId: houseTenantId,
-      name: String(name).trim(),
+      name,
       type,
-      csrBoxId: csrBoxId ?? null,
+      csrBoxId: null,
       isActive,
       displayOrder,
     }).returning();
@@ -2081,17 +2076,20 @@ router.patch(
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-    const { name, isActive, displayOrder } = req.body as {
-      name?: string;
-      isActive?: boolean;
-      displayOrder?: number;
-    };
+    const parsed = z.object({ name: z.string().trim().min(1).optional(), isActive: z.boolean().optional(), displayOrder: z.number().int().optional() }).strict().safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid location fields" }); return; }
+    const { name, isActive, displayOrder } = parsed.data;
     const update: Record<string, unknown> = {};
-    if (name !== undefined) update.name = String(name).trim();
+    if (name !== undefined) update.name = name;
     if (isActive !== undefined) update.isActive = isActive;
     if (displayOrder !== undefined) update.displayOrder = displayOrder;
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
-    const [updated] = await db.update(inventoryLocationsTable).set(update).where(eq(inventoryLocationsTable.id, id)).returning();
+    const tenantId = await getHouseTenantId();
+    if (isActive === false) {
+      const [stock] = await db.select({ quantity: sql<string>`COALESCE(SUM(${inventoryBalancesTable.quantityOnHand}),0)` }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.locationId, id)));
+      if (Number(stock?.quantity ?? 0) !== 0) { res.status(409).json({ error: "Location must be empty before archive" }); return; }
+    }
+    const [updated] = await db.update(inventoryLocationsTable).set(update).where(and(eq(inventoryLocationsTable.id, id), eq(inventoryLocationsTable.tenantId, tenantId))).returning();
     if (!updated) { res.status(404).json({ error: "Location not found" }); return; }
     await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_UPDATED", resourceType: "inventory_location", resourceId: String(id), metadata: update });
     res.json({ location: updated });
