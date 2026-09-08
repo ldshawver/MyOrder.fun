@@ -225,6 +225,13 @@
       "when": 1788535661741,
       "tag": "0054_inventory_movement_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788535661742,
+      "tag": "0055_locations_csr_box_consolidation",
+      "breakpoints": true
     }
   ]
 }

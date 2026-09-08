@@ -17,3 +17,4 @@ export * from "./tenant-settings";
 export * from "./payments";
 export * from "./tax";
 export * from "./nonCatalogInventory";
+export * from "./inventoryLedger";

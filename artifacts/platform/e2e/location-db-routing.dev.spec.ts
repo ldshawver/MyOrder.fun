@@ -1,0 +1,30 @@
+import { test, expect } from '@playwright/test';
+import pg from '../../../node_modules/.pnpm/pg@8.20.0/node_modules/pg/lib/index.js';
+
+test('API and verifier share the same disposable database', async ({ browser, request }) => {
+  test.skip(process.env.RUN_LOCATION_ROUTING_PROOF !== '1');
+  const dbUrl = process.env.DATABASE_URL!;
+  const api = process.env.ROUTING_API_URL!;
+  const db = new pg.Client({ connectionString: dbUrl, ssl: false });
+  await db.connect();
+  const fingerprint = await db.query('select current_database() as name, (select count(*)::int from orders) as orders, (select count(*)::int from inventory_locations) as locations');
+  expect(fingerprint.rows[0].name).toBe(process.env.ROUTING_DB_NAME);
+  const context = await browser.newContext({ storageState: 'playwright/.auth/admin.json' });
+  const page = await context.newPage();
+  await page.goto('/catalog', { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => page.evaluate(() => Boolean(window.Clerk?.session))).toBe(true);
+  const token = await page.evaluate(() => window.Clerk?.session?.getToken());
+  expect(token).toBeTruthy();
+  const headers = { Authorization: `Bearer ${token}` };
+  const created = await request.post(`${api}/api/admin/inventory-locations`, { headers, data: { name: `routing-proof-${Date.now()}`, type: 'backstock' } });
+  expect(created.status()).toBe(201);
+  const locationId = Number((await created.json()).location.id);
+  const row = await db.query('select id, tenant_id, type, name from inventory_locations where id=$1', [locationId]);
+  expect(row.rows[0]).toMatchObject({ id: locationId, type: 'backstock' });
+  const fetched = await request.get(`${api}/api/admin/inventory/locations`, { headers });
+  expect(fetched.status()).toBe(200);
+  expect((await fetched.json()).locations.some((location: { id: number }) => location.id === locationId)).toBe(true);
+  await db.query('delete from inventory_locations where id=$1', [locationId]);
+  await context.close();
+  await db.end();
+});
