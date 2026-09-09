@@ -5,7 +5,8 @@ import { inventoryLocationsTable } from "./shifts";
 
 export const taxConfigurationsTable = pgTable("tax_configurations", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
-  locationId: integer("location_id").notNull(), jurisdiction: text("jurisdiction").notNull(),
+  // NULL location_id is the tenant-wide configuration introduced by 0050.
+  locationId: integer("location_id"), jurisdiction: text("jurisdiction").notNull(),
   rate: numeric("rate", { precision: 9, scale: 8 }).notNull(), sourcingRule: text("sourcing_rule").notNull(),
   effectiveFrom: date("effective_from").notNull(), effectiveUntil: date("effective_until"),
   sourceName: text("source_name").notNull(), sourceUrl: text("source_url").notNull(),

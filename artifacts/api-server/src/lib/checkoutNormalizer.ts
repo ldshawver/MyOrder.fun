@@ -85,9 +85,16 @@ export class TaxConfigurationError extends Error {
 export async function getCheckoutTaxSettings(tenantId?: number, locationId?: number, at = new Date()): Promise<{ taxMode: "added"; taxRate: number; taxJurisdiction: string; taxConfigurationId: number }> {
   if (!tenantId) throw new TaxConfigurationError("Tenant tax configuration is required");
   const day = at.toISOString().slice(0, 10);
-  const rows = await db.select().from(taxConfigurationsTable).where(and(
+  const locationRows = locationId ? await db.select().from(taxConfigurationsTable).where(and(
     eq(taxConfigurationsTable.tenantId, tenantId),
-    locationId ? eq(taxConfigurationsTable.locationId, locationId) : undefined,
+    eq(taxConfigurationsTable.locationId, locationId),
+    lte(taxConfigurationsTable.effectiveFrom, day),
+    or(isNull(taxConfigurationsTable.effectiveUntil), gte(taxConfigurationsTable.effectiveUntil, day)),
+  )) : [];
+  const rows = locationRows.length > 0 ? locationRows : await db.select().from(taxConfigurationsTable).where(and(
+    eq(taxConfigurationsTable.tenantId, tenantId),
+    isNull(taxConfigurationsTable.locationId),
+    eq(taxConfigurationsTable.sourcingRule, "tenant"),
     lte(taxConfigurationsTable.effectiveFrom, day),
     or(isNull(taxConfigurationsTable.effectiveUntil), gte(taxConfigurationsTable.effectiveUntil, day)),
   ));

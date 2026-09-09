@@ -26,6 +26,7 @@ async function buildAll() {
     entryPoints: {
       index: path.resolve(artifactDir, "src/index.ts"),
       "maintenance-repair-shift13-closeout-nan": path.resolve(artifactDir, "src/maintenance/repairShift13CloseoutNan.ts"),
+      "maintenance-repair-tenant-tax-configuration": path.resolve(artifactDir, "src/maintenance/repairTenantTaxConfiguration.ts"),
     },
     platform: "node",
     bundle: true,

@@ -7,7 +7,10 @@ import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
 const auth = [requireAuth, loadDbUser, requireDbUser, requireApproved, requirePermission("settings.edit_business")] as const;
-const Body = z.object({ locationId: z.number().int().positive(), jurisdiction: z.string().trim().min(2).max(200), rate: z.number().min(0).max(1), sourcingRule: z.enum(["origin", "destination", "pickup"]), effectiveFrom: z.string().date(), effectiveUntil: z.string().date().nullable().optional(), sourceName: z.literal("California Department of Tax and Fee Administration"), sourceUrl: z.string().url().refine(url => new URL(url).hostname === "cdtfa.ca.gov" || new URL(url).hostname === "www.cdtfa.ca.gov") }).strict();
+const Body = z.object({ locationId: z.number().int().positive().nullable(), jurisdiction: z.string().trim().min(2).max(200), rate: z.number().min(0).max(1), sourcingRule: z.enum(["tenant", "origin", "destination", "pickup"]), effectiveFrom: z.string().date(), effectiveUntil: z.string().date().nullable().optional(), sourceName: z.literal("California Department of Tax and Fee Administration"), sourceUrl: z.string().url().refine(url => new URL(url).hostname === "cdtfa.ca.gov" || new URL(url).hostname === "www.cdtfa.ca.gov") }).strict().superRefine((value, ctx) => {
+  if (value.sourcingRule === "tenant" && value.locationId !== null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "Tenant-wide tax configuration must not specify a location" });
+  if (value.sourcingRule !== "tenant" && value.locationId === null) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "Location tax configuration requires a location" });
+});
 
 router.get("/admin/tax-configurations", ...auth, async (req, res) => {
   const rows = await db.select().from(taxConfigurationsTable).where(eq(taxConfigurationsTable.tenantId, req.dbUser!.tenantId!)).orderBy(desc(taxConfigurationsTable.effectiveFrom));
@@ -17,12 +20,14 @@ router.get("/admin/tax-configurations", ...auth, async (req, res) => {
 router.post("/admin/tax-configurations", ...auth, async (req, res) => {
   const parsed = Body.safeParse(req.body); if (!parsed.success) { res.status(422).json({ error: "INVALID_TAX_CONFIGURATION" }); return; }
   const actor = req.dbUser!; const input = parsed.data;
-  const [location] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, actor.tenantId!), eq(inventoryLocationsTable.id, input.locationId))).limit(1);
-  if (!location) { res.status(404).json({ error: "LOCATION_NOT_FOUND" }); return; }
-  const overlapping = await db.select({ id: taxConfigurationsTable.id }).from(taxConfigurationsTable).where(and(eq(taxConfigurationsTable.tenantId, actor.tenantId!), eq(taxConfigurationsTable.locationId, input.locationId), lte(taxConfigurationsTable.effectiveFrom, input.effectiveUntil ?? "9999-12-31"), or(isNull(taxConfigurationsTable.effectiveUntil), gte(taxConfigurationsTable.effectiveUntil, input.effectiveFrom)))).limit(1);
+  if (input.locationId !== null) {
+    const [location] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, actor.tenantId!), eq(inventoryLocationsTable.id, input.locationId))).limit(1);
+    if (!location) { res.status(404).json({ error: "LOCATION_NOT_FOUND" }); return; }
+  }
+  const overlapping = await db.select({ id: taxConfigurationsTable.id }).from(taxConfigurationsTable).where(and(eq(taxConfigurationsTable.tenantId, actor.tenantId!), input.locationId === null ? isNull(taxConfigurationsTable.locationId) : eq(taxConfigurationsTable.locationId, input.locationId), lte(taxConfigurationsTable.effectiveFrom, input.effectiveUntil ?? "9999-12-31"), or(isNull(taxConfigurationsTable.effectiveUntil), gte(taxConfigurationsTable.effectiveUntil, input.effectiveFrom)))).limit(1);
   if (overlapping.length) { res.status(409).json({ error: "OVERLAPPING_TAX_CONFIGURATION" }); return; }
   const [created] = await db.insert(taxConfigurationsTable).values({ tenantId: actor.tenantId!, locationId: input.locationId, jurisdiction: input.jurisdiction, rate: String(input.rate), sourcingRule: input.sourcingRule, effectiveFrom: input.effectiveFrom, effectiveUntil: input.effectiveUntil ?? null, sourceName: input.sourceName, sourceUrl: input.sourceUrl, verifiedAt: new Date(), verifiedByUserId: actor.id }).returning();
-  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId: actor.tenantId!, action: "sales_tax.configuration_created", resourceType: "tax_configuration", resourceId: String(created.id), metadata: { locationId: input.locationId, jurisdiction: input.jurisdiction, rate: input.rate, effectiveFrom: input.effectiveFrom, effectiveUntil: input.effectiveUntil ?? null, sourceUrl: input.sourceUrl } });
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId: actor.tenantId!, action: "sales_tax.configuration_created", resourceType: "tax_configuration", resourceId: String(created.id), metadata: { locationId: input.locationId, sourcingRule: input.sourcingRule, jurisdiction: input.jurisdiction, rate: input.rate, effectiveFrom: input.effectiveFrom, effectiveUntil: input.effectiveUntil ?? null, sourceUrl: input.sourceUrl } });
   res.status(201).json({ id: created.id });
 });
 
