@@ -28,6 +28,7 @@ import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import NewOrder from "@/pages/new-order";
 import AiConcierge from "@/pages/ai-concierge";
+import OrderWorkspace from "@/pages/order-workspace";
 import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
 import GlobalAdminTenants from "@/pages/global-admin/tenants";
@@ -508,6 +509,7 @@ function AuthenticatedApp() {
           <Route path="/catalog/:id" component={CatalogItemDetail} />
 
           <Route path="/orders" component={Orders} />
+          <Route path="/order-workspace" component={OrderWorkspace} />
           <Route path="/orders/new" component={NewOrder} />
           <Route path="/orders/:id">{() => protect(<OrderDetail />)}</Route>
 

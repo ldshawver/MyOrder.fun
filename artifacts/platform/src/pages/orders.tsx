@@ -65,7 +65,7 @@ export default function Orders() {
           data-testid="link-new-order"
         >
           <Plus size={16} />
-          New Order
+          Catalogue
         </Link>
       </div>
 

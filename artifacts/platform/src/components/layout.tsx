@@ -116,7 +116,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Navigation",
       roles: ALL_ROLES,
       items: [
-        { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+        { href: "/order-workspace", label: "Order Workspace", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+        { href: "/catalog", label: "Catalogue", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
           label: isCustomer ? "My Order" : "Orders",

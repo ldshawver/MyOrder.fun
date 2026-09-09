@@ -282,7 +282,9 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
           if (!exists) continue;
 
           if (tc.function.name === "add_to_cart") {
-            cartActions.push({ action: "add", catalogItemId, quantity: args.quantity ?? 1, itemName: args.itemName });
+            const quantity = args.quantity ?? 1;
+            if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) continue;
+            cartActions.push({ action: "add", catalogItemId, quantity, itemName: args.itemName });
           } else if (tc.function.name === "remove_from_cart") {
             cartActions.push({ action: "remove", catalogItemId, itemName: args.itemName });
           }

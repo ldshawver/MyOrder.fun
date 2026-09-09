@@ -263,19 +263,19 @@ function mapItem(
     imageUrl: resolvedImageUrl,
     mediaGallery,
     tags: i.tags ?? [],
-    metadata: i.metadata,
+    metadata: alavontOnly ? {} : i.metadata,
     isFeatured: i.isFeatured ?? false,
     isSaleFeatured: i.isSaleFeatured ?? false,
-    internalName: i.internalName ?? null,
-    internalDescription: i.internalDescription ?? null,
-    internalCategory: i.internalCategory ?? null,
-    supplierName: i.supplierName ?? null,
-    supplierCategory: i.supplierCategory ?? null,
-    backendInventoryNotes: i.backendInventoryNotes ?? null,
-    vendorSku: i.vendorSku ?? null,
-    sourceInventoryId: i.sourceInventoryId ?? null,
-    costBasis: i.costBasis ? parseFloat(i.costBasis as string) : null,
-    inventoryTrackingData: i.inventoryTrackingData ?? {},
+    internalName: alavontOnly ? null : (i.internalName ?? null),
+    internalDescription: alavontOnly ? null : (i.internalDescription ?? null),
+    internalCategory: alavontOnly ? null : (i.internalCategory ?? null),
+    supplierName: alavontOnly ? null : (i.supplierName ?? null),
+    supplierCategory: alavontOnly ? null : (i.supplierCategory ?? null),
+    backendInventoryNotes: alavontOnly ? null : (i.backendInventoryNotes ?? null),
+    vendorSku: alavontOnly ? null : (i.vendorSku ?? null),
+    sourceInventoryId: alavontOnly ? null : (i.sourceInventoryId ?? null),
+    costBasis: alavontOnly ? null : (i.costBasis ? parseFloat(i.costBasis as string) : null),
+    inventoryTrackingData: alavontOnly ? {} : (i.inventoryTrackingData ?? {}),
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
     // Dual-brand fields — LC merchant names suppressed in Alavont-only mode
@@ -720,6 +720,13 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
   }
   const actorRole = normalizeRole(req.dbUser?.role);
   const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
+  if (alavontOnly) {
+    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (row.isAvailable !== true || row.alavontInStock === false || metadata.archived === true || metadata.safeOnlyDuplicate === true || row.isWooManaged === true || row.isLocalAlavont === false) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+  }
   res.json(GetCatalogItemResponse.parse(mapItem(row, alavontOnly)));
 });
 
