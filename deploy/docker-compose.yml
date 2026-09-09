@@ -22,9 +22,16 @@ services:
   # ── Database Migrations (one-shot) ───────────────────────
   # Usage: docker compose run --rm migrate
   migrate:
+    # Do not let `docker compose run migrate` silently reuse the project-scoped
+    # build cache. The migration artifact must be the release SHA supplied by
+    # the deploy command, just like the API and platform artifacts.
+    image: myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.migrate
+      labels:
+        org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       # The `db` container runs Postgres without SSL (Docker-internal network).
@@ -105,6 +112,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.platform
       args:
+        DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
         # Fall back to the plain CLERK_PUBLISHABLE_KEY so a single-key .env
         # still produces a SPA bundle with a real Clerk publishable key.
         # An empty key here causes the deployed app to treat every visitor as
