@@ -58,7 +58,7 @@ describe("MyOrder active navigation reconciliation", () => {
     expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/staff">\{\(\) => protect\(<StaffQueue \/>\)\}<\/Route>/);
     expect(appSrc).toMatch(/isStaff[\s\S]*<Route path="\/csr-settings" component=\{CsrSettings\} \/>/);
     expect(layoutSrc).toContain("normalizeNotificationRole(user.role)");
-    expect(layoutSrc).toMatch(/href:\s*"\/admin\/inventory",\s*label:\s*"Inventory & Par"[\s\S]*roles:\s*SHIFT_ROLES/);
+    expect(layoutSrc).toMatch(/href:\s*"\/admin\/inventory",\s*label:\s*"Inventory"[\s\S]*roles:\s*SHIFT_ROLES/);
   });
 
   it("centralizes receipts and printer settings and avoids duplicate nav entries", () => {

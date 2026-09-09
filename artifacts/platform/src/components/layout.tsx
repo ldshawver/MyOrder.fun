@@ -207,7 +207,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/edit-catalog", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
           ],
         },
-        { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
+        { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: SHIFT_ROLES },
         { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["global_admin", "admin"] },
         { href: "/admin/visual-editor", label: "Visual Editor", icon: PanelsTopLeft, roles: ["global_admin", "admin"] },
       ],

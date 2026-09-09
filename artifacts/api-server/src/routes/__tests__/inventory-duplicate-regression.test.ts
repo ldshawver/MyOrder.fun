@@ -15,7 +15,7 @@ function count(source: string, pattern: RegExp): number {
 describe("inventory duplicate regression", () => {
   it("renders one navigation control for the canonical inventory route", () => {
     expect(count(layoutSource, /href:\s*"\/admin\/inventory"/g)).toBe(1);
-    expect(layoutSource).toContain('label: "Inventory & Par"');
+    expect(layoutSource).toContain('label: "Inventory"');
     expect(layoutSource).not.toContain('label: "Edit Inventory & Par"');
   });
 
