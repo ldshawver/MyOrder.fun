@@ -330,9 +330,9 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
           to_regclass('public.inventory_receipts') IS NOT NULL
             AS inventory_receipts_table,
           (
-            (SELECT count(*) FROM information_schema.columns
-              WHERE table_schema='public' AND table_name='inventory_receipts') = 12
-            AND NOT EXISTS (
+            -- Require the complete historical 0047 shape, while allowing only
+            -- the additive receipt fields introduced by Phase 1 migration 0054.
+            NOT EXISTS (
               (VALUES
                 (1, 'id', 'int4', false),
                 (2, 'tenant_id', 'int4', false),
@@ -349,7 +349,7 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
               ) EXCEPT
               (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
                 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='inventory_receipts')
+              WHERE table_schema='public' AND table_name='inventory_receipts')
             )
             AND NOT EXISTS (
               (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
@@ -367,7 +367,12 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
                 (9, 'reference', 'text', true),
                 (10, 'received_by_user_id', 'int4', false),
                 (11, 'idempotency_key', 'text', false),
-                (12, 'created_at', 'timestamptz', false)
+                (12, 'created_at', 'timestamptz', false),
+                -- 0054_inventory_movement_ledger additions
+                (13, 'actual_unit_cost', 'numeric', true),
+                (14, 'supplier_reference', 'text', true),
+                (15, 'received_at', 'timestamptz', true),
+                (16, 'movement_id', 'int4', true)
               )
             )
           ) AS inventory_receipts_columns,
@@ -380,9 +385,9 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
               WHERE table_schema='public' AND table_name='inventory_receipts' AND column_name='created_at')
           ) AS inventory_receipts_defaults,
           (
-            (SELECT count(*) FROM pg_constraint
-              WHERE conrelid='public.inventory_receipts'::regclass) = 11
-            AND NOT EXISTS (
+            -- The historical constraints remain mandatory.  0054 adds the
+            -- movement foreign key and no other receipt constraint is accepted.
+            NOT EXISTS (
               (VALUES
                 ('inventory_receipts_actor_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, received_by_user_id) REFERENCES users(tenant_id, id)'),
                 ('inventory_receipts_location_id_fkey', 'f', 'FOREIGN KEY (location_id) REFERENCES inventory_locations(id)'),
@@ -398,6 +403,25 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
               ) EXCEPT
               (SELECT conname, contype::text, pg_get_constraintdef(oid, true)
                 FROM pg_constraint WHERE conrelid='public.inventory_receipts'::regclass AND convalidated)
+            )
+            AND NOT EXISTS (
+              (SELECT conname, contype::text, pg_get_constraintdef(oid, true)
+                FROM pg_constraint WHERE conrelid='public.inventory_receipts'::regclass AND convalidated) EXCEPT
+              (VALUES
+                ('inventory_receipts_actor_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, received_by_user_id) REFERENCES users(tenant_id, id)'),
+                ('inventory_receipts_location_id_fkey', 'f', 'FOREIGN KEY (location_id) REFERENCES inventory_locations(id)'),
+                ('inventory_receipts_location_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, location_id) REFERENCES inventory_locations(tenant_id, id)'),
+                ('inventory_receipts_pkey', 'p', 'PRIMARY KEY (id)'),
+                ('inventory_receipts_product_id_fkey', 'f', 'FOREIGN KEY (product_id) REFERENCES catalog_items(id)'),
+                ('inventory_receipts_product_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, product_id) REFERENCES catalog_items(tenant_id, id)'),
+                ('inventory_receipts_quantity_received_check', 'c', 'CHECK (quantity_received > 0::numeric)'),
+                ('inventory_receipts_received_by_user_id_fkey', 'f', 'FOREIGN KEY (received_by_user_id) REFERENCES users(id)'),
+                ('inventory_receipts_tenant_id_fkey', 'f', 'FOREIGN KEY (tenant_id) REFERENCES tenants(id)'),
+                ('inventory_receipts_tenant_id_id_unique', 'u', 'UNIQUE (tenant_id, id)'),
+                ('inventory_receipts_tenant_idempotency_unique', 'u', 'UNIQUE (tenant_id, idempotency_key)'),
+                -- 0054_inventory_movement_ledger addition
+                ('inventory_receipts_movement_id_fkey', 'f', 'FOREIGN KEY (movement_id) REFERENCES inventory_movements(id)')
+              )
             )
           ) AS inventory_receipts_constraints,
           EXISTS (

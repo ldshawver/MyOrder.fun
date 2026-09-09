@@ -250,6 +250,26 @@ describe("strict migration lineage validation", () => {
     }
   });
 
+  it("accepts the historical 0047 schema after the explicit 0054 receipt additions", () => {
+    // The SQL verifier permits only the enumerated 0054 additions; its boolean
+    // evidence must still be accepted by the fail-closed lineage assertion.
+    expect(() => assertHistoricalStaging0047Schema(verifiedHistoricalStagingSchema())).not.toThrow();
+
+    const validator = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../../../../../lib/db/scripts/validate-migration-ledger.ts",
+      ),
+      "utf8",
+    );
+    expect(validator).toContain("(13, 'actual_unit_cost', 'numeric', true)");
+    expect(validator).toContain("(16, 'movement_id', 'int4', true)");
+    expect(validator).toContain("inventory_receipts_movement_id_fkey");
+    expect(validator).not.toMatch(
+      /count\(\*\)[\s\S]{0,180}table_name='inventory_receipts'\)\s*=\s*12/,
+    );
+  });
+
   it("rejects an arbitrary alternate historical migration mismatch", () => {
     const local = stagingChain();
     const rows = historicalStagingApplied(local);
