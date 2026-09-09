@@ -196,7 +196,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
-        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin", "supervisor"] },
         {
           href: "/admin/concierge-settings",
           label: "AI Concierge",

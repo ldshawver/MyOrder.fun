@@ -559,6 +559,7 @@ function AuthenticatedApp() {
           {appRole === "supervisor" && (
             <>
               <Route path="/admin/users">{() => protect(<AdminUsers />)}</Route>
+              <Route path="/admin/closeouts">{() => protect(<AdminCloseouts />)}</Route>
               <Route path="/admin/feedback" component={AdminFeedback} />
             </>
           )}

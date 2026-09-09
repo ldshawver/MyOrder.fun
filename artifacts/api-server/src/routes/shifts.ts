@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, notInArray } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -1651,12 +1651,13 @@ router.get(
 // ─── GET /api/shifts/active-techs ────────────────────────────────────────────
 router.get(
   "/shifts/active-techs",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
+    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "active"))
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active")))
       .orderBy(desc(labTechShiftsTable.clockedInAt));
 
     const result = await Promise.all(
@@ -1681,6 +1682,49 @@ router.get(
     res.json({ activeTechs: result });
   }
 );
+
+const ShiftReassignmentBody = z.object({ targetShiftId: z.number().int().positive(), reason: z.string().trim().min(3).max(240) }).strict();
+const ShiftTerminationBody = z.object({ cashBankEnd: z.number().finite().nonnegative(), reason: z.string().trim().min(3).max(240) }).strict();
+const TERMINAL_ORDER_STATUSES = ["cancelled", "refunded", "voided", "archived", "completed"] as const;
+
+// Supervisor/admin controls for recovering a CSR shift whose operator is no
+// longer available. Orders move first, then the shift may be terminated.
+router.post("/shifts/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const shiftId = Number(req.params.id);
+  const parsed = ShiftReassignmentBody.safeParse(req.body);
+  if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift reassignment request" }); return; }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const result = await db.transaction(async tx => {
+    const [source] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId))).for("update").limit(1);
+    const [target] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, parsed.data.targetShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
+    if (!source || source.status !== "active") return { error: "SOURCE_SHIFT_NOT_ACTIVE" as const };
+    if (!target) return { error: "TARGET_SHIFT_NOT_ACTIVE" as const };
+    const [targetUser] = await tx.select({ id: usersTable.id, role: usersTable.role }).from(usersTable).where(and(eq(usersTable.id, target.techId), eq(usersTable.tenantId, tenantId), eq(usersTable.isActive, true))).limit(1);
+    if (!targetUser || normalizeRole(targetUser.role) !== "csr") return { error: "TARGET_SHIFT_NOT_CSR" as const };
+    const moved = await tx.update(ordersTable).set({ assignedCsrUserId: target.techId, assignedShiftId: target.id, routeSource: "supervisor_override", routedTo: "csr_shift", updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, source.id), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES]))).returning({ id: ordersTable.id });
+    await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "SHIFT_ORDERS_REASSIGNED", resourceType: "lab_tech_shift", resourceId: String(source.id), metadata: { sourceShiftId: source.id, targetShiftId: target.id, targetTechId: target.techId, orderIds: moved.map(order => order.id), reason: parsed.data.reason }, ipAddress: req.ip });
+    return { sourceShiftId: source.id, targetShiftId: target.id, movedOrderIds: moved.map(order => order.id) };
+  });
+  if ("error" in result) { res.status(409).json({ error: result.error }); return; }
+  res.json(result);
+});
+
+router.post("/shifts/:id/terminate", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const shiftId = Number(req.params.id);
+  const parsed = ShiftTerminationBody.safeParse(req.body);
+  if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift termination request" }); return; }
+  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
+  if (!shift) { res.status(409).json({ error: "Shift is not active in this tenant" }); return; }
+  const openOrders = await db.select({ id: ordersTable.id }).from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES])));
+  if (openOrders.length > 0) { res.status(409).json({ error: "Reassign active orders before terminating this shift", orderIds: openOrders.map(order => order.id) }); return; }
+  const [updated] = await db.update(labTechShiftsTable).set({ status: "supervisor_pending", clockedOutAt: new Date(), cashBankEnd: String(parsed.data.cashBankEnd.toFixed(2)), cashBankEndReported: String(parsed.data.cashBankEnd.toFixed(2)), updatedAt: new Date() }).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).returning();
+  if (!updated) { res.status(409).json({ error: "Shift changed before termination" }); return; }
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "SHIFT_ADMIN_TERMINATED", resourceType: "lab_tech_shift", resourceId: String(shiftId), metadata: { cashBankEnd: parsed.data.cashBankEnd.toFixed(2), reason: parsed.data.reason }, ipAddress: req.ip });
+  res.json({ shift: updated });
+});
 
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
@@ -2214,15 +2258,16 @@ router.get("/shifts/:id/print-assignment", requireRole("global_admin", "admin", 
 // Supervisor confirms ending inventory, sets tip %, calculates final amounts.
 router.post(
   "/shifts/:id/supervisor-checkout",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
 
+    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
+      .where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId)))
       .limit(1);
 
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
@@ -2497,12 +2542,13 @@ router.post(
 // Returns all shifts awaiting supervisor checkout.
 router.get(
   "/shifts/pending-supervisor",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
+    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "supervisor_pending"))
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "supervisor_pending")))
       .orderBy(desc(labTechShiftsTable.clockedOutAt));
 
     const result = await Promise.all(

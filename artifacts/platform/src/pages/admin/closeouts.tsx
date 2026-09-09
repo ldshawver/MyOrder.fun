@@ -13,6 +13,7 @@ type PendingShift = {
   cashBankEndReported: number;
   totalRevenue: number;
 };
+type ActiveShift = { shiftId: number; techId: number; techName: string; techEmail: string; boxAssignmentId?: string | null; clockedInAt: string; cashBankStart: number };
 
 const TIP_OPTIONS = [15, 16, 17, 18] as const;
 
@@ -24,22 +25,27 @@ export default function AdminCloseouts() {
   const [tipById, setTipById] = useState<Record<number, number>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const [activeShifts, setActiveShifts] = useState<ActiveShift[]>([]);
+  const [targetById, setTargetById] = useState<Record<number, number>>({});
+  const [cashEndById, setCashEndById] = useState<Record<number, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const token = await getToken();
-      const res = await fetch("/api/shifts/pending-supervisor", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Load failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
-      }
+      const [res, activeRes] = await Promise.all([
+        fetch("/api/shifts/pending-supervisor", { headers: { Authorization: `Bearer ${token}` } }),
+        fetch("/api/shifts/active-techs", { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (!res.ok || !activeRes.ok) throw new Error(`Load failed (HTTP ${res.ok ? activeRes.status : res.status})`);
       const data = await res.json();
+      const activeData = await activeRes.json();
       const list: PendingShift[] = data.pendingShifts ?? [];
       setShifts(list);
+      const active: ActiveShift[] = activeData.activeTechs ?? [];
+      setActiveShifts(active);
+      setCashEndById(prev => Object.fromEntries(active.map(s => [s.shiftId, prev[s.shiftId] ?? String(s.cashBankStart)])));
       setTipById(prev => {
         const next = { ...prev };
         for (const s of list) {
@@ -53,6 +59,32 @@ export default function AdminCloseouts() {
       setLoading(false);
     }
   }, [getToken]);
+
+  async function reassign(shiftId: number) {
+    const targetShiftId = targetById[shiftId];
+    if (!targetShiftId) return;
+    setBusyId(shiftId); setError(null); setResultMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/shifts/${shiftId}/reassign`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ targetShiftId, reason: "Supervisor reassigned orders before CSR shift termination" }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Reassignment failed");
+      setResultMessage(`Reassigned ${(body.movedOrderIds ?? []).length} order(s).`); await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Reassignment failed"); }
+    finally { setBusyId(null); }
+  }
+
+  async function terminate(shiftId: number) {
+    setBusyId(shiftId); setError(null); setResultMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/shifts/${shiftId}/terminate`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ cashBankEnd: Number(cashEndById[shiftId]), reason: "Supervisor terminated stale CSR shift" }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Termination failed");
+      setResultMessage(`Shift #${shiftId} terminated and queued for audited closeout.`); await load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Termination failed"); }
+    finally { setBusyId(null); }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -117,6 +149,25 @@ export default function AdminCloseouts() {
           <CheckCircle2 size={14} /> {resultMessage}
         </div>
       )}
+
+      <section className="rounded-xl border border-border/40 bg-card/30 p-4 space-y-3" data-testid="active-shift-controls">
+        <div>
+          <h2 className="font-semibold">Active CSR shift controls</h2>
+          <p className="text-xs text-muted-foreground mt-1">Reassign open orders before terminating a stale shift. Termination preserves the shift for supervisor closeout.</p>
+        </div>
+        {activeShifts.length === 0 ? <p className="text-sm text-muted-foreground">No active CSR shifts.</p> : activeShifts.map(shift => {
+          const targets = activeShifts.filter(candidate => candidate.shiftId !== shift.shiftId);
+          return <div key={shift.shiftId} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/30 p-3" data-testid={`active-shift-${shift.shiftId}`}>
+            <span className="text-sm font-medium min-w-44">{shift.techName || shift.techEmail} · #{shift.shiftId}</span>
+            <select className="h-9 rounded-md border bg-background px-2 text-sm" value={targetById[shift.shiftId] ?? ""} onChange={e => setTargetById(prev => ({ ...prev, [shift.shiftId]: Number(e.target.value) }))} aria-label={`Reassign shift ${shift.shiftId}`}>
+              <option value="">Reassign orders to…</option>{targets.map(target => <option key={target.shiftId} value={target.shiftId}>{target.techName} · shift #{target.shiftId}</option>)}
+            </select>
+            <Button size="sm" variant="outline" disabled={!targetById[shift.shiftId] || busyId === shift.shiftId} onClick={() => void reassign(shift.shiftId)}>Reassign orders</Button>
+            <input className="h-9 w-24 rounded-md border bg-background px-2 text-sm" inputMode="decimal" value={cashEndById[shift.shiftId] ?? ""} onChange={e => setCashEndById(prev => ({ ...prev, [shift.shiftId]: e.target.value }))} aria-label={`Cash end for shift ${shift.shiftId}`} />
+            <Button size="sm" variant="destructive" disabled={busyId === shift.shiftId} onClick={() => void terminate(shift.shiftId)}>Terminate shift</Button>
+          </div>;
+        })}
+      </section>
 
       {shifts.length === 0 ? (
         <div className="rounded-xl border border-border/40 bg-card/30 p-8 text-center text-sm text-muted-foreground" data-testid="text-closeouts-empty">
