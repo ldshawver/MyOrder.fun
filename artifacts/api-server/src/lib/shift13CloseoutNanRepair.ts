@@ -135,6 +135,7 @@ export async function repairShift13CloseoutNan(actor: RepairActor): Promise<Shif
   assertActor(actor);
   return db.transaction(async tx => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+    await tx.execute(sql`SELECT set_config('app.shift_closeout_nan_repair', 'SHIFT_CLOSEOUT_NAN_REPAIR:13', true)`);
     const [shift] = await tx.select().from(labTechShiftsTable)
       .where(and(eq(labTechShiftsTable.id, SHIFT_13_ID), eq(labTechShiftsTable.tenantId, 1))).for("update").limit(1);
     if (!shift || shift.status !== "finalized") throw new Shift13CloseoutNanRepairError(409, "Shift 13 must be finalized before repair");
