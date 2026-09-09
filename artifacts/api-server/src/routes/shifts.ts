@@ -27,6 +27,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 import { getHouseTenantId } from "../lib/singleTenant";
 import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
+import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
 import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
@@ -877,25 +878,25 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       };
     }
     itemMap[item.catalogItemId].qtySold += item.quantity;
-    itemMap[item.catalogItemId].revenue += parseFloat(item.totalPrice as string);
+    itemMap[item.catalogItemId].revenue += moneyNumber(requiredMoneyCents(item.totalPrice, `orderItem.${item.id}.totalPrice`));
   }
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
-  const paymentTotals: Record<string, number> = {
-    cash: 0, paypal: 0, paypal_card: 0, customer_credit: 0, split: 0, other: 0,
+  const paymentTotalsCents: Record<string, bigint> = {
+    cash: 0n, card: 0n, paypal: 0n, paypal_card: 0n, customer_credit: 0n, split: 0n, comp: 0n, other: 0n,
   };
 
   for (const order of shiftOrders) {
     if (order.paymentStatus !== "paid") continue;
     const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
-    const orderTotal = parseFloat(order.total as string);
+    const orderTotal = requiredMoneyCents(order.total, `order.${order.id}.total`);
     if (method.includes("+")) {
-      paymentTotals.split += orderTotal;
-    } else if (method in paymentTotals) {
-      paymentTotals[method] += orderTotal;
+      paymentTotalsCents.split += orderTotal;
+    } else if (method in paymentTotalsCents) {
+      paymentTotalsCents[method] += orderTotal;
     } else {
-      paymentTotals.other += orderTotal;
+      paymentTotalsCents.other += orderTotal;
     }
 
     if (!customerMap[order.customerId]) {
@@ -913,12 +914,17 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       };
     }
     customerMap[order.customerId].orderCount++;
-    customerMap[order.customerId].total += orderTotal;
+    customerMap[order.customerId].total += moneyNumber(orderTotal);
   }
+
+  const paymentTotals = Object.fromEntries(
+    Object.entries(paymentTotalsCents).map(([method, cents]) => [method, moneyNumber(cents)]),
+  ) as Record<string, number>;
+  const totalRevenue = moneyNumber(Object.values(paymentTotalsCents).reduce((total, cents) => total + cents, 0n));
 
   return {
     orderCount: shiftOrders.length,
-    totalRevenue: shiftOrders.filter(o => o.paymentStatus === "paid").reduce((s, o) => s + parseFloat(o.total as string), 0),
+    totalRevenue,
     cashSales: paymentTotals.cash,
     cardSales: paymentTotals.card,
     compSales: paymentTotals.comp,
@@ -939,7 +945,7 @@ async function computeShiftAccountableCash(shiftId: number, tenantId: number): P
     eq(cashLedgerEntriesTable.tenantId, tenantId),
     eq(cashLedgerEntriesTable.shiftId, shiftId),
   ));
-  return Number(row?.total ?? 0);
+  return moneyNumber(requiredMoneyCents(row?.total ?? "0", "shift accountable cash"));
 }
 
 type EnrichedItem = {
@@ -1506,16 +1512,20 @@ router.post(
       }
     }
 
-    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
-    const reportedInventoryDifference = enriched.reduce((sum, item) => {
+    const cashBankStartCents = requiredNonNegativeMoneyCents(activeShift.cashBankStart ?? "0", "cashBankStart");
+    const reportedInventoryDifferenceRaw = enriched.reduce((sum, item) => {
       if (item.rowType !== "item" || item.discrepancy == null || item.discrepancy <= 0) return sum;
       return sum + (item.discrepancy * item.unitPrice);
     }, 0);
-    const accountableCash = await computeShiftAccountableCash(activeShift.id, activeShift.tenantId);
-    const expectedCashBank = cashBankStart + accountableCash;
-    const cashBankEndVal = cashBankEnd ?? null;
-    const cashDiscrepancy = cashBankEndVal != null ? expectedCashBank - cashBankEndVal : null;
-    const differenceAmount = Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100;
+    const reportedInventoryDifference = moneyNumber(requiredNonNegativeMoneyCents(Math.round(reportedInventoryDifferenceRaw * 100) / 100, "reportedInventoryDifference"));
+    const accountableCashCents = requiredMoneyCents(await computeShiftAccountableCash(activeShift.id, activeShift.tenantId), "accountableCash");
+    const expectedCashBankCents = cashBankStartCents + accountableCashCents;
+    const cashBankEndCents = cashBankEnd == null ? null : requiredNonNegativeMoneyCents(cashBankEnd, "cashBankEnd");
+    const cashBankStart = moneyNumber(cashBankStartCents);
+    const expectedCashBank = moneyNumber(expectedCashBankCents);
+    const cashBankEndVal = cashBankEndCents == null ? null : moneyNumber(cashBankEndCents);
+    const cashDiscrepancy = cashBankEndCents == null ? null : moneyNumber(expectedCashBankCents - cashBankEndCents);
+    const differenceAmount = moneyNumber(requiredNonNegativeMoneyCents(Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100, "differenceAmount"));
 
     const inventorySummary = enriched
       .filter(i => i.rowType !== "spacer")
@@ -1539,7 +1549,7 @@ router.post(
       cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
-      reportedInventoryDifference: Math.round(reportedInventoryDifference * 100) / 100,
+      reportedInventoryDifference,
       differenceAmount,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
@@ -2244,19 +2254,25 @@ router.post(
         .where(eq(shiftInventoryItemsTable.shiftId, shiftId)).orderBy(asc(shiftInventoryItemsTable.displayOrder));
       const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
       const employeeDiscountSales = 0;
-      const eligibleSalesBase = Math.max(0, stats.totalRevenue - stats.compSales - employeeDiscountSales);
-      const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
       let differenceAmount = 0;
       for (const item of inventory) if (item.isFlagged && item.discrepancy != null && item.discrepancy > 0) differenceAmount += item.discrepancy * item.unitPrice;
       differenceAmount = Math.round(differenceAmount * 100) / 100;
-      const finalTip = Math.max(0, tipAmount - differenceAmount);
-      const cashBankStart = parseFloat(String(lockedShift.cashBankStart ?? 0));
-      const cashBankEndReported = parseFloat(String(lockedShift.cashBankEndReported ?? 0));
-      const depositAmount = Math.max(0, stats.cashSales - finalTip - cashBankStart);
+      const financials = calculateCloseoutFinancials({
+        totalRevenue: stats.totalRevenue,
+        cashSales: stats.cashSales,
+        compSales: stats.compSales,
+        employeeDiscountSales,
+        cashBankStart: lockedShift.cashBankStart,
+        cashBankEndReported: lockedShift.cashBankEndReported,
+        differenceAmount,
+        tipPercent,
+      });
       const checkout = {
         shiftId, tenantId: shift.tenantId, csrUserId: lockedShift.techId,
-        eligibleSalesBase, tipPercent, tipAmount, differenceAmount, finalTip,
-        cashBankStart, cashBankEndReported, depositAmount, newCashBalance: finalTip - differenceAmount,
+        eligibleSalesBase: financials.eligibleSalesBase, tipPercent, tipAmount: financials.tipAmount,
+        differenceAmount: financials.differenceAmount, finalTip: financials.finalTip,
+        cashBankStart: financials.cashBankStart, cashBankEndReported: financials.cashBankEndReported,
+        depositAmount: financials.depositAmount, newCashBalance: financials.newCashBalance,
         paymentTotals: stats.paymentTotals, employeeDiscountSales,
         commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, exclusions: ["comp", "employee_discount"], shortageDeduction: differenceAmount },
         inventory, flaggedItems: inventory.filter(i => i.isFlagged), orderCount: stats.orderCount,
@@ -2267,13 +2283,15 @@ router.post(
       }).returning();
       await tx.insert(commissionSnapshotsTable).values({
         tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId,
-        qualifyingSales: String(stats.totalRevenue - stats.compSales), commissionBasis: String(eligibleSalesBase),
-        commissionRate: String(tipPercent / 100), adjustments: String(-differenceAmount), commissionAmount: String(finalTip),
+        qualifyingSales: financials.persistence.qualifyingSales, commissionBasis: financials.persistence.commissionBasis,
+        commissionRate: financials.persistence.commissionRate, adjustments: financials.persistence.adjustments,
+        commissionAmount: financials.persistence.commissionAmount,
         ruleSnapshot: checkout.commissionRule,
       });
       const [finalized] = await tx.update(labTechShiftsTable).set({
-        status: "finalized", tipPercentSelected: String(tipPercent), tipAmount: String(finalTip),
-        differenceAmount: String(differenceAmount), depositAmount: String(depositAmount), supervisorId: supervisor.id, supervisorConfirmedAt: new Date(), summary: checkout,
+        status: "finalized", tipPercentSelected: String(tipPercent), tipAmount: financials.persistence.tipAmount,
+        differenceAmount: financials.persistence.differenceAmount, depositAmount: financials.persistence.depositAmount,
+        supervisorId: supervisor.id, supervisorConfirmedAt: new Date(), summary: checkout,
       }).where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.status, "supervisor_pending"))).returning();
       if (!finalized) throw new Error("SHIFT_CLOSEOUT_STATE_CHANGED");
       await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true } });

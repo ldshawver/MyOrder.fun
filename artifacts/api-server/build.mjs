@@ -23,7 +23,10 @@ async function buildAll() {
   ).catch(() => { /* no-op if source dir doesn't exist yet */ });
 
   await esbuild({
-    entryPoints: [path.resolve(artifactDir, "src/index.ts")],
+    entryPoints: {
+      index: path.resolve(artifactDir, "src/index.ts"),
+      "maintenance-repair-shift13-closeout-nan": path.resolve(artifactDir, "src/maintenance/repairShift13CloseoutNan.ts"),
+    },
     platform: "node",
     bundle: true,
     format: "esm",
