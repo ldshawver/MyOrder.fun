@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
-import { legacyDev0038, validateAppliedLineage } from "./migration-lineage.js";
+import {
+  assertHistoricalStaging0047Schema,
+  historicalStaging0047,
+  type HistoricalStaging0047SchemaEvidence,
+  legacyDev0038,
+  validateAppliedLineage,
+} from "./migration-lineage.js";
 
 const { Pool } = pg;
 
@@ -248,7 +254,11 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
           )
         ).rows
       : [];
-    const { legacyIndices } = validateAppliedLineage(local, applied);
+    const {
+      legacyIndices,
+      appliedJournalIndices,
+      historicalStaging0047Recognized,
+    } = validateAppliedLineage(local, applied);
 
     if (legacyIndices.has(legacyDev0038.index)) {
       const reconciled = await client.query<{ healthy: boolean }>(`
@@ -314,12 +324,223 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
           `sha256=${legacyDev0038.hash} reconciled-by=${legacyDev0038.reconciliationTag}`,
       );
     }
+    if (historicalStaging0047Recognized) {
+      const schema = await client.query<HistoricalStaging0047SchemaEvidence>(`
+        SELECT
+          to_regclass('public.inventory_receipts') IS NOT NULL
+            AS inventory_receipts_table,
+          (
+            (SELECT count(*) FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='inventory_receipts') = 12
+            AND NOT EXISTS (
+              (VALUES
+                (1, 'id', 'int4', false),
+                (2, 'tenant_id', 'int4', false),
+                (3, 'product_id', 'int4', false),
+                (4, 'location_id', 'int4', false),
+                (5, 'quantity_received', 'numeric', false),
+                (6, 'quantity_before', 'numeric', false),
+                (7, 'quantity_after', 'numeric', false),
+                (8, 'reason', 'text', false),
+                (9, 'reference', 'text', true),
+                (10, 'received_by_user_id', 'int4', false),
+                (11, 'idempotency_key', 'text', false),
+                (12, 'created_at', 'timestamptz', false)
+              ) EXCEPT
+              (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='inventory_receipts')
+            )
+            AND NOT EXISTS (
+              (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='inventory_receipts') EXCEPT
+              (VALUES
+                (1, 'id', 'int4', false),
+                (2, 'tenant_id', 'int4', false),
+                (3, 'product_id', 'int4', false),
+                (4, 'location_id', 'int4', false),
+                (5, 'quantity_received', 'numeric', false),
+                (6, 'quantity_before', 'numeric', false),
+                (7, 'quantity_after', 'numeric', false),
+                (8, 'reason', 'text', false),
+                (9, 'reference', 'text', true),
+                (10, 'received_by_user_id', 'int4', false),
+                (11, 'idempotency_key', 'text', false),
+                (12, 'created_at', 'timestamptz', false)
+              )
+            )
+          ) AS inventory_receipts_columns,
+          (
+            (SELECT column_default LIKE 'nextval(%'
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='inventory_receipts' AND column_name='id')
+            AND (SELECT column_default = 'now()'
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='inventory_receipts' AND column_name='created_at')
+          ) AS inventory_receipts_defaults,
+          (
+            (SELECT count(*) FROM pg_constraint
+              WHERE conrelid='public.inventory_receipts'::regclass) = 11
+            AND NOT EXISTS (
+              (VALUES
+                ('inventory_receipts_actor_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, received_by_user_id) REFERENCES users(tenant_id, id)'),
+                ('inventory_receipts_location_id_fkey', 'f', 'FOREIGN KEY (location_id) REFERENCES inventory_locations(id)'),
+                ('inventory_receipts_location_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, location_id) REFERENCES inventory_locations(tenant_id, id)'),
+                ('inventory_receipts_pkey', 'p', 'PRIMARY KEY (id)'),
+                ('inventory_receipts_product_id_fkey', 'f', 'FOREIGN KEY (product_id) REFERENCES catalog_items(id)'),
+                ('inventory_receipts_product_tenant_fk', 'f', 'FOREIGN KEY (tenant_id, product_id) REFERENCES catalog_items(tenant_id, id)'),
+                ('inventory_receipts_quantity_received_check', 'c', 'CHECK (quantity_received > 0::numeric)'),
+                ('inventory_receipts_received_by_user_id_fkey', 'f', 'FOREIGN KEY (received_by_user_id) REFERENCES users(id)'),
+                ('inventory_receipts_tenant_id_fkey', 'f', 'FOREIGN KEY (tenant_id) REFERENCES tenants(id)'),
+                ('inventory_receipts_tenant_id_id_unique', 'u', 'UNIQUE (tenant_id, id)'),
+                ('inventory_receipts_tenant_idempotency_unique', 'u', 'UNIQUE (tenant_id, idempotency_key)')
+              ) EXCEPT
+              (SELECT conname, contype::text, pg_get_constraintdef(oid, true)
+                FROM pg_constraint WHERE conrelid='public.inventory_receipts'::regclass AND convalidated)
+            )
+          ) AS inventory_receipts_constraints,
+          EXISTS (
+            SELECT 1 FROM pg_indexes
+            WHERE schemaname='public' AND tablename='inventory_receipts'
+              AND indexname='inventory_receipts_product_location_created_idx'
+              AND indexdef='CREATE INDEX inventory_receipts_product_location_created_idx ON public.inventory_receipts USING btree (tenant_id, product_id, location_id, created_at)'
+          ) AS inventory_receipts_index,
+          EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid='public.catalog_items'::regclass
+              AND conname='catalog_items_tenant_id_id_unique'
+              AND contype='u' AND convalidated
+              AND pg_get_constraintdef(oid, true)='UNIQUE (tenant_id, id)'
+          ) AS catalog_items_tenant_id_id_unique,
+          to_regclass('public.catalog_import_preview_tokens') IS NOT NULL
+            AS preview_tokens_table,
+          (
+            (SELECT count(*) FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='catalog_import_preview_tokens') = 18
+            AND NOT EXISTS (
+              (VALUES
+                (1, 'id', 'int8', false),
+                (2, 'token_sha256', 'text', false),
+                (3, 'tenant_id', 'int4', false),
+                (4, 'actor_id', 'int4', false),
+                (5, 'workbook_sha256', 'text', false),
+                (6, 'preview_request_id', 'text', false),
+                (7, 'expected_inserted', 'int4', false),
+                (8, 'expected_updated', 'int4', false),
+                (9, 'expected_visible', 'int4', false),
+                (10, 'expected_held', 'int4', false),
+                (11, 'expected_duplicates', 'int4', false),
+                (12, 'expected_errors', 'int4', false),
+                (13, 'source_state_sha256', 'text', false),
+                (14, 'issued_at', 'timestamptz', false),
+                (15, 'expires_at', 'timestamptz', false),
+                (16, 'consumed_at', 'timestamptz', true),
+                (17, 'confirmation_request_id', 'text', true),
+                (18, 'created_at', 'timestamptz', false)
+              ) EXCEPT
+              (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='catalog_import_preview_tokens')
+            )
+            AND NOT EXISTS (
+              (SELECT ordinal_position, column_name, udt_name, is_nullable = 'YES'
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='catalog_import_preview_tokens') EXCEPT
+              (VALUES
+                (1, 'id', 'int8', false),
+                (2, 'token_sha256', 'text', false),
+                (3, 'tenant_id', 'int4', false),
+                (4, 'actor_id', 'int4', false),
+                (5, 'workbook_sha256', 'text', false),
+                (6, 'preview_request_id', 'text', false),
+                (7, 'expected_inserted', 'int4', false),
+                (8, 'expected_updated', 'int4', false),
+                (9, 'expected_visible', 'int4', false),
+                (10, 'expected_held', 'int4', false),
+                (11, 'expected_duplicates', 'int4', false),
+                (12, 'expected_errors', 'int4', false),
+                (13, 'source_state_sha256', 'text', false),
+                (14, 'issued_at', 'timestamptz', false),
+                (15, 'expires_at', 'timestamptz', false),
+                (16, 'consumed_at', 'timestamptz', true),
+                (17, 'confirmation_request_id', 'text', true),
+                (18, 'created_at', 'timestamptz', false)
+              )
+            )
+          ) AS preview_tokens_columns,
+          (
+            (SELECT column_default LIKE 'nextval(%'
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='catalog_import_preview_tokens' AND column_name='id')
+            AND (SELECT column_default = 'now()'
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='catalog_import_preview_tokens' AND column_name='issued_at')
+            AND (SELECT column_default = 'now()'
+              FROM information_schema.columns
+              WHERE table_schema='public' AND table_name='catalog_import_preview_tokens' AND column_name='created_at')
+          ) AS preview_tokens_defaults,
+          (
+            (SELECT count(*) FROM pg_constraint
+              WHERE conrelid='public.catalog_import_preview_tokens'::regclass) = 4
+            AND NOT EXISTS (
+              (VALUES
+                ('catalog_import_preview_tokens_actor_id_fkey', 'f', 'FOREIGN KEY (actor_id) REFERENCES users(id)'),
+                ('catalog_import_preview_tokens_pkey', 'p', 'PRIMARY KEY (id)'),
+                ('catalog_import_preview_tokens_tenant_id_fkey', 'f', 'FOREIGN KEY (tenant_id) REFERENCES tenants(id)'),
+                ('catalog_import_preview_tokens_token_sha256_key', 'u', 'UNIQUE (token_sha256)')
+              ) EXCEPT
+              (SELECT conname, contype::text, pg_get_constraintdef(oid, true)
+                FROM pg_constraint WHERE conrelid='public.catalog_import_preview_tokens'::regclass AND convalidated)
+            )
+          ) AS preview_tokens_constraints,
+          (
+            (SELECT count(*) FROM pg_indexes
+              WHERE schemaname='public' AND tablename='catalog_import_preview_tokens') = 4
+            AND EXISTS (
+              SELECT 1 FROM pg_indexes
+              WHERE schemaname='public' AND tablename='catalog_import_preview_tokens'
+                AND indexname='catalog_import_preview_tokens_expiry_idx'
+                AND indexdef='CREATE INDEX catalog_import_preview_tokens_expiry_idx ON public.catalog_import_preview_tokens USING btree (expires_at) WHERE (consumed_at IS NULL)'
+            )
+            AND EXISTS (
+              SELECT 1 FROM pg_indexes
+              WHERE schemaname='public' AND tablename='catalog_import_preview_tokens'
+                AND indexname='catalog_import_preview_tokens_tenant_actor_idx'
+                AND indexdef='CREATE INDEX catalog_import_preview_tokens_tenant_actor_idx ON public.catalog_import_preview_tokens USING btree (tenant_id, actor_id, expires_at) WHERE (consumed_at IS NULL)'
+            )
+          ) AS preview_tokens_indexes
+      `);
+      assertHistoricalStaging0047Schema(
+        schema.rows[0] ?? {
+          inventory_receipts_table: false,
+          inventory_receipts_columns: false,
+          inventory_receipts_defaults: false,
+          inventory_receipts_constraints: false,
+          inventory_receipts_index: false,
+          catalog_items_tenant_id_id_unique: false,
+          preview_tokens_table: false,
+          preview_tokens_columns: false,
+          preview_tokens_defaults: false,
+          preview_tokens_constraints: false,
+          preview_tokens_indexes: false,
+        },
+      );
+      console.log(
+        "migration_lineage=historical_staging_0047_reconciled " +
+          `historical_hash=${historicalStaging0047.historicalHash} ` +
+          `canonical_tag=${historicalStaging0047.canonicalTag} ` +
+          "schema_verified=true ledger_mutated=false",
+      );
+    }
     await client.query("COMMIT");
 
     for (const [index, migration] of local.entries()) {
-      const state = index < applied.length ? "APPLIED" : "PENDING";
+      const state = appliedJournalIndices.has(index) ? "APPLIED" : "PENDING";
       const lineage = legacyIndices.has(index)
-        ? ` historical-sha256=${legacyDev0038.hash}`
+        ? index === historicalStaging0047.index
+          ? ` historical-sha256=${historicalStaging0047.historicalHash}`
+          : ` historical-sha256=${legacyDev0038.hash}`
         : "";
       console.log(
         `[migration-ledger] ${state} ${migration.tag} sha256=${migration.hash}${lineage}`,
