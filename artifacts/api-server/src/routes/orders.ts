@@ -842,14 +842,16 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     }
   }
 
-  const immediatePaymentMethod = checkoutConfirmation?.paymentMethod ?? "cash";
   await ensureInventoryReservationsTable();
 
   const shouldReserveInventory =
     routing.routeSource === "active_csr" && targetLocationId != null;
 
-  const shouldConfirmReservationImmediately =
-    shouldReserveInventory && immediatePaymentMethod === "cash";
+  // Reservations represent availability holds.  They may only become an
+  // authoritative sale after the payment/tender transaction has settled.
+  // In particular, do not confirm cash reservations while the order row is
+  // still unpaid: cash is settled by the closeout endpoint below.
+  const shouldConfirmReservationImmediately = false;
 
   if (POS_INTEGRITY_STRICT && shouldReserveInventory) {
     const missingRows = await db
@@ -1496,6 +1498,11 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
     if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
+    // Consume the reservation only after the authoritative cash payment has
+    // been committed in this same transaction.  This keeps payment,
+    // inventory, and the cash ledger atomic and prevents unpaid orders from
+    // creating sale movements.
+    await deductPaidOrderInventory(updated, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
     const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
       tenantId, orderId, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null,
       csrUserId: actor.id, actorUserId: actor.id, locationId, boxAssignmentId: boxSlug,

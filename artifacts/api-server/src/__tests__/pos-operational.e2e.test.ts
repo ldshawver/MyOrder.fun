@@ -388,6 +388,13 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect(orderCreated.status, orderCreated.text).toBe(201);
     const orderId = Number(orderCreated.body.id);
     expect(orderCreated.body).toMatchObject({ assignedCsrUserId: expect.any(Number) });
+    // An unpaid cash order may hold inventory, but it must not consume it or
+    // create an authoritative sale movement before cash closeout settles.
+    const preSettlementSale = await db.execute(sql`
+      SELECT id FROM inventory_movements
+      WHERE order_id = ${orderId} AND movement_type = 'sale'
+    `);
+    expect(preSettlementSale.rows).toHaveLength(0);
 
     const customerReceipt = await db.execute(sql`
       SELECT rendered_text
@@ -433,6 +440,12 @@ operationalDescribe("POS opening-manager operational flow", () => {
     });
     expect(closeout.status, closeout.text).toBe(200);
     expect(closeout.body.paymentStatus).toBe("paid");
+    const settledSales = await db.execute(sql`
+      SELECT id, idempotency_key FROM inventory_movements
+      WHERE order_id = ${orderId} AND movement_type = 'sale'
+    `);
+    expect(settledSales.rows).toHaveLength(1);
+    expect(String(settledSales.rows[0]?.idempotency_key)).toMatch(new RegExp(`^sale:${orderId}:`));
     const [normalLedger] = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${orderId}`);
     expect(normalLedger).toMatchObject({ shiftId, generalQueueSessionId: null, actorUserId: expect.any(Number), boxAssignmentId: "sales-box-1" });
     await db.update(ordersTable).set({ assignedShiftId: shiftId }).where(sql`${ordersTable.id} = ${orderId}`);

@@ -20,8 +20,6 @@ export async function deductPaidOrderInventory(
   auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string },
   executor: InventoryKernelExecutor = db,
 ): Promise<void> {
-  const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
-  if (method === "cash") return;
   if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
   await ensureInventoryReservationsTable();
   const [shift] = await executor.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
