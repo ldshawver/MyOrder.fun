@@ -87,7 +87,19 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       const tax = cents(order.subtotal) > 0 ? Math.round(cents(order.tax) * amount / cents(order.subtotal)) : 0;
       total += amount + tax; taxTotal += tax; computed.push({ line, item, amount, tax, remaining });
     }
-    if (total <= 0 || total > remainingPaid) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
+    if (total <= 0) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
+    // Allocate the final cent of tax to the final eligible return rather than
+    // rounding each partial line upward. This preserves the immutable paid
+    // total while allowing a valid second return for the remaining quantity.
+    if (total > remainingPaid) {
+      const allRequestedRemainder = computed.every((c) => c.line.quantity === c.remaining);
+      const roundingOverage = total - remainingPaid;
+      if (!allRequestedRemainder || roundingOverage > 1) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
+      total = remainingPaid;
+      taxTotal = Math.max(0, taxTotal - roundingOverage);
+      const last = computed[computed.length - 1];
+      if (last) last.tax = Math.max(0, last.tax - roundingOverage);
+    }
     if (parsed.data.preview) return { status: 200, result: { preview: true, tenderType, refundAmount: money(total), taxAmount: money(taxTotal), lines: computed.map(c => ({ orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition })) } };
     const inserted = rows<Row>(await tx.execute(sql`
       INSERT INTO return_transactions (tenant_id, location_id, order_id, actor_user_id, status, tender_type, refund_amount, tax_amount, idempotency_key, reason)
