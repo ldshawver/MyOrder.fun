@@ -9,6 +9,6 @@ describe("settled payment inventory recovery", () => {
     expect(source).toContain('row.status === "confirmed"');
     expect(source).toContain('row.status === "reserved" && row.expiresAt > new Date()');
     expect(source).toContain("!hasConfirmed && !hasActiveReservation");
-    expect(source).toContain("idempotencyKey: null");
+    expect(source).toContain("':expired'");
   });
 });
