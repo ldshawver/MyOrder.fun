@@ -1808,6 +1808,10 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(403).json({ error: "Forbidden" });
     return;
   }
+  if (["cancelled", "archived", "voided"].includes(status) && order.paymentStatus === "paid") {
+    res.status(409).json({ error: "Paid orders require the supported refund workflow before cancellation or archival" });
+    return;
+  }
   const statusAction: OrderLifecycleAction =
     status === "completed" ? "complete" :
     status === "refunded" ? "refund" :
@@ -1891,9 +1895,21 @@ router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin",
     lt(ordersTable.createdAt, cutoff),
   ];
   if (parsed.data.orderIds?.length) conditions.push(inArray(ordersTable.id, parsed.data.orderIds));
-  const archived = await db.update(ordersTable).set({
-    status: "archived", fulfillmentStatus: "cancelled", archivedAt: now, archivedByUserId: actor.id, updatedAt: now,
-  }).where(and(...conditions)).returning();
+  // Stale cleanup is intentionally limited to unpaid orders. Paid orders must
+  // go through the refund workflow, never an archive-as-cancel shortcut.
+  conditions.push(eq(ordersTable.paymentStatus, "unpaid"));
+  const archived = await db.transaction(async (tx) => {
+    const candidates = await tx.select().from(ordersTable).where(and(...conditions));
+    const result = [];
+    for (const order of candidates) {
+      await releaseInventoryReservationsForOrder(tx, order.id);
+      const [updated] = await tx.update(ordersTable).set({
+        status: "archived", fulfillmentStatus: "cancelled", archivedAt: now, archivedByUserId: actor.id, updatedAt: now,
+      }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, tenantId))).returning();
+      if (updated) result.push(updated);
+    }
+    return result;
+  });
   await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "ORDER_STALE_SUBMITTED_ARCHIVED", resourceType: "order", metadata: { count: archived.length, orderIds: archived.map((o) => o.id), cutoff: cutoff.toISOString(), reason: parsed.data.reason }, ipAddress: req.ip });
   for (const order of archived) emitUpdated(order, "stale_archived");
   res.json({ archived: archived.length, orders: await Promise.all(archived.map(buildOrderResponse)) });
