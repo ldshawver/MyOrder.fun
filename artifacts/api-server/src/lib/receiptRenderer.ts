@@ -61,6 +61,7 @@ interface PrintOrder {
   receiptTemplateStyle?: "clean" | "classic" | "compact";
   // Receipt line name mode (dual-brand)
   receiptLineNameMode?: "alavont_only" | "lucifer_only" | "both";
+  receiptBrandName?: string;
   // Legacy (ignored)
   logoLines?: string[];
   brandName?: string;
@@ -108,7 +109,7 @@ function expandItemsForMode(items: OrderItem[], mode: "alavont_only" | "lucifer_
 
 export function renderKitchenTicket(order: PrintOrder): string {
   const width = charWidth(order.paperWidth ?? "80mm");
-  const logoLines = getLogo(width);
+  const logoLines = getLogo(width, order.receiptBrandName);
   const mode = order.receiptLineNameMode ?? "lucifer_only";
   const resolvedItems = expandItemsForMode(order.items ?? [], mode);
 

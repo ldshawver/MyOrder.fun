@@ -11,9 +11,9 @@ const TAGLINE = "SECURE COMMERCE";
  * output uses this simple high-legibility wordmark so it prints cleanly on
  * both 58mm and 80mm printers.
  */
-export function getLogo(width: number): string[] {
+export function getLogo(width: number, primary = PRIMARY): string[] {
   return [
-    centerText(PRIMARY, width),
+    centerText(primary, width),
     centerText(TAGLINE, width),
   ];
 }

@@ -33,6 +33,7 @@ import {
 } from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
 import { logger as _logger } from "./logger";
+import { getBranding } from "../config/brandingConfig";
 
 const pLog = _logger.child({ module: "printService" });
 
@@ -474,6 +475,7 @@ export async function enqueueOrderPrintJobs(order: {
     fulfillmentType: order.fulfillmentType,
     notes: order.notes ?? undefined,
     receiptLineNameMode,
+    receiptBrandName: (await getBranding(tenantId))?.supplier.displayName?.toLowerCase().includes("lucifer") ? "LUCIFER CRUZ" : "MYORDER.FUN",
     paperWidth: settings.paperWidth ?? "80mm",
     logoLines: receiptLogoLines,
     dualBrandName: settings.brandName ?? undefined,
