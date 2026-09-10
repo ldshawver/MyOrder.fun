@@ -70,7 +70,11 @@ export class PaymentService {
   }
 
   async refund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
-    return db.transaction(async tx => {
+    return db.transaction(async tx => this.refundInTransaction(tx, input));
+  }
+
+  /** Execute a provider refund using the caller's transaction boundary. */
+  async refundInTransaction(tx: any, input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
@@ -106,7 +110,6 @@ export class PaymentService {
         await tx.update(ordersTable).set(fullOrderRefund ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, input.orderId));
       }
       return { status: completedState, refundId: refund.refundId, replayed: false };
-    });
   }
 
   async reconcile(input: { tenantId: number; orderId: number; finalize: (order: typeof ordersTable.$inferSelect) => Promise<void> }) {

@@ -6,6 +6,9 @@ import { requirePermission } from "../lib/roles";
 import { z } from "zod";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { restoreCustomerCredit } from "../payments/customerCredit";
+import { loadPaymentConfig, requireOnlinePayments } from "../payments/config";
+import { PayPalProvider } from "../payments/paypal";
+import { PaymentService } from "../payments/service";
 
 const router = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -69,7 +72,9 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     const tender = String(order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
     const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender === "paypal" ? "paypal" : null;
     if (!tenderType) return { status: 409, error: "Unsupported refund tender" };
-    if (tenderType === "paypal") return { status: 409, error: "PayPal refunds are certified in Gate 2B" };
+    const paypalService = tenderType === "paypal"
+      ? new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())))
+      : undefined;
     const paidCents = tenderType === "customer_credit" ? cents(order.customer_credit_applied) : cents(order.total);
     const prior = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(refund_amount),0) AS amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status = 'completed'`))[0];
     const remainingPaid = paidCents - cents(prior?.amount);
@@ -107,6 +112,25 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     `))[0];
     if (!inserted) throw new Error("Return transaction could not be created");
     const returnId = Number(inserted.id);
+    if (paypalService) {
+      try {
+        const providerResult = await paypalService.refundInTransaction(tx, {
+          tenantId,
+          orderId,
+          actorUserId: actor.id,
+          idempotencyKey: `return-paypal:${returnId}`,
+          amount: money(total),
+          reason: parsed.data.reason,
+        });
+        if (providerResult.status !== "completed") {
+          await tx.execute(sql`UPDATE return_transactions SET status = 'failed', updated_at = now() WHERE id = ${returnId}`);
+          return { status: 502, error: "PayPal refund requires reconciliation" };
+        }
+      } catch (error) {
+        await tx.execute(sql`UPDATE return_transactions SET status = 'failed', updated_at = now() WHERE id = ${returnId}`);
+        return { status: 502, error: error instanceof Error ? error.message : "PayPal refund failed" };
+      }
+    }
     if (tenderType === "customer_credit") {
       await restoreCustomerCredit(tx as any, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: total, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
     } else {
