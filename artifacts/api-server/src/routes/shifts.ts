@@ -121,7 +121,7 @@ async function createShiftReceiptPrintJob(args: {
   shiftId: number;
   tenantId: number;
   operatorUserId: number;
-  jobType: "shift_start_receipt" | "shift_end_receipt";
+  jobType: string;
   payload: Record<string, unknown>;
   renderedText: string;
 }): Promise<void> {
@@ -148,6 +148,20 @@ async function createShiftReceiptPrintJob(args: {
   } catch {
     // Receipt creation must never block shift start/end in tests or production.
   }
+}
+
+/** Enqueue a closeout report as a durable, idempotent print event.  Reports
+ * are side effects of a committed shift transaction; printer availability
+ * must never roll back the shift. */
+async function createShiftOperationalPrintJob(args: {
+  shiftId: number;
+  tenantId: number;
+  operatorUserId: number;
+  jobType: "shift_sales" | "shift_ending_inventory" | "shift_restock" | "shift_deposit" | "shift_commission";
+  payload: Record<string, unknown>;
+  renderedText: string;
+}): Promise<void> {
+  await createShiftReceiptPrintJob(args);
 }
 
 
@@ -1403,7 +1417,7 @@ router.post(
       shiftId: shift.id,
       tenantId,
       operatorUserId: tech.id,
-      jobType: "shift_start_receipt",
+      jobType: "shift_beginning_inventory",
       payload: {
         csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
         box: selectedBox,
@@ -1592,7 +1606,7 @@ router.post(
       shiftId: activeShift.id,
       tenantId: activeShift.tenantId ?? null,
       operatorUserId: tech.id,
-      jobType: "shift_end_receipt",
+      jobType: "shift_sales",
       payload: {
         csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
         endingInventory: inventorySummary,
@@ -1603,6 +1617,28 @@ router.post(
         timestamp: summary.clockedOutAt,
       },
       renderedText: [`SHIFT END`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, `Cash expected: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
+    });
+
+    const reportBase = { shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, employee: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email, location: activeShift.boxAssignmentId ?? null, generatedAt: summary.clockedOutAt };
+    await createShiftOperationalPrintJob({
+      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
+      jobType: "shift_ending_inventory", payload: { ...reportBase, inventory: inventorySummary },
+      renderedText: [`ENDING INVENTORY`, `Shift: ${activeShift.id}`, JSON.stringify(inventorySummary), summary.clockedOutAt].join("\n"),
+    });
+    await createShiftOperationalPrintJob({
+      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
+      jobType: "shift_restock", payload: { ...reportBase, sales: stats },
+      renderedText: [`RESTOCK LIST`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, summary.clockedOutAt].join("\n"),
+    });
+    await createShiftOperationalPrintJob({
+      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
+      jobType: "shift_deposit", payload: { ...reportBase, cashBankStart, expectedCashBank, cashBankEndReported: cashBankEndVal, depositAmount: cashBankEndVal, variance: cashDiscrepancy },
+      renderedText: [`DEPOSIT RECEIPT`, `Shift: ${activeShift.id}`, `Expected cash: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
+    });
+    await createShiftOperationalPrintJob({
+      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
+      jobType: "shift_commission", payload: { ...reportBase, commission: (stats as Record<string, unknown>).commission ?? null },
+      renderedText: [`COMMISSION SLIP`, `Shift: ${activeShift.id}`, `Commission: ${String((stats as Record<string, unknown>).commission ?? "0")}`, summary.clockedOutAt].join("\n"),
     });
 
     res.json({ summary, shift: updatedShift });

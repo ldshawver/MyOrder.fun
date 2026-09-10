@@ -180,7 +180,19 @@ export async function resolveExpoPrinter(context: { tenantId: number; locationId
     eq(shiftPrintAssignmentsTable.tenantId, context.tenantId), eq(shiftPrintAssignmentsTable.shiftId, context.shiftId),
     eq(shiftPrintAssignmentsTable.locationId, context.locationId), eq(shiftPrintAssignmentsTable.printExpoTickets, true),
   )).limit(1);
-  if (!assignment?.expoPrinterId) return null;
+  if (!assignment?.expoPrinterId) {
+    // A tenant-scoped receipt printer is a safe fallback for sites that have
+    // not yet provisioned a dedicated expo device.  Keep this location aware
+    // when possible, and never cross the tenant boundary.
+    const [fallback] = await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.tenantId, context.tenantId),
+      eq(printPrintersTable.isActive, true),
+      eq(printPrintersTable.role, "receipt"),
+      eq(printPrintersTable.routingScope, "general"),
+      sql`${printPrintersTable.locationId} IS NULL`,
+    )).limit(1);
+    return fallback ?? null;
+  }
   const [printer] = await db.select().from(printPrintersTable).where(and(
     eq(printPrintersTable.tenantId, context.tenantId), eq(printPrintersTable.locationId, context.locationId),
     eq(printPrintersTable.routingScope, "location"), eq(printPrintersTable.role, "expo"),
