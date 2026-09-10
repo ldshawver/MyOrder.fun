@@ -31,7 +31,9 @@ export async function getBranding(tenantId: number) {
   return {
     platform: PLATFORM_BRAND,
     customer: {
-      displayName: String(customer.displayName ?? "").trim() || tenant.name.trim() || PLATFORM_BRAND.displayName,
+      // The authenticated platform defaults to MyOrder.fun. Merchant-facing
+      // identity is carried explicitly by the supplier/catalogue context.
+      displayName: String(customer.displayName ?? "").trim() || PLATFORM_BRAND.displayName,
       legalName: customer.legalName ?? null,
       logoUrl: customer.logoUrl ?? PLATFORM_BRAND.logoUrl,
       faviconUrl: customer.faviconUrl ?? PLATFORM_BRAND.faviconUrl,
@@ -47,7 +49,7 @@ export async function getBranding(tenantId: number) {
       domainVerificationState: customer.domainVerificationState ?? "unconfigured",
     },
     supplier: {
-      displayName: supplier.displayName ?? null,
+      displayName: supplier.displayName ?? (String(tenant.name ?? "").trim() || null),
       logoUrl: supplier.logoUrl ?? null,
       attribution: supplier.attribution ?? null,
       disclaimer: supplier.disclaimer ?? null,

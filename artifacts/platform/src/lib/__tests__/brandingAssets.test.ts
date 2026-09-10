@@ -32,7 +32,9 @@ describe("MyOrder.fun branding assets", () => {
   it("references the PWA, favicon, and Apple assets from metadata", () => {
     const html = readFileSync(resolve(platformRoot, "index.html"), "utf8");
     const manifest = JSON.parse(readFileSync(resolve(publicRoot, "manifest.webmanifest"), "utf8"));
-    expect(html).toContain("<title>MyOrder.fun</title>");
+    // The unauthenticated shell is merchant-facing; the authenticated app
+    // updates document.title from the tenant/platform branding context.
+    expect(html).toContain("<title>Lucifer Cruz</title>");
     expect(html).toContain('/favicon-32.png');
     expect(html).toContain('/apple-touch-icon.png');
     expect(html).toContain('/manifest.webmanifest');

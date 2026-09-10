@@ -155,8 +155,18 @@ export async function resolveReceiptPrinters(
     return { primary: await fetch(assignment?.receiptPrinterId), fallback: null };
   }
 
+  // A tenant/location printer is the safe operational fallback when an
+  // operator has not yet been given a personal print profile. Keep the
+  // lookup tenant-scoped and require an active general receipt printer.
   if (!profile) {
-    return { primary: null, fallback: null };
+    const rows = await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.tenantId, context.tenantId),
+      eq(printPrintersTable.isActive, true),
+      eq(printPrintersTable.role, "receipt"),
+      eq(printPrintersTable.routingScope, "general"),
+      sql`${printPrintersTable.locationId} IS NULL`,
+    )).limit(1);
+    return { primary: rows[0] ?? null, fallback: null };
   }
 
   return {

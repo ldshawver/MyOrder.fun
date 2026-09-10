@@ -110,13 +110,13 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
         <div className="flex flex-col items-center gap-3 mb-2">
           <img
-            src="/myorder-logo-mobile.png"
-            alt="MyOrder.fun"
+            src="/lc-logo.webp"
+            alt="Lucifer Cruz"
             className="h-16 w-auto object-contain"
           />
           <div className="text-center">
             <div className="font-bold tracking-[0.12em] text-base" style={{ color: "#C0C0C0" }}>
-              MYORDER.FUN
+              LUCIFER CRUZ
             </div>
             <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
               Secure commerce platform
@@ -125,7 +125,7 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
         </div>
         {children}
         <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>
-          TENANT-AWARE · SECURE · AUDITED
+          SECURE · PRIVATE · AUDITED
         </p>
       </div>
     </div>
