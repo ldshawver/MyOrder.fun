@@ -4,6 +4,7 @@ import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
 import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
+import { logger } from "../lib/logger";
 
 const CURRENCY = "USD";
 const money = (value: unknown) => Number(value).toFixed(2);
@@ -124,7 +125,14 @@ export class PaymentService {
         const capture = await this.provider.getCapture(authoritative.capture.captureId);
         if (capture.orderId !== attempt.providerOrderId || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "RECONCILIATION_MISMATCH", "Capture does not match the order");
         await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
-        if (order.paymentStatus !== "paid") await input.finalize(order);
+        if (order.paymentStatus !== "paid") {
+          try {
+            await input.finalize(order);
+          } catch (error) {
+            logger.error({ orderId: order.id, failureClass: "local_finalize_failed", error: error instanceof Error ? error.message : "unknown" }, "PayPal reconciliation local finalization failed");
+            throw error;
+          }
+        }
         await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: "paypal_verified", selectedPaymentMethod: "paypal_verified", paymentIntentId: capture.captureId }).where(eq(ordersTable.id, order.id));
         await tx.update(paymentAttemptsTable).set({ state: "captured", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "resolved", failureClass: null }).where(eq(paymentAttemptsTable.id, attempt.id));
         return { localState: "captured", providerState: capture.status, recovered: order.paymentStatus !== "paid" };
