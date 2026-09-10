@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, inventoryReservationsTable, labTechShiftsTable, orderItemsTable, ordersTable } from "@workspace/db";
 import { writeAuditLog } from "../lib/auth";
 import { type InventoryOrderType } from "../lib/inventoryBalances";
