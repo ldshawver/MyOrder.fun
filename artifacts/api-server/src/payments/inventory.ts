@@ -27,8 +27,10 @@ export async function deductPaidOrderInventory(
   const items = await executor.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
   await executeTransaction(executor, "payments.inventoryDeduct", async tx => {
-    const existing = await tx.select({ id: inventoryReservationsTable.id }).from(inventoryReservationsTable).where(eq(inventoryReservationsTable.orderId, order.id)).limit(1);
-    if (existing.length === 0) {
+    const existing = await tx.select({ status: inventoryReservationsTable.status, expiresAt: inventoryReservationsTable.expiresAt }).from(inventoryReservationsTable).where(eq(inventoryReservationsTable.orderId, order.id));
+    const hasConfirmed = existing.some(row => row.status === "confirmed");
+    const hasActiveReservation = existing.some(row => row.status === "reserved" && row.expiresAt > new Date());
+    if (!hasConfirmed && !hasActiveReservation) {
       for (const item of items) {
         if (!item.catalogItemId) continue;
         const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id, item.catalogItemId, Number(item.quantity), orderTypeForPaidDeduction(order));
