@@ -16,7 +16,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, RotateCcw } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -36,6 +36,43 @@ type OrderWithTracking = Order & {
   handoffCompletedByUserId?: number | null;
 };
 type CreditSummary = { balance: number };
+
+function RefundReturnPanel({ order, getToken, onDone }: { order: Order; getToken: () => Promise<string | null>; onDone: () => void }) {
+  const [itemId, setItemId] = useState<number | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [disposition, setDisposition] = useState<"RESTOCK" | "DO_NOT_RESTOCK">("RESTOCK");
+  const [reason, setReason] = useState("Customer return");
+  const [quote, setQuote] = useState<{ refundAmount: string; taxAmount: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const items = (order.items ?? []) as Array<{ id: number; catalogItemName: string; quantity: number; unitPrice: number }>;
+  const selected = items.find((item) => item.id === itemId) ?? items[0];
+  useEffect(() => { if (selected && itemId == null) setItemId(selected.id); }, [selected, itemId]);
+  async function submit(preview: boolean) {
+    if (!selected) return;
+    setBusy(true); setMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/orders/${order.id}/returns`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ lines: [{ orderItemId: selected.id, quantity, disposition }], reason, idempotencyKey: `return:${order.id}:${selected.id}:${crypto.randomUUID()}`, preview }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Return was rejected");
+      if (preview) setQuote({ refundAmount: data.refundAmount, taxAmount: data.taxAmount });
+      else { setMessage(`Refund completed: $${Number(data.refundAmount).toFixed(2)}`); setQuote(null); onDone(); }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Return was rejected"); }
+    finally { setBusy(false); }
+  }
+  return <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="refund-return-panel">
+    <div className="flex items-center gap-2 font-semibold text-sm"><RotateCcw size={15} /> Return / Refund</div>
+    <div className="grid gap-2 sm:grid-cols-3">
+      <Select value={String(selected?.id ?? "")} onValueChange={(v) => setItemId(Number(v))}><SelectTrigger className="text-xs"><SelectValue placeholder="Item" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.catalogItemName} ({item.quantity})</SelectItem>)}</SelectContent></Select>
+      <Input type="number" min={1} max={selected?.quantity ?? 1} value={quantity} onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))} className="text-xs" aria-label="Return quantity" />
+      <Select value={disposition} onValueChange={(v) => setDisposition(v as "RESTOCK" | "DO_NOT_RESTOCK")}><SelectTrigger className="text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="RESTOCK">Restock</SelectItem><SelectItem value="DO_NOT_RESTOCK">Do not restock</SelectItem></SelectContent></Select>
+    </div>
+    <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} className="text-xs" aria-label="Return reason" />
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={busy || !selected}>Calculate refund</Button>{quote && <><span className="text-xs">Authoritative refund: <strong>${Number(quote.refundAmount).toFixed(2)}</strong></span><Button size="sm" onClick={() => void submit(false)} disabled={busy}>Confirm refund</Button></>}</div>
+    {message && <div className="text-xs text-muted-foreground">{message}</div>}
+  </div>;
+}
 
 function formatCourierEta(value?: string | null) {
   if (!value) return null;
@@ -424,6 +461,7 @@ export default function OrderDetail() {
   const userRole = normalizeNotificationRole(user?.role);
   const canEditStatus = userRole === "global_admin" || userRole === "admin" || userRole === "csr";
   const canManageRouting = userRole === "global_admin" || userRole === "admin";
+  const canRefund = userRole === "global_admin" || userRole === "admin" || userRole === "supervisor";
   const isCustomer = userRole === "user";
 
   const { notifyOrderStatusChange } = usePushNotifications({
@@ -651,6 +689,10 @@ export default function OrderDetail() {
           {new Date(order.createdAt).toLocaleString()}
         </p>
       </div>
+
+      {canRefund && order.paymentStatus !== OrderPaymentStatus.unpaid && (
+        <RefundReturnPanel order={order} getToken={getToken} onDone={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+      )}
 
       {/* ── Customer waiting view: Hourglass with ETA countdown ────── */}
       {isCustomer && isPendingOrProcessing && (

@@ -31,6 +31,7 @@ import privacyRouter from "./privacy";
 import pwaPushRouter from "./pwa-push";
 import taxConfigurationsRouter from "./tax-configurations";
 import stagingStickerBridgeRouter from "./staging-sticker-bridge";
+import returnsRouter from "./returns";
 
 const router: IRouter = Router();
 
@@ -41,6 +42,7 @@ router.use(onboardingRouter);
 router.use(tenantsRouter);
 router.use(catalogRouter);
 router.use(ordersRouter);
+router.use(returnsRouter);
 router.use(notificationsRouter);
 router.use(settingsRouter);
 router.use(tenantSettingsRouter);
