@@ -60,7 +60,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       LEFT JOIN lab_tech_shifts ls ON ls.tenant_id = o.tenant_id AND ls.id = o.assigned_shift_id
       LEFT JOIN csr_boxes cb ON cb.tenant_id = o.tenant_id AND cb.slug = ls.box_assignment_id
       LEFT JOIN inventory_locations il ON il.tenant_id = o.tenant_id AND il.csr_box_id = cb.id AND il.is_active = true
-      WHERE o.tenant_id = ${tenantId} AND o.id = ${orderId} FOR UPDATE
+      WHERE o.tenant_id = ${tenantId} AND o.id = ${orderId} FOR UPDATE OF o
     `))[0];
     if (!order) return { status: 404, error: "Order not found" };
     if (!order.locationId) return { status: 409, error: "Order has no authoritative location" };
