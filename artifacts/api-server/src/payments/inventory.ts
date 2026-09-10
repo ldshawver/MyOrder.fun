@@ -31,6 +31,12 @@ export async function deductPaidOrderInventory(
     const hasConfirmed = existing.some(row => row.status === "confirmed");
     const hasActiveReservation = existing.some(row => row.status === "reserved" && row.expiresAt > new Date());
     if (!hasConfirmed && !hasActiveReservation) {
+      // A paid capture may arrive after the checkout hold expires. Preserve
+      // the expired reservation row as history, but release its idempotency
+      // key so the authoritative paid-sale recovery can reserve again.
+      await tx.update(inventoryReservationsTable)
+        .set({ status: "released", idempotencyKey: null, updatedAt: new Date() })
+        .where(and(eq(inventoryReservationsTable.orderId, order.id), eq(inventoryReservationsTable.status, "reserved")));
       for (const item of items) {
         if (!item.catalogItemId) continue;
         const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id, item.catalogItemId, Number(item.quantity), orderTypeForPaidDeduction(order));
