@@ -58,6 +58,7 @@ import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
 import { consumeCustomerCredit } from "../payments/customerCredit";
+import { deductPaidOrderInventory } from "../payments/inventory";
 
 import { logger } from "../lib/logger";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
