@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { db, inventoryLocationsTable, inventoryReservationsTable, ordersTable } from "@workspace/db";
+import { db, inventoryLocationsTable, inventoryMovementsTable, inventoryReservationsTable, ordersTable } from "@workspace/db";
 import { type CheckoutInventoryLocationDeduction, type InventoryOrderType } from "./inventoryBalances";
 import { assertKernelCatalogItemId, executeTransaction, reservationIdempotencyKey } from "./inventoryKernel";
 import { postInventoryMovement, type InventoryMovementActor } from "./inventoryMovementLedger";
@@ -221,7 +221,21 @@ export async function releaseInventoryReservationsForOrder(executor: Reservation
   return executeTransaction(executor, "inventoryReservations.releaseOrder", async tx => {
     const released = await tx.update(inventoryReservationsTable)
       .set({ status: "released", updatedAt: new Date() })
-      .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "reserved")))
+      .where(and(
+        eq(inventoryReservationsTable.orderId, orderId),
+        sql`${inventoryReservationsTable.status} IN ('reserved', 'confirmed')`,
+        // A confirmed reservation with a sale movement has already consumed
+        // inventory and requires an audited reconciliation, not a silent
+        // release. Confirmed holds without a sale are still temporary
+        // availability state and are safe to release on unpaid cancellation.
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${inventoryMovementsTable}
+          WHERE ${inventoryMovementsTable.orderId} = ${orderId}
+            AND ${inventoryMovementsTable.movementType} = 'sale'
+            AND ${inventoryMovementsTable.catalogItemId} = ${inventoryReservationsTable.catalogItemId}
+            AND ${inventoryMovementsTable.locationId} = ${inventoryReservationsTable.locationId}
+        )`,
+      ))
       .returning({ id: inventoryReservationsTable.id });
     return released.length;
   });

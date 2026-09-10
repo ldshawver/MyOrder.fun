@@ -1839,6 +1839,17 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     throw err;
   }
   if (!transition.changed) {
+    if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
+      const released = await db.transaction((tx) => releaseInventoryReservationsForOrder(tx, id));
+      if (released > 0) {
+        await writeAuditLog({
+          actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
+          action: "ORDER_RESERVATIONS_RELEASED",
+          resourceType: "order", resourceId: String(id),
+          metadata: { reason: reason ?? "unpaid cancellation replay", released }, ipAddress: req.ip,
+        });
+      }
+    }
     res.json(await buildOrderResponse(order));
     return;
   }
