@@ -70,7 +70,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     if (role === "csr" && Number(order.assigned_csr_user_id ?? 0) !== actor.id) return { status: 403, error: "Order is outside the CSR location assignment" };
     if (!["paid", "partially_refunded"].includes(String(order.payment_status))) return { status: 409, error: "Only settled orders may be refunded" };
     const tender = String(order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
-    const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender === "paypal" ? "paypal" : null;
+    const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender.startsWith("paypal") ? "paypal" : null;
     if (!tenderType) return { status: 409, error: "Unsupported refund tender" };
     const paypalService = tenderType === "paypal"
       ? new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())))
