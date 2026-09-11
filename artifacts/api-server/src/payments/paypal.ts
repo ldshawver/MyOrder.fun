@@ -79,13 +79,14 @@ export class PayPalProvider implements PaymentProvider {
     const recognizedStatuses = new Set(["COMPLETED", "PENDING", "FAILED", "CANCELLED"]);
     if (typeof body.id !== "string" || !status || !recognizedStatuses.has(status)) throw new PayPalProviderError("invalid_response", "PayPal refund response invalid");
     if (returned !== undefined && (typeof returned !== "object" || returned === null || Array.isArray(returned))) throw new PayPalProviderError("invalid_response", "PayPal refund response invalid");
-    if (returned !== undefined) {
-      if (typeof returned.value !== "string" || typeof returned.currency_code !== "string" || returned.value !== amount.value || returned.currency_code !== amount.currency) throw new PayPalProviderError("invalid_response", "PayPal refund response amount mismatch");
-    }
     // PayPal may honor Prefer: return=representation by returning amount, but a
     // valid minimal success response is allowed to omit it. The requested amount
     // is already server-authoritative and is retained for local reconciliation.
-    return { refundId: body.id, status, amount: returned ? { value: returned.value as string, currency: returned.currency_code as string } : amount };
+    // Do not validate optional amount fields here.  The service persists `id`
+    // and `status` first, then validates the optional representation durably.
+    return returned && typeof returned.value === "string" && typeof returned.currency_code === "string"
+      ? { refundId: body.id, status, amount: { value: returned.value, currency: returned.currency_code } }
+      : { refundId: body.id, status };
   }
   async verifyWebhook(headers: PayPalTransmissionHeaders, event: unknown): Promise<boolean> {
     const body = await this.request("/v1/notifications/verify-webhook-signature", { method: "POST", body: JSON.stringify({ auth_algo: headers.authAlgorithm, cert_url: headers.certificateUrl, transmission_id: headers.transmissionId, transmission_sig: headers.transmissionSignature, transmission_time: headers.transmissionTime, webhook_id: this.config.webhookId, webhook_event: event }) });

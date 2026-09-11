@@ -21,7 +21,8 @@ describe("unified refund/return boundary", () => {
     expect(route).toContain('movementType: "customer_return"');
     expect(route).toContain("DO_NOT_RESTOCK");
     expect(route).toContain("return-movement:");
-    expect(route).toContain("refundInTransaction");
+    expect(route).toContain("prepareRefundInTransaction");
+    expect(route).toContain("paypalService.refund");
     expect(route).not.toContain("PayPal refunds are certified in Gate 2B");
   });
   it("persists return transactions and lines", () => {

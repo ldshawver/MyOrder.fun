@@ -30,6 +30,29 @@ const rows = <T extends Row>(value: any): T[] => Array.isArray(value) ? value as
 const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
 const money = (n: number) => (n / 100).toFixed(2);
 
+/** Local effects for a PayPal return happen only after the provider identity
+ * has been committed.  This function is repeat-safe via the return status and
+ * inventory movement idempotency keys. */
+const finalizePayPalReturn = async (input: { returnId: number; tenantId: number; orderId: number; actor: any; ipAddress?: string }) => db.transaction(async tx => {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
+  const ret = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE id=${input.returnId} AND tenant_id=${input.tenantId} FOR UPDATE`))[0];
+  if (!ret) throw new Error("Return transaction not found");
+  if (ret.status === "completed") return { idempotent: true };
+  if (ret.status !== "pending") throw new Error("Return transaction is not pending provider finalization");
+  const order = rows<Row>(await tx.execute(sql`SELECT * FROM orders WHERE tenant_id=${input.tenantId} AND id=${input.orderId} FOR UPDATE`))[0];
+  if (!order) throw new Error("Order not found");
+  const lines = rows<Row>(await tx.execute(sql`SELECT rl.*, oi.catalog_item_id FROM return_lines rl JOIN order_items oi ON oi.id=rl.order_item_id WHERE rl.return_transaction_id=${input.returnId} ORDER BY rl.id`));
+  for (const line of lines) {
+    if (line.disposition !== "RESTOCK") continue;
+    const sale = rows<Row>(await tx.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id=${input.tenantId} AND order_item_id=${Number(line.order_item_id)} AND movement_type='sale' ORDER BY id LIMIT 1`))[0];
+    const valuation = rows<Row>(await tx.execute(sql`SELECT COALESCE(average_unit_cost, last_purchase_unit_cost) AS cost FROM inventory_valuation_states WHERE tenant_id=${input.tenantId} AND catalog_item_id=${Number(line.catalog_item_id)} LIMIT 1`))[0];
+    await postInventoryMovement(tx as any, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
+  }
+  await tx.execute(sql`UPDATE return_transactions SET status='completed', updated_at=now() WHERE id=${input.returnId}`);
+  await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId: input.tenantId, actorId: input.actor.id, actorEmail: input.actor.email ?? "", actorRole: input.actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(input.returnId), metadata: { orderId: input.orderId, refundAmount: String(ret.refund_amount), taxAmount: String(ret.tax_amount), tenderType: "paypal", providerFinalized: true }, ipAddress: input.ipAddress ?? null });
+  return { idempotent: false };
+});
+
 router.get("/orders/:id/returns", requirePermission("orders.refund"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const orderId = Number(req.params.id);
@@ -54,9 +77,8 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
   const outcome = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const existing = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE tenant_id = ${tenantId} AND idempotency_key = ${parsed.data.idempotencyKey} LIMIT 1`))[0];
-    if (existing && existing.status === "completed") {
-      return { status: 200, result: { id: Number(existing.id), status: existing.status, refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), idempotent: true } };
-    }
+    if (existing && existing.status === "completed") return { status: 200, result: { id: Number(existing.id), status: existing.status, refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), idempotent: true } };
+    if (existing && existing.status === "pending" && existing.tender_type === "paypal") return { status: 202, paypalPending: { returnId: Number(existing.id), refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), reason: String(existing.reason) } };
     const order = rows<Row>(await tx.execute(sql`
       SELECT o.*, COALESCE(ots.location_id, il.id) AS "locationId"
       FROM orders o LEFT JOIN order_tax_snapshots ots ON ots.tenant_id = o.tenant_id AND ots.order_id = o.id
@@ -113,23 +135,12 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     if (!inserted) throw new Error("Return transaction could not be created");
     const returnId = Number(inserted.id);
     if (paypalService) {
-      try {
-        const providerResult = await paypalService.refundInTransaction(tx, {
-          tenantId,
-          orderId,
-          actorUserId: actor.id,
-          idempotencyKey: `return-paypal:${returnId}`,
-          amount: money(total),
-          reason: parsed.data.reason,
-        });
-        if (providerResult.status !== "completed") {
-          await tx.execute(sql`UPDATE return_transactions SET status = 'failed', updated_at = now() WHERE id = ${returnId}`);
-          return { status: 502, error: "PayPal refund requires reconciliation" };
-        }
-      } catch (error) {
-        await tx.execute(sql`UPDATE return_transactions SET status = 'failed', updated_at = now() WHERE id = ${returnId}`);
-        return { status: 502, error: error instanceof Error ? error.message : "PayPal refund failed" };
-      }
+      // Persist return lines and provider intent, then commit.  The PayPal POST
+      // is intentionally outside this transaction so a local rollback cannot
+      // erase the stable PayPal-Request-Id.
+      for (const c of computed) await tx.execute(sql`INSERT INTO return_lines (return_transaction_id, order_item_id, quantity, unit_value, tax_value, disposition) VALUES (${returnId}, ${c.line.orderItemId}, ${c.line.quantity}, ${money(c.amount)}, ${money(c.tax)}, ${c.line.disposition})`);
+      const intent = await paypalService.prepareRefundInTransaction(tx, { tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${returnId}`, amount: money(total), reason: parsed.data.reason });
+      return { status: 202, paypalPending: { returnId, refundAmount: money(total), taxAmount: money(taxTotal), reason: parsed.data.reason, intent } };
     }
     if (tenderType === "customer_credit") {
       await restoreCustomerCredit(tx as any, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: total, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
@@ -156,6 +167,22 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(returnId), metadata: { orderId, refundAmount: money(total), taxAmount: money(taxTotal), tenderType, reason: parsed.data.reason }, ipAddress: req.ip ?? null });
     return { status: 200, result: { id: returnId, status: "completed", refundAmount: money(total), taxAmount: money(taxTotal), tenderType, idempotent: false } };
   });
+  if ("paypalPending" in outcome) {
+    const pending = outcome.paypalPending;
+    const paypalService = new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())));
+    try {
+      // Re-entering with the same return idempotency key reuses the durable
+      // provider request ID and therefore cannot create a second refund.
+      const providerResult = await paypalService.refund({ tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${pending.returnId}`, amount: pending.refundAmount, reason: pending.reason });
+      if (providerResult.status !== "completed") { res.status(502).json({ error: "PayPal refund requires reconciliation", returnId: pending.returnId }); return; }
+      const local = await finalizePayPalReturn({ returnId: pending.returnId, tenantId, orderId, actor, ipAddress: req.ip });
+      res.status(200).json({ id: pending.returnId, status: "completed", refundAmount: pending.refundAmount, taxAmount: pending.taxAmount, tenderType: "paypal", idempotent: providerResult.replayed && local.idempotent });
+      return;
+    } catch (error) {
+      res.status(error instanceof PaymentServiceError ? error.statusCode : 502).json({ error: error instanceof Error ? error.message : "PayPal refund failed", returnId: pending.returnId });
+      return;
+    }
+  }
   if ("error" in outcome) { res.status(outcome.status).json({ error: outcome.error }); return; }
   res.status(outcome.status).json(outcome.result);
 });

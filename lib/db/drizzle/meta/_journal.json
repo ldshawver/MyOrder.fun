@@ -246,6 +246,13 @@
       "when": 1788931988000,
       "tag": "0057_refund_return_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789095830000,
+      "tag": "0058_paypal_refund_durability",
+      "breakpoints": true
     }
   ]
 }

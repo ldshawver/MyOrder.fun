@@ -37,11 +37,15 @@ export const paymentCapturesTable = pgTable("payment_captures", {
 export const paymentRefundsTable = pgTable("payment_refunds", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), paymentCaptureId: integer("payment_capture_id").notNull(),
   providerRefundId: text("provider_refund_id"), idempotencyKey: text("idempotency_key").notNull(), amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
-  currency: text("currency").notNull(), reason: text("reason").notNull(), state: text("state").notNull().default("creating"), failureClass: text("failure_class"),
+  currency: text("currency").notNull(), reason: text("reason").notNull(), state: text("state").notNull().default("requested"), failureClass: text("failure_class"),
+  // This is the provider operation identity, not the caller's local replay key.
+  // It is allocated and committed before the provider POST and never changes.
+  providerRequestId: text("provider_request_id"), providerStatus: text("provider_status"), providerResultAt: timestamp("provider_result_at", { withTimezone: true }), requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(), locallyFinalizedAt: timestamp("locally_finalized_at", { withTimezone: true }),
   actorUserId: integer("actor_user_id").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, table => ({
   tenantIdUnique: unique("payment_refunds_tenant_id_unique").on(table.tenantId, table.id),
   idempotencyUnique: unique("payment_refunds_tenant_capture_key_unique").on(table.tenantId, table.paymentCaptureId, table.idempotencyKey),
+  providerRequestUnique: unique("payment_refunds_provider_request_unique").on(table.providerRequestId),
   providerRefundUnique: unique("payment_refunds_provider_refund_unique").on(table.providerRefundId),
   captureFk: foreignKey({ name: "payment_refunds_tenant_capture_fk", columns: [table.tenantId, table.paymentCaptureId], foreignColumns: [paymentCapturesTable.tenantId, paymentCapturesTable.id] }),
   actorFk: foreignKey({ name: "payment_refunds_tenant_actor_fk", columns: [table.tenantId, table.actorUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
@@ -49,11 +53,12 @@ export const paymentRefundsTable = pgTable("payment_refunds", {
 
 export const paymentWebhookEventsTable = pgTable("payment_webhook_events", {
   id: serial("id").primaryKey(), provider: text("provider").notNull(), providerEnvironment: text("provider_environment").notNull(), providerEventId: text("provider_event_id").notNull(),
-  eventType: text("event_type").notNull(), providerOrderId: text("provider_order_id"), providerCaptureId: text("provider_capture_id"), tenantId: integer("tenant_id").references(() => tenantsTable.id),
-  paymentAttemptId: integer("payment_attempt_id"), processingState: text("processing_state").notNull().default("received"), failureClass: text("failure_class"),
+  eventType: text("event_type").notNull(), providerOrderId: text("provider_order_id"), providerCaptureId: text("provider_capture_id"), providerRefundId: text("provider_refund_id"), tenantId: integer("tenant_id").references(() => tenantsTable.id),
+  paymentAttemptId: integer("payment_attempt_id"), paymentRefundId: integer("payment_refund_id"), processingState: text("processing_state").notNull().default("received"), failureClass: text("failure_class"),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(), processedAt: timestamp("processed_at", { withTimezone: true }),
 }, table => ({
   eventUnique: unique("payment_webhook_provider_event_unique").on(table.provider, table.providerEnvironment, table.providerEventId),
   attemptFk: foreignKey({ name: "payment_webhook_tenant_attempt_fk", columns: [table.tenantId, table.paymentAttemptId], foreignColumns: [paymentAttemptsTable.tenantId, paymentAttemptsTable.id] }),
+  refundFk: foreignKey({ name: "payment_webhook_tenant_refund_fk", columns: [table.tenantId, table.paymentRefundId], foreignColumns: [paymentRefundsTable.tenantId, paymentRefundsTable.id] }),
   lookupIndex: index("payment_webhook_lookup_idx").on(table.provider, table.providerEnvironment, table.providerOrderId, table.providerCaptureId),
 }));

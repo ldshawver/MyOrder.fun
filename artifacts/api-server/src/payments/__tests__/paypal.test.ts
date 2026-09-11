@@ -28,19 +28,23 @@ describe("PayPal provider", () => {
     expect(result).toEqual({ refundId: "REF1", status: "COMPLETED", amount: { value: "10.80", currency: "USD" } });
     expect((fetcher.mock.calls[1][1].headers as Record<string, string>).Prefer).toBe("return=representation");
   });
-  it("accepts a valid completed minimal refund response using the trusted requested amount", async () => {
+  it("preserves a valid completed minimal refund response for durable service validation", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "REF2", status: "COMPLETED", links: [] }));
-    await expect(new PayPalProvider(config, fetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).resolves.toEqual({ refundId: "REF2", status: "COMPLETED", amount: { value: "10.80", currency: "USD" } });
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).resolves.toEqual({ refundId: "REF2", status: "COMPLETED" });
   });
   it.each(["PENDING", "FAILED", "CANCELLED"])("accepts recognized non-final refund status %s", async status => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "REF3", status }));
     await expect(new PayPalProvider(config, fetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).resolves.toMatchObject({ refundId: "REF3", status });
   });
-  it("rejects unknown, missing-id, malformed, and mismatched refund responses", async () => {
-    for (const response of [{ id: "REF", status: "MYSTERY" }, { status: "COMPLETED" }, { id: "REF", status: "COMPLETED", amount: null }, { id: "REF", status: "COMPLETED", amount: { value: "9.00", currency_code: "USD" } }, { id: "REF", status: "COMPLETED", amount: { value: "10.80", currency_code: "EUR" } }]) {
+  it("rejects unknown, missing-id, and malformed refund identities while deferring optional amount validation", async () => {
+    for (const response of [{ id: "REF", status: "MYSTERY" }, { status: "COMPLETED" }, { id: "REF", status: "COMPLETED", amount: null }]) {
       const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json(response));
       await expect(new PayPalProvider(config, fetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).rejects.toMatchObject({ failureClass: "invalid_response" });
     }
+  });
+  it("returns a mismatched optional amount so the service can persist the identity before reconciliation", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({ id: "REF", status: "COMPLETED", amount: { value: "9.00", currency_code: "USD" } }));
+    await expect(new PayPalProvider(config, fetcher as typeof fetch).refundCapture("CAP1", { value: "10.80", currency: "USD" }, "refund-key", "test")).resolves.toEqual({ refundId: "REF", status: "COMPLETED", amount: { value: "9.00", currency: "USD" } });
   });
   it("classifies refund HTTP errors", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(json({ access_token: "token" })).mockResolvedValueOnce(json({}, 500));
