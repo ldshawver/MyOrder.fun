@@ -2219,6 +2219,8 @@ router.get(
         updatedAt: inventoryBalancesTable.updatedAt,
         productName: catalogItemsTable.name,
         alavontName: catalogItemsTable.alavontName,
+        sku: catalogItemsTable.sku,
+        merchantSku: catalogItemsTable.merchantSku,
         locationName: inventoryLocationsTable.name,
         locationType: inventoryLocationsTable.type,
       })

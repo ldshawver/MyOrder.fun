@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
-  Package, MapPin, BarChart3, AlertTriangle, ShieldOff, Archive, ChevronDown, ChevronRight, Pencil, Search,
+  Package, MapPin, AlertTriangle, ShieldOff, Archive, ChevronDown, ChevronRight, Pencil, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1207,6 +1207,10 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
 
 // ─── Inventory Locations Tab ──────────────────────────────────────────────────
 
+// Preserved only for route-level compatibility while it remains absent from the
+// operator navigation. All normal inventory quantity changes use movements.
+void StockLevelsTab;
+
 type InventoryLocation = {
   id: number;
   name: string;
@@ -1388,6 +1392,8 @@ type InventoryBalance = {
   parLevel: number;
   productName: string;
   alavontName: string | null;
+  sku: string | null;
+  merchantSku: string | null;
   locationName: string;
   locationType: string;
 };
@@ -1397,10 +1403,8 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [edits, setEdits] = useState<Record<number, string>>({});
-  const [parEdits, setParEdits] = useState<Record<number, string>>({});
-  const [saving, setSaving] = useState<Record<number, boolean>>({});
   const [filterLoc, setFilterLoc] = useState<number | "all">("all");
+  const [search, setSearch] = useState("");
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const fetchBalances = useCallback(async () => {
@@ -1414,55 +1418,23 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
       const data = await res.json();
       setBalances(data.balances ?? []);
       setLocations(data.locations ?? []);
-      setEdits({});
-      setParEdits({});
     } catch (e: unknown) { setError(e instanceof Error ? e.message : "Network error"); }
-    setLoading(false);
+    finally { setLoading(false); }
   }, [getToken, filterLoc]);
 
   useEffect(() => { fetchBalances(); }, [fetchBalances]);
 
-  const saveBalance = async (balance: InventoryBalance) => {
-    const rawQty = edits[balance.id];
-    const rawPar = parEdits[balance.id];
-    if (rawQty === undefined && rawPar === undefined) return;
-    const payload: { quantityOnHand?: number; parLevel?: number } = {};
-    if (rawQty !== undefined) {
-      const qty = parseFloat(rawQty);
-      if (isNaN(qty)) return;
-      payload.quantityOnHand = qty;
-    }
-    if (rawPar !== undefined) {
-      const par = parseFloat(rawPar);
-      if (isNaN(par)) return;
-      payload.parLevel = par;
-    }
-    setSaving(s => ({ ...s, [balance.id]: true }));
-    try {
-      const token = await getToken();
-      const res = await fetch(`/api/admin/inventory-balances/${balance.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error("Save failed");
-      const data = await res.json();
-      setBalances(prev => prev.map(b => b.id === balance.id ? { ...b, quantityOnHand: data.balance.quantityOnHand, parLevel: data.balance.parLevel } : b));
-      setEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
-      setParEdits(prev => { const n = { ...prev }; delete n[balance.id]; return n; });
-    } catch { setError("Failed to save."); }
-    setSaving(s => ({ ...s, [balance.id]: false }));
-  };
-
   // Group by product for the grid view
-  const productMap = new Map<number, { name: string; balances: InventoryBalance[] }>();
+  const productMap = new Map<number, { name: string; sku: string | null; balances: InventoryBalance[] }>();
   for (const b of balances) {
     if (!productMap.has(b.productId)) {
-      productMap.set(b.productId, { name: b.alavontName ?? b.productName, balances: [] });
+      productMap.set(b.productId, { name: b.alavontName ?? b.productName, sku: b.sku ?? b.merchantSku, balances: [] });
     }
     productMap.get(b.productId)!.balances.push(b);
   }
-  const products = Array.from(productMap.entries()).sort((a, b) => a[0] - b[0]);
+  const products = Array.from(productMap.entries())
+    .filter(([, product]) => `${product.name} ${product.sku ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => a[1].name.localeCompare(b[1].name));
 
   if (loading) return (
     <div className="flex items-center justify-center gap-3 py-16 text-muted-foreground text-sm">
@@ -1478,12 +1450,16 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
 
   return (
     <div className="space-y-4">
-      {detailId != null && <InventoryLedgerDetail getToken={getToken} entityType="catalog" itemId={detailId} onClose={() => setDetailId(null)} />}
-      <div className="flex items-center gap-3">
+      {detailId != null && <InventoryLedgerDetail getToken={getToken} entityType="catalog" itemId={detailId} onClose={() => setDetailId(null)} onChanged={() => { void fetchBalances(); }} />}
+      <div className="flex flex-wrap items-end gap-3">
         <p className="text-xs text-muted-foreground flex-1">
-          One imported row is one inventory product. Only Alavont/master inventory rows appear here; safe/cart-conversion columns stay hidden. Edit quantity and location par inline; row totals show on-hand stock available to sell.
+          Catalogue inventory uses the same tenant-scoped, server-authoritative balances as checkout. Use an item’s actions to create an immutable receipt, transfer, adjustment, or loss movement.
         </p>
         <div className="flex items-center gap-2">
+          <label className="text-xs text-muted-foreground">
+            <span className="mb-1 block">Search catalogue inventory</span>
+            <Input aria-label="Search catalogue inventory" value={search} onChange={e => setSearch(e.target.value)} placeholder="Product name" className="h-8 w-52" />
+          </label>
           <select
             value={filterLoc}
             onChange={e => setFilterLoc(e.target.value === "all" ? "all" : parseInt(e.target.value))}
@@ -1506,8 +1482,8 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
         <div className="rounded-xl border border-border/40 overflow-hidden">
           {/* Header */}
           <div className="grid gap-2 px-4 py-2 bg-muted/20 border-b border-border/30 text-[10px] font-bold text-muted-foreground uppercase tracking-widest"
-            style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
-            <div>Product</div>
+            style={{ gridTemplateColumns: `minmax(180px, 1fr) repeat(${Math.max(activeLocations.length, 1)}, 100px) 80px` }}>
+            <div>Catalogue item</div>
             {activeLocations.map(l => (
               <div key={l.id} className="text-center">
                 {l.name}
@@ -1519,40 +1495,17 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
           </div>
 
           {/* Rows */}
-          {products.map(([productId, { name, balances: pBalances }]) => (
-            <div key={productId}
+          {products.map(([productId, { name, sku, balances: pBalances }]) => (
+              <div key={productId}
               className="grid gap-2 px-4 py-2 border-b border-border/20 last:border-0 hover:bg-muted/10 transition-colors items-center"
-              style={{ gridTemplateColumns: `1fr repeat(${Math.max(activeLocations.length, 1)}, 120px) 80px` }}>
-              <div className="flex items-center gap-2 text-xs font-medium truncate"><span className="truncate">{name}</span><Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => setDetailId(productId)}>Details</Button></div>
+              style={{ gridTemplateColumns: `minmax(180px, 1fr) repeat(${Math.max(activeLocations.length, 1)}, 100px) 80px` }}>
+              <div className="flex items-center gap-2 text-xs font-medium min-w-0"><div className="min-w-0 flex-1"><div className="truncate">{name}</div><div className="mt-1 flex flex-wrap items-center gap-1"><Badge variant="outline" className="text-[9px]">Catalogue</Badge>{sku && <span className="font-mono text-[9px] text-muted-foreground">SKU {sku}</span>}</div></div><Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setDetailId(productId)}>Open</Button></div>
               {activeLocations.map(loc => {
                 const b = pBalances.find(pb => pb.locationId === loc.id);
                 if (!b) return <div key={loc.id} className="text-center text-muted-foreground/30 text-xs">—</div>;
-                const editVal = edits[b.id];
-                const parEditVal = parEdits[b.id];
-                const isDirty = editVal !== undefined;
-                const isParDirty = parEditVal !== undefined;
                 return (
-                  <div key={loc.id} className="flex items-center justify-center gap-1">
-                    {saving[b.id] ? (
-                      <Loader2 size={11} className="animate-spin text-muted-foreground" />
-                    ) : (
-                      <>
-                        <Input
-                          value={isDirty ? editVal : String(b.quantityOnHand)}
-                          onChange={e => setEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
-                          onBlur={() => saveBalance(b)}
-                          title={`${loc.name} on-hand quantity`}
-                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isDirty ? "border-primary/50 bg-primary/5" : "bg-transparent border-transparent hover:border-border/50"}`}
-                        />
-                        <Input
-                          value={isParDirty ? parEditVal : String(b.parLevel)}
-                          onChange={e => setParEdits(prev => ({ ...prev, [b.id]: e.target.value }))}
-                          onBlur={() => saveBalance(b)}
-                          title={`${loc.name} par level`}
-                          className={`h-6 w-14 text-xs text-center font-mono rounded-lg p-0 ${isParDirty ? "border-amber-400/50 bg-amber-400/5" : "bg-transparent border-transparent hover:border-border/50"}`}
-                        />
-                      </>
-                    )}
+                  <div key={loc.id} className="text-center text-xs font-mono" title={`${loc.name}: on hand ${b.quantityOnHand}; PAR ${b.parLevel}`}>
+                    <div>{b.quantityOnHand}</div><div className="text-[9px] text-muted-foreground">PAR {b.parLevel}</div>
                   </div>
                 );
               })}
@@ -1563,6 +1516,7 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
           ))}
         </div>
       )}
+      {products.length === 0 && balances.length > 0 && <div className="rounded-xl border border-dashed border-border/40 p-8 text-center text-xs text-muted-foreground">No catalogue inventory matches “{search}”.</div>}
     </div>
   );
 }
@@ -1681,7 +1635,7 @@ type NonCatalogLocation = { id: number; name: string; type: string };
 type NonCatalogForm = { name: string; description: string; sectionId: string; sku: string; barcode: string; unitOfMeasure: string; parLevel: string; moq: string; preferredReorderQuantity: string; unitCost: string; supplier: string; supplierSku: string; notes: string };
 const emptyNonCatalogForm = (): NonCatalogForm => ({ name: "", description: "", sectionId: "", sku: "", barcode: "", unitOfMeasure: "each", parLevel: "0", moq: "0", preferredReorderQuantity: "0", unitCost: "", supplier: "", supplierSku: "", notes: "" });
 
-function InventoryLedgerDetail({ getToken, entityType, itemId, onClose }: { getToken: () => Promise<string | null>; entityType: "catalog" | "non_catalog"; itemId: number; onClose: () => void }) {
+function InventoryLedgerDetail({ getToken, entityType, itemId, onClose, onChanged }: { getToken: () => Promise<string | null>; entityType: "catalog" | "non_catalog"; itemId: number; onClose: () => void; onChanged?: () => void }) {
   const [detail, setDetail] = useState<LedgerDetail | null>(null); const [error, setError] = useState<string | null>(null);
   const [locations, setLocations] = useState<NonCatalogLocation[]>([]); const [action, setAction] = useState<"receipt" | "transfer" | "loss" | "adjustment" | null>(null); const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ locationId: "", destinationLocationId: "", quantity: "", unitCost: "", supplierReference: "", reason: "", movementType: "waste", direction: "decrease" });
@@ -1692,7 +1646,7 @@ function InventoryLedgerDetail({ getToken, entityType, itemId, onClose }: { getT
       else if (action === "transfer") { path = "/api/admin/inventory/transfers"; body = { entityType, itemId, sourceLocationId: Number(form.locationId), destinationLocationId: Number(form.destinationLocationId), quantity: form.quantity, reasonText: form.reason || undefined, idempotencyKey: key }; }
       else if (action === "loss") body.movementType = form.movementType;
       else { body.movementType = form.direction === "increase" ? "adjustment_increase" : "adjustment_decrease"; if (form.direction === "increase" && form.unitCost) body.unitCost = form.unitCost; }
-      const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) }); const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error ?? `Inventory action failed (${response.status})`); setAction(null); setForm({ locationId: "", destinationLocationId: "", quantity: "", unitCost: "", supplierReference: "", reason: "", movementType: "waste", direction: "decrease" }); await load(); } catch (e) { setError(e instanceof Error ? e.message : "Inventory action failed"); } finally { setBusy(false); } };
+      const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) }); const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error ?? `Inventory action failed (${response.status})`); setAction(null); setForm({ locationId: "", destinationLocationId: "", quantity: "", unitCost: "", supplierReference: "", reason: "", movementType: "waste", direction: "decrease" }); await load(); onChanged?.(); } catch (e) { setError(e instanceof Error ? e.message : "Inventory action failed"); } finally { setBusy(false); } };
   const money = (value: string | number | null) => value == null ? (detail?.item.costStatus === "unknown_baseline" ? "Unknown baseline" : "—") : `$${Number(value).toFixed(2)}`;
   const reference = (row: LedgerMovement) => row.receiptId ? `Receipt #${row.receiptId}` : row.orderId ? `Order #${row.orderId}` : row.sourceId ? `${row.sourceType} ${row.sourceId}` : row.sourceType;
   if (error) return <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>;
@@ -1730,7 +1684,7 @@ function NonCatalogTab({ getToken }: { getToken: () => Promise<string | null> })
     <div className="rounded-xl border border-border/40 p-4 space-y-3"><div className="flex items-center justify-between"><h2 className="font-semibold">{editingId ? "Edit non-catalog item" : "Create non-catalog item"}</h2>{editingId && <Button size="sm" variant="outline" onClick={() => { setEditingId(null); setForm(emptyNonCatalogForm()); }}>Cancel edit</Button>}</div><div className="grid gap-3 md:grid-cols-3">{input("Name", "name")}{input("Description", "description")}<label className="text-xs text-muted-foreground"><span className="mb-1 block">Section</span><select className="h-9 w-full rounded-md border bg-background px-2" value={form.sectionId} onChange={event => updateField("sectionId", event.target.value)}><option value="">Unsectioned</option>{sections.filter(section => section.isActive).map(section => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label>{input("Internal SKU", "sku")}{input("Barcode", "barcode")}{input("Unit", "unitOfMeasure")}{input("PAR", "parLevel", "number")}{input("Minimum Order Quantity", "moq", "number")}{input("Preferred Reorder Quantity", "preferredReorderQuantity", "number")}{input("Supplier", "supplier")}{input("Supplier SKU", "supplierSku")}{input("Unit Cost", "unitCost", "number")}<label className="text-xs text-muted-foreground md:col-span-3"><span className="mb-1 block">Notes</span><textarea className="min-h-20 w-full rounded-md border bg-background p-2 text-sm" value={form.notes} onChange={event => updateField("notes", event.target.value)} /></label></div><Button disabled={busy || !form.name.trim()} onClick={() => void run(async () => { await request(editingId ? `/api/admin/non-catalog/items/${editingId}` : "/api/admin/non-catalog/items", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(formPayload()) }); setEditingId(null); setForm(emptyNonCatalogForm()); })}>{editingId ? <Pencil size={14} /> : <Plus size={14} />}{editingId ? "Save item" : "Create item"}</Button></div>
     <div className="rounded-xl border border-border/40 p-4"><div className="mb-3 flex flex-wrap items-end gap-2"><label className="flex-1 text-xs text-muted-foreground"><span className="mb-1 block">New section</span><Input value={sectionName} onChange={event => setSectionName(event.target.value)} placeholder="e.g. Shipping Supplies" /></label><Button disabled={busy || !sectionName.trim()} onClick={() => void run(async () => { await request("/api/admin/non-catalog/sections", { method: "POST", body: JSON.stringify({ name: sectionName.trim() }) }); setSectionName(""); })}><Plus size={14} /> Create section</Button></div>{sections.filter(section => section.isActive).map(section => { const sectionItems = filteredItems.filter(item => item.sectionId === section.id); const open = expanded[section.id] !== false; return <div key={section.id} className="border-t border-border/40 py-3"><div className="flex flex-wrap items-center gap-2"><button aria-label={`${open ? "Collapse" : "Expand"} ${section.name}`} className="flex flex-1 items-center gap-2 text-left font-bold" onClick={() => setExpanded(current => ({ ...current, [section.id]: !open }))}>{open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}{section.name} <span className="text-xs font-normal text-muted-foreground">({sectionItems.length})</span></button>{sectionEditing === section.id ? <><Input className="w-52" value={sectionEditName} onChange={event => setSectionEditName(event.target.value)} /><Button size="sm" disabled={busy || !sectionEditName.trim()} onClick={() => void run(async () => { await request(`/api/admin/non-catalog/sections/${section.id}`, { method: "PATCH", body: JSON.stringify({ name: sectionEditName.trim() }) }); setSectionEditing(null); })}>Save</Button></> : <Button aria-label={`Rename ${section.name}`} size="sm" variant="ghost" onClick={() => { setSectionEditing(section.id); setSectionEditName(section.name); }}><Pencil size={14} /> Rename</Button>}<Button aria-label={`Archive ${section.name}`} size="sm" variant="ghost" disabled={busy} onClick={() => void run(async () => { await request(`/api/admin/non-catalog/sections/${section.id}`, { method: "DELETE" }); })}><Archive size={14} /> Archive</Button></div>{open && <div className="mt-2 space-y-2">{sectionItems.map(item => <NonCatalogItemRow key={item.id} item={item} quantity={locationId ? stockFor(item.id) : balances.filter(balance => balance.itemId === item.id).reduce((sum, balance) => sum + n(balance.quantityOnHand), 0)} effectivePar={effectivePar(item)} locationName={locations.find(location => location.id === Number(locationId))?.name} onDetail={() => setDetailItemId(item.id)} onEdit={() => beginEdit(item)} onArchive={() => void run(async () => { await request(`/api/admin/non-catalog/items/${item.id}`, { method: "DELETE" }); })} onAdjust={() => { setAdjustItemId(item.id); setAdjustment("0"); setAdjustmentReason(stockFor(item.id) === 0 ? "INITIAL" : "ADJUSTMENT"); }} />)}{sectionItems.length === 0 && <div className="px-6 py-2 text-sm text-muted-foreground">No matching active items.</div>}</div>}</div>; })}{filteredItems.filter(item => item.sectionId == null).length > 0 && <div className="border-t border-border/40 py-3"><div className="font-bold">Unsectioned</div>{filteredItems.filter(item => item.sectionId == null).map(item => <NonCatalogItemRow key={item.id} item={item} quantity={locationId ? stockFor(item.id) : balances.filter(balance => balance.itemId === item.id).reduce((sum, balance) => sum + n(balance.quantityOnHand), 0)} effectivePar={effectivePar(item)} onDetail={() => setDetailItemId(item.id)} onEdit={() => beginEdit(item)} onArchive={() => void run(async () => { await request(`/api/admin/non-catalog/items/${item.id}`, { method: "DELETE" }); })} onAdjust={() => { setAdjustItemId(item.id); setAdjustment("0"); }} />)}</div>}{sections.filter(section => section.isActive).length === 0 && <div className="text-sm text-muted-foreground">Create a section to organize non-catalog stock.</div>}</div>
     {adjustItemId != null && <div className="rounded-xl border border-primary/30 bg-primary/5 p-4"><div className="mb-2 font-semibold">Audited stock {adjustmentReason === "INITIAL" ? "initialization" : "adjustment"}: {items.find(item => item.id === adjustItemId)?.name}</div><div className="flex flex-wrap items-end gap-3"><label className="text-xs text-muted-foreground"><span className="mb-1 block">Location</span><select className="h-9 rounded-md border bg-background px-2" value={locationId} onChange={event => setLocationId(event.target.value)}><option value="">Choose location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Action</span><select className="h-9 rounded-md border bg-background px-2" value={adjustmentReason} onChange={event => setAdjustmentReason(event.target.value as "INITIAL" | "ADJUSTMENT")}><option value="INITIAL">Initialize stock</option><option value="ADJUSTMENT">Adjustment (+/-)</option></select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">{adjustmentReason === "INITIAL" ? "Starting quantity" : "Quantity change"}</span><Input type="number" value={adjustment} onChange={event => setAdjustment(event.target.value)} /></label><Button disabled={busy || !locationId || !Number.isFinite(Number(adjustment))} onClick={() => void run(async () => { const key = globalThis.crypto?.randomUUID?.() ?? `noncatalog-${Date.now()}-${adjustItemId}`; await request("/api/admin/non-catalog/balances/adjust", { method: "POST", body: JSON.stringify({ itemId: adjustItemId, locationId: Number(locationId), quantityDelta: Number(adjustment), reason: adjustmentReason, idempotencyKey: key }) }); setAdjustItemId(null); })}>Save audited movement</Button><Button variant="ghost" onClick={() => setAdjustItemId(null)}>Cancel</Button></div></div>}
-    {detailItemId != null && <InventoryLedgerDetail getToken={getToken} entityType="non_catalog" itemId={detailItemId} onClose={() => setDetailItemId(null)} />}
+    {detailItemId != null && <InventoryLedgerDetail getToken={getToken} entityType="non_catalog" itemId={detailItemId} onClose={() => setDetailItemId(null)} onChanged={() => { void load(); }} />}
   </div>;
 }
 
@@ -1743,7 +1697,7 @@ function NonCatalogItemRow({ item, quantity, effectivePar, locationName, onEdit,
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"stock" | "template" | "locations" | "stockgrid" | "health" | "noncatalog">("template");
+  const [tab, setTab] = useState<"template" | "locations" | "stockgrid" | "health" | "noncatalog">("stockgrid");
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -1761,12 +1715,11 @@ export default function AdminInventory() {
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
         {[
-          { key: "template" as const, label: "Inventory", icon: Settings2 },
-          { key: "stock" as const, label: "Stock Levels", icon: ClipboardList },
-          { key: "locations" as const, label: "Locations", icon: MapPin },
-          { key: "stockgrid" as const, label: "Stock Grid", icon: BarChart3 },
-          { key: "health" as const, label: "Health", icon: EyeOff },
+          { key: "stockgrid" as const, label: "All Inventory", icon: ClipboardList },
           { key: "noncatalog" as const, label: "Non-Catalog", icon: Package },
+          { key: "locations" as const, label: "Locations", icon: MapPin },
+          { key: "template" as const, label: "Shift Template", icon: Settings2 },
+          { key: "health" as const, label: "Health", icon: EyeOff },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1794,9 +1747,7 @@ export default function AdminInventory() {
         <InventoryHealthTab getToken={getToken} />
       ) : tab === "noncatalog" ? (
         <NonCatalogTab getToken={getToken} />
-      ) : (
-        <StockLevelsTab getToken={getToken} />
-      )}
+      ) : null}
     </div>
   );
 }
