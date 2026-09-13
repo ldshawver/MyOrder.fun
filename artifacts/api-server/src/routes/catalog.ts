@@ -486,8 +486,10 @@ router.get("/catalog", async (req, res): Promise<void> => {
   }
 
   rows = rows.sort((a, b) => {
-    const aRank = (a.isFeatured ? 0 : 2) + (a.isSaleFeatured || (a.compareAtPrice && Number(a.compareAtPrice) > Number(a.price)) ? 0 : 1);
-    const bRank = (b.isFeatured ? 0 : 2) + (b.isSaleFeatured || (b.compareAtPrice && Number(b.compareAtPrice) > Number(b.price)) ? 0 : 1);
+    // Featured is merchandising priority. Sale is a marker and price state,
+    // never an implicit sorting rule.
+    const aRank = a.isFeatured ? 0 : 1;
+    const bRank = b.isFeatured ? 0 : 1;
     if (aRank !== bRank) return aRank - bRank;
     return a.name.localeCompare(b.name);
   });
@@ -738,7 +740,10 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const body = UpdateCatalogItemBody.safeParse(req.body);
+  // Keep the generated field allow-list, and reject rather than silently strip
+  // unexpected client input.  This protects catalogue updates from mass
+  // assignment while preserving the intentionally supported edit fields.
+  const body = UpdateCatalogItemBody.strict().safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
@@ -768,7 +773,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     return;
   }
 
-  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, ...restBodyData } = body.data;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, ...restBodyData } = body.data;
   if (stockQuantity !== undefined) {
     res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
     return;
@@ -779,6 +784,9 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
+  if (parLevel !== undefined) updateData.parLevel = String(parLevel);
+  if (moq !== undefined) updateData.moq = String(moq);
+  if (preferredReorderQuantity !== undefined) updateData.preferredReorderQuantity = String(preferredReorderQuantity);
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.

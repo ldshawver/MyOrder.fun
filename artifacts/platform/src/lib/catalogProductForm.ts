@@ -9,6 +9,19 @@ function optionalText(form: CatalogProductDraft, key: string): string | undefine
   return String(form[key] || "").trim() || undefined;
 }
 
+function optionalNumber(form: CatalogProductDraft, key: string): number | null | undefined {
+  const raw = String(form[key] ?? "").trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function optionalJsonArray(form: CatalogProductDraft, key: string): unknown[] | undefined {
+  const raw = String(form[key] ?? "").trim();
+  if (!raw) return undefined;
+  try { const value = JSON.parse(raw) as unknown; return Array.isArray(value) ? value : undefined; } catch { return undefined; }
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -24,6 +37,10 @@ export function validateCatalogProductDraft(form: CatalogProductDraft): CatalogP
   if (!canonicalText(form, "category", "alavontCategory")) errors.category = "Category is required.";
   const price = Number(form.price);
   if (!Number.isFinite(price) || price <= 0) errors.price = "Price must be greater than zero.";
+  for (const key of ["parLevel", "moq", "preferredReorderQuantity"] as const) {
+    const value = optionalNumber(form, key);
+    if (value === undefined || (value != null && value < 0)) errors.price = `${key === "parLevel" ? "PAR" : key === "moq" ? "Minimum order quantity" : "Preferred reorder quantity"} must be a non-negative number.`;
+  }
   for (const key of ["imageUrl", "alavontImageUrl", "luciferCruzImageUrl"] as const) {
     const value = optionalText(form, key);
     if (value && !isHttpUrl(value)) errors[key] = "Image URL must be a valid HTTP or HTTPS URL.";
@@ -46,12 +63,31 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     description: optionalText(form, "description"),
     alavontDescription: String(form.alavontDescription || "").trim() || null,
     price: Number(form.price),
+    compareAtPrice: optionalNumber(form, "compareAtPrice"),
     regularPrice: form.regularPrice ? Number(form.regularPrice) : null,
+    homiePrice: optionalNumber(form, "homiePrice"),
     imageUrl: optionalText(form, "imageUrl"),
     alavontImageUrl: String(form.alavontImageUrl || "").trim() || null,
+    alavontInStock: form.alavontInStock !== false,
     labName: String(form.labName || "").trim() || null,
     sku: optionalText(form, "sku"),
     isAvailable: form.isAvailable !== false,
+    isTaxable: form.isTaxable !== false,
+    isFeatured: form.isFeatured === true,
+    isSaleFeatured: form.isSaleFeatured === true,
+    parLevel: optionalNumber(form, "parLevel") ?? 0,
+    moq: optionalNumber(form, "moq") ?? 0,
+    preferredReorderQuantity: optionalNumber(form, "preferredReorderQuantity") ?? 0,
+    displayName: optionalText(form, "displayName") ?? null,
+    displayCategory: optionalText(form, "displayCategory") ?? null,
+    displayDescription: optionalText(form, "displayDescription") ?? null,
+    displayImage: optionalText(form, "displayImage") ?? null,
+    marketingCopy: optionalText(form, "marketingCopy") ?? null,
+    upsellCopy: optionalText(form, "upsellCopy") ?? null,
+    promoBadges: String(form.promoBadges ?? "").split(",").map(value => value.trim()).filter(Boolean),
+    // Blank gallery input preserves the current value on PATCH. Gallery clearing
+    // is handled through the detailed editor's explicit media controls.
+    mediaGallery: optionalJsonArray(form, "mediaGallery"),
   };
 }
 

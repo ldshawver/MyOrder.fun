@@ -231,6 +231,14 @@ export const ListCatalogItemsQueryParams = zod.object({
   "mode": zod.coerce.string().optional()
 })
 
+export const listCatalogItemsResponseItemsItemParLevelMin = 0;
+
+export const listCatalogItemsResponseItemsItemMoqMin = 0;
+
+export const listCatalogItemsResponseItemsItemPreferredReorderQuantityMin = 0;
+
+
+
 export const ListCatalogItemsResponse = zod.object({
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -272,6 +280,9 @@ export const ListCatalogItemsResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(listCatalogItemsResponseItemsItemParLevelMin).optional(),
+  "moq": zod.number().min(listCatalogItemsResponseItemsItemMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(listCatalogItemsResponseItemsItemPreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),
@@ -354,6 +365,14 @@ export const GetCatalogItemParams = zod.object({
   "id": zod.coerce.number()
 })
 
+export const getCatalogItemResponseParLevelMin = 0;
+
+export const getCatalogItemResponseMoqMin = 0;
+
+export const getCatalogItemResponsePreferredReorderQuantityMin = 0;
+
+
+
 export const GetCatalogItemResponse = zod.object({
   "id": zod.number(),
   "tenantId": zod.number(),
@@ -394,6 +413,9 @@ export const GetCatalogItemResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(getCatalogItemResponseParLevelMin).optional(),
+  "moq": zod.number().min(getCatalogItemResponseMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(getCatalogItemResponsePreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),
@@ -408,6 +430,14 @@ export const GetCatalogItemResponse = zod.object({
 export const UpdateCatalogItemParams = zod.object({
   "id": zod.coerce.number()
 })
+
+export const updateCatalogItemBodyParLevelMin = 0;
+
+export const updateCatalogItemBodyMoqMin = 0;
+
+export const updateCatalogItemBodyPreferredReorderQuantityMin = 0;
+
+
 
 export const UpdateCatalogItemBody = zod.object({
   "name": zod.string().optional(),
@@ -465,8 +495,19 @@ export const UpdateCatalogItemBody = zod.object({
   "upsellCopy": zod.string().nullish(),
   "promoBadges": zod.array(zod.string()).optional(),
   "labName": zod.string().nullish(),
-  "receiptName": zod.string().nullish()
+  "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(updateCatalogItemBodyParLevelMin).optional(),
+  "moq": zod.number().min(updateCatalogItemBodyMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(updateCatalogItemBodyPreferredReorderQuantityMin).optional()
 })
+
+export const updateCatalogItemResponseParLevelMin = 0;
+
+export const updateCatalogItemResponseMoqMin = 0;
+
+export const updateCatalogItemResponsePreferredReorderQuantityMin = 0;
+
+
 
 export const UpdateCatalogItemResponse = zod.object({
   "id": zod.number(),
@@ -508,6 +549,9 @@ export const UpdateCatalogItemResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(updateCatalogItemResponseParLevelMin).optional(),
+  "moq": zod.number().min(updateCatalogItemResponseMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(updateCatalogItemResponsePreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),
@@ -1982,6 +2026,14 @@ export const AiConciergeChatBody = zod.object({
 }).optional()
 })
 
+export const aiConciergeChatResponseSuggestedItemsItemParLevelMin = 0;
+
+export const aiConciergeChatResponseSuggestedItemsItemMoqMin = 0;
+
+export const aiConciergeChatResponseSuggestedItemsItemPreferredReorderQuantityMin = 0;
+
+
+
 export const AiConciergeChatResponse = zod.object({
   "reply": zod.string(),
   "suggestedItems": zod.array(zod.object({
@@ -2024,6 +2076,9 @@ export const AiConciergeChatResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(aiConciergeChatResponseSuggestedItemsItemParLevelMin).optional(),
+  "moq": zod.number().min(aiConciergeChatResponseSuggestedItemsItemMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(aiConciergeChatResponseSuggestedItemsItemPreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),
@@ -2047,6 +2102,14 @@ export const AiCatalogSearchBody = zod.object({
   "query": zod.string(),
   "limit": zod.number().optional()
 })
+
+export const aiCatalogSearchResponseItemsItemParLevelMin = 0;
+
+export const aiCatalogSearchResponseItemsItemMoqMin = 0;
+
+export const aiCatalogSearchResponseItemsItemPreferredReorderQuantityMin = 0;
+
+
 
 export const AiCatalogSearchResponse = zod.object({
   "items": zod.array(zod.object({
@@ -2089,6 +2152,9 @@ export const AiCatalogSearchResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(aiCatalogSearchResponseItemsItemParLevelMin).optional(),
+  "moq": zod.number().min(aiCatalogSearchResponseItemsItemMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(aiCatalogSearchResponseItemsItemPreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),
@@ -2106,6 +2172,14 @@ export const AiUpsellSuggestionsBody = zod.object({
   "cartItemIds": zod.array(zod.number()),
   "orderId": zod.number().optional()
 })
+
+export const aiUpsellSuggestionsResponseSuggestionsItemParLevelMin = 0;
+
+export const aiUpsellSuggestionsResponseSuggestionsItemMoqMin = 0;
+
+export const aiUpsellSuggestionsResponseSuggestionsItemPreferredReorderQuantityMin = 0;
+
+
 
 export const AiUpsellSuggestionsResponse = zod.object({
   "suggestions": zod.array(zod.object({
@@ -2148,6 +2222,9 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "wooProductId": zod.string().nullish(),
   "wooVariationId": zod.string().nullish(),
   "receiptName": zod.string().nullish(),
+  "parLevel": zod.number().min(aiUpsellSuggestionsResponseSuggestionsItemParLevelMin).optional(),
+  "moq": zod.number().min(aiUpsellSuggestionsResponseSuggestionsItemMoqMin).optional(),
+  "preferredReorderQuantity": zod.number().min(aiUpsellSuggestionsResponseSuggestionsItemPreferredReorderQuantityMin).optional(),
   "labName": zod.string().nullish(),
   "customerSafeName": zod.string().nullish(),
   "customerSafeDescription": zod.string().nullish(),

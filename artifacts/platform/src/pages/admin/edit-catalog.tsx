@@ -30,6 +30,7 @@ type CatalogProduct = {
   price: number;
   regularPrice: number | null;
   compareAtPrice: number | null;
+  homiePrice: number | null;
   imageUrl: string | null;
   alavontImageUrl: string | null;
   isAvailable: boolean;
@@ -38,7 +39,21 @@ type CatalogProduct = {
   isLocalAlavont: boolean;
   sku: string | null;
   alavontInStock: boolean | null;
+  displayName: string | null;
+  displayCategory: string | null;
+  displayDescription: string | null;
+  displayImage: string | null;
+  marketingCopy: string | null;
+  upsellCopy: string | null;
+  promoBadges: string[] | null;
+  mediaGallery: unknown[] | null;
   labName: string | null;
+  receiptName: string | null;
+  isFeatured: boolean;
+  isSaleFeatured: boolean;
+  parLevel: number | string | null;
+  moq: number | string | null;
+  preferredReorderQuantity: number | string | null;
   stockQuantity: number | null;
 };
 
@@ -52,6 +67,8 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   alavontDescription: "",
   price: 0,
   regularPrice: null,
+  compareAtPrice: null,
+  homiePrice: null,
   imageUrl: "",
   alavontImageUrl: "",
   luciferCruzImageUrl: "",
@@ -63,6 +80,11 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   isAvailable: true,
   isTaxable: true,
   isWooManaged: false,
+  isFeatured: false,
+  isSaleFeatured: false,
+  parLevel: 0,
+  moq: 0,
+  preferredReorderQuantity: 0,
 };
 
 function fieldVal(v: unknown): string {
@@ -97,15 +119,32 @@ function EditDialog({
     luciferCruzDescription: fieldVal(item?.luciferCruzDescription),
     price: fieldVal(item?.price),
     regularPrice: fieldVal(item?.regularPrice),
+    compareAtPrice: fieldVal(item?.compareAtPrice),
+    homiePrice: fieldVal(item?.homiePrice),
     imageUrl: fieldVal(item?.imageUrl),
     alavontImageUrl: fieldVal(item?.alavontImageUrl),
+    alavontInStock: item?.alavontInStock !== false,
     luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
     labName: fieldVal(item?.labName),
+    receiptName: fieldVal(item?.receiptName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
     isTaxable: item?.isTaxable !== false,
+    isFeatured: item?.isFeatured === true,
+    isSaleFeatured: item?.isSaleFeatured === true,
+    parLevel: fieldVal(item?.parLevel),
+    moq: fieldVal(item?.moq),
+    preferredReorderQuantity: fieldVal(item?.preferredReorderQuantity),
+    displayName: fieldVal(item?.displayName),
+    displayCategory: fieldVal(item?.displayCategory),
+    displayDescription: fieldVal(item?.displayDescription),
+    displayImage: fieldVal(item?.displayImage),
+    marketingCopy: fieldVal(item?.marketingCopy),
+    upsellCopy: fieldVal(item?.upsellCopy),
+    promoBadges: Array.isArray(item?.promoBadges) ? item!.promoBadges!.join(", ") : "",
+    mediaGallery: JSON.stringify(item?.mediaGallery ?? []),
   });
   const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -184,6 +223,12 @@ function EditDialog({
               {input("SKU", "sku")}
               {input("Price ($)", "price", isWoo, "number")}
               {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
+              {input("Sale Price ($)", "compareAtPrice", false, "number")}
+              {input("Employee Discount ($)", "homiePrice", false, "number")}
+              {input("PAR", "parLevel", false, "number")}
+              {input("Minimum Order Quantity", "moq", false, "number")}
+              {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
+              {input("Receipt Name", "receiptName")}
             </div>
             <label className="flex flex-col gap-1 mt-3">
               <span className="text-xs text-muted-foreground font-medium">Alavont Description</span>
@@ -263,8 +308,30 @@ function EditDialog({
                 <input type="checkbox" checked={Boolean(form.isTaxable)} onChange={e => setForm(f => ({ ...f, isTaxable: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
                 <span className="text-sm">Taxable at the transaction location</span>
               </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.alavontInStock)} onChange={e => setForm(f => ({ ...f, alavontInStock: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Show catalogue stock indicator</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isFeatured)} onChange={e => setForm(f => ({ ...f, isFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Featured (promote in catalogue)</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Sale (show sale marker only)</span>
+              </label>
             </div>
           )}
+
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Optional presentation</div>
+            <div className="grid grid-cols-2 gap-3">
+              {input("Display Name", "displayName")}{input("Display Category", "displayCategory")}{input("Display Image URL", "displayImage")}{input("Promo Badges (comma separated)", "promoBadges")}
+              {input("Marketing Copy", "marketingCopy")}{input("Upsell Copy", "upsellCopy")}
+            </div>
+            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Display Description</span><textarea value={fieldVal(form.displayDescription)} onChange={e => setForm(f => ({ ...f, displayDescription: e.target.value }))} disabled={requestPending} rows={2} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Media Gallery JSON</span><textarea value={fieldVal(form.mediaGallery)} onChange={e => setForm(f => ({ ...f, mediaGallery: e.target.value }))} disabled={requestPending} rows={2} className="w-full font-mono text-xs rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+          </div>
 
           <div className="flex gap-2 pt-2">
             <Button type="button" onClick={() => void handleSave()} disabled={requestPending || !catalogProductDraftIsValid(form)} className="flex-1">

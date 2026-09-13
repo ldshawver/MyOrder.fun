@@ -72,6 +72,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [brand]);
 
   const addItem = useCallback((item: { id: number; name: string; price: number; imageUrl?: string | null }, quantity = 1) => {
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
     mutate(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
@@ -86,12 +87,18 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const updateQuantity = useCallback((id: number, delta: number) => {
-    mutate(prev =>
-      prev.map(i => i.id === id ? { ...i, quantity: Math.max(1, i.quantity + delta) } : i)
-    );
+    if (!Number.isSafeInteger(delta) || delta === 0) return;
+    mutate(prev => prev.flatMap(i => {
+      if (i.id !== id) return [i];
+      const quantity = i.quantity + delta;
+      // A decrement from one uses the normal cart removal behavior; a cart
+      // never persists a zero or negative line quantity.
+      return quantity > 0 ? [{ ...i, quantity }] : [];
+    }));
   }, [mutate]);
 
   const setQuantity = useCallback((id: number, quantity: number) => {
+    if (!Number.isSafeInteger(quantity)) return;
     if (quantity <= 0) {
       mutate(prev => prev.filter(i => i.id !== id));
     } else {

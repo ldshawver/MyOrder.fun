@@ -61,4 +61,10 @@ export interface UpdateCatalogItemBody {
   promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
+  /** @minimum 0 */
+  parLevel?: number;
+  /** @minimum 0 */
+  moq?: number;
+  /** @minimum 0 */
+  preferredReorderQuantity?: number;
 }

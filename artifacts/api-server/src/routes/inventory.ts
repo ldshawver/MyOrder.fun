@@ -482,6 +482,27 @@ router.get(
   }
 );
 
+// Inventory export is intentionally distinct from the catalogue configuration
+// export. It reports current per-location balances; it is not an import source
+// and never includes the immutable movement ledger.
+router.get("/admin/inventory/export", requirePermission("inventory.view"), async (req, res): Promise<void> => {
+  const tenantId = await resolveInventoryTenantId(req);
+  const snapshot = await getCatalogInventorySnapshot(tenantId);
+  const headers = ["Product ID", "SKU", "Product Name", "Customer-Safe Name", "Category", "Location", "Location Type", "Quantity", "Total Quantity", "PAR", "Inventory Classification"];
+  const escape = (value: unknown) => {
+    let text = value == null ? "" : String(value);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const lines = [headers.join(",")];
+  for (const item of snapshot.items) for (const location of item.locations) {
+    lines.push([item.id, item.sku ?? "", item.alavontName ?? item.name, item.customerSafeName ?? "", item.category ?? "", location.name, location.type, location.qty, item.totalStock, location.par, item.inventoryKind].map(escape).join(","));
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="inventory_export.csv"');
+  res.send(lines.join("\n"));
+});
+
 
 // ─── GET /api/admin/inventory/orphans ─────────────────────────────────────────
 // Admin-visible quarantine/report for balances that are not active sellable catalog stock.

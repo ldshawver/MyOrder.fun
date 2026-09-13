@@ -334,6 +334,7 @@ export interface CatalogInventoryLocationSnapshot {
 
 export interface CatalogInventorySnapshotItem {
   id: number;
+  sku: string | null;
   name: string;
   alavontName: string | null;
   luciferCruzName: string | null;
@@ -404,6 +405,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
   const [products, locations, balances] = await Promise.all([
     db.select({
       id: catalogItemsTable.id,
+      sku: catalogItemsTable.sku,
       name: catalogItemsTable.name,
       category: catalogItemsTable.category,
       price: catalogItemsTable.price,
@@ -463,6 +465,7 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
     const parLevel = locationBreakdown.reduce((total, loc) => total + loc.par, 0);
     return {
       id: item.id,
+      sku: item.sku ?? null,
       name: item.name,
       alavontName: item.alavontName ?? null,
       luciferCruzName: item.luciferCruzName ?? null,

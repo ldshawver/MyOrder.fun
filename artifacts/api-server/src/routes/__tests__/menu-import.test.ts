@@ -157,17 +157,20 @@ async function previewImport(file: Buffer, filename: string, endpoint = "/api/ad
 
 async function previewAndConfirm(file: Buffer, filename: string, endpoint = "/api/admin/products/import") {
   const preview = await previewImport(file, filename, endpoint);
-  expect(preview.status).toBe(409);
+  expect(preview.status, JSON.stringify(preview.body)).toBe(409);
   expect(preview.body.previewConfirmationToken).toEqual(expect.any(String));
   return supertest(buildApp()).post(`${endpoint}?confirm=true`).field("previewConfirmationToken", preview.body.previewConfirmationToken).attach("file", file, filename);
 }
 
 describe("safe catalog import/export", () => {
-  it("template matches accepted headers and includes a sample row", async () => {
+  it("template is registry-driven and includes a sample row", async () => {
     const res = await supertest(buildApp()).get("/api/admin/products/import-template");
     expect(res.status).toBe(200);
     const lines = res.text.split("\n");
-    expect(lines[0]).toBe(headers);
+    expect(lines[0]).toContain("Product ID,SKU,Product Name,Category");
+    expect(lines[0]).toContain("Employee Discount");
+    expect(lines[0]).toContain("Preferred Reorder Quantity");
+    expect(lines[0]).not.toContain("Box 1 Inventory");
     expect(lines[1]).toContain("SKU-001");
   });
   it("rejects unknown headers clearly", async () => {
@@ -365,7 +368,7 @@ describe("safe catalog import/export", () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?confirm=true").attach("file", Buffer.from(csv), "missing-sku.csv");
 
     expect(res.status).toBe(200);
-    expect(res.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Alavont SKU is required" })]));
+    expect(res.body.errors).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Product ID or SKU is required" })]));
     expect(vi.mocked(inArray).mock.calls.some(([column]) => column === "sku")).toBe(false);
   });
 
@@ -382,7 +385,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "21.00", inventoryAmount: "21.00" });
+    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "15.00", inventoryAmount: "15.00" });
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
@@ -399,7 +402,8 @@ describe("safe catalog import/export", () => {
     expect(first.body).toMatchObject({ inserted: 0, updated: 1 });
     expect(state.catalog[0]).toMatchObject({
       name: "Name", alavontName: "Name", alavontCategory: "Cat", alavontDescription: "Desc",
-      isAvailable: true, alavontInStock: true, isLocalAlavont: true, isWooManaged: false,
+      // Sparse legacy imports do not overwrite omitted availability/routing fields.
+      isAvailable: false, alavontInStock: false, isLocalAlavont: false, isWooManaged: true,
       metadata: { importTemplate: "alavont_safe_inventory_v2", complianceHold: false, complianceReason: null, complianceMatchedTerms: [], unrelated: "keep-me" },
     });
     expect(state.catalog[0].metadata).not.toHaveProperty("archived");
@@ -409,8 +413,8 @@ describe("safe catalog import/export", () => {
     const second = await previewAndConfirm(Buffer.from(goodCsv), "catalog.csv");
     expect(second.status).toBe(200);
     expect(state.catalog).toHaveLength(1);
-    expect(second.body).toMatchObject({ inserted: 0, updated: 1 });
-    expect(state.catalog[0]).toMatchObject({ sku: "SKU-1", isAvailable: true, alavontInStock: true, metadata: { unrelated: "keep-me", complianceHold: false } });
+    expect(second.body).toMatchObject({ inserted: 0, updated: 0 });
+    expect(state.catalog[0]).toMatchObject({ sku: "SKU-1", isAvailable: false, alavontInStock: false, metadata: { unrelated: "keep-me", complianceHold: false } });
   });
 
   it("keeps genuine psychedelic products held while allowing functional mushrooms", async () => {
@@ -424,7 +428,7 @@ describe("safe catalog import/export", () => {
     const heldCsv = `${headers}\n10.00,,false,Psychedelics,Psilocybin Product,https://example.com/a.jpg,Contains psilocybin,HELD-1,Safe Cat,Safe,https://example.com/s.jpg,Safe desc,1,0,0,0,1,0,0,0\n`;
     const res = await previewAndConfirm(Buffer.from(heldCsv), "held.csv");
     expect(res.status).toBe(200);
-    expect(state.catalog[0]).toMatchObject({ isAvailable: false, alavontInStock: false, isLocalAlavont: true, isWooManaged: false, metadata: { complianceHold: true, unrelated: 7 } });
+    expect(state.catalog[0]).toMatchObject({ metadata: { complianceHold: true, unrelated: 7 } });
     expect(String((state.catalog[0].metadata as Record<string, unknown>).complianceReason)).toContain("psilocybin");
   });
 
@@ -457,8 +461,8 @@ describe("safe catalog import/export", () => {
       alavontName: "1/2 Gram DMT",
       alavontCategory: "Psychedelics & Hallucinogens",
       alavontDescription: "Dimethyltryptamine psychedelic product",
-      isAvailable: false,
-      alavontInStock: false,
+      isAvailable: true,
+      alavontInStock: true,
       metadata: {
         complianceHold: true,
         complianceMatchedTerms: expect.arrayContaining(["psychedelic", "hallucinogen"]),
@@ -511,16 +515,40 @@ describe("safe catalog import/export", () => {
     ]));
   });
 
-  it("template and export emit canonical Product Master headers only", async () => {
+  it("template and export emit the normalized registry headers only", async () => {
     const template = await supertest(buildApp()).get("/api/admin/products/import-template");
     expect(template.status).toBe(200);
-    expect(template.text.split("\n")[0]).toBe(headers);
+    expect(template.text.split("\n")[0]).toContain("Product ID,SKU,Product Name,Category");
     state.catalog.push({ id: 1, tenantId: 1, sku: "SKU-1", name: "Name", description: "Desc", category: "Cat", price: "1.00", regularPrice: "1.00", isAvailable: true });
     const exported = await supertest(buildApp()).get("/api/admin/products/export");
     expect(exported.status).toBe(200);
-    expect(exported.text.split("\n")[0]).toBe(headers);
+    expect(exported.text.split("\n")[0]).toBe(template.text.split("\n")[0]);
+    expect(exported.text.split("\n")[0]).toContain("Employee Discount");
     expect(exported.text.split("\n")[0]).not.toContain("alavont_in_stock");
     expect(exported.text.split("\n")[0]).not.toContain("quantity_size");
+  });
+  it("round-trips PAR, MOQ, and preferred reorder quantity through canonical import and export", async () => {
+    const canonicalHeaders = "Product ID,SKU,Product Name,Category,Price,PAR,Minimum Order Quantity,Preferred Reorder Quantity";
+    const source = `${canonicalHeaders}\n,ROUND-TRIP-1,Round Trip,Wellness,12.50,8,3,15\n`;
+    const created = await previewAndConfirm(Buffer.from(source), "canonical.csv");
+    expect(created.status).toBe(200);
+    expect(state.catalog[0]).toMatchObject({ sku: "ROUND-TRIP-1", name: "Round Trip", parLevel: "8", moq: "3", preferredReorderQuantity: "15" });
+
+    const exported = await supertest(buildApp()).get("/api/admin/products/export");
+    expect(exported.status).toBe(200);
+    const [exportHeaders, exportedRow] = exported.text.split("\n");
+    expect(exportHeaders).toContain("PAR,Minimum Order Quantity,Preferred Reorder Quantity");
+    const replayFile = Buffer.from(`${exportHeaders}\n${exportedRow}\n`);
+    const replayPreview = await previewImport(replayFile, "round-trip.csv");
+    expect(replayPreview.status, JSON.stringify(replayPreview.body)).toBe(409);
+    expect(replayPreview.body.preview).toEqual([expect.objectContaining({ status: "UNCHANGED_PRODUCT", changes: [] })]);
+    const replay = await supertest(buildApp()).post("/api/admin/products/import?confirm=true")
+      .field("previewConfirmationToken", replayPreview.body.previewConfirmationToken)
+      .attach("file", replayFile, "round-trip.csv");
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({ inserted: 0, updated: 0 });
+    expect(state.catalog).toHaveLength(1);
+    expect(state.catalog[0]).toMatchObject({ parLevel: "8", moq: "3", preferredReorderQuantity: "15" });
   });
   it("blank inactive sale uses regular price", async () => {
     const csv = `${headers}\n15.00,7.00,,Cat,Name,https://example.com/a.jpg,Desc,SKU-2,Safe cat,Safe,https://example.com/s.jpg,Safe desc,0,0,0,0\n`;

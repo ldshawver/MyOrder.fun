@@ -13,33 +13,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-// ─── Template column reference (Alavont import spec) ─────────────────────────
-const REQUIRED_TEMPLATE_HEADERS = [
-  "Regular Price",
-  "Alavont Category",
-  "Alavont Name",
-  "Alavont SKU",
-];
-
-const TEMPLATE_HEADERS = [
-  "Regular Price",
-  "Sale Price",
-  "Active Sale",
-  "Alavont Category",
-  "Alavont Name",
-  "Alavont Image",
-  "Alavont Description",
-  "Alavont SKU",
-  "Safe Category",
-  "Safe Name",
-  "Safe Image",
-  "Safe Description",
-  "Box 1 Inventory",
-  "Box 2 Inventory",
-  "Storefront Inventory",
-  "Backstock Inventory",
-];
-
 type ImportTemplateColumn = {
   id: string;
   header: string;
@@ -47,23 +20,23 @@ type ImportTemplateColumn = {
   required: boolean;
   sampleValue: string;
   locked?: boolean;
+  description?: string;
+  type?: string;
+  nullable?: boolean;
+  blankBehavior?: string;
+  aliases?: string[];
 };
 
 type ImportTemplateSpec = {
-  version: 1;
+  version: number;
   columns: ImportTemplateColumn[];
 };
 
 const DEFAULT_IMPORT_SPEC: ImportTemplateSpec = {
-  version: 1,
-  columns: TEMPLATE_HEADERS.map(header => ({
-    id: header.replace(/[^a-zA-Z0-9_-]/g, "-"),
-    header,
-    canonical: header,
-    required: REQUIRED_TEMPLATE_HEADERS.includes(header),
-    sampleValue: "",
-    locked: REQUIRED_TEMPLATE_HEADERS.includes(header),
-  })),
+  // The server registry is authoritative.  This empty state deliberately does
+  // not carry a second handwritten field list while it is loading.
+  version: 2,
+  columns: [],
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────

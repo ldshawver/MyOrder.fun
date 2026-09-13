@@ -192,6 +192,12 @@ export interface CatalogItem {
   wooProductId?: string | null;
   wooVariationId?: string | null;
   receiptName?: string | null;
+  /** @minimum 0 */
+  parLevel?: number;
+  /** @minimum 0 */
+  moq?: number;
+  /** @minimum 0 */
+  preferredReorderQuantity?: number;
   labName?: string | null;
   customerSafeName?: string | null;
   customerSafeDescription?: string | null;
@@ -339,6 +345,12 @@ export interface UpdateCatalogItemBody {
   promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
+  /** @minimum 0 */
+  parLevel?: number;
+  /** @minimum 0 */
+  moq?: number;
+  /** @minimum 0 */
+  preferredReorderQuantity?: number;
 }
 
 export interface CatalogItemListResponse {

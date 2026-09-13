@@ -81,6 +81,9 @@ type ExtendedCatalogItem = CatalogItem & {
   mediaGallery?: Array<{ type?: "image" | "video"; src: string; alt?: string | null }>;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  parLevel?: string | number | null;
+  moq?: string | number | null;
+  preferredReorderQuantity?: string | number | null;
 };
 
 type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
@@ -96,7 +99,11 @@ interface CatalogItemForm {
   sku: string;
   imageUrl: string;
   stockQuantity: string;
+  parLevel: string;
+  moq: string;
+  preferredReorderQuantity: string;
   isAvailable: boolean;
+  isTaxable: boolean;
   alavontName: string;
   alavontDescription: string;
   alavontCategory: string;
@@ -304,9 +311,11 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
     { label: "Price / Sale Price ($) *", key: "price", type: "number" },
     { label: "Compare-at Price ($)", key: "compareAtPrice", type: "number" },
     { label: "Regular Price ($)", key: "regularPrice", type: "number" },
-    { label: "Homie Price ($)", key: "homiePrice", type: "number" },
+    { label: "Employee Discount ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
-    { label: "Stock Quantity", key: "stockQuantity", type: "number" },
+    { label: "PAR", key: "parLevel", type: "number" },
+    { label: "Minimum Order Quantity", key: "moq", type: "number" },
+    { label: "Preferred Reorder Quantity", key: "preferredReorderQuantity", type: "number" },
     { label: "Image URL", key: "imageUrl", type: "url", placeholder: "https://example.com/image.jpg" },
   ];
   return (
@@ -476,7 +485,11 @@ function emptyCatalogForm(): CatalogItemForm {
     sku: "",
     imageUrl: "",
     stockQuantity: "0",
+    parLevel: "0",
+    moq: "0",
+    preferredReorderQuantity: "0",
     isAvailable: true,
+    isTaxable: true,
     alavontName: "",
     alavontDescription: "",
     alavontCategory: "",
@@ -523,7 +536,11 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     sku: item.sku || "",
     imageUrl: item.imageUrl || "",
     stockQuantity: item.stockQuantity?.toString() || "0",
+    parLevel: item.parLevel?.toString() || "0",
+    moq: item.moq?.toString() || "0",
+    preferredReorderQuantity: item.preferredReorderQuantity?.toString() || "0",
     isAvailable: item.isAvailable ?? true,
+    isTaxable: item.isTaxable ?? true,
     alavontName: item.alavontName || "",
     alavontDescription: item.alavontDescription || "",
     alavontCategory: item.alavontCategory || "",
@@ -679,17 +696,20 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
   const [form, setForm] = useState<CatalogItemForm>(() => formFromItem(item));
   const updateMutation = useUpdateCatalogItem();
   const queryClient = useQueryClient();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setForm(formFromItem(item));
       setShowDualBrand(false);
       setShowPresentation(false);
+      setSaveError(null);
     }
   }, [item, open]);
 
   const handleSave = () => {
     if (!item) return;
+    setSaveError(null);
     const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
     updateMutation.mutate(
       {
@@ -705,8 +725,11 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           sku: form.sku || undefined,
           imageUrl: form.imageUrl || undefined,
           mediaGallery,
-          stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: form.isAvailable,
+          isTaxable: form.isTaxable,
+          parLevel: parseFloat(form.parLevel || "0"),
+          moq: parseFloat(form.moq || "0"),
+          preferredReorderQuantity: parseFloat(form.preferredReorderQuantity || "0"),
           alavontName: form.alavontName || undefined,
           alavontDescription: form.alavontDescription || undefined,
           alavontCategory: form.alavontCategory || undefined,
@@ -737,10 +760,11 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
         },
       },
       {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
-          onClose();
-        },
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
+            onClose();
+          },
+          onError: () => setSaveError("Could not save this catalogue item. No changes were applied."),
       }
     );
   };
@@ -753,6 +777,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
         </DialogHeader>
         <div className="space-y-3 pt-2">
           <ItemFormFields form={form} setForm={setForm} />
+          <p className="text-xs text-muted-foreground">Inventory quantities are managed through Inventory movements, not catalogue editing.</p>
           <MediaGalleryFields form={form} setForm={setForm} />
           <div className="flex items-center gap-3 pt-1">
             <span className="text-xs text-muted-foreground">Available for ordering</span>
@@ -762,6 +787,10 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
             >
               <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isAvailable ? "left-5" : "left-0.5"}`} />
             </button>
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            <span className="text-xs text-muted-foreground">Taxable</span>
+            <button onClick={() => setForm(prev => ({ ...prev, isTaxable: !prev.isTaxable }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.isTaxable ? "bg-primary" : "bg-muted"}`}><div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isTaxable ? "left-5" : "left-0.5"}`} /></button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <button
@@ -793,6 +822,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
             {showPresentation ? "Hide" : "Show"} Checkout Presentation Fields
           </button>
           {showPresentation && <CheckoutPresentationFields form={form} setForm={setForm} />}
+          {saveError && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">{saveError}</p>}
           <Button className="w-full rounded-xl" onClick={handleSave} disabled={updateMutation.isPending}>
             {updateMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>

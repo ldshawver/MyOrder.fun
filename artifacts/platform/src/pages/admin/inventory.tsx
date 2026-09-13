@@ -3,7 +3,7 @@ import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, Calendar,
   Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
-  Package, MapPin, AlertTriangle, ShieldOff, Archive, ChevronDown, ChevronRight, Pencil, Search,
+  Package, MapPin, AlertTriangle, ShieldOff, Archive, ChevronDown, ChevronRight, Pencil, Search, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1698,6 +1698,15 @@ function NonCatalogItemRow({ item, quantity, effectivePar, locationName, onEdit,
 export default function AdminInventory() {
   const { getToken } = useAuth();
   const [tab, setTab] = useState<"template" | "locations" | "stockgrid" | "health" | "noncatalog">("stockgrid");
+  const [exportError, setExportError] = useState<string | null>(null);
+  const downloadInventoryExport = useCallback(async () => {
+    setExportError(null);
+    const token = await getToken();
+    const response = await fetch("/api/admin/inventory/export", { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) { setExportError("Inventory export could not be downloaded."); return; }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a"); link.href = url; link.download = "inventory_export.csv"; link.click(); URL.revokeObjectURL(url);
+  }, [getToken]);
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -1710,7 +1719,9 @@ export default function AdminInventory() {
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
           <p className="text-xs text-muted-foreground mt-0.5">Master inventory, shift template, CSR boxes, storefront, backstock, and per-location stock</p>
         </div>
+        <Button className="ml-auto" size="sm" variant="outline" onClick={() => void downloadInventoryExport()}><Download size={14} />Export Inventory</Button>
       </div>
+      {exportError && <p role="alert" className="text-sm text-red-400">{exportError}</p>}
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
