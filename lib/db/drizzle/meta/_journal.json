@@ -253,6 +253,13 @@
       "when": 1789095830000,
       "tag": "0058_paypal_refund_durability",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789200000000,
+      "tag": "0059_print_bridge_discovery_registry",
+      "breakpoints": true
     }
   ]
 }
