@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { catalogProductDraftIsValid, createCatalogProductPayload, sanitizedCatalogError, validateCatalogProductDraft } from "@/lib/catalogProductForm";
+import { CATALOG_LIFECYCLE_LABEL, type CatalogLifecycleStatus } from "@/lib/catalogLifecycleStatus";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ type CatalogProduct = {
   moq: number | string | null;
   preferredReorderQuantity: number | string | null;
   stockQuantity: number | null;
+  lifecycleStatus?: CatalogLifecycleStatus;
 };
 
 const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isTaxable: boolean; isWooManaged: boolean } = {
@@ -356,6 +358,7 @@ export default function AdminEditCatalog() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [showWoo, setShowWoo] = useState(false);
+  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | CatalogLifecycleStatus>("all");
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [saveConfirmation, setSaveConfirmation] = useState<string | null>(null);
@@ -416,6 +419,7 @@ export default function AdminEditCatalog() {
 
   const filtered = items.filter(item => {
     if (!showWoo && item.isWooManaged) return false;
+    if (!item.isWooManaged && lifecycleFilter !== "all" && item.lifecycleStatus !== lifecycleFilter) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return (
@@ -428,6 +432,13 @@ export default function AdminEditCatalog() {
 
   const alavontCount = items.filter(i => !i.isWooManaged).length;
   const wooCount = items.filter(i => i.isWooManaged).length;
+  const localItems = items.filter(i => !i.isWooManaged);
+  const lifecycleCounts = {
+    customerVisible: localItems.filter(item => item.lifecycleStatus === "customer_visible").length,
+    unavailableHidden: localItems.filter(item => item.lifecycleStatus === "unavailable_hidden").length,
+    complianceHold: localItems.filter(item => item.lifecycleStatus === "compliance_hold").length,
+    archived: localItems.filter(item => item.lifecycleStatus === "archived").length,
+  };
 
   return (
     <div className="space-y-5">
@@ -485,14 +496,22 @@ export default function AdminEditCatalog() {
           <input type="checkbox" checked={showWoo} onChange={e => setShowWoo(e.target.checked)} className="w-3.5 h-3.5" />
           Show WooCommerce products
         </label>
+        <select aria-label="Catalogue lifecycle filter" value={lifecycleFilter} onChange={event => setLifecycleFilter(event.target.value as "all" | CatalogLifecycleStatus)} className="h-9 rounded-md border bg-background px-2 text-sm">
+          <option value="all">All</option>
+          <option value="customer_visible">Customer Visible</option>
+          <option value="compliance_hold">Held</option>
+          <option value="archived">Archived</option>
+        </select>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {[
           { label: "Total Products", value: alavontCount, icon: Package, color: "text-blue-400" },
-          { label: "Available", value: items.filter(i => !i.isWooManaged && i.isAvailable).length, icon: CheckCircle, color: "text-green-400" },
-          { label: "Hidden / Unavailable", value: items.filter(i => !i.isWooManaged && !i.isAvailable).length, icon: XCircle, color: "text-red-400" },
+          { label: "Customer Visible", value: lifecycleCounts.customerVisible, icon: CheckCircle, color: "text-green-400" },
+          { label: "Unavailable / Hidden", value: lifecycleCounts.unavailableHidden, icon: XCircle, color: "text-amber-400" },
+          { label: "Compliance Hold", value: lifecycleCounts.complianceHold, icon: XCircle, color: "text-orange-400" },
+          { label: "Archived", value: lifecycleCounts.archived, icon: XCircle, color: "text-red-400" },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="glass-card rounded-xl p-3 flex items-center gap-3">
             <Icon size={17} className={color} />
@@ -564,10 +583,11 @@ export default function AdminEditCatalog() {
                       )}
                     </td>
                     <td className="p-3 text-center">
-                      {item.isAvailable
-                        ? <span className="text-[10px] font-semibold text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">Active</span>
-                        : <span className="text-[10px] font-semibold text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">Hidden</span>
-                      }
+                      {(() => {
+                        const lifecycle = item.lifecycleStatus ?? "unavailable_hidden";
+                        const style = lifecycle === "customer_visible" ? "text-green-400 bg-green-400/10" : lifecycle === "archived" ? "text-red-400 bg-red-400/10" : lifecycle === "compliance_hold" ? "text-orange-400 bg-orange-400/10" : "text-amber-400 bg-amber-400/10";
+                        return <span className={`text-[10px] font-semibold ${style} px-2 py-0.5 rounded-full`}>{CATALOG_LIFECYCLE_LABEL[lifecycle]}</span>;
+                      })()}
                     </td>
                     <td className="p-3 text-center">
                       {item.isWooManaged

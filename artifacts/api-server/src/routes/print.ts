@@ -635,7 +635,9 @@ router.post(
 );
 
 
-const VALID_ROLES = ["kitchen", "receipt", "expo", "label", "bar"];
+// Discovery uses `unassigned`; only an authenticated tenant admin assigns a
+// routing function. Legacy roles remain readable during migration.
+const VALID_ROLES = ["unassigned", "customer_receipt", "thank_you", "report", "kitchen", "receipt", "expo", "label", "bar"];
 const VALID_CONN_TYPES = [
   "ethernet_direct",
   "mac_bridge",
@@ -780,7 +782,10 @@ router.patch(
     const b = req.body ?? {};
     const updates: Record<string, unknown> = {};
     if (b.name !== undefined) updates.name = String(b.name);
-    if (b.role !== undefined) updates.role = String(b.role);
+    if (b.role !== undefined) {
+      if (typeof b.role !== "string" || !VALID_ROLES.includes(b.role)) { res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(", ")}` }); return; }
+      updates.role = b.role;
+    }
     if (b.connectionType !== undefined)
       updates.connectionType = String(b.connectionType);
     if (
@@ -821,8 +826,11 @@ router.patch(
     if (b.directIp !== undefined)
       updates.directIp = b.directIp ? String(b.directIp) : null;
     if (b.directPort !== undefined) updates.directPort = Number(b.directPort);
-    if (b.bridgePrinterName !== undefined)
-      updates.bridgePrinterName = String(b.bridgePrinterName);
+    if (b.bridgePrinterName !== undefined) {
+      const queue = String(b.bridgePrinterName).trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/.test(queue)) { res.status(400).json({ error: "bridgePrinterName is invalid" }); return; }
+      updates.bridgePrinterName = queue;
+    }
     if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
     if (b.copies !== undefined)
       updates.copies = Math.min(5, Math.max(1, Number(b.copies)));

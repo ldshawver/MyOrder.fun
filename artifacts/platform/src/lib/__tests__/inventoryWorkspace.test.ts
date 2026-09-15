@@ -18,6 +18,13 @@ describe("consolidated inventory workspace", () => {
     expect(source).not.toContain('`/api/admin/inventory-balances/${balance.id}`');
   });
 
+  it("keeps Inventory Health secondary and shows the canonical preferred reorder quantity", () => {
+    expect(source).toContain("Inventory Health");
+    expect(source).toContain("showInventoryHealth");
+    expect(source).toContain("Preferred reorder");
+    expect(source).not.toContain('{ key: "health"');
+  });
+
   it("keeps movements behind the canonical detail workflow and refreshes balances after success", () => {
     expect(source).toContain('openAction={detail.action}');
     expect(source).toContain('<Button size="sm" onClick={actions.receive}>Receive</Button>');

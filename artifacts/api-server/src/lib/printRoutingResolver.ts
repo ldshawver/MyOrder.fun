@@ -58,34 +58,38 @@ export type RoutingDecision = {
   blockedReason: string | null;
 };
 
-export const THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2";
 export const THANK_YOU_STICKER_ARTWORK_SHA256 = "0fad41aa3b9f338e00f02d4bcd1e80acc34a6d4bb1cb8a846ce52b4d740a83f4";
 export const THANK_YOU_STICKER_TEMPLATE_VERSION = 1;
+/** Legacy staging-pull compatibility only; never used for assignment or routing. */
+export const THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2";
 
-/** Dedicated sticker policy: exact role + exact queue, with no fallback. */
+/** Tenant assignment decides the thank-you destination; queue names never do. */
 export function validateThankYouStickerPrinter(printer: Pick<PrintPrinter, "role" | "bridgePrinterName" | "name" | "isActive"> | null): { eligible: boolean; reason: string } {
-  if (!printer?.isActive) return { eligible: false, reason: "MARKLIFE_X2 is not configured and active" };
-  if (printer.role !== "thank_you_sticker") return { eligible: false, reason: "printer is not dedicated to thank_you_sticker jobs" };
-  if ((printer.bridgePrinterName ?? printer.name) !== THANK_YOU_STICKER_QUEUE) return { eligible: false, reason: "thank_you_sticker queue must be MARKLIFE_X2" };
-  return { eligible: true, reason: "dedicated MARKLIFE_X2 route verified" };
+  if (!printer?.isActive) return { eligible: false, reason: "No active thank-you printer is assigned" };
+  if (printer.role !== "thank_you") return { eligible: false, reason: "printer is not assigned to thank_you" };
+  if (!(printer.bridgePrinterName ?? printer.name)) return { eligible: false, reason: "assigned thank-you printer has no queue" };
+  return { eligible: true, reason: "tenant thank-you assignment verified" };
 }
 
 export async function resolveThankYouStickerRouting(order: PrintOrderContext): Promise<RoutingDecision> {
   const base = { requestedRole: "thank_you_sticker" as const, selectedBridgeProfileId: null, selectedBridgeUrl: null, selectedPrinterName: null, selectedPrinter: null, fallbackUsed: false };
   if (!order.tenantId) return { ...base, eligible: false, decisionReason: "tenant ownership is required for printer routing", blockedReason: "tenant ownership is required for printer routing" };
-  const profiles = (await getActiveBridgeProfiles(order.tenantId, order.locationId ?? null)).filter(profile => profile.bridgeType === "mac_studio");
-  if (profiles.length !== 1) return { ...base, eligible: false, decisionReason: "exactly one Mac Studio bridge is required", blockedReason: "exactly one Mac Studio bridge is required" };
-  const profile = profiles[0];
-  if (!await isBridgeHealthy(profile)) return { ...base, eligible: false, decisionReason: "MARKLIFE_X2 bridge is unavailable", blockedReason: "MARKLIFE_X2 bridge is unavailable" };
-  const printers = await db.select().from(printPrintersTable).where(and(
-    eq(printPrintersTable.tenantId, order.tenantId), eq(printPrintersTable.bridgeProfileId, profile.id),
-    eq(printPrintersTable.role, "thank_you_sticker"), eq(printPrintersTable.isActive, true),
-  )).limit(2);
-  if (printers.length !== 1) return { ...base, eligible: false, decisionReason: "exactly one dedicated MARKLIFE_X2 printer is required", blockedReason: "exactly one dedicated MARKLIFE_X2 printer is required" };
-  const printer = printers[0];
+  const tenantId = order.tenantId;
+  const profiles = await getActiveBridgeProfiles(tenantId, order.locationId ?? null);
+  if (!profiles.length) return { ...base, eligible: false, decisionReason: "no active tenant bridge is assigned", blockedReason: "no active tenant bridge is assigned" };
+  const assignments = (await Promise.all(profiles.map(async (profile) => {
+    const printers = await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.bridgeProfileId, profile.id),
+      eq(printPrintersTable.role, "thank_you"), eq(printPrintersTable.isActive, true),
+    )).limit(2);
+    return printers.map((printer) => ({ profile, printer }));
+  }))).flat();
+  if (assignments.length !== 1) return { ...base, eligible: false, decisionReason: "exactly one active thank-you printer must be assigned", blockedReason: "exactly one active thank-you printer must be assigned" };
+  const { profile, printer } = assignments[0]!;
   const validation = validateThankYouStickerPrinter(printer ?? null);
   if (!validation.eligible) return { ...base, eligible: false, decisionReason: validation.reason, blockedReason: validation.reason };
-  return { requestedRole: "thank_you_sticker", eligible: true, selectedBridgeProfileId: profile.id, selectedBridgeUrl: profile.bridgeUrl, selectedPrinterName: THANK_YOU_STICKER_QUEUE, selectedPrinter: printer, fallbackUsed: false, decisionReason: validation.reason, blockedReason: null };
+  if (!await isBridgeHealthy(profile)) return { ...base, eligible: false, decisionReason: "assigned thank-you bridge is unavailable", blockedReason: "assigned thank-you bridge is unavailable" };
+  return { requestedRole: "thank_you_sticker", eligible: true, selectedBridgeProfileId: profile.id, selectedBridgeUrl: profile.bridgeUrl, selectedPrinterName: printer.bridgePrinterName ?? printer.name, selectedPrinter: printer, fallbackUsed: false, decisionReason: validation.reason, blockedReason: null };
 }
 
 // ── Label Eligibility ─────────────────────────────────────────────────────────

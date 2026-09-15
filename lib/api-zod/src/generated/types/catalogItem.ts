@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { CatalogItemLifecycleStatus } from './catalogItemLifecycleStatus';
 import type { CatalogItemMediaGalleryItem } from './catalogItemMediaGalleryItem';
 import type { CatalogItemMetadata } from './catalogItemMetadata';
 
@@ -50,6 +51,7 @@ export interface CatalogItem {
   moq?: number;
   /** @minimum 0 */
   preferredReorderQuantity?: number;
+  lifecycleStatus?: CatalogItemLifecycleStatus;
   labName?: string | null;
   customerSafeName?: string | null;
   customerSafeDescription?: string | null;

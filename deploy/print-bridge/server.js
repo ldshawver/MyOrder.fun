@@ -22,6 +22,7 @@
  */
 
 const http = require("http");
+const https = require("https");
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
@@ -48,7 +49,11 @@ const USB_DEVICE = process.env.USB_DEVICE ?? "";
 const CUPS_RAW = String(process.env.CUPS_RAW ?? "false").toLowerCase() === "true";
 const MAX_COPIES = parseInt(process.env.MAX_COPIES ?? "5", 10);
 const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES ?? String(2 * 1024 * 1024), 10);
-const THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2";
+const DISCOVERY_URL = process.env.PRINT_BRIDGE_DISCOVERY_URL ?? "";
+const DISCOVERY_CREDENTIAL = process.env.PRINT_BRIDGE_CREDENTIAL ?? "";
+const DISCOVERY_BRIDGE_ID = process.env.PRINT_BRIDGE_ID ?? "";
+const DISCOVERY_ENVIRONMENT = process.env.PRINT_BRIDGE_ENVIRONMENT ?? "staging";
+const DISCOVERY_INTERVAL_MS = Math.max(60_000, Math.min(Number(process.env.PRINT_BRIDGE_DISCOVERY_INTERVAL_MS ?? 300_000), 3_600_000));
 
 if (!API_KEY) {
   console.error("PRINT_BRIDGE_API_KEY is required");
@@ -138,6 +143,29 @@ function listPrinters() {
   } catch {
     return [];
   }
+}
+
+function discoveryConfigured() {
+  return Boolean(DISCOVERY_URL && DISCOVERY_CREDENTIAL && DISCOVERY_BRIDGE_ID);
+}
+
+function postDiscovery(body) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(DISCOVERY_URL);
+    const client = target.protocol === "https:" ? https : http;
+    const request = client.request({ hostname: target.hostname, port: target.port || (target.protocol === "https:" ? 443 : 80), path: `${target.pathname}${target.search}`, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), "Authorization": `Bearer ${DISCOVERY_CREDENTIAL}`, "X-MyOrder-Bridge-ID": DISCOVERY_BRIDGE_ID, "X-MyOrder-Environment": DISCOVERY_ENVIRONMENT }, timeout: 8000 }, response => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+    request.on("timeout", () => request.destroy(new Error("discovery timeout")));
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
+async function discoverPrinters() {
+  if (!discoveryConfigured()) return;
+  const printers = listPrinters().filter(printer => printer.enabled).map(printer => ({ queue: printer.name, displayName: printer.name, receiptCapable: true, labelCapable: true }));
+  if (!printers.length) return;
+  try { const status = await postDiscovery(JSON.stringify({ printers })); log(status >= 200 && status < 300 ? "info" : "warn", "Printer discovery completed", { status, queueCount: printers.length }); }
+  catch (error) { log("warn", "Printer discovery failed", { error: String(error).replace(/(?:bearer|token|secret|key)\\s*[:=]\\s*\\S+/gi, "credential=[redacted]").slice(0, 240) }); }
 }
 
 /**
@@ -277,6 +305,7 @@ async function handleHealth(req, res) {
     cupsAvailable,
     printers,
     printerNames: printerNames(printers),
+    discoveryConfigured: discoveryConfigured(),
     time: new Date().toISOString(),
   });
 }
@@ -341,16 +370,9 @@ async function handlePrint(req, res) {
   const printableText = text || decodedText;
   const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
 
-  // Thank You stickers are a dedicated, fail-closed CUPS image workflow.
-  // Never use a configured/system default, raw socket, USB, receipt, or label printer.
-  if (role === "thank_you_sticker") {
-    if (printerName !== THANK_YOU_STICKER_QUEUE) {
-      return respond(res, 422, { success: false, error: "THANK_YOU_STICKER_PRINTER_MISMATCH" });
-    }
-    if (printableText || (!imagePath && !imageBase64)) {
-      return respond(res, 422, { success: false, error: "THANK_YOU_STICKER_IMAGE_REQUIRED" });
-    }
-  }
+  // Printer purpose is assigned by the tenant registry, not by a CUPS queue
+  // name. The bridge accepts only the already-registered explicit queue sent
+  // by the server and never selects a default queue on its own.
 
   if (!printableText && !imagePath && !imageBase64) {
     return respond(res, 400, {
@@ -543,4 +565,6 @@ server.listen(PORT, BIND_HOST, () => {
     usbDevice: USB_DEVICE || "none",
     cupsRaw: CUPS_RAW,
   });
+  void discoverPrinters();
+  if (discoveryConfigured()) setInterval(() => { void discoverPrinters(); }, DISCOVERY_INTERVAL_MS).unref();
 });

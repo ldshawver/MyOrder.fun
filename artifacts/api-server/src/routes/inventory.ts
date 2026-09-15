@@ -12,9 +12,10 @@ import {
   inventoryMovementsTable,
   inventoryReceiptsTable,
   inventoryValuationStatesTable,
+  auditLogsTable,
 } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
-import { requirePermission } from "../lib/roles";
+import { normalizeRole, requirePermission } from "../lib/roles";
 import { z } from "zod";
 import { getHouseTenantId } from "../lib/singleTenant";
 import {
@@ -31,7 +32,7 @@ import {
 import { collectPosIntegrityReport, assertPosIntegrityReport, PosIntegrityError } from "../lib/posIntegrity";
 import { collectInventoryReconcileReport, reconcileInventoryState } from "../lib/inventoryAuthority";
 import { ensureInventoryTransactionLogTable, replayInventoryTransaction } from "../lib/inventoryKernel";
-import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postInventoryMovement, transferInventory } from "../lib/inventoryMovementLedger";
+import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postInventoryMovement, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -143,6 +144,15 @@ const receiptBody = z.object({
   entityType: z.enum(["catalog", "non_catalog"]), itemId: z.number().int().positive(), locationId: z.number().int().positive(), quantity: movementDecimal, unitCost: movementDecimal,
   supplierReference: z.string().trim().max(240).optional(), reference: z.string().trim().max(240).optional(), receivedAt: z.string().datetime({ offset: true }).optional(), idempotencyKey: movementText,
 }).strict();
+const catalogReplenishmentBody = z.object({
+  locationId: z.number().int().positive().optional(),
+  parLevel: z.number().finite().min(0).max(1_000_000).optional(),
+  moq: z.number().finite().min(0).max(1_000_000).optional(),
+  preferredReorderQuantity: z.number().finite().min(0).max(1_000_000).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.parLevel === undefined && value.moq === undefined && value.preferredReorderQuantity === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide PAR, MOQ, or preferred reorder quantity" });
+  if (value.parLevel !== undefined && value.locationId === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "Location is required when updating PAR" });
+});
 const nonCatalogTenant = (req: import("express").Request) => req.dbUser!.tenantId ?? 0;
 const nonCatalogIdParam = z.string().regex(/^[1-9]\d*$/, "A positive scalar identifier is required");
 export function parseNonCatalogId(value: unknown): number | null {
@@ -273,6 +283,34 @@ router.post("/admin/inventory/transfers", requirePermission("inventory.manage"),
     }));
     res.status(transfer.out.idempotent ? 200 : 201).json({ transfer });
   } catch (error) { res.status(error instanceof InventoryMovementError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Inventory transfer failed" }); }
+});
+
+// Replenishment configuration uses the existing catalogue fields and the
+// canonical per-location PAR projection. It never changes stock quantities.
+router.patch("/admin/inventory/catalog/:itemId/replenishment", requirePermission("inventory.manage"), async (req, res): Promise<void> => {
+  const itemId = parseNonCatalogId(req.params.itemId);
+  const parsed = catalogReplenishmentBody.safeParse(req.body);
+  if (!itemId || !parsed.success) { res.status(400).json({ error: parsed.success ? "Invalid catalogue item" : parsed.error.message }); return; }
+  const tenantId = await resolveInventoryTenantId(req);
+  try {
+    const replenishment = await db.transaction(async tx => {
+      const [item] = await tx.select({ id: catalogItemsTable.id }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, itemId))).limit(1);
+      if (!item) throw new InventoryMovementError(404, "Inventory item was not found for this tenant");
+      if (parsed.data.parLevel !== undefined) {
+        const [location] = await tx.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, parsed.data.locationId!), eq(inventoryLocationsTable.isActive, true))).limit(1);
+        if (!location) throw new InventoryMovementError(404, "Active inventory location was not found for this tenant");
+        await setCatalogBalanceParProjection(tx, { tenantId, itemId, locationId: location.id, parLevel: String(parsed.data.parLevel) });
+      }
+      const configuration: Record<string, unknown> = { updatedAt: new Date() };
+      if (parsed.data.moq !== undefined) configuration.moq = String(parsed.data.moq);
+      if (parsed.data.preferredReorderQuantity !== undefined) configuration.preferredReorderQuantity = String(parsed.data.preferredReorderQuantity);
+      if (Object.keys(configuration).length > 1) await tx.update(catalogItemsTable).set(configuration).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, itemId)));
+      const [updated] = await tx.select({ moq: catalogItemsTable.moq, preferredReorderQuantity: catalogItemsTable.preferredReorderQuantity }).from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, itemId))).limit(1);
+      return { itemId, locationId: parsed.data.locationId ?? null, parLevel: parsed.data.parLevel ?? null, moq: updated?.moq ?? null, preferredReorderQuantity: updated?.preferredReorderQuantity ?? null };
+    });
+    await db.insert(auditLogsTable).values({ tenantId, actorId: req.dbUser!.id, actorEmail: req.dbUser!.email ?? "", actorRole: req.dbUser!.role, action: "inventory.catalog_replenishment_updated", resourceType: "catalog_item", resourceId: String(itemId), metadata: replenishment, ipAddress: req.ip });
+    res.json({ replenishment });
+  } catch (error) { res.status(error instanceof InventoryMovementError ? error.status : 500).json({ error: error instanceof Error ? error.message : "Could not update replenishment settings" }); }
 });
 
 router.get("/admin/inventory/movements", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
@@ -488,15 +526,36 @@ router.get(
 router.get("/admin/inventory/export", requirePermission("inventory.view"), async (req, res): Promise<void> => {
   const tenantId = await resolveInventoryTenantId(req);
   const snapshot = await getCatalogInventorySnapshot(tenantId);
-  const headers = ["Product ID", "SKU", "Product Name", "Customer-Safe Name", "Category", "Location", "Location Type", "Quantity", "Total Quantity", "PAR", "Inventory Classification"];
+  const mayViewCost = ["admin", "global_admin"].includes(normalizeRole(req.dbUser!.role));
+  const [sections, nonCatalogItems, nonCatalogBalances, locations, valuations] = await Promise.all([
+    db.select({ id: nonCatalogInventorySectionsTable.id, name: nonCatalogInventorySectionsTable.name }).from(nonCatalogInventorySectionsTable).where(eq(nonCatalogInventorySectionsTable.tenantId, tenantId)),
+    db.select().from(nonCatalogInventoryItemsTable).where(eq(nonCatalogInventoryItemsTable.tenantId, tenantId)),
+    db.select().from(nonCatalogInventoryBalancesTable).where(eq(nonCatalogInventoryBalancesTable.tenantId, tenantId)),
+    db.select({ id: inventoryLocationsTable.id, name: inventoryLocationsTable.name, type: inventoryLocationsTable.type }).from(inventoryLocationsTable).where(eq(inventoryLocationsTable.tenantId, tenantId)),
+    db.select().from(inventoryValuationStatesTable).where(eq(inventoryValuationStatesTable.tenantId, tenantId)),
+  ]);
+  const headers = ["Item Type", "Product ID", "SKU", "Product / Display Name", "Customer-Safe Name", "Category", "Section", "Description", "Availability", "Location", "Location Type", "Quantity", "PAR", "MOQ", "Preferred Reorder Quantity", ...(mayViewCost ? ["Authorized WAC / Cost"] : [])];
   const escape = (value: unknown) => {
     let text = value == null ? "" : String(value);
     if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   const lines = [headers.join(",")];
+  const row = (values: unknown[]) => lines.push(values.map(escape).join(","));
+  const catalogWac = new Map(valuations.filter(value => value.catalogItemId != null).map(value => [value.catalogItemId!, value.averageUnitCost]));
+  const nonCatalogWac = new Map(valuations.filter(value => value.nonCatalogItemId != null).map(value => [value.nonCatalogItemId!, value.averageUnitCost]));
   for (const item of snapshot.items) for (const location of item.locations) {
-    lines.push([item.id, item.sku ?? "", item.alavontName ?? item.name, item.customerSafeName ?? "", item.category ?? "", location.name, location.type, location.qty, item.totalStock, location.par, item.inventoryKind].map(escape).join(","));
+    row(["catalogue", item.id, item.sku ?? "", item.alavontName ?? item.name, item.customerSafeName ?? "", item.category ?? "", "", "", item.isAvailable ? "available" : "unavailable", location.name, location.type, location.qty, location.par, item.moq, item.preferredReorderQuantity, ...(mayViewCost ? [catalogWac.get(item.id) ?? item.costBasis ?? ""] : [])]);
+  }
+  const sectionById = new Map(sections.map(section => [section.id, section.name]));
+  const locationById = new Map(locations.map(location => [location.id, location]));
+  for (const item of nonCatalogItems) {
+    const itemBalances = nonCatalogBalances.filter(balance => balance.itemId === item.id);
+    for (const balance of itemBalances) {
+      const location = locationById.get(balance.locationId);
+      if (!location) continue;
+      row(["non_catalogue", item.id, item.sku ?? item.barcode ?? "", item.name, "", "", item.sectionId == null ? "" : sectionById.get(item.sectionId) ?? "", item.description ?? "", item.isActive ? "active" : "archived", location.name, location.type, balance.quantityOnHand, item.parLevel, item.moq, item.preferredReorderQuantity, ...(mayViewCost ? [nonCatalogWac.get(item.id) ?? item.unitCost ?? ""] : [])]);
+    }
   }
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="inventory_export.csv"');

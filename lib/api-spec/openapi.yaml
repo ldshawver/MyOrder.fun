@@ -1602,6 +1602,9 @@ components:
         preferredReorderQuantity:
           type: number
           minimum: 0
+        lifecycleStatus:
+          type: string
+          enum: [customer_visible, unavailable_hidden, compliance_hold, archived]
         labName:
           type: string
           nullable: true

@@ -162,7 +162,7 @@ export async function resolveReceiptPrinters(
     const rows = await db.select().from(printPrintersTable).where(and(
       eq(printPrintersTable.tenantId, context.tenantId),
       eq(printPrintersTable.isActive, true),
-      eq(printPrintersTable.role, "receipt"),
+      sql`${printPrintersTable.role} IN ('customer_receipt', 'receipt')`,
       eq(printPrintersTable.routingScope, "general"),
       sql`${printPrintersTable.locationId} IS NULL`,
     )).limit(1);
@@ -187,7 +187,7 @@ export async function resolveExpoPrinter(context: { tenantId: number; locationId
     const [fallback] = await db.select().from(printPrintersTable).where(and(
       eq(printPrintersTable.tenantId, context.tenantId),
       eq(printPrintersTable.isActive, true),
-      eq(printPrintersTable.role, "receipt"),
+      sql`${printPrintersTable.role} IN ('customer_receipt', 'receipt')`,
       eq(printPrintersTable.routingScope, "general"),
       sql`${printPrintersTable.locationId} IS NULL`,
     )).limit(1);

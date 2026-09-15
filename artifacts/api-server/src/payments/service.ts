@@ -80,7 +80,7 @@ export class PaymentService {
     return db.transaction(async tx => this.prepareRefundInTransaction(tx, input));
   }
 
-  async prepareRefundInTransaction(tx: any, input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
+  async prepareRefundInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
@@ -88,7 +88,7 @@ export class PaymentService {
       if (!attempt) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
       const [capture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (!capture) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
-      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter((row: any) => row.state === "locally_finalized" || row.state === "completed");
+      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter(row => row.state === "locally_finalized" || row.state === "completed");
       const refunded = completed.reduce((sum, row) => sum + Number(row.amount), 0); const amount = Number(input.amount ?? (Number(capture.amount) - refunded).toFixed(2));
       if (!Number.isFinite(amount) || amount <= 0 || refunded + amount > Number(capture.amount)) throw new PaymentServiceError(409, "INVALID_REFUND_AMOUNT", "Refund exceeds captured amount");
       const [existing] = await tx.select().from(paymentRefundsTable).where(and(eq(paymentRefundsTable.tenantId, input.tenantId), eq(paymentRefundsTable.paymentCaptureId, capture.id), eq(paymentRefundsTable.idempotencyKey, input.idempotencyKey))).limit(1);
@@ -116,7 +116,7 @@ export class PaymentService {
     return db.transaction(async tx => this.finalizeRefundInTransaction(tx, refundRowId));
   }
 
-  async finalizeRefundInTransaction(tx: any, refundRowId: number) {
+  async finalizeRefundInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], refundRowId: number) {
       const [row] = await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.id, refundRowId)).limit(1);
       if (!row) throw new PaymentServiceError(404, "REFUND_NOT_FOUND", "Refund intent not found");
       if (row.state === "locally_finalized") return { status: "completed", refundId: row.providerRefundId, replayed: true };
@@ -126,8 +126,8 @@ export class PaymentService {
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(eq(paymentAttemptsTable.id, capture.paymentAttemptId)).limit(1);
       const [order] = attempt ? await tx.select().from(ordersTable).where(and(eq(ordersTable.id, attempt.orderId), eq(ordersTable.tenantId, row.tenantId))).limit(1) : [];
       if (!attempt || !order) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
-      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter((refund: any) => refund.state === "locally_finalized" || refund.state === "completed");
-      const refundedBefore = completed.reduce((sum: number, refund: any) => sum + Number(refund.amount), 0);
+      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter(refund => refund.state === "locally_finalized" || refund.state === "completed");
+      const refundedBefore = completed.reduce((sum: number, refund) => sum + Number(refund.amount), 0);
       const amount = Number(row.amount);
       {
         const fullProviderRefund = refundedBefore + amount === Number(capture.amount);

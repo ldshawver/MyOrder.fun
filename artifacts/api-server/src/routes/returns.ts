@@ -8,7 +8,7 @@ import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { restoreCustomerCredit } from "../payments/customerCredit";
 import { loadPaymentConfig, requireOnlinePayments } from "../payments/config";
 import { PayPalProvider } from "../payments/paypal";
-import { PaymentService } from "../payments/service";
+import { PaymentService, PaymentServiceError } from "../payments/service";
 
 const router = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -25,15 +25,15 @@ const bodySchema = z.object({
   preview: z.boolean().optional().default(false),
 }).strict();
 
-type Row = Record<string, any>;
-const rows = <T extends Row>(value: any): T[] => Array.isArray(value) ? value as T[] : (value?.rows ?? []) as T[];
+type Row = Record<string, unknown>;
+const rows = <T extends Row>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | null | undefined)?.rows ?? []);
 const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
 const money = (n: number) => (n / 100).toFixed(2);
 
 /** Local effects for a PayPal return happen only after the provider identity
  * has been committed.  This function is repeat-safe via the return status and
  * inventory movement idempotency keys. */
-const finalizePayPalReturn = async (input: { returnId: number; tenantId: number; orderId: number; actor: any; ipAddress?: string }) => db.transaction(async tx => {
+const finalizePayPalReturn = async (input: { returnId: number; tenantId: number; orderId: number; actor: { id: number; email: string | null; role: string }; ipAddress?: string }) => db.transaction(async tx => {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
   const ret = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE id=${input.returnId} AND tenant_id=${input.tenantId} FOR UPDATE`))[0];
   if (!ret) throw new Error("Return transaction not found");
@@ -46,7 +46,7 @@ const finalizePayPalReturn = async (input: { returnId: number; tenantId: number;
     if (line.disposition !== "RESTOCK") continue;
     const sale = rows<Row>(await tx.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id=${input.tenantId} AND order_item_id=${Number(line.order_item_id)} AND movement_type='sale' ORDER BY id LIMIT 1`))[0];
     const valuation = rows<Row>(await tx.execute(sql`SELECT COALESCE(average_unit_cost, last_purchase_unit_cost) AS cost FROM inventory_valuation_states WHERE tenant_id=${input.tenantId} AND catalog_item_id=${Number(line.catalog_item_id)} LIMIT 1`))[0];
-    await postInventoryMovement(tx as any, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
+    await postInventoryMovement(tx as never, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
   }
   await tx.execute(sql`UPDATE return_transactions SET status='completed', updated_at=now() WHERE id=${input.returnId}`);
   await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId: input.tenantId, actorId: input.actor.id, actorEmail: input.actor.email ?? "", actorRole: input.actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(input.returnId), metadata: { orderId: input.orderId, refundAmount: String(ret.refund_amount), taxAmount: String(ret.tax_amount), tenderType: "paypal", providerFinalized: true }, ipAddress: input.ipAddress ?? null });
@@ -143,7 +143,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       return { status: 202, paypalPending: { returnId, refundAmount: money(total), taxAmount: money(taxTotal), reason: parsed.data.reason, intent } };
     }
     if (tenderType === "customer_credit") {
-      await restoreCustomerCredit(tx as any, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: total, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
+      await restoreCustomerCredit(tx as never, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: total, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
     } else {
       const shift = rows<Row>(await tx.execute(sql`SELECT id, tech_id, box_assignment_id, status FROM lab_tech_shifts WHERE tenant_id = ${tenantId} AND id = ${order.assigned_shift_id ?? 0} LIMIT 1`))[0];
       if (!shift || shift.status !== "active") return { status: 409, error: "An active accountable cash session is required for cash refunds" };
@@ -157,7 +157,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       if (c.line.disposition === "RESTOCK") {
         const sale = rows<Row>(await tx.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_item_id = ${c.line.orderItemId} AND movement_type = 'sale' ORDER BY id LIMIT 1`))[0];
         const valuation = rows<Row>(await tx.execute(sql`SELECT COALESCE(average_unit_cost, last_purchase_unit_cost) AS cost FROM inventory_valuation_states WHERE tenant_id = ${tenantId} AND catalog_item_id = ${Number(c.item.catalog_item_id)} LIMIT 1`))[0];
-        await postInventoryMovement(tx as any, { tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "catalog", itemId: Number(c.item.catalog_item_id), locationId: Number(order.locationId), movementType: "customer_return", quantity: String(c.line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${c.line.orderItemId}`, orderId, orderItemId: c.line.orderItemId, reasonCode: "customer_return_restock", reasonText: parsed.data.reason, idempotencyKey: `return-movement:${returnId}:${c.line.orderItemId}` });
+        await postInventoryMovement(tx as never, { tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "catalog", itemId: Number(c.item.catalog_item_id), locationId: Number(order.locationId), movementType: "customer_return", quantity: String(c.line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${c.line.orderItemId}`, orderId, orderItemId: c.line.orderItemId, reasonCode: "customer_return_restock", reasonText: parsed.data.reason, idempotencyKey: `return-movement:${returnId}:${c.line.orderItemId}` });
       }
       await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_LINE_COMPLETED", resourceType: "return_line", resourceId: String(line.id), metadata: { orderId, orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition, returnId }, ipAddress: req.ip ?? null });
     }
@@ -169,6 +169,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
   });
   if ("paypalPending" in outcome) {
     const pending = outcome.paypalPending;
+    if (!pending) { res.status(500).json({ error: "Invalid return outcome" }); return; }
     const paypalService = new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())));
     try {
       // Re-entering with the same return idempotency key reuses the durable

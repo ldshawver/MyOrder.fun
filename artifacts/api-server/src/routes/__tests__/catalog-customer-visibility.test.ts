@@ -94,6 +94,23 @@ describe("customer catalogue visibility", () => {
     expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1]);
   });
 
+  it("returns restrictive server-derived lifecycle states to an administrator without reactivating the rows", async () => {
+    actor.role = "admin";
+    rows.catalog = [
+      catalogRow(1),
+      catalogRow(2, { isAvailable: false }),
+      catalogRow(3, { isAvailable: true, metadata: { complianceHold: true } }),
+      catalogRow(4, { isAvailable: true, metadata: { archived: true } }),
+    ];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.items.map((item: { id: number; lifecycleStatus: string }) => [item.id, item.lifecycleStatus]))
+      .toEqual([[1, "customer_visible"], [2, "unavailable_hidden"], [3, "compliance_hold"], [4, "archived"]]);
+    expect(response.body.items.find((item: { id: number }) => item.id === 4)?.isAvailable).toBe(true);
+  });
+
   it("keeps the customer catalogue complete across pages and does not apply a second frontend-style filter", async () => {
     rows.catalog = Array.from({ length: 25 }, (_, index) => catalogRow(index + 1));
 

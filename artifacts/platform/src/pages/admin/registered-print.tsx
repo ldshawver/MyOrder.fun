@@ -147,6 +147,16 @@ export default function RegisteredPrintAdmin({
     }
   }
 
+  async function assignFunction(printer: RegisteredPrinter, role: string) {
+    setMessage(null);
+    try {
+      await api(`/api/print/printers/${printer.id}`, { method: "PATCH", body: JSON.stringify({ role }) });
+      await load();
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof Error ? error.message : "Printer assignment failed" });
+    }
+  }
+
   if (loading)
     return (
       <div className="py-10 text-center text-sm text-muted-foreground">
@@ -242,6 +252,14 @@ export default function RegisteredPrintAdmin({
                 {printer.bridgePrinterName ?? "invalid/unset"} ·{" "}
                 {printer.isActive ? "active" : "inactive"}
               </div>
+              <label className="mt-2 block text-xs text-muted-foreground">Routing function
+                <select aria-label={`Routing function for ${printer.name}`} className="ml-2 h-7 rounded border bg-background px-1" value={printer.role} onChange={event => void assignFunction(printer, event.target.value)}>
+                  <option value="unassigned">Unassigned</option>
+                  <option value="customer_receipt">Customer Receipt</option>
+                  <option value="thank_you">Thank You</option>
+                  <option value="report">Reports / Inventory Exports</option>
+                </select>
+              </label>
             </div>
             {mode === "test" &&
             printer.role === "receipt" &&

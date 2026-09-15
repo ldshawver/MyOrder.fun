@@ -345,6 +345,9 @@ export interface CatalogInventorySnapshotItem {
   stockQuantity: number;
   stockUnit: string;
   parLevel: number;
+  moq: number;
+  preferredReorderQuantity: number;
+  costBasis: number | null;
   isAvailable: boolean | null;
   isWooManaged: boolean;
   isLocalAlavont: boolean;
@@ -418,6 +421,9 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       stockUnit: catalogItemsTable.stockUnit,
       isWooManaged: catalogItemsTable.isWooManaged,
       isLocalAlavont: catalogItemsTable.isLocalAlavont,
+      moq: catalogItemsTable.moq,
+      preferredReorderQuantity: catalogItemsTable.preferredReorderQuantity,
+      costBasis: catalogItemsTable.costBasis,
     }).from(catalogItemsTable)
       .where(and(
         eq(catalogItemsTable.tenantId, tenantId),
@@ -476,6 +482,9 @@ export async function getCatalogInventorySnapshot(tenantId: number): Promise<{
       stockQuantity: totalStock,
       stockUnit: item.stockUnit ?? "#",
       parLevel,
+      moq: parseFloat(String(item.moq ?? "0")),
+      preferredReorderQuantity: parseFloat(String(item.preferredReorderQuantity ?? "0")),
+      costBasis: item.costBasis == null ? null : parseFloat(String(item.costBasis)),
       isAvailable: item.isAvailable,
       isWooManaged: item.isWooManaged ?? false,
       isLocalAlavont: item.isLocalAlavont ?? true,

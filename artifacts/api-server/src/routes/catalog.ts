@@ -59,6 +59,19 @@ function isArchivedOrSafeDuplicateRow(row: { metadata?: unknown }): boolean {
   return metadata.archived === true || metadata.safeOnlyDuplicate === true || metadata.mergedIntoCatalogItemId != null;
 }
 
+export type CatalogLifecycleStatus = "customer_visible" | "unavailable_hidden" | "compliance_hold" | "archived";
+
+/** The admin lifecycle projection is server-owned; UI callers must not infer it from availability. */
+export function getCatalogLifecycleStatus(row: { isAvailable: boolean; alavontInStock: boolean | null; metadata?: unknown }): CatalogLifecycleStatus {
+  const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+    ? row.metadata as Record<string, unknown>
+    : {};
+  if (isArchivedOrSafeDuplicateRow({ metadata })) return "archived";
+  if (metadata.complianceHold === true) return "compliance_hold";
+  if (row.isAvailable !== true || row.alavontInStock === false) return "unavailable_hidden";
+  return "customer_visible";
+}
+
 function activeProductRows<T extends { metadata?: unknown }>(rows: T[]): T[] {
   return rows.filter(row => !isArchivedOrSafeDuplicateRow(row));
 }
@@ -264,6 +277,7 @@ function mapItem(
     mediaGallery,
     tags: i.tags ?? [],
     metadata: alavontOnly ? {} : i.metadata,
+    lifecycleStatus: alavontOnly ? undefined : getCatalogLifecycleStatus(i),
     isFeatured: i.isFeatured ?? false,
     isSaleFeatured: i.isSaleFeatured ?? false,
     internalName: alavontOnly ? null : (i.internalName ?? null),
@@ -434,7 +448,11 @@ router.get("/catalog", async (req, res): Promise<void> => {
     .where(eq(catalogItemsTable.tenantId, tenantId))
     .orderBy(asc(catalogItemsTable.name));
 
-  rows = activeProductRows(rows);
+  // Customer catalogue calls must never receive archived or safe-duplicate
+  // products. Administrators need those same records to audit their
+  // restrictive lifecycle state, so do not discard them before mapping the
+  // server-derived lifecycleStatus.
+  if (!isAdminActor) rows = activeProductRows(rows);
   const totalBeforeFilters = rows.length;
 
   if (query.data.category) {

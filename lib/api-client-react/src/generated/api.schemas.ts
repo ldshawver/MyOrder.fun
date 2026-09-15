@@ -156,6 +156,16 @@ export type CatalogItemMediaGalleryItem = {
 
 export type CatalogItemMetadata = { [key: string]: unknown };
 
+export type CatalogItemLifecycleStatus = typeof CatalogItemLifecycleStatus[keyof typeof CatalogItemLifecycleStatus];
+
+
+export const CatalogItemLifecycleStatus = {
+  customer_visible: 'customer_visible',
+  unavailable_hidden: 'unavailable_hidden',
+  compliance_hold: 'compliance_hold',
+  archived: 'archived',
+} as const;
+
 export interface CatalogItem {
   id: number;
   tenantId: number;
@@ -198,6 +208,7 @@ export interface CatalogItem {
   moq?: number;
   /** @minimum 0 */
   preferredReorderQuantity?: number;
+  lifecycleStatus?: CatalogItemLifecycleStatus;
   labName?: string | null;
   customerSafeName?: string | null;
   customerSafeDescription?: string | null;

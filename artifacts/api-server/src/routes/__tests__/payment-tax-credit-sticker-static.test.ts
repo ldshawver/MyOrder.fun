@@ -21,10 +21,11 @@ describe("payment and sticker release invariants", () => {
     expect(read("deploy/docker-compose.staging.yml")).not.toContain("STRIPE_SECRET_KEY");
   });
 
-  it("fails closed and exclusively routes stickers to MARKLIFE_X2", () => {
+  it("keeps bridge printing authenticated without a queue-name business policy", () => {
     const bridge = read("deploy/print-bridge/server.js");
-    expect(bridge).toContain('THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2"');
-    expect(bridge).toContain("THANK_YOU_STICKER_PRINTER_MISMATCH");
-    expect(bridge).toContain('role !== "thank_you_sticker" && printableText && DIRECT_PRINTER_IP');
+    expect(bridge).not.toContain('THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2"');
+    expect(bridge).toContain("PRINT_BRIDGE_API_KEY");
+    expect(bridge).toContain("discoveryConfigured");
+    expect(bridge).not.toContain("THANK_YOU_STICKER_PRINTER_MISMATCH");
   });
 });

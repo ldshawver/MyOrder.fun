@@ -30,13 +30,13 @@ import rolePermissionsRouter from "./role-permissions";
 import privacyRouter from "./privacy";
 import pwaPushRouter from "./pwa-push";
 import taxConfigurationsRouter from "./tax-configurations";
-import stagingStickerBridgeRouter from "./staging-sticker-bridge";
+import printBridgeDiscoveryRouter from "./print-bridge-discovery";
 import returnsRouter from "./returns";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
-router.use(stagingStickerBridgeRouter);
+router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);
 router.use(tenantsRouter);
