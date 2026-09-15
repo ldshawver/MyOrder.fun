@@ -6,7 +6,7 @@ import {
   getListCatalogItemsQueryKey,
   type CatalogItem,
 } from "@workspace/api-client-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -19,6 +19,7 @@ import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
 
 type MenuMode = "alavont" | "lucifer";
+type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
 
 const LC_MAIN_CATEGORIES = [
   "Anal Play",
@@ -879,10 +880,26 @@ export default function Catalog() {
       return res.json() as Promise<{ categories: string[] }>;
     },
   });
-  const { data, isLoading } = useListCatalogItems(
-    { search, category: category !== "all" ? category : undefined, limit: 200, mode: menuMode === "lucifer" ? "lucifer" : "alavont" },
-    { query: { queryKey: ["listCatalogItems", search, category, menuMode] } }
-  );
+  const catalogQuery = useInfiniteQuery({
+    queryKey: ["listCatalogItems", search, category, menuMode],
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }): Promise<CatalogPage> => {
+      const query = new URLSearchParams({ limit: "200", page: String(pageParam), mode: menuMode === "lucifer" ? "lucifer" : "alavont" });
+      if (search) query.set("search", search);
+      if (category !== "all") query.set("category", category);
+      const token = await getToken();
+      const res = await fetch(`/api/catalog?${query.toString()}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+      if (!res.ok) throw new Error(`Could not load catalogue (${res.status})`);
+      return res.json() as Promise<CatalogPage>;
+    },
+    getNextPageParam: lastPage => lastPage.page * lastPage.limit < lastPage.total ? lastPage.page + 1 : undefined,
+  });
+
+  useEffect(() => {
+    if (catalogQuery.hasNextPage && !catalogQuery.isFetchingNextPage) {
+      void catalogQuery.fetchNextPage();
+    }
+  }, [catalogQuery.fetchNextPage, catalogQuery.hasNextPage, catalogQuery.isFetchingNextPage]);
 
   const isLC = menuMode === "lucifer";
   const categories = ["all", ...(categoriesRes?.categories ?? [])]
@@ -896,7 +913,8 @@ export default function Catalog() {
       return a.localeCompare(b);
     });
 
-  const allItems = data?.items ?? [];
+  const allItems = catalogQuery.data?.pages.flatMap(page => page.items) ?? [];
+  const isLoading = catalogQuery.isLoading || catalogQuery.isFetchingNextPage;
 
   // In LC mode the API returns only WooCommerce-synced Lucifer Cruz products.
   // Alavont rows can still carry LC mapping fields for payment conversion,
