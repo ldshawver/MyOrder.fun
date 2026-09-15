@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import {
-  useListCatalogItems,
   useUpdateCatalogItem,
   useGetCurrentUser,
   getListCatalogItemsQueryKey,
@@ -894,12 +893,13 @@ export default function Catalog() {
     },
     getNextPageParam: lastPage => lastPage.page * lastPage.limit < lastPage.total ? lastPage.page + 1 : undefined,
   });
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = catalogQuery;
 
   useEffect(() => {
-    if (catalogQuery.hasNextPage && !catalogQuery.isFetchingNextPage) {
-      void catalogQuery.fetchNextPage();
+    if (hasNextPage && !isFetchingNextPage) {
+      void fetchNextPage();
     }
-  }, [catalogQuery.fetchNextPage, catalogQuery.hasNextPage, catalogQuery.isFetchingNextPage]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const isLC = menuMode === "lucifer";
   const categories = ["all", ...(categoriesRes?.categories ?? [])]

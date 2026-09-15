@@ -31,7 +31,7 @@ describe("catalogue edit integrity", () => {
   it("continues loading customer catalogue pages instead of silently truncating after the first 200 rows", () => {
     expect(catalog).toContain("useInfiniteQuery");
     expect(catalog).toContain("getNextPageParam: lastPage => lastPage.page * lastPage.limit < lastPage.total ? lastPage.page + 1 : undefined");
-    expect(catalog).toContain("void catalogQuery.fetchNextPage()");
+    expect(catalog).toContain("void fetchNextPage()");
     expect(catalog).toContain("catalogQuery.data?.pages.flatMap(page => page.items)");
   });
 });
