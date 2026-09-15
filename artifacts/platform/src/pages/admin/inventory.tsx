@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/react";
 import {
   Save, ClipboardList, DollarSign, RefreshCw, Calendar,
-  Settings2, Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
+  Eye, EyeOff, Loader2, Plus, Trash2, RotateCcw, Link2, Database,
   Package, MapPin, AlertTriangle, ShieldOff, Archive, ChevronDown, ChevronRight, Pencil, Search, Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,13 @@ type InvItem = {
   stockQuantity: number | null;
   stockUnit: string;
   totalStock: number;
+  parLevel: number;
+  moq: number;
+  customerSafeName?: string | null;
+  sku?: string | null;
   isAvailable: boolean;
+  alavontInStock?: boolean | null;
+  held?: boolean;
   locations: InvLocEntry[];
 };
 
@@ -68,7 +74,6 @@ function inventoryLocationRoleLabel(location: { name: string; type: string }): s
   if (location.name === "Backstock" || location.type === "backstock") return "Primary Stock";
   return "Allocated / Held Stock";
 }
-
 function inventoryLocationShortType(location: { name: string; type: string }): string {
   if (location.name === "Backstock" || location.type === "backstock") return "Backstock";
   if (location.type === "csr_box") return "CSR Box";
@@ -1635,9 +1640,9 @@ type NonCatalogLocation = { id: number; name: string; type: string };
 type NonCatalogForm = { name: string; description: string; sectionId: string; sku: string; barcode: string; unitOfMeasure: string; parLevel: string; moq: string; preferredReorderQuantity: string; unitCost: string; supplier: string; supplierSku: string; notes: string };
 const emptyNonCatalogForm = (): NonCatalogForm => ({ name: "", description: "", sectionId: "", sku: "", barcode: "", unitOfMeasure: "each", parLevel: "0", moq: "0", preferredReorderQuantity: "0", unitCost: "", supplier: "", supplierSku: "", notes: "" });
 
-function InventoryLedgerDetail({ getToken, entityType, itemId, onClose, onChanged }: { getToken: () => Promise<string | null>; entityType: "catalog" | "non_catalog"; itemId: number; onClose: () => void; onChanged?: () => void }) {
+function InventoryLedgerDetail({ getToken, entityType, itemId, onClose, openAction, onChanged }: { getToken: () => Promise<string | null>; entityType: "catalog" | "non_catalog"; itemId: number; onClose: () => void; openAction?: "receipt" | "transfer" | "loss" | "adjustment"; onChanged?: () => void }) {
   const [detail, setDetail] = useState<LedgerDetail | null>(null); const [error, setError] = useState<string | null>(null);
-  const [locations, setLocations] = useState<NonCatalogLocation[]>([]); const [action, setAction] = useState<"receipt" | "transfer" | "loss" | "adjustment" | null>(null); const [busy, setBusy] = useState(false);
+  const [locations, setLocations] = useState<NonCatalogLocation[]>([]); const [action, setAction] = useState<"receipt" | "transfer" | "loss" | "adjustment" | null>(openAction ?? null); const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ locationId: "", destinationLocationId: "", quantity: "", unitCost: "", supplierReference: "", reason: "", movementType: "waste", direction: "decrease" });
   const load = useCallback(async () => { const token = await getToken(); const headers: Record<string, string> = {}; if (token) headers.Authorization = `Bearer ${token}`; const [detailResponse, locationsResponse] = await Promise.all([fetch(`/api/admin/inventory/${entityType}/${itemId}/detail`, { headers }), fetch("/api/admin/inventory", { headers })]); if (!detailResponse.ok) throw new Error("Could not load inventory valuation"); const data = await detailResponse.json() as LedgerDetail; setDetail(data); if (locationsResponse.ok) setLocations(((await locationsResponse.json()).locations ?? []) as NonCatalogLocation[]); }, [entityType, getToken, itemId]);
   useEffect(() => { let active = true; void load().catch(e => { if (active) setError(e instanceof Error ? e.message : "Could not load inventory valuation"); }); return () => { active = false; }; }, [load]);
@@ -1693,11 +1698,184 @@ function NonCatalogItemRow({ item, quantity, effectivePar, locationName, onEdit,
   return <div className={`rounded-lg border p-3 ${item.isActive ? "border-border/40" : "border-border/20 opacity-60"}`}><div className="flex flex-wrap items-start gap-3"><div className="min-w-48 flex-1"><div className="font-bold">{item.name}{!item.isActive && <span className="ml-2 text-xs font-normal text-muted-foreground">Archived</span>}</div><div className="mt-1 text-xs text-muted-foreground">{item.description || "No description"}{item.sku && ` · SKU ${item.sku}`}{item.barcode && ` · Barcode ${item.barcode}`}</div><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs"><span className="font-semibold">PAR {effectivePar}</span><span className="font-semibold">Minimum Order {item.moq}</span><span className="text-muted-foreground">Preferred reorder {item.preferredReorderQuantity}</span><span className="text-muted-foreground">{item.unitOfMeasure}{item.supplier && ` · ${item.supplier}`}{item.supplierSku && ` / ${item.supplierSku}`}{item.unitCost != null && ` · $${item.unitCost}`}</span></div></div><div className="min-w-28 text-right"><div className="text-[10px] uppercase text-muted-foreground">Stock{locationName ? ` · ${locationName}` : ""}</div><div className="text-xl font-bold">{quantity}</div><div className={`text-xs ${state === "In stock" ? "text-muted-foreground" : "text-amber-500"}`}>{state}</div></div><div className="flex gap-1"><Button size="sm" variant="outline" onClick={onAdjust} disabled={!item.isActive}>Stock</Button><Button size="sm" variant="outline" onClick={onDetail}>Details</Button><Button aria-label={`Edit ${item.name}`} size="sm" variant="ghost" onClick={onEdit}><Pencil size={14} /></Button><Button aria-label={`Archive ${item.name}`} size="sm" variant="ghost" onClick={onArchive} disabled={!item.isActive}><Archive size={14} /></Button></div></div></div>;
 }
 
+type CombinedDetail = { entityType: "catalog" | "non_catalog"; itemId: number; action?: "receipt" | "transfer" | "loss" | "adjustment" };
+type SupplyEditor = { id: number | null; name: string; description: string; sectionId: string; unitOfMeasure: string; parLevel: string; moq: string; unitCost: string };
+const emptySupplyEditor = (): SupplyEditor => ({ id: null, name: "", description: "", sectionId: "", unitOfMeasure: "each", parLevel: "0", moq: "0", unitCost: "" });
+
+/**
+ * The operational inventory surface deliberately composes the two canonical
+ * item models.  It never merges their tables or derives a replacement balance:
+ * catalogue rows come from /admin/inventory and supplies retain their own
+ * sections/items/balances endpoints.
+ */
+function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | null> }) {
+  const [catalogue, setCatalogue] = useState<InvItem[]>([]);
+  const [sections, setSections] = useState<NonCatalogSection[]>([]);
+  const [nonCatalog, setNonCatalog] = useState<NonCatalogItem[]>([]);
+  const [balances, setBalances] = useState<NonCatalogBalance[]>([]);
+  const [locations, setLocations] = useState<NonCatalogLocation[]>([]);
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "catalog" | "non_catalog">("all");
+  const [locationId, setLocationId] = useState("");
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("myorder.inventory.collapsed-groups") ?? "{}"); }
+    catch { return {}; }
+  });
+  const [detail, setDetail] = useState<CombinedDetail | null>(null);
+  const [replenishment, setReplenishment] = useState<{ item: InvItem; locationId: string; parLevel: string; moq: string } | null>(null);
+  const [supplyEditor, setSupplyEditor] = useState<SupplyEditor | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const request = useCallback(async (path: string) => {
+    const token = await getToken();
+    const response = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `Could not load inventory (${response.status})`);
+    }
+    return response.json();
+  }, [getToken]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [catalogueResponse, sectionResponse, itemResponse, balanceResponse] = await Promise.all([
+        request("/api/admin/inventory"),
+        request("/api/admin/non-catalog/sections"),
+        request("/api/admin/non-catalog/items"),
+        request("/api/admin/non-catalog/balances"),
+      ]);
+      setCatalogue(catalogueResponse.items ?? []);
+      setLocations(catalogueResponse.locations ?? []);
+      setSections(sectionResponse.sections ?? []);
+      setNonCatalog(itemResponse.items ?? []);
+      setBalances(balanceResponse.balances ?? []);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not load inventory");
+    } finally {
+      setLoading(false);
+    }
+  }, [request]);
+
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    try { localStorage.setItem("myorder.inventory.collapsed-groups", JSON.stringify(openGroups)); }
+    catch { /* presentation preference only; storage may be unavailable */ }
+  }, [openGroups]);
+
+  const normalize = (value: string | number | null | undefined) => Number(value ?? 0);
+  const selectedLocation = Number(locationId);
+  const needle = search.trim().toLowerCase();
+  const matches = (value: string) => !needle || value.toLowerCase().includes(needle);
+  const catalogueByCategory = new Map<string, InvItem[]>();
+  for (const item of catalogue) {
+    const location = locationId ? item.locations.find(row => row.locationId === selectedLocation) : null;
+    const searchable = `${item.name} ${item.customerSafeName ?? ""} ${item.alavontName ?? ""} ${item.luciferCruzName ?? ""} ${item.sku ?? ""} ${item.category}`;
+    if (!matches(searchable)) continue;
+    const category = item.category || "Uncategorized";
+    catalogueByCategory.set(category, [...(catalogueByCategory.get(category) ?? []), { ...item, totalStock: location ? location.qty : item.totalStock, parLevel: location ? location.par : item.parLevel }]);
+  }
+  const stockForSupply = (itemId: number) => locationId
+    ? normalize(balances.find(balance => balance.itemId === itemId && balance.locationId === selectedLocation)?.quantityOnHand)
+    : balances.filter(balance => balance.itemId === itemId).reduce((sum, balance) => sum + normalize(balance.quantityOnHand), 0);
+  const suppliesFor = (sectionId: number | null) => nonCatalog.filter(item => item.isActive && item.sectionId === sectionId && matches(`${item.name} ${item.description ?? ""} ${item.sku ?? ""} ${item.barcode ?? ""} ${sections.find(section => section.id === item.sectionId)?.name ?? ""}`));
+  const trigger = (entityType: CombinedDetail["entityType"], itemId: number, action?: CombinedDetail["action"]) => setDetail({ entityType, itemId, action });
+  const beginReplenishment = (item: InvItem) => {
+    const firstLocation = locationId || String(locations[0]?.id ?? "");
+    const locationPar = item.locations.find(row => row.locationId === Number(firstLocation))?.par ?? 0;
+    setReplenishment({ item, locationId: firstLocation, parLevel: String(locationPar), moq: String(item.moq) });
+  };
+  const saveReplenishment = async () => {
+    if (!replenishment?.locationId) return;
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/admin/inventory/catalog/${replenishment.item.id}/replenishment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ locationId: Number(replenishment.locationId), parLevel: Number(replenishment.parLevel), moq: Number(replenishment.moq) }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not update replenishment settings");
+      }
+      setReplenishment(null);
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not update replenishment settings"); }
+  };
+  const beginSupplyEditor = (item?: NonCatalogItem) => setSupplyEditor(item ? { id: item.id, name: item.name, description: item.description ?? "", sectionId: item.sectionId?.toString() ?? "", unitOfMeasure: item.unitOfMeasure, parLevel: String(item.parLevel), moq: String(item.moq), unitCost: item.unitCost == null ? "" : String(item.unitCost) } : emptySupplyEditor());
+  const saveSupply = async () => {
+    if (!supplyEditor?.name.trim()) return;
+    try {
+      const token = await getToken();
+      const payload = { name: supplyEditor.name.trim(), description: supplyEditor.description || null, sectionId: supplyEditor.sectionId ? Number(supplyEditor.sectionId) : null, unitOfMeasure: supplyEditor.unitOfMeasure.trim(), parLevel: Number(supplyEditor.parLevel), moq: Number(supplyEditor.moq), unitCost: supplyEditor.unitCost === "" ? null : Number(supplyEditor.unitCost) };
+      const response = await fetch(supplyEditor.id ? `/api/admin/non-catalog/items/${supplyEditor.id}` : "/api/admin/non-catalog/items", { method: supplyEditor.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(payload) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error ?? "Could not save operational item"); }
+      setSupplyEditor(null);
+      await load();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save operational item"); }
+  };
+  const exportInventory = async () => {
+    try {
+      const token = await getToken();
+      const response = await fetch("/api/admin/inventory/export.csv", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? "Could not export inventory");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = "inventory_export.csv"; anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not export inventory"); }
+  };
+  const isOpen = (key: string) => openGroups[key] !== false;
+  const toggle = (key: string) => setOpenGroups(current => ({ ...current, [key]: !isOpen(key) }));
+
+  if (loading) return <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 size={16} className="animate-spin" /> Loading inventory…</div>;
+
+  return <div className="space-y-5">
+    <div className="rounded-xl border border-border/40 bg-card/50 p-4">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="min-w-56 flex-1 text-xs text-muted-foreground"><span className="mb-1 flex items-center gap-1"><Search size={12} /> Search inventory</span><Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Product, customer-safe name, SKU, category, section" /></label>
+        <label className="text-xs text-muted-foreground"><span className="mb-1 block">Inventory type</span><select className="h-9 rounded-md border bg-background px-2" value={typeFilter} onChange={event => setTypeFilter(event.target.value as typeof typeFilter)}><option value="all">All</option><option value="catalog">Catalogue</option><option value="non_catalog">Non-Catalogue</option></select></label>
+        <label className="text-xs text-muted-foreground"><span className="mb-1 block">Location</span><select className="h-9 rounded-md border bg-background px-2" value={locationId} onChange={event => setLocationId(event.target.value)}><option value="">All Locations</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
+        <Button size="sm" variant="outline" onClick={() => void exportInventory()}>Export CSV</Button>
+        <Button size="sm" variant="outline" onClick={() => void load()}><RefreshCw size={13} /> Refresh</Button>
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">Totals and location balances are server projections. Receive, transfer, loss, and adjustment open canonical ledger commands; costs remain server-authoritative.</p>
+    </div>
+    {error && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>}
+    {detail && <InventoryLedgerDetail getToken={getToken} entityType={detail.entityType} itemId={detail.itemId} openAction={detail.action} onClose={() => { setDetail(null); void load(); }} />}
+    {replenishment && <section className="rounded-xl border border-primary/30 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">Replenishment settings — {replenishment.item.name}</h2><p className="text-xs text-muted-foreground">PAR is location-specific; MOQ applies to the catalogue item. Neither changes stock.</p></div><Button size="sm" variant="ghost" onClick={() => setReplenishment(null)}>Cancel</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="text-xs text-muted-foreground"><span className="mb-1 block">Location</span><select className="h-9 w-full rounded-md border bg-background px-2" value={replenishment.locationId} onChange={event => { const next = event.target.value; setReplenishment(current => current ? { ...current, locationId: next, parLevel: String(current.item.locations.find(row => row.locationId === Number(next))?.par ?? 0) } : current); }}>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">PAR</span><Input type="number" min="0" value={replenishment.parLevel} onChange={event => setReplenishment(current => current ? { ...current, parLevel: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Minimum order quantity</span><Input type="number" min="0" value={replenishment.moq} onChange={event => setReplenishment(current => current ? { ...current, moq: event.target.value } : current)} /></label></div><div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void saveReplenishment()}>Save replenishment settings</Button></div></section>}
+    {supplyEditor && <section className="rounded-xl border border-primary/30 bg-primary/5 p-4"><div className="mb-3 flex items-center justify-between"><div><h2 className="font-semibold">{supplyEditor.id ? "Edit" : "Create"} non-catalogue item</h2><p className="text-xs text-muted-foreground">Operational inventory remains separate from the catalogue business model.</p></div><Button size="sm" variant="ghost" onClick={() => setSupplyEditor(null)}>Cancel</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="text-xs text-muted-foreground"><span className="mb-1 block">Name</span><Input value={supplyEditor.name} onChange={event => setSupplyEditor(current => current ? { ...current, name: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Description</span><Input value={supplyEditor.description} onChange={event => setSupplyEditor(current => current ? { ...current, description: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Section</span><select className="h-9 w-full rounded-md border bg-background px-2" value={supplyEditor.sectionId} onChange={event => setSupplyEditor(current => current ? { ...current, sectionId: event.target.value } : current)}><option value="">Unsectioned</option>{sections.filter(section => section.isActive).map(section => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Unit</span><Input value={supplyEditor.unitOfMeasure} onChange={event => setSupplyEditor(current => current ? { ...current, unitOfMeasure: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">PAR</span><Input type="number" min="0" value={supplyEditor.parLevel} onChange={event => setSupplyEditor(current => current ? { ...current, parLevel: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">MOQ</span><Input type="number" min="0" value={supplyEditor.moq} onChange={event => setSupplyEditor(current => current ? { ...current, moq: event.target.value } : current)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Current/default unit cost</span><Input type="number" min="0" value={supplyEditor.unitCost} onChange={event => setSupplyEditor(current => current ? { ...current, unitCost: event.target.value } : current)} /></label></div><div className="mt-3 flex justify-end"><Button size="sm" disabled={!supplyEditor.name.trim()} onClick={() => void saveSupply()}>{supplyEditor.id ? "Save item" : "Create item"}</Button></div></section>}
+    {typeFilter !== "non_catalog" && <section className="rounded-xl border border-border/40 overflow-hidden"><div className="flex items-center gap-2 border-b border-border/40 bg-muted/20 px-4 py-3"><Package size={15} /><div><h2 className="font-semibold">Catalogue Inventory</h2><p className="text-xs text-muted-foreground">Catalogue stock by canonical location, including held items.</p></div></div>{[...catalogueByCategory.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([category, items]) => { const key = `catalogue:${category}`; return <div key={key} className="border-b border-border/30 last:border-0"><button className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold" onClick={() => toggle(key)}>{isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}{category}<span className="text-xs font-normal text-muted-foreground">({items.length})</span></button>{isOpen(key) && <div className="space-y-2 px-4 pb-4">{items.map(item => <CombinedItemCard key={item.id} title={item.name} secondary={item.customerSafeName && item.customerSafeName !== item.name ? item.customerSafeName : null} meta={`${item.stockUnit} · SKU ${item.sku ?? "—"} · MOQ ${item.moq} · ${item.held ? "Held" : item.isAvailable ? "Visible" : "Hidden"}`} stock={item.totalStock} par={item.parLevel} locationRows={item.locations} selectedLocationId={locationId} onReplenishment={() => beginReplenishment(item)} actions={{ receive: () => trigger("catalog", item.id, "receipt"), transfer: () => trigger("catalog", item.id, "transfer"), adjust: () => trigger("catalog", item.id, "adjustment"), loss: () => trigger("catalog", item.id, "loss"), history: () => trigger("catalog", item.id) }} />)}</div>}</div>; })}{catalogueByCategory.size === 0 && <div className="px-4 py-8 text-sm text-muted-foreground">No catalogue inventory matches these filters.</div>}</section>}
+    {typeFilter !== "catalog" && <section className="rounded-xl border border-border/40 overflow-hidden"><div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/20 px-4 py-3"><div className="flex items-center gap-2"><Archive size={15} /><div><h2 className="font-semibold">Non-Catalogue Inventory</h2><p className="text-xs text-muted-foreground">Operational supplies, kept in their own canonical item model.</p></div></div><Button size="sm" onClick={() => beginSupplyEditor()}><Plus size={13} /> Add item</Button></div>{[...sections.filter(section => section.isActive), { id: -1, name: "Unsectioned", isActive: true }].map(section => { const items = suppliesFor(section.id === -1 ? null : section.id); const key = `supply:${section.id}`; return <div key={key} className="border-b border-border/30 last:border-0"><button className="flex w-full items-center gap-2 px-4 py-3 text-left font-semibold" onClick={() => toggle(key)}>{isOpen(key) ? <ChevronDown size={15} /> : <ChevronRight size={15} />}{section.name}<span className="text-xs font-normal text-muted-foreground">({items.length})</span></button>{isOpen(key) && <div className="space-y-2 px-4 pb-4">{items.map(item => <CombinedItemCard key={item.id} title={item.name} secondary={item.description} meta={`${item.unitOfMeasure} · MOQ ${item.moq}${item.sku ? ` · ${item.sku}` : ""}`} stock={stockForSupply(item.id)} par={normalize(item.parLevel)} selectedLocationId={locationId} onEdit={() => beginSupplyEditor(item)} locationRows={locations.map(location => ({ locationId: location.id, name: location.name, qty: normalize(balances.find(balance => balance.itemId === item.id && balance.locationId === location.id)?.quantityOnHand), par: normalize(item.parLevel) }))} actions={{ receive: () => trigger("non_catalog", item.id, "receipt"), transfer: () => trigger("non_catalog", item.id, "transfer"), adjust: () => trigger("non_catalog", item.id, "adjustment"), loss: () => trigger("non_catalog", item.id, "loss"), history: () => trigger("non_catalog", item.id) }} />)}{items.length === 0 && <div className="py-2 text-sm text-muted-foreground">No matching active items.</div>}</div>}</div>; })}</section>}
+  </div>;
+}
+
+function CombinedItemCard({ title, secondary, meta, stock, par, locationRows, selectedLocationId, onReplenishment, onEdit, actions }: { title: string; secondary: string | null; meta: string; stock: number; par: number; locationRows: Array<{ locationId: number; name: string; qty: number; par: number }>; selectedLocationId: string; onReplenishment?: () => void; onEdit?: () => void; actions: { receive: () => void; transfer: () => void; adjust: () => void; loss: () => void; history: () => void } }) {
+  const visibleLocations = selectedLocationId ? locationRows.filter(row => row.locationId === Number(selectedLocationId)) : locationRows;
+  const low = par > 0 && stock < par;
+  return <div className="rounded-lg border border-border/40 bg-background/30 p-3"><div className="flex flex-wrap items-start gap-3"><div className="min-w-52 flex-1"><div className="font-semibold">{title}</div>{secondary && <div className="mt-0.5 text-xs text-muted-foreground">{secondary}</div>}<div className="mt-1 text-xs font-medium text-muted-foreground">{meta}</div><div className="mt-2 flex flex-wrap gap-2 text-xs">{visibleLocations.map(row => <span key={row.locationId} className="rounded bg-muted px-2 py-1">{row.name}: <b>{row.qty}</b>{row.par > 0 && <> <span className="text-muted-foreground">PAR</span> {row.par}</>}</span>)}</div></div><div className="min-w-24 text-right"><div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Stock</div><div className="text-2xl font-bold">{stock}</div><div className={`text-xs ${low ? "text-amber-500" : "text-muted-foreground"}`}>{low ? `Below PAR ${par}` : `PAR ${par}`}</div></div><div className="flex flex-wrap gap-1"><Button size="sm" onClick={actions.receive}>Receive</Button><Button size="sm" variant="outline" onClick={actions.transfer}>Transfer</Button><Button size="sm" variant="outline" onClick={actions.adjust}>Adjust</Button><Button size="sm" variant="outline" onClick={actions.loss}>Loss</Button>{onReplenishment && <Button size="sm" variant="ghost" onClick={onReplenishment}>PAR / MOQ</Button>}{onEdit && <Button size="sm" variant="ghost" onClick={onEdit}>Edit</Button>}<Button size="sm" variant="ghost" onClick={actions.history}>History</Button></div></div></div>;
+}
+
+// These older, route-unreachable presentation tabs are kept temporarily for
+// their reusable layout fragments while migration verification is in progress.
+// They are intentionally not offered in navigation because they contain
+// deprecated direct-balance and template affordances.
+void ShiftTemplateTab;
+void StockLevelsTab;
+void StockGridTab;
+void InventoryHealthTab;
+void NonCatalogTab;
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AdminInventory() {
   const { getToken } = useAuth();
-  const [tab, setTab] = useState<"template" | "locations" | "stockgrid" | "health" | "noncatalog">("stockgrid");
+  const [tab, setTab] = useState<"combined" | "locations">("combined");
   const [exportError, setExportError] = useState<string | null>(null);
   const downloadInventoryExport = useCallback(async () => {
     setExportError(null);
@@ -1717,7 +1895,7 @@ export default function AdminInventory() {
         </div>
         <div>
           <h1 className="text-xl font-bold tracking-tight">Inventory</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Master inventory, shift template, CSR boxes, storefront, backstock, and per-location stock</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Catalogue and operational inventory, together by canonical location</p>
         </div>
         <Button className="ml-auto" size="sm" variant="outline" onClick={() => void downloadInventoryExport()}><Download size={14} />Export Inventory</Button>
       </div>
@@ -1726,11 +1904,8 @@ export default function AdminInventory() {
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
         {[
-          { key: "stockgrid" as const, label: "All Inventory", icon: ClipboardList },
-          { key: "noncatalog" as const, label: "Non-Catalog", icon: Package },
+          { key: "combined" as const, label: "Inventory", icon: ClipboardList },
           { key: "locations" as const, label: "Locations", icon: MapPin },
-          { key: "template" as const, label: "Shift Template", icon: Settings2 },
-          { key: "health" as const, label: "Health", icon: EyeOff },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -1748,17 +1923,11 @@ export default function AdminInventory() {
       </div>
 
       {/* Tab content */}
-      {tab === "template" ? (
-        <ShiftTemplateTab getToken={getToken} />
-      ) : tab === "locations" ? (
+      {tab === "locations" ? (
         <LocationsTab getToken={getToken} />
-      ) : tab === "stockgrid" ? (
-        <StockGridTab getToken={getToken} />
-      ) : tab === "health" ? (
-        <InventoryHealthTab getToken={getToken} />
-      ) : tab === "noncatalog" ? (
-        <NonCatalogTab getToken={getToken} />
-      ) : null}
+      ) : (
+        <CombinedInventoryTab getToken={getToken} />
+      )}
     </div>
   );
 }
