@@ -468,6 +468,7 @@ export async function enqueueOrderPrintJobs(order: {
     : undefined;
   const receiptWidth = charWidth(settings.paperWidth ?? "80mm");
   const receiptLogoLines = settings.includeLogo !== false ? getLogo(receiptWidth) : [];
+  const brandingDisplayName = (await getBranding(tenantId))?.supplier.displayName;
 
   const printOrder = {
     id: order.id,
@@ -475,7 +476,7 @@ export async function enqueueOrderPrintJobs(order: {
     fulfillmentType: order.fulfillmentType,
     notes: order.notes ?? undefined,
     receiptLineNameMode,
-    receiptBrandName: (await getBranding(tenantId))?.supplier.displayName?.toLowerCase().includes("lucifer") ? "LUCIFER CRUZ" : "MYORDER.FUN",
+    receiptBrandName: typeof brandingDisplayName === "string" && brandingDisplayName.toLowerCase().includes("lucifer") ? "LUCIFER CRUZ" : "MYORDER.FUN",
     paperWidth: settings.paperWidth ?? "80mm",
     logoLines: receiptLogoLines,
     dualBrandName: settings.brandName ?? undefined,

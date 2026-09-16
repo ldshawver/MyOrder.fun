@@ -80,7 +80,7 @@ describe("registered printer UI workflow", () => {
   it("does not return printer or bridge credentials from list endpoints", () => {
     const printerList = route.slice(
       route.indexOf('router.get("/print/printers"'),
-      route.indexOf("const VALID_ROLES"),
+      route.indexOf("// Restores the one audited Mac receipt destination"),
     );
     const bridgeList = route.slice(
       route.indexOf('router.get("/print/bridge-profiles"'),

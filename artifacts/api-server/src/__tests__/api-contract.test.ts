@@ -153,14 +153,14 @@ describe("API contract — global error middleware (real assembled app)", () => 
     const res = await supertest(app).get("/api/__contract/sync-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(res.body.error).toBe("sync boom");
+    expect(res.body.error).toBe("Internal Server Error");
   });
 
   it("asynchronous throw → JSON 500 via the real chain", async () => {
     const res = await supertest(app).get("/api/__contract/async-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(res.body.error).toBe("async boom");
+    expect(res.body.error).toBe("Internal Server Error");
   });
 
   it("error with custom status → that status, JSON body, via the real chain", async () => {

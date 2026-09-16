@@ -7,7 +7,7 @@ const confirmation = process.argv.find(arg => arg.startsWith("--confirm="))?.spl
 const actorIdArg = process.argv.find(arg => arg.startsWith("--actor-id="))?.split("=", 2)[1];
 const actorId = actorIdArg ? Number(actorIdArg) : null;
 
-if (!execute || confirmation !== TENANT_TAX_CONFIGURATION_REPAIR_REASON || !Number.isInteger(actorId) || actorId <= 0) {
+if (!execute || confirmation !== TENANT_TAX_CONFIGURATION_REPAIR_REASON || actorId === null || !Number.isInteger(actorId) || actorId <= 0) {
   throw new Error(`Refusing to run. Required: --execute --confirm=${TENANT_TAX_CONFIGURATION_REPAIR_REASON} --actor-id=<global-admin-or-supervisor-id>`);
 }
 

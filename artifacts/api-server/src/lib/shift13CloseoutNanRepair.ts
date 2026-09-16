@@ -14,7 +14,7 @@ import {
 } from "./shiftCloseoutFinancials";
 
 export const SHIFT_13_NAN_REPAIR_REASON = "SHIFT_CLOSEOUT_NAN_REPAIR" as const;
-const SHIFT_13_ID = 13;
+const SHIFT_13_ID = 13 as const;
 const REPAIR_KEY = "shift-closeout-nan-repair:1:13";
 
 type RepairActor = { id: number; email?: string | null; role: string; ipAddress?: string | null };

@@ -100,14 +100,10 @@ describe("Phase 3 POS operations Product Master integration", () => {
 
 
   describe("Import Menu UI Product Master mapping", () => {
-    it("displays canonical Product Master labels instead of old required headers", () => {
-      expect(importMenuUi).toContain('"Regular Price"');
-      expect(importMenuUi).toContain('"Sale Price"');
-      expect(importMenuUi).toContain('"Active Sale"');
-      expect(importMenuUi).toContain('"Box 1 Inventory"');
-      expect(importMenuUi).toContain('"Box 2 Inventory"');
-      expect(importMenuUi).toContain('"Storefront Inventory"');
-      expect(importMenuUi).toContain('"Backstock Inventory"');
+    it("loads canonical Product Master labels from the server registry instead of a stale handwritten client list", () => {
+      expect(importMenuUi).toContain("/api/admin/products/import-template");
+      expect(importMenuUi).toContain("server registry is authoritative");
+      expect(importMenuUi).toContain("columns: []");
       expect(importMenuUi).toContain("product_master_import_template.csv");
       expect(importMenuUi).not.toContain('"alavont_in_stock"');
       expect(importMenuUi).not.toContain('"quantity_size"');

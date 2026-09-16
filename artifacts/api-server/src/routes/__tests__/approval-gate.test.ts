@@ -41,6 +41,8 @@ const makeDrizzleChain = (resolvedValue: unknown[]) => {
   chain.where = vi.fn(() => chain);
   chain.limit = terminal;
   chain.orderBy = vi.fn(() => Promise.resolve(resolvedValue));
+  chain.innerJoin = vi.fn(() => chain);
+  chain.groupBy = terminal;
   chain.from = vi.fn(() => chain);
   chain.then = (resolve: (value: unknown[]) => unknown) => Promise.resolve(resolvedValue).then(resolve);
   return chain;
@@ -135,6 +137,7 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((col) => col),
   desc: vi.fn((col) => col),
   gte: vi.fn((col, val) => ({ col, val })),
+  isNull: vi.fn((col) => ({ col, isNull: true })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 

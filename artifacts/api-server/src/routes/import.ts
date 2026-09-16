@@ -591,7 +591,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const productIdCell = rec["Product ID"]?.trim() ?? "";
     const productId = productIdCell ? Number(productIdCell) : null;
-    if (productIdCell && (!Number.isSafeInteger(productId) || productId <= 0)) errors.push({ row: rowNum, message: "Product ID must be a positive integer" });
+    if (productId !== null && (!Number.isSafeInteger(productId) || productId <= 0)) errors.push({ row: rowNum, message: "Product ID must be a positive integer" });
     const sku = safeText(rec["SKU"] || rec["Alavont SKU"], "SKU", rowNum, errors);
     const name = safeText(rec["Product Name"] || rec["Alavont Name"] || rec["Base Name"], "Product Name", rowNum, errors);
     const category = safeText(rec["Category"] || rec["Alavont Category"] || rec["Base Category"], "Category", rowNum, errors);
@@ -625,12 +625,12 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const updateValues: Partial<CatalogImportUpsertValues> = { updatedAt: new Date() };
     const has = (header: CatalogImportHeader) => suppliedHeaders.has(header) && Boolean(rec[header].trim());
     const text = (header: CatalogImportHeader) => suppliedText(rec[header]);
-    if (has("Alavont Name")) { updateValues.alavontName = text("Alavont Name"); updateValues.name = text("Base Name") ?? text("Alavont Name"); }
-    if (has("Alavont Category")) { updateValues.alavontCategory = text("Alavont Category"); updateValues.category = text("Base Category") ?? text("Alavont Category"); }
+    if (has("Alavont Name")) { const alavontName = text("Alavont Name"); updateValues.alavontName = alavontName; const baseName = text("Base Name") ?? alavontName; if (baseName !== null) updateValues.name = baseName; }
+    if (has("Alavont Category")) { const alavontCategory = text("Alavont Category"); updateValues.alavontCategory = alavontCategory; const baseCategory = text("Base Category") ?? alavontCategory; if (baseCategory !== null) updateValues.category = baseCategory; }
     if (has("Alavont Description")) { updateValues.alavontDescription = text("Alavont Description"); updateValues.description = text("Base Description") ?? text("Alavont Description"); }
     if (has("Alavont Image")) { updateValues.alavontImageUrl = isExplicitClear(rec["Alavont Image"]) ? null : imageUrl; updateValues.imageUrl = isExplicitClear(rec["Base Image"]) ? null : (safeUrl(rec["Base Image"], "Base Image", rowNum, errors) ?? imageUrl); }
-    if (has("Base Name")) updateValues.name = text("Base Name");
-    if (has("Base Category")) updateValues.category = text("Base Category");
+    if (has("Base Name")) { const baseName = text("Base Name"); if (baseName !== null) updateValues.name = baseName; }
+    if (has("Base Category")) { const baseCategory = text("Base Category"); if (baseCategory !== null) updateValues.category = baseCategory; }
     if (has("Base Description")) updateValues.description = text("Base Description");
     if (has("Base Image")) updateValues.imageUrl = isExplicitClear(rec["Base Image"]) ? null : safeUrl(rec["Base Image"], "Base Image", rowNum, errors);
     if (has("Regular Price") && regularPrice !== null) updateValues.regularPrice = regularPrice.toFixed(2);
