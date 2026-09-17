@@ -132,6 +132,12 @@ function safeMetadataPatch(current: unknown, patch: Record<string, unknown>) {
   return { ...base, presentation: { ...(base.presentation && typeof base.presentation === "object" && !Array.isArray(base.presentation) ? base.presentation as Record<string, unknown> : {}), ...patch } };
 }
 
+/** Lifecycle controls are canonical state, not presentation metadata. */
+export function lifecycleMetadataPatch(current: unknown, patch: Record<string, unknown>) {
+  const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  return { ...base, ...patch };
+}
+
 let catalogRouteSchemaEnsured = false;
 
 async function ensureCatalogRouteSchema(): Promise<void> {
@@ -586,7 +592,7 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
   if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
   const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).limit(1);
   if (!existing) { res.status(404).json({ error: "Not found" }); return; }
-  const metadata = safeMetadataPatch(existing.metadata, {
+  const metadata = lifecycleMetadataPatch(existing.metadata, {
     archived: body.data.archived ?? (existing.metadata as Record<string, unknown> | null)?.archived === true,
     complianceHold: body.data.complianceHold ?? (existing.metadata as Record<string, unknown> | null)?.complianceHold === true,
     lifecycleReason: body.data.reason ?? null,
