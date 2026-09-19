@@ -32,10 +32,12 @@ import pwaPushRouter from "./pwa-push";
 import taxConfigurationsRouter from "./tax-configurations";
 import printBridgeDiscoveryRouter from "./print-bridge-discovery";
 import returnsRouter from "./returns";
+import publicBrandingRouter from "./public-branding";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
+router.use(publicBrandingRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);

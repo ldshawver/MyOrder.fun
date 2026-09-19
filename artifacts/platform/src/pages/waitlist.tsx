@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSignUp } from "@clerk/react/legacy";
 import { Link } from "wouter";
+import { useBrand } from "@/contexts/BrandContext";
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -52,6 +53,7 @@ function splitName(fullName: string): { firstName: string; lastName?: string } {
 }
 
 export default function WaitlistPage() {
+  const { branding, publicBrandLoading } = useBrand();
   const { isLoaded, signUp, setActive } = useSignUp();
   const [form, setForm] = useState<WaitlistForm>({
     name: "",
@@ -193,16 +195,16 @@ export default function WaitlistPage() {
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4 max-w-sm">
         <div className="flex flex-col items-center gap-3 mb-2">
           <img
-            src={`${basePath}/myorder-logo-mobile.png`}
-            alt="MyOrder.fun"
+            src={branding.customer.logoUrl}
+            alt={branding.customer.displayName}
             className="h-20 w-auto object-contain"
           />
           <div className="text-center">
             <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>
-              MYORDER.FUN
+              {publicBrandLoading ? "Loading storefront…" : branding.customer.displayName}
             </div>
             <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Secure commerce platform
+              Private storefront
             </div>
           </div>
         </div>

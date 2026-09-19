@@ -28,7 +28,6 @@ import Orders from "@/pages/orders";
 import OrderDetail from "@/pages/order-detail";
 import NewOrder from "@/pages/new-order";
 import AiConcierge from "@/pages/ai-concierge";
-import OrderWorkspace from "@/pages/order-workspace";
 import GlobalAdmin from "@/pages/global-admin";
 import GlobalAdminOnboarding from "@/pages/global-admin/onboarding";
 import GlobalAdminTenants from "@/pages/global-admin/tenants";
@@ -79,6 +78,11 @@ if (!clerkPubKey) {
 }
 
 function AuthBrandWrapper({ children }: { children: ReactNode }) {
+  const { branding, publicBrandLoading } = useBrand();
+  const name = branding.customer.displayName;
+  if (publicBrandLoading) {
+    return <main className="min-h-screen bg-background text-foreground flex items-center justify-center"><span className="text-sm text-muted-foreground">Loading storefront…</span></main>;
+  }
   return (
     <div
       className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden"
@@ -110,16 +114,16 @@ function AuthBrandWrapper({ children }: { children: ReactNode }) {
       <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
         <div className="flex flex-col items-center gap-3 mb-2">
           <img
-            src="/lc-logo.webp"
-            alt="Lucifer Cruz"
+            src={branding.customer.logoUrl}
+            alt={name}
             className="h-16 w-auto object-contain"
           />
           <div className="text-center">
             <div className="font-bold tracking-[0.12em] text-base" style={{ color: "#C0C0C0" }}>
-              LUCIFER CRUZ
+              {name}
             </div>
             <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Secure commerce platform
+              Private storefront
             </div>
           </div>
         </div>
@@ -193,21 +197,35 @@ function HomeRedirect() {
   );
 }
 
+/** Legacy customer URLs have one canonical mutable cart: /cart. */
+function LegacyCartRedirect() {
+  const [, setLocation] = useLocation();
+  useEffect(() => {
+    setLocation(`/cart${window.location.search}`, { replace: true });
+  }, [setLocation]);
+  return null;
+}
+
 const LoadingScreen = () => (
-  <div
+  <BrandedLoadingScreen />
+);
+
+function BrandedLoadingScreen() {
+  const { branding } = useBrand();
+  return <div
     className="h-screen w-full flex flex-col items-center justify-center gap-4"
     style={{ background: "#0A0000" }}
   >
     <img
-      src="/myorder-logo-mobile.png"
-      alt="MyOrder.fun"
+      src={branding.customer.logoUrl}
+      alt={branding.customer.displayName}
       className="h-20 w-auto object-contain animate-pulse"
     />
     <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>
       Loading...
     </div>
-  </div>
-);
+  </div>;
+}
 
 function useSessionLogger(_userEmail: string) {
   const [location] = useLocation();
@@ -243,12 +261,13 @@ function AuthErrorScreen({
   onSignOut: () => void;
   onRetry: () => void;
 }) {
+  const { branding } = useBrand();
   return (
     <div
       className="h-screen w-full flex flex-col items-center justify-center gap-6"
       style={{ background: "#0A0000" }}
     >
-      <img src="/myorder-logo-mobile.png" alt="MyOrder.fun" className="h-16 w-auto object-contain" />
+      <img src={branding.customer.logoUrl} alt={branding.customer.displayName} className="h-16 w-auto object-contain" />
       <div className="text-center flex flex-col gap-1">
         <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>
           Unable to load your account.
@@ -505,12 +524,15 @@ function AuthenticatedApp() {
         <Switch>
           <Route path="/dashboard" component={Dashboard} />
 
+          <Route path="/catalogue"><Redirect to="/catalog" /></Route>
           <Route path="/catalog" component={Catalog} />
           <Route path="/catalog/:id" component={CatalogItemDetail} />
 
           <Route path="/orders" component={Orders} />
-          <Route path="/order-workspace" component={OrderWorkspace} />
-          <Route path="/orders/new" component={NewOrder} />
+          <Route path="/cart" component={NewOrder} />
+          <Route path="/checkout" component={NewOrder} />
+          <Route path="/order-workspace" component={LegacyCartRedirect} />
+          <Route path="/orders/new" component={LegacyCartRedirect} />
           <Route path="/orders/:id">{() => protect(<OrderDetail />)}</Route>
 
           <Route path="/ai-concierge" component={AiConcierge} />

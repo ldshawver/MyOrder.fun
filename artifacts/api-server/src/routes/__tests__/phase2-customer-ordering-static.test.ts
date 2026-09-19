@@ -23,13 +23,17 @@ describe("Phase 2 customer ordering boundaries", () => {
     expect(source).toContain("quantity > 99");
   });
 
-  it("routes customers to one ordering workspace using canonical pages", () => {
+  it("routes customers to one Cart and Checkout experience", () => {
     const app = platform("App.tsx");
-    const workspace = platform("pages/order-workspace.tsx");
-    expect(app).toContain('path="/order-workspace"');
-    expect(workspace).toContain('href="/catalog"');
-    expect(workspace).toContain('href="/orders/new"');
-    expect(workspace).toContain("<AiConcierge />");
-    expect(workspace).toContain('href={`/orders/${currentOrder.id}`}');
+    const cart = platform("pages/new-order.tsx");
+    const catalog = platform("pages/catalog.tsx");
+    expect(app).toContain('path="/cart" component={NewOrder}');
+    expect(app).toContain('path="/checkout" component={NewOrder}');
+    expect(app).toContain('path="/order-workspace" component={LegacyCartRedirect}');
+    expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
+    expect(cart).toContain("Cart & Checkout");
+    expect(cart).toContain("Optional Zappy suggestions");
+    expect(catalog).toContain('data-testid="catalog-cart-link"');
+    expect(catalog).toContain('data-testid="catalog-checkout-link"');
   });
 });

@@ -1,5 +1,6 @@
 import { Link } from "wouter";
 import { ArrowLeft, Shield, AlertTriangle, Eye, Trash2, Lock, FileText } from "lucide-react";
+import { useBrand } from "@/contexts/BrandContext";
 
 const EFFECTIVE_DATE = "April 8, 2026";
 
@@ -69,6 +70,8 @@ function PrincipleCard({ icon: Icon, title, body }: { icon: React.ElementType; t
 }
 
 export default function PrivacyPage() {
+  const { branding } = useBrand();
+  const name = branding.customer.displayName;
   return (
     <div className="min-h-screen font-sans" style={{ background: "#0A0000" }}>
       {/* Scan lines */}
@@ -84,7 +87,7 @@ export default function PrivacyPage() {
           <div className="w-px h-4" style={{ background: "rgba(220,20,60,0.2)" }} />
           <div className="flex items-center gap-2">
             <Shield size={14} style={{ color: "#DC143C" }} />
-            <span className="text-xs font-mono tracking-wide" style={{ color: "#777" }}>PRIVACY POLICY · MYORDER.FUN</span>
+            <span className="text-xs font-mono tracking-wide" style={{ color: "#777" }}>PRIVACY POLICY · {name}</span>
           </div>
         </div>
         <div className="text-[10px] font-mono" style={{ color: "#444" }}>Effective {EFFECTIVE_DATE}</div>
@@ -101,13 +104,13 @@ export default function PrivacyPage() {
           <h1 className="text-2xl font-bold tracking-[0.1em] uppercase mb-3" style={{ color: "#C0C0C0" }}>
             Privacy Policy
           </h1>
-          <p className="text-sm font-mono mb-1" style={{ color: "#555" }}>MyOrder.fun &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
+          <p className="text-sm font-mono mb-1" style={{ color: "#555" }}>{name} &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
         </div>
 
         {/* Section 1: Introduction */}
         <Section number="1" title="Introduction">
           <p>
-            MyOrder.fun ("we," "us," or "our") is built with a privacy-first and security-first architecture.
+            {name} ("we," "us," or "our") is built with a privacy-first and security-first approach.
             Unlike traditional platforms, we intentionally minimize data storage and retain only what is strictly
             necessary for real-time operation.
           </p>
@@ -115,12 +118,12 @@ export default function PrivacyPage() {
             This Privacy Policy explains how we collect, use, and handle your information while prioritizing
             data minimization, limited retention, and system security.
           </p>
-          <p>By using MyOrder.fun, you agree to this Privacy Policy.</p>
+          <p>By using {name}, you agree to this Privacy Policy.</p>
         </Section>
 
         {/* Section 2: Core Principles */}
         <Section number="2" title="Core Privacy Principles">
-          <p className="mb-4">MyOrder.fun operates under the following principles:</p>
+          <p className="mb-4">{name} operates under the following principles:</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <PrincipleCard icon={Eye} title="Minimal Data Collection" body="Only essential data is collected. We do not gather information beyond what is required to operate the service." />
             <PrincipleCard icon={Trash2} title="Ephemeral Data Storage" body="Data is deleted as soon as it is no longer operationally required. Order data is purged post-payment." />
@@ -150,7 +153,7 @@ export default function PrivacyPage() {
             <AlertBox icon={AlertTriangle} color="#FF6B00" title="Important — Ephemeral Order Data">
               All transaction and order data is automatically deleted immediately after payment is completed and
               processed, except where temporary retention is required for system integrity or fraud prevention.
-              MyOrder.fun does not maintain long-term purchase histories.
+              {name} does not maintain long-term purchase histories.
             </AlertBox>
           </Clause>
 
@@ -187,7 +190,7 @@ export default function PrivacyPage() {
         {/* Section 5: Ephemeral Data & Deletion */}
         <Section number="5" title="Ephemeral Data & Deletion Policy" icon={Trash2}>
           <Clause title="5.1 Order Data Deletion">
-            <p>Order history is not permanently stored. All order-related data is deleted immediately after successful payment processing. MyOrder.fun does not maintain long-term purchase histories beyond what is operationally required.</p>
+            <p>Order history is not permanently stored. All order-related data is deleted immediately after successful payment processing. {name} does not maintain long-term purchase histories beyond what is operationally required.</p>
           </Clause>
 
           <Clause title="5.2 Account Deletion (Full Erasure)">
@@ -215,7 +218,7 @@ export default function PrivacyPage() {
         {/* Section 6: Private Infrastructure */}
         <Section number="6" title="Private Infrastructure">
           <p>
-            MyOrder.fun is hosted on a privately controlled server environment, reducing reliance on third-party
+            {name} is hosted on a privately controlled server environment, reducing reliance on third-party
             cloud providers and their associated data exposure risks.
           </p>
           <p>We limit exposure by:</p>
@@ -271,7 +274,7 @@ export default function PrivacyPage() {
         {/* Section 11: Dynamic Updates */}
         <Section number="11" title="Privacy Policy Updates">
           <p>
-            Because MyOrder.fun continuously improves its security architecture, this Privacy Policy may be
+            Because {name} continuously improves its security practices, this Privacy Policy may be
             updated to reflect changes in system design, data handling, or security practices. Updates may be
             implemented as features evolve or security improvements are deployed.
           </p>
@@ -306,7 +309,7 @@ export default function PrivacyPage() {
         <Section number="14" title="Contact">
           <p>For privacy or security inquiries, contact the Platform operator through your designated account representative or the administrative contact on file for your organization.</p>
           <div className="mt-4 rounded-xl border p-5" style={{ borderColor: "rgba(220,20,60,0.15)", background: "rgba(220,20,60,0.04)" }}>
-            <div className="text-xs font-mono" style={{ color: "#777" }}>MyOrder.fun</div>
+            <div className="text-xs font-mono" style={{ color: "#777" }}>{name}</div>
             <div className="text-xs font-mono mt-1" style={{ color: "#444" }}>Privacy &amp; Security Office &nbsp;·&nbsp; Contact via Platform administrator</div>
           </div>
         </Section>
@@ -329,7 +332,7 @@ export default function PrivacyPage() {
 
         {/* Footer */}
         <div className="mt-14 pt-8 border-t text-center space-y-2" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
-          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN</div>
+          <div className="text-[10px] font-mono" style={{ color: "#333" }}>{name}</div>
           <div className="text-[10px] font-mono" style={{ color: "#2a2a2a" }}>Effective {EFFECTIVE_DATE} &nbsp;·&nbsp; All rights reserved</div>
           <div className="mt-4">
             <Link href="/" className="inline-flex items-center gap-2 text-xs font-mono px-4 py-2 rounded-lg border transition-colors" style={{ borderColor: "rgba(220,20,60,0.2)", color: "#555" }}>

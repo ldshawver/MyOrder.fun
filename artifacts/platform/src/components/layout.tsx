@@ -116,18 +116,18 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Navigation",
       roles: ALL_ROLES,
       items: [
-        { href: "/order-workspace", label: "Order Workspace", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
+        { href: "/cart", label: "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/catalog", label: "Catalogue", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
-          label: isCustomer ? "My Order" : "Orders",
-          mobileLabel: isCustomer ? "My Order" : "Orders",
+          label: isCustomer ? "Order Status" : "Orders",
+          mobileLabel: isCustomer ? "Order Status" : "Orders",
           icon: ShoppingCart,
           roles: ALL_ROLES,
           mobileShow: true,
           children: isCustomer ? [
-            { href: "/orders", label: "My Orders", icon: ListTodo, roles: ALL_ROLES },
-            { href: "/orders/new", label: "Cart & Checkout", icon: ShoppingCart, roles: ALL_ROLES },
+            { href: "/orders", label: "Order Status", icon: ListTodo, roles: ALL_ROLES },
+            { href: "/cart", label: "Cart", icon: ShoppingCart, roles: ALL_ROLES },
           ] : undefined,
         },
         {

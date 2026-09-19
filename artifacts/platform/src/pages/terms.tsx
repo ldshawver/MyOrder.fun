@@ -1,5 +1,6 @@
 import { Link } from "wouter";
 import { ArrowLeft, ShieldCheck, AlertTriangle, Lock, FileText } from "lucide-react";
+import { useBrand } from "@/contexts/BrandContext";
 
 const EFFECTIVE_DATE = "April 8, 2026";
 
@@ -54,6 +55,8 @@ function AlertBox({ icon: Icon, color, title, children }: { icon: React.ElementT
 }
 
 export default function TermsPage() {
+  const { branding } = useBrand();
+  const name = branding.customer.displayName;
   return (
     <div className="min-h-screen font-sans" style={{ background: "#0A0000" }}>
       {/* Scan lines */}
@@ -69,7 +72,7 @@ export default function TermsPage() {
           <div className="w-px h-4" style={{ background: "rgba(220,20,60,0.2)" }} />
           <div className="flex items-center gap-2">
             <FileText size={14} style={{ color: "#DC143C" }} />
-            <span className="text-xs font-mono tracking-wide" style={{ color: "#777" }}>LEGAL · MYORDER.FUN</span>
+            <span className="text-xs font-mono tracking-wide" style={{ color: "#777" }}>LEGAL · {name}</span>
           </div>
         </div>
         <div className="text-[10px] font-mono" style={{ color: "#444" }}>Effective {EFFECTIVE_DATE}</div>
@@ -86,14 +89,14 @@ export default function TermsPage() {
           <h1 className="text-2xl font-bold tracking-[0.1em] uppercase mb-3" style={{ color: "#C0C0C0" }}>
             Terms &amp; Conditions
           </h1>
-          <p className="text-sm font-mono" style={{ color: "#555" }}>MyOrder.fun &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
+          <p className="text-sm font-mono" style={{ color: "#555" }}>{name} &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
         </div>
 
         {/* NDA Banner */}
         <AlertBox icon={ShieldCheck} color="#DC143C" title="Non-Disclosure Acknowledgment (NDA)">
           By accessing or using this Platform, you enter into a binding non-disclosure obligation. All content,
           workflows, pricing logic, product data, and operational information visible within the Platform is
-          strictly confidential and proprietary to MyOrder.fun or the applicable tenant. You may
+          strictly confidential and proprietary to {name}. You may
           not record, screenshot, screen-share, reproduce, or disclose any portion of this Platform to any
           unauthorized party. This obligation survives account termination and continues indefinitely.
         </AlertBox>
@@ -113,7 +116,7 @@ export default function TermsPage() {
         {/* ── TERMS ─────────────────────────────────────────────────── */}
         <Section number="1" title="Acceptance of Terms">
           <p>
-            By accessing or using MyOrder.fun ("Platform," "Service"), you agree to be legally bound by these Terms
+            By accessing or using {name} ("Storefront," "Service"), you agree to be legally bound by these Terms
             and Conditions. If you do not agree, do not use the Platform.
           </p>
           <p>
@@ -234,7 +237,7 @@ export default function TermsPage() {
         </Section>
 
         <Section number="12" title="Indemnification">
-          <p>You agree to indemnify, defend, and hold harmless MyOrder.fun and the applicable tenant and their operators from any claims, liabilities, damages, or expenses (including attorney's fees) arising from your misuse of the Platform, security breaches caused by your actions, or violations of these Terms.</p>
+          <p>You agree to indemnify, defend, and hold harmless {name} and its operators from any claims, liabilities, damages, or expenses (including attorney's fees) arising from your misuse of the Storefront, security breaches caused by your actions, or violations of these Terms.</p>
         </Section>
 
         <Section number="13" title="Modifications">
@@ -250,11 +253,11 @@ export default function TermsPage() {
         {/* ── PRIVACY POLICY ────────────────────────────────────────── */}
         <div className="mb-8 text-center">
           <h1 className="text-xl font-bold tracking-[0.1em] uppercase mb-2" style={{ color: "#C0C0C0" }}>Privacy Policy</h1>
-          <p className="text-sm font-mono" style={{ color: "#555" }}>MyOrder.fun &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
+          <p className="text-sm font-mono" style={{ color: "#555" }}>{name} &nbsp;·&nbsp; Effective Date: {EFFECTIVE_DATE}</p>
         </div>
 
         <Section number="P1" title="Overview">
-          <p>MyOrder.fun is built with a security-first architecture. We collect only what is necessary and protect it aggressively. This Privacy Policy explains what data we collect, how we use it, and your rights.</p>
+          <p>{name} is built with a security-first approach. We collect only what is necessary and protect it aggressively. This Privacy Policy explains what data we collect, how we use it, and your rights.</p>
         </Section>
 
         <Section number="P2" title="Information We Collect">
@@ -319,7 +322,7 @@ export default function TermsPage() {
 
         {/* Footer */}
         <div className="mt-14 pt-8 border-t text-center space-y-2" style={{ borderColor: "rgba(220,20,60,0.08)" }}>
-          <div className="text-[10px] font-mono" style={{ color: "#333" }}>MYORDER.FUN</div>
+          <div className="text-[10px] font-mono" style={{ color: "#333" }}>{name}</div>
           <div className="text-[10px] font-mono" style={{ color: "#2a2a2a" }}>Effective {EFFECTIVE_DATE} &nbsp;·&nbsp; All rights reserved</div>
           <div className="mt-4">
             <div className="flex items-center justify-center gap-3 flex-wrap">

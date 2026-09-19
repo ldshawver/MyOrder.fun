@@ -3,11 +3,25 @@ import { domainToASCII } from "node:url";
 import { z } from "zod";
 
 export const SUPPORTED_BUSINESS_CURRENCIES = ["USD"] as const;
-function hasControlChars(value: string): boolean {
-  return Array.from(value).some((char) => {
-    const code = char.charCodeAt(0);
-    return code <= 31 || code === 127;
-  });
+/**
+ * Normalize ordinary pasted business text without widening the input surface.
+ * Newlines remain newlines, tabs become ordinary spaces, and NBSP is made
+ * searchable/renderable as an ordinary space. Other C0 controls stay invalid.
+ */
+function normalizeHumanText(value: string): string {
+  return value
+    .normalize("NFC")
+    .replace(/\r\n?|\n/g, "\n")
+    .replace(/\t/g, " ")
+    .replace(/\u00a0/g, " ");
+}
+
+function hasUnsupportedControlChars(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) return true;
+  }
+  return false;
 }
 const HTML_TAG = /<\s*\/?\s*[a-zA-Z][^>]*>/;
 const INTERNAL_HOST_SUFFIXES = [".localhost", ".local", ".internal"] as const;
@@ -15,7 +29,8 @@ const INTERNAL_HOST_SUFFIXES = [".localhost", ".local", ".internal"] as const;
 function plainText(max: number, field: string) {
   return z.string()
     .max(max, `${field} must be ${max} characters or fewer`)
-    .refine((v) => !hasControlChars(v), `${field} contains unsupported control characters`)
+    .transform(normalizeHumanText)
+    .refine((v) => !hasUnsupportedControlChars(v), `${field} contains unsupported control characters`)
     .refine((v) => !HTML_TAG.test(v), `${field} must be plain text`)
     .transform((v) => v.trim())
     .nullable();
@@ -74,7 +89,7 @@ function nullableUrl(runtimeEnvironment: string | undefined) {
   return z.string()
     .trim()
     .max(2048, "URL must be 2048 characters or fewer")
-    .refine((v) => !hasControlChars(v), "URL contains unsupported control characters")
+    .refine((v) => !hasUnsupportedControlChars(v), "URL contains unsupported control characters")
     .transform((v) => v === "" ? null : v)
     .nullable()
     .refine((value) => {
@@ -82,7 +97,7 @@ function nullableUrl(runtimeEnvironment: string | undefined) {
       try {
         const url = new URL(value);
         if (url.username || url.password) return false;
-        if (!url.hostname || hasControlChars(url.hostname) || url.hostname.includes("\0")) return false;
+        if (!url.hostname || hasUnsupportedControlChars(url.hostname) || url.hostname.includes("\0")) return false;
         if (url.protocol === "https:") return isValidPublicDnsHostname(url.hostname) || (allowDevelopmentLocalUrls && isAllowedDevelopmentHost(url.hostname));
         if (url.protocol === "http:" && allowDevelopmentLocalUrls) return isAllowedDevelopmentHost(url.hostname);
         return false;

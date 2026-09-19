@@ -53,4 +53,20 @@ describe("business settings schema", () => {
     expect(productionSchema.safeParse({ version: 1, appName: "x".repeat(81) }).success).toBe(false);
     expect(productionSchema.safeParse({ version: 1, businessDescription: "<script>alert(1)</script>" }).success).toBe(false);
   });
+
+  it("accepts and safely normalizes ordinary Unicode business descriptions", () => {
+    const source = "Lucifer Cruz Adult Boutique — confidence, caf\u00e9s, and self-expression.\r\nIt\u2019s discreet\u00a0and welcoming.\tAlways.";
+    const parsed = productionSchema.safeParse({ version: 1, businessDescription: source });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.businessDescription).toBe("Lucifer Cruz Adult Boutique — confidence, caf\u00e9s, and self-expression.\nIt\u2019s discreet and welcoming. Always.");
+  });
+
+  it("rejects unsafe controls while preserving strict plain-text and unknown-field validation", () => {
+    for (const control of ["\u0000", "\u0001", "\u0008", "\u000b", "\u000c", "\u000e", "\u001f", "\u007f"]) {
+      expect(productionSchema.safeParse({ version: 1, businessDescription: `unsafe${control}text` }).success).toBe(false);
+    }
+    expect(productionSchema.safeParse({ version: 1, businessDescription: "<img src=x onerror=alert(1)>" }).success).toBe(false);
+    expect(productionSchema.safeParse({ version: 1, businessDescription: "safe", tenantId: 2 }).success).toBe(false);
+  });
 });

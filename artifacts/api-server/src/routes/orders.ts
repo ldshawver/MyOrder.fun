@@ -221,15 +221,15 @@ function storeConversionSnapshot(tenantId: number, userId: number, items: Array<
   return token;
 }
 function verifyConversionSnapshot(token: unknown, tenantId: number, userId: number, items: Array<{ catalogItemId: number; quantity: number }>): { ok: true; snapshot: unknown } | { ok: false; error: string } {
-  if (typeof token !== "string" || !token) return { ok: false, error: "Cart must be converted before payment." };
+  if (typeof token !== "string" || !token) return { ok: false, error: "Checkout needs to be prepared before payment." };
   const record = conversionSnapshots.get(token);
-  if (!record) return { ok: false, error: "Cart conversion snapshot is missing or expired." };
+  if (!record) return { ok: false, error: "Your checkout session is missing or expired. Review your cart and continue to payment again." };
   if (Date.now() - record.createdAt > 30 * 60 * 1000) {
     conversionSnapshots.delete(token);
-    return { ok: false, error: "Cart conversion snapshot expired. Convert Shopping Cart again." };
+    return { ok: false, error: "Your checkout session expired. Review your cart and continue to payment again." };
   }
   if (record.tenantId !== tenantId || record.userId !== userId || record.itemKey !== cartItemKey(items)) {
-    return { ok: false, error: "Cart changed after conversion. Convert Shopping Cart again." };
+    return { ok: false, error: "Your cart changed. Review it and continue to payment again." };
   }
   return { ok: true, snapshot: record.snapshot };
 }
@@ -274,10 +274,10 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
       taxRate: totals.taxRate,
     },
     converted: {
-      stage: "customer_facing_product_conversion",
+      stage: "checkout_prepared",
       brandName: lines[0]?.merchant_brand_name ?? branding?.supplier.displayName ?? branding?.customer.displayName ?? "MyOrder.fun",
-      headline: "Your order has been converted into a branded checkout experience.",
-      zappyMessage: "I transformed the internal cart into customer-ready merchandise, checked the merchant mapping, and prepared payment options. Cash orders may qualify for exclusive discounts when enabled.",
+      headline: "Your checkout is ready.",
+      zappyMessage: "Items, availability, and payment options have been verified for checkout.",
       paymentMethods: [
         { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
         { id: "paypal", label: "PayPal", promoted: false },

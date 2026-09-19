@@ -4,7 +4,7 @@ import { db, ordersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { computeCheckoutTotals, getCheckoutTaxSettings, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
 
-export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Cart must be converted before checkout";
+export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Checkout needs to be prepared before payment";
 export const CHECKOUT_CONVERSION_TTL_MS = 15 * 60 * 1000;
 
 export class CheckoutConversionRequiredError extends Error {

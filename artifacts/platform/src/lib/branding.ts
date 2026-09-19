@@ -23,6 +23,7 @@ export type CustomerBranding = {
   privacyNotice: string | null;
   customDomain: string | null;
   domainVerificationState: "unconfigured" | "pending" | "verified" | "failed";
+  businessDescription: string | null;
 };
 
 export type SupplierBranding = {
@@ -69,6 +70,7 @@ export function resolveBranding(input?: BrandingInput | null): ResolvedBranding 
       domainVerificationState: ["pending", "verified", "failed"].includes(String(verification))
         ? verification as CustomerBranding["domainVerificationState"]
         : "unconfigured",
+      businessDescription: text(customer.businessDescription),
     },
     supplier: {
       displayName: text(supplier.displayName),

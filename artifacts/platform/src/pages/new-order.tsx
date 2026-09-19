@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ReceiptText, ShoppingCart, MapPin, PackageCheck, HandCoins } from "lucide-react";
+import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ShoppingCart, MapPin, PackageCheck, HandCoins } from "lucide-react";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
@@ -79,7 +79,7 @@ type ConversionPreview = {
 };
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
-const CONVERSION_NOTE = "Items in this cart will be converted to the appropriate customer-facing items before purchase.";
+const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment.";
 
 const isDevelopment = import.meta.env.DEV;
 
@@ -227,13 +227,13 @@ export default function NewOrder() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.error ?? "Product conversion failed.");
+        throw new Error(data?.error ?? "Could not prepare checkout.");
       }
       const converted = data as ConversionPreview;
       setConversionPreview(converted);
       setSelectedPaymentMethod(current => current || converted.converted.paymentMethods[0]?.id || "cash");
     } catch (e) {
-      setConversionError(e instanceof Error ? e.message : "Product conversion failed.");
+      setConversionError(e instanceof Error ? e.message : "Could not prepare checkout.");
     } finally {
       setIsConverting(false);
     }
@@ -368,16 +368,16 @@ export default function NewOrder() {
         </Link>
         <div>
           <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">Cart & Checkout</h1>
-          <p className="text-muted-foreground">Review the cart, choose pickup or delivery, convert with Zappy, then collect payment.</p>
+          <p className="text-muted-foreground">Review your cart, choose fulfillment, and pay securely.</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)] gap-6 items-start">
-        {/* Receipt Cart */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* Cart */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-card">
           <CardHeader className="pb-3 bg-muted/10 border-b border-border/50">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2">
-              <ReceiptText size={16} /> Receipt Cart
+              <ShoppingCart size={16} /> Cart
             </CardTitle>
             <div className="relative mt-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
@@ -417,13 +417,10 @@ export default function NewOrder() {
           <CardContent className="p-5">
             <div className="rounded-sm border border-border/70 bg-background text-foreground shadow-inner">
               <div className="border-b border-dashed border-border px-4 py-3 text-center">
-                <div className="text-xs font-semibold uppercase tracking-[0.24em]">Order Receipt</div>
+                <div className="text-xs font-semibold uppercase tracking-[0.24em]">Cart Summary</div>
                 <div className="text-[10px] text-muted-foreground mt-1 font-mono">{new Date().toLocaleString()}</div>
               </div>
               <div className="min-h-[420px] p-4 space-y-3">
-              {!conversionPreview && cart.length > 0 && (
-                <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-xs font-semibold text-amber-700 dark:text-amber-300">Cart must be converted before payment.</div>
-              )}
               {cart.length === 0 ? (
                 <div className="h-72 flex flex-col items-center justify-center text-center text-muted-foreground text-sm font-mono uppercase tracking-wider border border-dashed border-border/50 rounded-sm">
                   <ShoppingCart size={24} className="mb-3" />
@@ -492,22 +489,22 @@ export default function NewOrder() {
           </CardContent>
         </Card>
 
-        {/* Checkout Steps */}
+        {/* Checkout */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm">
           <CardHeader className="pb-3 bg-muted/10 border-b border-border/50">
-            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Checkout Steps</CardTitle>
+            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Checkout</CardTitle>
           </CardHeader>
           <CardContent className="p-5 space-y-5">
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <MapPin size={14} /> 1. Delivery or Pickup
+                <MapPin size={14} /> Fulfillment
               </div>
               <div className={`grid gap-2 ${csrStatus?.csrDeliveryAvailable ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
                     {[
                       { id: "pickup", label: "Pickup" },
                       { id: "manual_delivery", label: "Delivery" },
                       { id: "uber_direct", label: "Uber Courier" },
-                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "CSR Delivery" }] : []),
+                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "Personal delivery" }] : []),
                     ].map(option => (
                       <button
                         key={option.id}
@@ -523,7 +520,7 @@ export default function NewOrder() {
 
                   {deliveryMethod === "csr_delivery" && (
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
-                      <div className="font-semibold text-primary">CSR Personal Delivery</div>
+                      <div className="font-semibold text-primary">Personal delivery</div>
                       <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep only within 2 miles.</div>
                       <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($6 + 3% of sale total)</div>
                       {!csrDeliveryAllowed && <div className="text-destructive">Personal delivery is blocked beyond 2 miles.</div>}
@@ -575,7 +572,7 @@ export default function NewOrder() {
 
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <PackageCheck size={14} /> 2. Confirm Order is Correct
+                <PackageCheck size={14} /> Review order
               </div>
               <Textarea
                 placeholder="Order notes (optional)"
@@ -586,7 +583,7 @@ export default function NewOrder() {
               />
               <CatalogNotice />
               <div className="rounded-sm border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground leading-relaxed">
-                {CONVERSION_NOTE}
+                {CHECKOUT_NOTE}
               </div>
 
                 <label className="flex items-start gap-3 text-sm leading-relaxed">
@@ -608,7 +605,7 @@ export default function NewOrder() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold">Need one last item?</div>
-                      <div className="text-xs text-muted-foreground">Supervisor-selected add-ons can be added before Zappy converts the cart.</div>
+                      <div className="text-xs text-muted-foreground">Optional suggestions are available before checkout.</div>
                     </div>
                     {reviewedLastItemPrompt && <CheckCircle2 size={17} className="text-emerald-500 shrink-0" />}
                   </div>
@@ -646,21 +643,21 @@ export default function NewOrder() {
                   data-testid="button-preview-conversion"
                 >
                   <Wand2 size={15} className="mr-2" />
-                {isConverting ? "Converting..." : "Convert Shopping Cart"}
+                {isConverting ? "Preparing checkout..." : "Continue to payment"}
                 </Button>
                 {conversionError && (
                   <div className="text-xs text-destructive" data-testid="text-conversion-error">{conversionError}</div>
                 )}
               {conversionPreview && (
                 <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700" data-testid="conversion-ready">
-                  Shopping cart converted. Payment options are ready.
+                  Checkout is ready. Choose a payment method below.
                 </div>
               )}
             </div>
 
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <CreditCard size={14} /> 4. Select Payment Option & Pay
+                <CreditCard size={14} /> Payment
               </div>
               {conversionPreview ? (
                 <div className="space-y-4">
@@ -707,7 +704,7 @@ export default function NewOrder() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {conversionPreview.converted.paymentMethods.map(method => {
+                    {conversionPreview.converted.paymentMethods.filter(method => method.id !== "paypal_card").map(method => {
                       const Icon = method.id === "cash" ? Banknote : method.id === "paypal_card" ? CreditCard : method.id === "customer_credit" ? Gift : CheckCircle2;
                       const active = selectedPaymentMethod === method.id;
                       return (
@@ -727,10 +724,13 @@ export default function NewOrder() {
                       );
                     })}
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Card details are entered only in PayPal&apos;s secure payment form when card payments are available. We never collect card numbers or CVV.
+                  </p>
                 </div>
               ) : (
                 <div className="rounded-sm border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">
-                  Payment options appear after the shopping cart is converted.
+                  Confirm your cart details to see available payment options.
                 </div>
               )}
 
@@ -744,14 +744,14 @@ export default function NewOrder() {
                 onClick={() => void handleSubmit()}
                 data-testid="button-submit-order"
               >
-                {paymentBusy ? "Processing Payment..." : `Pay & Send Order · $${displayedTotal.toFixed(2)}`}
+                {paymentBusy ? "Preparing secure payment..." : `Place order · $${displayedTotal.toFixed(2)}`}
               </Button>
             </div>
           </CardContent>
         </Card>
 
-        {/* Zappy Suggestions + Product Conversion */}
-        <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20">
+        {/* Optional Zappy suggestions */}
+        <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20 lg:col-span-2">
           <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
               <Sparkles size={16} /> Zappy Suggestions

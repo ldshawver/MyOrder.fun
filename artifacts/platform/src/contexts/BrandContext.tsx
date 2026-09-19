@@ -5,16 +5,16 @@ export type Brand = "alavont" | "lucifer_cruz";
 
 interface BrandContextValue {
   brand: Brand;
-  setBrand: (b: Brand) => void;
   branding: ResolvedBranding;
   setBranding: (branding: BrandingInput | null) => void;
+  publicBrandLoading: boolean;
 }
 
 const BrandContext = createContext<BrandContextValue>({
   brand: "alavont",
-  setBrand: () => {},
   branding: resolveBranding(),
   setBranding: () => {},
+  publicBrandLoading: true,
 });
 
 const ALAVONT_VARS: Record<string, string> = {
@@ -49,38 +49,6 @@ const ALAVONT_VARS: Record<string, string> = {
   "--sidebar-ring": "214 90% 55%",
 };
 
-const LUCIFER_VARS: Record<string, string> = {
-  "--background": "0 30% 5%",
-  "--foreground": "0 10% 95%",
-  "--border": "0 25% 14%",
-  "--input": "0 25% 12%",
-  "--ring": "0 78% 48%",
-  "--card": "0 28% 8%",
-  "--card-foreground": "0 10% 95%",
-  "--card-border": "0 25% 14%",
-  "--popover": "0 30% 5%",
-  "--popover-foreground": "0 10% 95%",
-  "--popover-border": "0 25% 16%",
-  "--primary": "0 78% 48%",
-  "--primary-foreground": "0 10% 95%",
-  "--secondary": "0 25% 14%",
-  "--secondary-foreground": "0 10% 95%",
-  "--muted": "0 25% 14%",
-  "--muted-foreground": "0 15% 50%",
-  "--accent": "0 72% 42%",
-  "--accent-foreground": "0 10% 95%",
-  "--destructive": "0 72% 40%",
-  "--destructive-foreground": "0 10% 95%",
-  "--sidebar": "0 30% 4%",
-  "--sidebar-foreground": "0 10% 95%",
-  "--sidebar-border": "0 25% 12%",
-  "--sidebar-primary": "0 78% 48%",
-  "--sidebar-primary-foreground": "0 10% 95%",
-  "--sidebar-accent": "0 25% 12%",
-  "--sidebar-accent-foreground": "0 10% 95%",
-  "--sidebar-ring": "0 78% 48%",
-};
-
 function hexToHsl(value: string): string | null {
   const match = /^#([0-9a-f]{6})$/i.exec(value);
   if (!match) return null;
@@ -94,34 +62,38 @@ function hexToHsl(value: string): string | null {
   return `${Math.round((hue * 60 + 360) % 360)} ${Math.round(saturation * 100)}% ${Math.round(light * 100)}%`;
 }
 
-function applyBrandVars(brand: Brand, branding: ResolvedBranding) {
-  const vars = brand === "lucifer_cruz" ? LUCIFER_VARS : ALAVONT_VARS;
+function applyBrandVars(branding: ResolvedBranding) {
+  const vars = ALAVONT_VARS;
   const root = document.documentElement;
   for (const [k, v] of Object.entries(vars)) {
     root.style.setProperty(k, v);
   }
-  if (brand !== "lucifer_cruz") {
-    const primary = hexToHsl(branding.customer.primaryColor);
-    const secondary = hexToHsl(branding.customer.secondaryColor);
-    if (primary) root.style.setProperty("--primary", primary);
-    if (secondary) root.style.setProperty("--secondary", secondary);
-  }
+  const primary = hexToHsl(branding.customer.primaryColor);
+  const secondary = hexToHsl(branding.customer.secondaryColor);
+  if (primary) root.style.setProperty("--primary", primary);
+  if (secondary) root.style.setProperty("--secondary", secondary);
 }
 
 export function BrandProvider({ children }: { children: ReactNode }) {
   const [branding, setResolvedBranding] = useState<ResolvedBranding>(() => resolveBranding());
-  const [brand, setBrandState] = useState<Brand>(() => {
-    try {
-      const saved = localStorage.getItem("orderflow_brand");
-      return (saved === "lucifer_cruz" ? "lucifer_cruz" : "alavont") as Brand;
-    } catch {
-      return "alavont";
-    }
-  });
+  const [brand] = useState<Brand>("alavont");
+  const [publicBrandLoading, setPublicBrandLoading] = useState(true);
 
   useEffect(() => {
-    applyBrandVars(brand, branding);
-  }, [brand, branding]);
+    applyBrandVars(branding);
+  }, [branding]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/public/branding", { credentials: "same-origin" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((value: BrandingInput | null) => {
+        if (!cancelled && value) setResolvedBranding(resolveBranding(value));
+      })
+      .catch(() => { /* unknown hosts intentionally retain the generic platform presentation */ })
+      .finally(() => { if (!cancelled) setPublicBrandLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     document.title = branding.customer.displayName;
@@ -129,17 +101,12 @@ export function BrandProvider({ children }: { children: ReactNode }) {
     if (favicon) favicon.href = branding.customer.faviconUrl;
   }, [branding]);
 
-  function setBrand(b: Brand) {
-    setBrandState(b);
-    try { localStorage.setItem("orderflow_brand", b); } catch { /* storage unavailable */ }
-  }
-
   const setBranding = useCallback((value: BrandingInput | null) => {
     setResolvedBranding(resolveBranding(value));
   }, []);
 
   return (
-    <BrandContext.Provider value={{ brand, setBrand, branding, setBranding }}>
+    <BrandContext.Provider value={{ brand, branding, setBranding, publicBrandLoading }}>
       {children}
     </BrandContext.Provider>
   );

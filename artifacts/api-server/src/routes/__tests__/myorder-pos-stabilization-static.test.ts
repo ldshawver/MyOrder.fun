@@ -51,8 +51,10 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "Reprint Receipts"');
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
-    expect(layout).toContain('label: isCustomer ? "My Order" : "Orders"');
-    expect(layout).toContain('{ href: "/orders/new", label: "Cart & Checkout"');
+    expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
+    expect(layout).toContain('{ href: "/cart", label: "Cart"');
+    expect(app).toContain('path="/cart" component={NewOrder}');
+    expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
   });
 
   it("replaces web-editor Plasmic UI copy with Puck copy", () => {
@@ -224,7 +226,10 @@ describe("receipts and deploy workflow", () => {
     expect(receipts).toContain("integration errors are shown clearly");
     expect(receipts).toContain("aria-selected={activeTab === key}");
     expect(receipts).toContain("<RegisteredPrintAdmin mode={activeTab} />");
-    expect(platform("pages/new-order.tsx")).toContain("xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)]");
+    const checkout = platform("pages/new-order.tsx");
+    expect(checkout).toContain("grid grid-cols-1 lg:grid-cols-2 gap-6 items-start");
+    expect(checkout).toContain("Optional Zappy suggestions");
+    expect(checkout).not.toContain("Receipt Cart");
   });
 
   it("keeps restrictive catch-all admin routers after feature routers", () => {
