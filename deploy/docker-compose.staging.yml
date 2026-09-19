@@ -48,6 +48,10 @@ services:
     environment:
       PORT: "8080"
       NODE_ENV: staging
+      # Explicit staging-only public storefront alias. This is never present
+      # in the production Compose definition and cannot be selected by a client.
+      STAGING_PUBLIC_STOREFRONT_HOST: ${STAGING_PUBLIC_STOREFRONT_HOST:-}
+      STAGING_PUBLIC_TENANT_ID: ${STAGING_PUBLIC_TENANT_ID:-}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: "false"
       DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}

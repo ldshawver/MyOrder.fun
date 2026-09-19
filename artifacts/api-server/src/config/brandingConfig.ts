@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, tenantsTable, tenantSettingsTable } from "@workspace/db";
-import { PLATFORM_BRAND, resolvePublicBrandingForHost, type PublicStorefrontBranding, type TenantBrandingEnvelope } from "./publicStorefrontBranding";
+import { PLATFORM_BRAND, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, type PublicStorefrontBranding, type TenantBrandingEnvelope } from "./publicStorefrontBranding";
 export { PLATFORM_BRAND } from "./publicStorefrontBranding";
 
 function object(value: unknown): Record<string, unknown> {
@@ -11,13 +11,19 @@ function object(value: unknown): Record<string, unknown> {
 /** Resolve an exact configured storefront host without exposing tenant IDs. */
 export async function getPublicBrandingForHost(host: string): Promise<PublicStorefrontBranding | null> {
   const rows = await db.select({
+    tenantId: tenantsTable.id,
     settings: tenantsTable.settings,
     storefrontUrl: tenantSettingsTable.storefrontUrl,
     publicBusinessName: tenantSettingsTable.publicBusinessName,
     businessDescription: tenantSettingsTable.businessDescription,
   }).from(tenantsTable).leftJoin(tenantSettingsTable, eq(tenantSettingsTable.tenantId, tenantsTable.id));
 
-  return resolvePublicBrandingForHost(host, rows);
+  return resolvePublicBrandingForHost(host, rows)
+    ?? resolveStagingPublicBrandingAlias(host, rows, {
+      runtimeEnvironment: process.env.NODE_ENV,
+      host: process.env.STAGING_PUBLIC_STOREFRONT_HOST,
+      tenantId: process.env.STAGING_PUBLIC_TENANT_ID,
+    });
 }
 
 export async function getBranding(tenantId: number) {

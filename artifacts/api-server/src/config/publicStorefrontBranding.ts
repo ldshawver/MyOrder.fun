@@ -9,7 +9,7 @@ export const PLATFORM_BRAND = {
 } as const;
 
 export type TenantBrandingEnvelope = { customer?: Record<string, unknown>; supplier?: Record<string, unknown> };
-export type StorefrontBrandingRecord = { settings: unknown; storefrontUrl: string | null; publicBusinessName: string | null; businessDescription: string | null };
+export type StorefrontBrandingRecord = { tenantId: number; settings: unknown; storefrontUrl: string | null; publicBusinessName: string | null; businessDescription: string | null };
 export type PublicStorefrontBranding = { customer: {
   displayName: string; logoUrl: string; faviconUrl: string; primaryColor: string; secondaryColor: string;
   supportEmail: string | null; supportPhone: string | null; websiteUrl: string | null; businessDescription: string | null;
@@ -54,5 +54,24 @@ export function publicBrandingFromRecord(record: StorefrontBrandingRecord): Publ
 
 export function resolvePublicBrandingForHost(host: string, records: StorefrontBrandingRecord[]): PublicStorefrontBranding | null {
   const matches = records.filter((record) => storefrontHostFromUrl(record.storefrontUrl) === host);
+  return matches.length === 1 ? publicBrandingFromRecord(matches[0]) : null;
+}
+
+type StagingAliasConfig = { runtimeEnvironment: string | undefined; host: string | undefined; tenantId: string | undefined };
+
+/**
+ * Resolve an explicitly configured staging-only alias. Both values must be
+ * supplied by the server environment; request headers select only the host.
+ */
+export function resolveStagingPublicBrandingAlias(
+  host: string,
+  records: StorefrontBrandingRecord[],
+  config: StagingAliasConfig,
+): PublicStorefrontBranding | null {
+  if (config.runtimeEnvironment !== "staging") return null;
+  const configuredHost = normalizeStorefrontHost(config.host);
+  const tenantId = Number(config.tenantId);
+  if (!configuredHost || configuredHost !== host || !Number.isSafeInteger(tenantId) || tenantId < 1) return null;
+  const matches = records.filter((record) => record.tenantId === tenantId);
   return matches.length === 1 ? publicBrandingFromRecord(matches[0]) : null;
 }

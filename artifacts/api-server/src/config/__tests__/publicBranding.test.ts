@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeStorefrontHost, resolvePublicBrandingForHost, type StorefrontBrandingRecord } from "../publicStorefrontBranding";
+import { normalizeStorefrontHost, resolvePublicBrandingForHost, resolveStagingPublicBrandingAlias, type StorefrontBrandingRecord } from "../publicStorefrontBranding";
 
 const lucifer: StorefrontBrandingRecord = {
+  tenantId: 1,
   storefrontUrl: "https://shop.lucifercruz.com/",
   publicBusinessName: "Lucifer Cruz",
   businessDescription: "Bold, discreet, and unapologetically adult.",
@@ -17,6 +18,7 @@ const lucifer: StorefrontBrandingRecord = {
 };
 
 const other: StorefrontBrandingRecord = {
+  tenantId: 2,
   storefrontUrl: "https://store.example.test/",
   publicBusinessName: "Other Store",
   businessDescription: "Other storefront.",
@@ -43,5 +45,19 @@ describe("public storefront branding", () => {
     expect(result).toEqual({ customer: expect.objectContaining({ displayName: "Lucifer Cruz", primaryColor: "#820000" }) });
     expect(JSON.stringify(result)).not.toContain("secret");
     expect(JSON.stringify(result)).not.toMatch(/tenantId|clerk|payment|printer/i);
+  });
+
+  it("permits an exact, server-configured staging alias without replacing the canonical storefront domain", () => {
+    const config = { runtimeEnvironment: "staging", host: "staging.myorder.fun", tenantId: "1" };
+    expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer, other], config)?.customer.displayName).toBe("Lucifer Cruz");
+    expect(resolvePublicBrandingForHost("shop.lucifercruz.com", [lucifer, other])?.customer.displayName).toBe("Lucifer Cruz");
+    expect(resolveStagingPublicBrandingAlias("other.example.test", [lucifer, other], config)).toBeNull();
+    expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer, other], { ...config, tenantId: "2" })?.customer.displayName).toBe("Other Store");
+  });
+
+  it("fails closed when the alias is incomplete, malformed, or outside staging", () => {
+    expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer], { runtimeEnvironment: "production", host: "staging.myorder.fun", tenantId: "1" })).toBeNull();
+    expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer], { runtimeEnvironment: "staging", host: "staging.myorder.fun/path", tenantId: "1" })).toBeNull();
+    expect(resolveStagingPublicBrandingAlias("staging.myorder.fun", [lucifer], { runtimeEnvironment: "staging", host: "staging.myorder.fun", tenantId: undefined })).toBeNull();
   });
 });
