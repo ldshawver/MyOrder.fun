@@ -35,11 +35,6 @@ router.get("/payments/config", (_req, res) => {
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
 
-router.get("/payments/paypal/browser-token", ...auth, async (_req, res) => {
-  try { const config = requireOnlinePayments(loadPaymentConfig()); const token = await new PayPalProvider(config).browserSafeClientToken(); res.setHeader("Cache-Control", "no-store"); res.json(token); }
-  catch (error) { fail(res, error); }
-});
-
 router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
   try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().create({ tenantId: actor.tenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
   catch (error) { fail(res, error); }

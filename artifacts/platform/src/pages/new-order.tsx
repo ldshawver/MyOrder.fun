@@ -752,7 +752,7 @@ export default function NewOrder() {
               {selectedPaymentMethod === "paypal" ? (
                 <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
                   <p className="text-sm font-semibold">Pay securely with PayPal</p>
-                  <p className="text-xs text-muted-foreground">Choose PayPal Wallet, or enter card details only in PayPal&apos;s hosted fields when PayPal makes them eligible. Your order is created only after you start a provider-controlled payment.</p>
+                  <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
                   <PayPalCheckoutButton
                     createOrder={() => createCheckoutOrder("paypal")}
                     getToken={getToken}

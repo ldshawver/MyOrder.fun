@@ -153,6 +153,7 @@ export default function AdminSettingsPage() {
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [paypalStatus, setPayPalStatus] = useState<PayPalStatus | null>(null);
+  const [paypalTesting, setPayPalTesting] = useState(false);
 
   const [business, setBusiness] = useState<TenantBusinessSettings>(EMPTY_BUSINESS);
   const [businessSaving, setBusinessSaving] = useState(false);
@@ -744,8 +745,18 @@ export default function AdminSettingsPage() {
                   <p><strong>Connection:</strong> {paypalStatus?.connection === "not_tested" ? "Not tested" : paypalStatus?.connection ?? "Not tested"}</p>
                 </div>
                 <p><strong>Webhook URL:</strong> <code>{typeof window === "undefined" ? "/api/webhooks/paypal" : `${window.location.origin}/api/webhooks/paypal`}</code></p>
-                <p><strong>PayPal Wallet:</strong> determined by the official PayPal checkout SDK for the current merchant, buyer, and session.</p>
-                <p><strong>Credit/Debit Cards:</strong> shown only when PayPal reports Advanced Cards eligibility. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
+                <p><strong>PayPal Wallet:</strong> determined by the official PayPal SDK for the current merchant, buyer, and session.</p>
+                <p><strong>Credit/Debit Cards:</strong> not exposed until this merchant's PayPal Advanced Cards capability and v6 hosted-fields integration are verified. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
+                <Button type="button" variant="outline" size="sm" disabled={paypalTesting} onClick={async () => {
+                  setPayPalTesting(true);
+                  try {
+                    const token = await getToken();
+                    const response = await fetch("/api/admin/settings/paypal-status/test", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+                    const result = await response.json() as { connection?: string };
+                    setPayPalStatus(current => current ? { ...current, connection: response.ok ? "connected" : result.connection ?? "failed" } : current);
+                  } catch { setPayPalStatus(current => current ? { ...current, connection: "failed" } : current); }
+                  finally { setPayPalTesting(false); }
+                }}>{paypalTesting ? "Testing…" : "Test Connection"}</Button>
               </div>
             </div>
           </div>

@@ -6,6 +6,7 @@ import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
 import { loadPaymentConfig } from "../payments/config";
+import { PayPalProvider } from "../payments/paypal";
 import { z } from "zod";
 
 const router: IRouter = Router();
@@ -476,6 +477,23 @@ router.get("/admin/settings/paypal-status", requirePermission("settings.view"), 
     });
   } catch {
     res.json({ enabled: false, environment: "invalid", clientIdConfigured: false, clientSecretConfigured: false, webhookIdConfigured: false, wallet: "not_configured", advancedCards: "not_configured", vault: "unknown", connection: "not_tested" });
+  }
+});
+
+/** Runs a bounded OAuth handshake without returning or storing credentials. */
+router.post("/admin/settings/paypal-status/test", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  try {
+    const config = loadPaymentConfig();
+    if (!config.enabled) {
+      res.status(503).json({ connection: "not_configured" });
+      return;
+    }
+    await new PayPalProvider(config).testConnection();
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.dbUser!.tenantId!, action: "settings.paypal.connection_tested", resourceType: "payment_provider", resourceId: "paypal", metadata: { environment: config.environment, connected: true }, ipAddress: req.ip });
+    res.json({ connection: "connected" });
+  } catch {
+    // Deliberately omit upstream detail: it may disclose provider configuration.
+    res.status(502).json({ connection: "failed" });
   }
 });
 

@@ -15,12 +15,18 @@ describe("PayPal release security structure", () => {
   it("requires auth, approval, strict schemas, idempotency and refund permission", () => { expect(route).toContain("requireApproved"); expect(route).toContain(".strict()"); expect(route).toContain("Idempotency-Key"); expect(route).toContain('requirePermission("orders.refund")'); });
   it("uses a raw bounded webhook and signature metadata", () => { expect(route).toContain("Buffer.isBuffer"); expect(route).toContain("PayPal-Transmission-Sig"); expect(route).toContain("PayPal-Cert-Url"); });
   it("does not load PayPal SDK until server configuration enables it", () => { expect(frontend.indexOf("if (!config.enabled")).toBeLessThan(frontend.indexOf("document.createElement")); expect(frontend).not.toContain("paypalme"); });
-  it("uses PayPal SDK v6's official Wallet element and hosted-card eligibility, not an application imitation", () => {
+  it("uses the v6 official Wallet element with only the publishable client ID and automatic presentation", () => {
     expect(frontend).toContain('document.createElement("paypal-button")');
     expect(frontend).toContain("createPayPalOneTimePaymentSession");
-    expect(frontend).toContain("createCardFieldsOneTimePaymentSession");
-    expect(frontend).toContain('methods.isEligible("advanced_cards")');
+    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('presentationMode: "auto"');
+    expect(frontend).toContain('headers: await authHeaders()');
+    expect(frontend).not.toContain("browser-token");
+    expect(frontend).not.toContain("clientSecret");
     expect(frontend).not.toContain("type=\"text\" name=\"cardNumber\"");
+  });
+  it("does not retain the legacy browser token endpoint when Wallet uses client-ID authentication", () => {
+    expect(route).not.toContain("browser-token");
   });
   it("starts a durable checkout only from the provider payment action and reuses an active provider order", () => {
     expect(checkout).toContain('createOrder={() => createCheckoutOrder("paypal")}');

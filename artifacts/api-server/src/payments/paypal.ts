@@ -10,14 +10,6 @@ export class PayPalProvider implements PaymentProvider {
   private accessToken?: { value: string; expiresAt: number };
   constructor(private readonly config: EnabledPaymentConfig, private readonly fetchImpl: typeof fetch = fetch) {}
 
-  async browserSafeClientToken(): Promise<{ accessToken: string; expiresIn: number }> {
-    const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
-    const response = await this.fetchImpl(`${this.config.apiOrigin}/v1/oauth2/token`, { method: "POST", headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" }, body: "grant_type=client_credentials&response_type=client_token&intent=sdk_init", signal: AbortSignal.timeout(10_000) });
-    const body = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number };
-    if (!response.ok || !body.access_token) throw new PayPalProviderError("provider_error", "PayPal browser token request failed");
-    return { accessToken: body.access_token, expiresIn: Math.min(900, Math.max(60, body.expires_in ?? 900)) };
-  }
-
   private async token(): Promise<string> {
     if (this.accessToken && this.accessToken.expiresAt > Date.now() + 30_000) return this.accessToken.value;
     const auth = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
@@ -27,6 +19,11 @@ export class PayPalProvider implements PaymentProvider {
     if (!body.access_token) throw new PayPalProviderError("invalid_response", "PayPal authentication response invalid");
     this.accessToken = { value: body.access_token, expiresAt: Date.now() + Math.max(60, body.expires_in ?? 300) * 1000 };
     return body.access_token;
+  }
+
+  /** Auth-only diagnostic. It never returns the access token or credentials. */
+  async testConnection(): Promise<void> {
+    await this.token();
   }
 
   private async request(path: string, init: RequestInit, requestId?: string): Promise<Json> {
