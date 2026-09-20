@@ -20,13 +20,14 @@ type Props = {
   createOrder?: () => Promise<number>;
   getToken: () => Promise<string | null>;
   onCaptured: (orderId: number) => void;
+  onAbandoned?: (orderId: number) => void;
   disabled?: boolean;
 };
 
 const idempotencyKey = (prefix: string) => `${prefix}:${crypto.randomUUID()}`;
 
 /** PayPal JavaScript SDK v6 checkout: an official custom Wallet element and PayPal-hosted card fields. */
-export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCaptured, disabled = false }: Props) {
+export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCaptured, onAbandoned, disabled = false }: Props) {
   const walletContainer = useRef<HTMLDivElement>(null);
   const number = useRef<HTMLDivElement>(null); const expiry = useRef<HTMLDivElement>(null); const cvv = useRef<HTMLDivElement>(null);
   const internalOrderId = useRef<number | undefined>(orderId);
@@ -57,6 +58,30 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
     if (!response.ok) throw new Error(body.error ?? "PayPal capture requires reconciliation");
     setMessage("PayPal payment captured and verified."); onCaptured(checkoutOrderId);
   }, [authHeaders, onCaptured, resolveInternalOrder]);
+  const cancelAfterBuyerCancellation = useCallback(async () => {
+    const checkoutOrderId = internalOrderId.current;
+    if (!checkoutOrderId) return;
+    try {
+      const response = await fetch(`/api/orders/${checkoutOrderId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...await authHeaders() },
+        body: JSON.stringify({ status: "cancelled", reason: "Buyer cancelled PayPal approval" }),
+      });
+      if (!response.ok) throw new Error("Checkout cancellation needs review");
+      // The provider session has explicitly reported buyer cancellation. The
+      // existing order lifecycle releases its unpaid reservation atomically.
+      // A new click therefore starts a new, server-validated checkout rather
+      // than attaching to a cancelled order.
+      const abandonedOrderId = checkoutOrderId;
+      internalOrderId.current = undefined; attempt.current = undefined;
+      onAbandoned?.(abandonedOrderId);
+      setMessage("PayPal approval was canceled. Your cart is unchanged and no payment was captured.");
+    } catch {
+      // Do not discard a pending provider identity if local cancellation did
+      // not complete. It remains recoverable and cannot be silently retried.
+      setMessage("PayPal approval was canceled, but checkout recovery is still pending. Do not retry payment until the order status is confirmed.");
+    }
+  }, [authHeaders, onAbandoned]);
   const startWallet = useCallback(async () => {
     if (busyRef.current || disabled || !wallet.current) return;
     busyRef.current = true; setBusy(true); setMessage(null);
@@ -88,7 +113,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
       if (disposed) return;
       const canPayPal = methods.isEligible("paypal"); setWalletEligible(canPayPal);
       if (canPayPal && walletContainer.current) {
-        wallet.current = sdk.createPayPalOneTimePaymentSession({ onApprove: data => capture(data.orderId), onCancel: () => setMessage("PayPal approval was canceled; no capture occurred."), onError: () => setMessage("PayPal checkout failed; no payment was confirmed.") });
+        wallet.current = sdk.createPayPalOneTimePaymentSession({ onApprove: data => capture(data.orderId), onCancel: () => { void cancelAfterBuyerCancellation(); }, onError: () => setMessage("PayPal reported an error. Checkout remains pending for safe recovery; do not retry automatically.") });
         const paypalButton = document.createElement("paypal-button"); paypalButton.setAttribute("type", "pay"); paypalButton.setAttribute("aria-label", "Pay with PayPal"); paypalButton.dataset.testid = "paypal-button";
         paypalButton.addEventListener("click", () => { void startWallet(); }); walletContainer.current.replaceChildren(paypalButton);
       }
@@ -102,7 +127,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
     }
     start().catch(() => { if (!disposed) { setWalletEligible(false); setCardEligible(false); setMessage("Online PayPal checkout is unavailable."); } });
     return () => { disposed = true; };
-  }, [authHeaders, capture, startWallet]);
+  }, [authHeaders, cancelAfterBuyerCancellation, capture, startWallet]);
 
   async function payCard() {
     if (busyRef.current || disabled || !card.current) return;

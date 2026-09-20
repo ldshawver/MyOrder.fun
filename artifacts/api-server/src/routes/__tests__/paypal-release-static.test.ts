@@ -28,5 +28,10 @@ describe("PayPal release security structure", () => {
     expect(service).toContain("A new browser session must resume an existing durable PayPal order");
     expect(service).toContain('inArray(paymentAttemptsTable.state, ["created", "capturing", "reconciliation_required"])');
   });
+  it("releases an explicitly cancelled buyer checkout but preserves unknown outcomes for recovery", () => {
+    expect(frontend).toContain('status: "cancelled", reason: "Buyer cancelled PayPal approval"');
+    expect(frontend).toContain("existing order lifecycle releases its unpaid reservation atomically");
+    expect(frontend).toContain("Checkout remains pending for safe recovery; do not retry automatically.");
+  });
   it("staging requires PayPal Sandbox variables and removes Stripe configuration", () => { expect(compose).toContain("PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:?"); expect(compose).not.toContain("STRIPE_SECRET_KEY"); expect(compose).not.toContain("PAYPAL_API_BASE_URL"); });
 });
