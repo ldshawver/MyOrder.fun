@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable } from "@workspace/db";
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
@@ -30,6 +30,17 @@ export class PaymentService {
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
+
+      // A new browser session must resume an existing durable PayPal order,
+      // rather than create a second provider order for the same MyOrder
+      // checkout when a popup was dismissed, a page was refreshed, or a
+      // network response was lost.
+      const [activeAttempt] = await tx.select().from(paymentAttemptsTable).where(and(
+        eq(paymentAttemptsTable.tenantId, input.tenantId),
+        eq(paymentAttemptsTable.orderId, input.orderId),
+        inArray(paymentAttemptsTable.state, ["created", "capturing", "reconciliation_required"]),
+      )).orderBy(sql`${paymentAttemptsTable.createdAt} DESC`).limit(1);
+      if (activeAttempt?.providerOrderId) return { attemptId: activeAttempt.id, providerOrderId: activeAttempt.providerOrderId, status: activeAttempt.state, replayed: true };
 
       const amount = money(order.remainingTenderAmount ?? order.total);
       if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");

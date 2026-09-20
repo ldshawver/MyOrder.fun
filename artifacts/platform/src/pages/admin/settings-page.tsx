@@ -49,15 +49,18 @@ const EMPTY_BUSINESS: TenantBusinessSettings = {
   businessDescription: null,
 };
 
-type MerchantProcessorConfig = Record<string, {
-  displayName?: string;
-  accountId?: string;
-  publicKey?: string;
-  webhookConfigured?: boolean;
-  notes?: string;
-}>;
-
 type CatalogDiagnostics = { summary?: Record<string, unknown>; items?: Array<{ id: number; name: string; missingFields?: string[]; filteredBecause?: string[]; isAvailable?: boolean; alavontName?: string | null; luciferCruzName?: string | null }> };
+type PayPalStatus = {
+  enabled: boolean;
+  environment: "sandbox" | "live" | "disabled" | "invalid";
+  clientIdConfigured: boolean;
+  clientSecretConfigured: boolean;
+  webhookIdConfigured: boolean;
+  wallet: string;
+  advancedCards: string;
+  vault: string;
+  connection: string;
+};
 
 type AdminSettings = {
   menuImportEnabled: boolean;
@@ -65,7 +68,6 @@ type AdminSettings = {
   enabledProcessors: string[];
   checkoutConversionPreview: boolean;
   merchantImageEnabled: boolean;
-  merchantProcessorConfig: MerchantProcessorConfig;
   autoPrintOnPayment: boolean;
   receiptTemplateStyle: string;
   labelTemplateStyle: string;
@@ -98,23 +100,12 @@ const PAYMENT_PROCESSORS = [
   { id: "cash", label: "Cash" },
 ];
 
-const DEFAULT_MERCHANT_PROCESSOR_CONFIG: MerchantProcessorConfig = Object.fromEntries(
-  PAYMENT_PROCESSORS.map(p => [p.id, {
-    displayName: p.label,
-    accountId: "",
-    publicKey: "",
-    webhookConfigured: false,
-    notes: p.id === "cash" ? "Cash is reconciled against the active CSR shift cash bank." : "",
-  }])
-);
-
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
   showOutOfStock: false,
   enabledProcessors: ["paypal"],
   checkoutConversionPreview: false,
   merchantImageEnabled: true,
-  merchantProcessorConfig: DEFAULT_MERCHANT_PROCESSOR_CONFIG,
   autoPrintOnPayment: false,
   receiptTemplateStyle: "standard",
   labelTemplateStyle: "standard",
@@ -161,6 +152,7 @@ export default function AdminSettingsPage() {
   const [diagnostics, setDiagnostics] = useState<CatalogDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [paypalStatus, setPayPalStatus] = useState<PayPalStatus | null>(null);
 
   const [business, setBusiness] = useState<TenantBusinessSettings>(EMPTY_BUSINESS);
   const [businessSaving, setBusinessSaving] = useState(false);
@@ -177,11 +169,12 @@ export default function AdminSettingsPage() {
     (async () => {
       try {
         const token = await getToken();
-        const [genRes, wcRes, tenantRes, brandingRes] = await Promise.all([
+        const [genRes, wcRes, tenantRes, brandingRes, paypalRes] = await Promise.all([
           fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/branding", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/paypal-status", { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         let merged: Partial<AdminSettings> = {};
         if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
@@ -190,6 +183,7 @@ export default function AdminSettingsPage() {
           setBusiness({ ...EMPTY_BUSINESS, ...(tenantSettings.business ?? {}) });
         }
         if (brandingRes.ok) setBranding(resolveBranding(await brandingRes.json()));
+        if (paypalRes.ok) setPayPalStatus(await paypalRes.json() as PayPalStatus);
         if (wcRes.ok) {
           const wc = await wcRes.json();
           merged = {
@@ -204,10 +198,6 @@ export default function AdminSettingsPage() {
         setSettings(s => ({
           ...s,
           ...merged,
-          merchantProcessorConfig: {
-            ...DEFAULT_MERCHANT_PROCESSOR_CONFIG,
-            ...(merged.merchantProcessorConfig ?? {}),
-          },
         }));
       } catch { /* ignore fetch errors */ }
       setLoading(false);
@@ -409,20 +399,6 @@ export default function AdminSettingsPage() {
 
   function set<K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) {
     setSettings(s => ({ ...s, [key]: value }));
-  }
-
-  function setProcessorConfig(processorId: string, key: "accountId" | "publicKey" | "notes" | "webhookConfigured", value: string | boolean) {
-    setSettings(s => ({
-      ...s,
-      merchantProcessorConfig: {
-        ...s.merchantProcessorConfig,
-        [processorId]: {
-          ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[processorId],
-          ...(s.merchantProcessorConfig?.[processorId] ?? {}),
-          [key]: value,
-        },
-      },
-    }));
   }
 
   function BusinessField({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
@@ -746,45 +722,30 @@ export default function AdminSettingsPage() {
 
             <div className="mt-5 pt-5 border-t border-border/40 space-y-3">
               <div>
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer Credit Setup</div>
-                <p className="text-xs text-muted-foreground mt-1">Store public account IDs, checkout keys, webhook status, and admin notes for each accepted payment method.</p>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Cash</div>
+                <p className="text-xs text-muted-foreground mt-1">Cash is an internal tender. It has no merchant ID, API key, checkout handle, or webhook.</p>
               </div>
-              <div className="grid gap-3">
-                {PAYMENT_PROCESSORS.map(({ id, label }) => {
-                  const config = { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[id], ...(settings.merchantProcessorConfig?.[id] ?? {}) };
-                  const active = settings.enabledProcessors.includes(id);
-                  return (
-                    <div key={id} className={`rounded-xl border p-3 space-y-3 ${active ? "border-primary/30 bg-primary/5" : "border-border/30 bg-muted/10 opacity-75"}`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-semibold">{label}</div>
-                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <Switch checked={!!config.webhookConfigured} onCheckedChange={v => setProcessorConfig(id, "webhookConfigured", v)} />
-                          Webhook configured
-                        </label>
-                      </div>
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <Input
-                          value={config.accountId ?? ""}
-                          onChange={e => setProcessorConfig(id, "accountId", e.target.value)}
-                          placeholder={`${label} account / merchant ID`}
-                          className="h-9 rounded-xl text-xs bg-background/50"
-                        />
-                        <Input
-                          value={config.publicKey ?? ""}
-                          onChange={e => setProcessorConfig(id, "publicKey", e.target.value)}
-                          placeholder={`${label} public checkout key / handle`}
-                          className="h-9 rounded-xl text-xs bg-background/50"
-                        />
-                      </div>
-                      <Input
-                        value={config.notes ?? ""}
-                        onChange={e => setProcessorConfig(id, "notes", e.target.value)}
-                        placeholder="Supervisor/admin notes for this payment method"
-                        className="h-9 rounded-xl text-xs bg-background/50"
-                      />
-                    </div>
-                  );
-                })}
+              <div className="rounded-xl border border-border/30 bg-muted/10 p-3 text-xs text-muted-foreground space-y-1">
+                <p><strong className="text-foreground">Enabled:</strong> {settings.enabledProcessors.includes("cash") ? "Yes" : "No"}</p>
+                <p>Cash acceptance requires the employee to be authorized and assigned to the active accountable cash session/shift. Closeout is reconciled through General Queue or the assigned CSR shift.</p>
+              </div>
+
+              <div className="pt-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">PayPal</div>
+                <p className="text-xs text-muted-foreground mt-1">Credentials are deployment secrets. This screen reports configuration only; it never displays or stores a secret in the browser.</p>
+              </div>
+              <div className="rounded-xl border border-border/30 bg-muted/10 p-3 text-xs space-y-2">
+                <div className="grid gap-1 sm:grid-cols-2">
+                  <p><strong>Enabled:</strong> {paypalStatus?.enabled ? "Yes" : "No"}</p>
+                  <p><strong>Environment:</strong> {paypalStatus?.environment ?? "Not tested"}</p>
+                  <p><strong>Client ID:</strong> {paypalStatus?.clientIdConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Client Secret:</strong> {paypalStatus?.clientSecretConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Webhook ID:</strong> {paypalStatus?.webhookIdConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Connection:</strong> {paypalStatus?.connection === "not_tested" ? "Not tested" : paypalStatus?.connection ?? "Not tested"}</p>
+                </div>
+                <p><strong>Webhook URL:</strong> <code>{typeof window === "undefined" ? "/api/webhooks/paypal" : `${window.location.origin}/api/webhooks/paypal`}</code></p>
+                <p><strong>PayPal Wallet:</strong> determined by the official PayPal checkout SDK for the current merchant, buyer, and session.</p>
+                <p><strong>Credit/Debit Cards:</strong> shown only when PayPal reports Advanced Cards eligibility. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
               </div>
             </div>
           </div>

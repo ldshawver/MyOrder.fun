@@ -6,9 +6,11 @@ const root = resolve(import.meta.dirname, "../../../../..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 describe("payment and sticker release invariants", () => {
-  it("exposes only approved customer checkout tenders", () => {
+  it("exposes only configured customer checkout tenders and keeps card funding inside PayPal", () => {
     const orders = read("artifacts/api-server/src/routes/orders.ts");
-    for (const tender of ['id: "cash"', 'id: "paypal"', 'id: "paypal_card"', 'id: "customer_credit"']) expect(orders).toContain(tender);
+    for (const tender of ['id: "cash"', 'id: "paypal"', 'id: "customer_credit"']) expect(orders).toContain(tender);
+    expect(orders).not.toContain('id: "paypal_card"');
+    expect(read("artifacts/api-server/src/payments/service.ts")).toContain('capture.fundingSource === "card" ? "paypal_card" : "paypal"');
     for (const retired of ['id: "stripe"', 'id: "gift_card"', 'id: "manual"', 'id: "cash_app"']) expect(orders).not.toContain(retired);
   });
 

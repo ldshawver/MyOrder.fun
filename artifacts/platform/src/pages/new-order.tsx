@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
@@ -12,6 +12,7 @@ import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Ba
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
@@ -231,7 +232,9 @@ export default function NewOrder() {
       }
       const converted = data as ConversionPreview;
       setConversionPreview(converted);
-      setSelectedPaymentMethod(current => current || converted.converted.paymentMethods[0]?.id || "cash");
+      setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current)
+        ? current
+        : converted.converted.paymentMethods[0]?.id || "customer_credit");
     } catch (e) {
       setConversionError(e instanceof Error ? e.message : "Could not prepare checkout.");
     } finally {
@@ -268,10 +271,10 @@ export default function NewOrder() {
     }
   };
 
-  const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
-    if (cart.length === 0 || !conversionPreview) return;
-    if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
-    if (requiresDeliveryAddress && !shippingAddress.trim()) return;
+  const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
+    if (cart.length === 0 || !conversionPreview) throw new Error("Checkout is not ready.");
+    if (deliveryMethod === "uber_direct" && !deliveryQuote) throw new Error("A current delivery quote is required.");
+    if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
     setOrderSubmitError(null);
     const paymentMethod = paymentMethodOverride as "cash" | "paypal" | "paypal_card" | "customer_credit";
@@ -290,28 +293,19 @@ export default function NewOrder() {
       const order = await createOrderMutation.mutateAsync({
         data: {
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
-          shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
+          shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
           checkoutConversionToken,
           checkoutConversionSnapshot,
           selectedPaymentMethod: paymentMethod,
           paymentMethod,
-          csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
+          csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? 0 : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation,
         }
       });
-
-      notifyOrderPlaced(order.id, user?.firstName || undefined);
-      await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
-      clearCart();
-      try {
-        const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
-        sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
-      } catch { /* ignore storage errors */ }
-      setLocation(`/orders/${order.id}`);
+      return order.id;
     } catch (error) {
       const checkoutConversionToken = conversionPreview?.conversionToken;
       const checkoutConversionSnapshot = conversionPreview ? checkoutSnapshotFromConversion(conversionPreview) : undefined;
@@ -322,14 +316,31 @@ export default function NewOrder() {
       );
       setOrderSubmitError(message);
       toast({ title: "Order failed", description: message, variant: "destructive" });
+      throw error;
     }
+  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, shippingAddress, tipAmount, tipMode]);
+
+  const finishCheckout = useCallback(async (orderId: number) => {
+    notifyOrderPlaced(orderId, user?.firstName || undefined);
+    await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+    clearCart();
+    try {
+      const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
+      sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, orderId]));
+    } catch { /* ignore storage errors */ }
+    setLocation(`/orders/${orderId}`);
+  }, [clearCart, notifyOrderPlaced, queryClient, setLocation, user?.firstName]);
+
+  const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
+    try {
+      const orderId = await createCheckoutOrder(paymentMethodOverride);
+      if (orderId) await finishCheckout(orderId);
+    } catch { /* createCheckoutOrder presents the customer-safe error */ }
   };
 
   const handlePaymentMethodClick = (methodId: string) => {
     setSelectedPaymentMethod(methodId);
-    if (methodId === "cash" && canSubmit) {
-      void handleSubmit(methodId);
-    }
   };
 
   const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
@@ -705,7 +716,7 @@ export default function NewOrder() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {conversionPreview.converted.paymentMethods.filter(method => method.id !== "paypal_card").map(method => {
-                      const Icon = method.id === "cash" ? Banknote : method.id === "paypal_card" ? CreditCard : method.id === "customer_credit" ? Gift : CheckCircle2;
+                      const Icon = method.id === "cash" ? Banknote : method.id === "customer_credit" ? Gift : CheckCircle2;
                       const active = selectedPaymentMethod === method.id;
                       return (
                         <button
@@ -738,14 +749,27 @@ export default function NewOrder() {
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
               )}
 
-              <Button 
-                className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider" 
-                disabled={!canSubmit}
-                onClick={() => void handleSubmit()}
-                data-testid="button-submit-order"
-              >
-                {paymentBusy ? "Preparing secure payment..." : `Place order · $${displayedTotal.toFixed(2)}`}
-              </Button>
+              {selectedPaymentMethod === "paypal" ? (
+                <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
+                  <p className="text-sm font-semibold">Pay securely with PayPal</p>
+                  <p className="text-xs text-muted-foreground">Choose PayPal Wallet, or enter card details only in PayPal&apos;s hosted fields when PayPal makes them eligible. Your order is created only after you start a provider-controlled payment.</p>
+                  <PayPalCheckoutButton
+                    createOrder={() => createCheckoutOrder("paypal")}
+                    getToken={getToken}
+                    disabled={!canSubmit}
+                    onCaptured={(orderId) => { void finishCheckout(orderId); }}
+                  />
+                </div>
+              ) : (
+                <Button
+                  className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider"
+                  disabled={!canSubmit}
+                  onClick={() => void handleSubmit()}
+                  data-testid="button-submit-order"
+                >
+                  {paymentBusy ? "Preparing order..." : `Place order · $${displayedTotal.toFixed(2)}`}
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>

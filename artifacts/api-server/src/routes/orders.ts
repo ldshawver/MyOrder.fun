@@ -251,6 +251,14 @@ const PreviewConversionBody = z.object({
 async function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"], tenantId?: number) {
   const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(tenantId));
   const branding = tenantId ? await getBranding(tenantId) : null;
+  const [paymentSettings] = tenantId ? await db.select({ enabledProcessors: adminSettingsTable.enabledProcessors })
+    .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1) : [];
+  const enabledProcessors = new Set(paymentSettings?.enabledProcessors ?? ["paypal"]);
+  const paymentMethods = [
+    ...(enabledProcessors.has("cash") ? [{ id: "cash", label: "Cash", promoted: true, message: "Cash is accepted by an eligible employee in an open accountable session." }] : []),
+    ...(enabledProcessors.has("paypal") ? [{ id: "paypal", label: "PayPal", promoted: false }] : []),
+    { id: "customer_credit", label: "Customer Credit", promoted: false },
+  ];
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -278,12 +286,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
       brandName: lines[0]?.merchant_brand_name ?? branding?.supplier.displayName ?? branding?.customer.displayName ?? "MyOrder.fun",
       headline: "Your checkout is ready.",
       zappyMessage: "Items, availability, and payment options have been verified for checkout.",
-      paymentMethods: [
-        { id: "cash", label: "Cash", promoted: true, message: "Cash orders qualify for exclusive discounts." },
-        { id: "paypal", label: "PayPal", promoted: false },
-        { id: "paypal_card", label: "Credit/debit card (processed by PayPal)", promoted: false, message: "Shown only when PayPal confirms Card Fields eligibility." },
-        { id: "customer_credit", label: "Customer Credit", promoted: false },
-      ],
+      paymentMethods,
       items: lines.map(line => ({
         originalCatalogItemId: line.original_catalog_item_id ?? line.catalog_item_id,
         catalogItemId: line.catalog_item_id,
@@ -749,8 +752,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
     cashDiscountType: adminSettingsTable.cashDiscountType,
     cashDiscountValue: adminSettingsTable.cashDiscountValue,
+    enabledProcessors: adminSettingsTable.enabledProcessors,
   }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
   const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
+  if (tender !== "cash" && tender !== "paypal" && tender !== "customer_credit") {
+    res.status(422).json({ error: "Select an available payment method from checkout" });
+    return;
+  }
+  if ((tender === "cash" || tender === "paypal") && !financialSettings?.enabledProcessors?.includes(tender)) {
+    res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
+    return;
+  }
   const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const subtotal = financial.taxableSubtotal;
   const tax = financial.taxCollected;

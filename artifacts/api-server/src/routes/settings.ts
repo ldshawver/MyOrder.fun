@@ -5,6 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, safeDecrypt } from "../lib/crypto";
+import { loadPaymentConfig } from "../payments/config";
 import { z } from "zod";
 
 const router: IRouter = Router();
@@ -103,7 +104,6 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     cashDiscountType: s.cashDiscountType,
     cashDiscountValue: Number(s.cashDiscountValue ?? 0),
     merchantImageEnabled: s.merchantImageEnabled,
-    merchantProcessorConfig: parseMerchantProcessorConfig(s.merchantProcessorConfig),
     autoPrintOnPayment: s.autoPrintOnPayment,
     receiptTemplateStyle: s.receiptTemplateStyle,
     labelTemplateStyle: s.labelTemplateStyle,
@@ -223,39 +223,6 @@ function parseDeliveryOptions(raw: string | null | undefined) {
   } catch {
     return DEFAULT_DELIVERY_OPTIONS;
   }
-}
-
-const DEFAULT_MERCHANT_PROCESSOR_CONFIG: Record<string, Record<string, unknown>> = {
-  paypal: { displayName: "PayPal", accountId: "", publicKey: "", webhookConfigured: false, notes: "" },
-  cash: { displayName: "Cash", accountId: "", publicKey: "", webhookConfigured: false, notes: "Cash is collected by the active CSR and reconciled at shift close." },
-};
-
-function parseMerchantProcessorConfig(raw: string | null | undefined) {
-  if (!raw) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
-    return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...parsed };
-  } catch {
-    return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
-  }
-}
-
-function cleanMerchantProcessorConfig(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_MERCHANT_PROCESSOR_CONFIG;
-  const out: Record<string, Record<string, unknown>> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^[a-z0-9_]+$/.test(key) || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-    const row = raw as Record<string, unknown>;
-    out[key] = {
-      displayName: String(row.displayName ?? key).slice(0, 80),
-      accountId: String(row.accountId ?? "").slice(0, 200),
-      publicKey: String(row.publicKey ?? "").slice(0, 500),
-      webhookConfigured: row.webhookConfigured === true,
-      notes: String(row.notes ?? "").slice(0, 1000),
-    };
-  }
-  return { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG, ...out };
 }
 
 function parsePrinterNetworkConfig(raw: string | null | undefined) {
@@ -482,6 +449,36 @@ router.get("/admin/settings", requirePermission("settings.view"), requireTenantA
   res.json(mapSettings(s));
 });
 
+/**
+ * Provider-specific status only. Credentials stay in deployment secrets and
+ * are never accepted by or returned from the tenant settings API.
+ */
+router.get("/admin/settings/paypal-status", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
+  try {
+    const config = loadPaymentConfig();
+    if (!config.enabled) {
+      res.json({ enabled: false, environment: "disabled", clientIdConfigured: false, clientSecretConfigured: false, webhookIdConfigured: false, wallet: "not_configured", advancedCards: "not_configured", vault: "unknown", connection: "not_tested" });
+      return;
+    }
+    res.json({
+      enabled: true,
+      environment: config.environment,
+      clientIdConfigured: true,
+      clientSecretConfigured: true,
+      webhookIdConfigured: true,
+      // Eligibility is intentionally discovered by PayPal's browser SDK for
+      // the merchant, buyer, currency, and session; never promise a method
+      // from a tenant-edited setting.
+      wallet: "checkout_eligibility_required",
+      advancedCards: "checkout_eligibility_required",
+      vault: "unknown",
+      connection: "not_tested",
+    });
+  } catch {
+    res.json({ enabled: false, environment: "invalid", clientIdConfigured: false, clientSecretConfigured: false, webhookIdConfigured: false, wallet: "not_configured", advancedCards: "not_configured", vault: "unknown", connection: "not_tested" });
+  }
+});
+
 // PUT /api/admin/settings
 router.put("/admin/settings", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   const allowed = [
@@ -497,6 +494,13 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
   const update: Record<string, unknown> = {};
   for (const k of allowed) {
     if (body[k] !== undefined) update[k] = body[k];
+  }
+  if (body.enabledProcessors !== undefined) {
+    if (!Array.isArray(body.enabledProcessors) || body.enabledProcessors.some(value => value !== "cash" && value !== "paypal")) {
+      res.status(400).json({ error: "enabledProcessors may contain only cash and paypal" });
+      return;
+    }
+    update.enabledProcessors = [...new Set(body.enabledProcessors)];
   }
   if (body.catalogBannerImages !== undefined) {
     if (!Array.isArray(body.catalogBannerImages)) {
@@ -531,10 +535,6 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     }
     update.cashDiscountValue = String(value);
   }
-  if (body.merchantProcessorConfig !== undefined) {
-    update.merchantProcessorConfig = JSON.stringify(cleanMerchantProcessorConfig(body.merchantProcessorConfig));
-  }
-
   if (body.orderRoutingRule !== undefined) {
     if (typeof body.orderRoutingRule !== "string" || !(ROUTING_RULES as readonly string[]).includes(body.orderRoutingRule)) {
       res.status(400).json({ error: `orderRoutingRule must be one of ${ROUTING_RULES.join(", ")}` });
