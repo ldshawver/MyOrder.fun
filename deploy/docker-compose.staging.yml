@@ -70,11 +70,19 @@ services:
       TWILIO_ACCOUNT_SID: ""
       TWILIO_AUTH_TOKEN: ""
       TWILIO_PHONE_NUMBER: ""
-      UBER_CLIENT_ID: ""
-      UBER_CUSTOMER_ID: ""
-      UBER_CLIENT_SECRET: ""
-      UBER_PICKUP_ADDRESS: ""
-      UBER_PICKUP_ACTION: ""
+      # Staging-only deployment secrets. Values remain in the ignored staging
+      # environment file and never enter source, browser bundles, or logs.
+      UBER_CLIENT_ID: ${UBER_CLIENT_ID:-}
+      UBER_CUSTOMER_ID: ${UBER_CUSTOMER_ID:-}
+      UBER_CLIENT_SECRET: ${UBER_CLIENT_SECRET:-}
+      UBER_DIRECT_WEBHOOK_SIGNING_KEY: ${UBER_DIRECT_WEBHOOK_SIGNING_KEY:-}
+      UBER_DIRECT_ENVIRONMENT: ${UBER_DIRECT_ENVIRONMENT:-sandbox}
+      UBER_PICKUP_ADDRESS: ${UBER_PICKUP_ADDRESS:-}
+      UBER_PICKUP_NAME: ${UBER_PICKUP_NAME:-}
+      UBER_PICKUP_PHONE: ${UBER_PICKUP_PHONE:-}
+      UBER_PICKUP_ACTION: ${UBER_PICKUP_ACTION:-}
+      # Keep dispatch off until a separately authorized staging delivery test.
+      UBER_DIRECT_DISPATCH_ENABLED: ${UBER_DIRECT_DISPATCH_ENABLED:-false}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CUPS_SERVER: ${CUPS_SERVER:-}
       PRINT_BRIDGE_URL: ${PRINT_BRIDGE_URL:-}

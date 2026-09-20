@@ -3,6 +3,7 @@ export * from "./users";
 export * from "./onboarding";
 export * from "./catalog";
 export * from "./orders";
+export * from "./uberDirect";
 export * from "./audit";
 export * from "./notifications";
 export * from "./shifts";

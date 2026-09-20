@@ -213,10 +213,12 @@ describe("woocommerce settings save/load/sync", () => {
     );
 
     const res = await supertest(app).post("/api/admin/woocommerce/test").send({});
-    expect(res.status).toBe(502);
+    // Credential rejection is distinguishable from an unavailable upstream.
+    expect(res.status).toBe(424);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(res.body.ok).toBe(false);
-    expect(res.body.status).toBe(401);
+    expect(res.body.upstreamStatus).toBe(401);
+    expect(res.body.code).toBe("woocommerce_auth_failed");
     expect(typeof res.body.message).toBe("string");
   });
 });

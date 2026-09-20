@@ -1,5 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { eq, and, desc, lt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
 import {
   db,
   ordersTable,
@@ -17,6 +18,8 @@ import {
   generalQueueCashSessionParticipantsTable,
   generalQueueCashSessionsTable,
   orderTaxSnapshotsTable,
+  uberDeliveryQuotesTable,
+  uberDeliveryFulfillmentsTable,
 } from "@workspace/db";
 import {
   ListOrdersQueryParams,
@@ -61,6 +64,7 @@ import { consumeCustomerCredit } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
 
 import { logger } from "../lib/logger";
+import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
@@ -72,11 +76,14 @@ import { decideRouting, reassignOrder, listActiveCsrs, isShiftOrderRoutable, inv
 import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/orderEvents";
 import {
   createUberDeliveryQuote,
+  formatUberAddress,
   getConfiguredPickupAddress,
   getUberPickupAction,
   hasUberDirectConfig,
+  normalizeUberAddress,
   UberDirectApiError,
   UberDirectConfigError,
+  type UberAddress,
   type UberManifestItem,
 } from "../lib/uberDirect";
 import {
@@ -104,6 +111,8 @@ class InsufficientInventoryError extends Error {
     this.name = "InsufficientInventoryError";
   }
 }
+
+class UberQuoteConsumedError extends Error {}
 
 type InventoryDeductionAuditEntry = {
   orderId: number;
@@ -378,6 +387,11 @@ function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[]
   }));
 }
 
+function checkoutFingerprint(lines: NormalizedCartLine[]): string {
+  const value = [...lines].map(line => ({ id: line.catalog_item_id, quantity: line.quantity, price: line.unit_price })).sort((a, b) => a.id - b.id);
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 function normalizeCheckoutTip(raw: unknown): number {
   if (raw === undefined || raw === null || raw === "") return 0;
   const n = Number(raw);
@@ -535,11 +549,28 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
 
   try {
     const manifestItems = buildUberManifestItems(normalizedLines);
+    const normalizedPickup = normalizeUberAddress(pickupAddress);
+    const normalizedDropoff = normalizeUberAddress(body.data.dropoffAddress);
     const quote = await createUberDeliveryQuote({
-      pickupAddress,
-      dropoffAddress: body.data.dropoffAddress,
+      pickupAddress: normalizedPickup,
+      dropoffAddress: normalizedDropoff,
       manifestItems,
       pickupAction: getUberPickupAction(),
+    });
+    const feeCents = Number(quote.fee);
+    const expiresAt = quote.expires ? new Date(quote.expires) : null;
+    if (!quote.id || !Number.isSafeInteger(feeCents) || feeCents < 0 || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {
+      throw new UberDirectApiError(502, "Uber Direct returned an invalid delivery quote.", "invalid_quote_response");
+    }
+    // This opaque local ID is all the browser can return at order creation.
+    // The Uber quote ID, fee, addresses, and manifest remain server authority.
+    const localQuoteId = randomUUID();
+    await db.insert(uberDeliveryQuotesTable).values({
+      id: localQuoteId, tenantId, customerId: actor.id, providerQuoteId: quote.id,
+      cartFingerprint: checkoutFingerprint(normalizedLines), pickupAddress: normalizedPickup,
+      dropoffAddress: normalizedDropoff, manifestItems, feeCents,
+      currency: String(quote.currency_type ?? "USD").toUpperCase(),
+      providerCreatedAt: quote.created ? new Date(quote.created) : null, expiresAt,
     });
 
     await writeAuditLog({
@@ -549,8 +580,8 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       action: "UBER_DELIVERY_QUOTE_CREATED",
       resourceType: "order",
       metadata: {
-        quoteId: quote.id,
-        fee: quote.fee ?? null,
+        quoteId: localQuoteId,
+        fee: feeCents,
         currency: quote.currency_type ?? null,
         pickupAction: quote.pickup_action ?? getUberPickupAction(),
         itemCount: manifestItems.length,
@@ -560,10 +591,10 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
 
     res.json({
       provider: "uber_direct",
-      quoteId: quote.id,
-      fee: typeof quote.fee === "number" ? quote.fee / 100 : null,
-      feeCents: quote.fee ?? null,
-      currency: quote.currency_type ?? "USD",
+      quoteId: localQuoteId,
+      fee: feeCents / 100,
+      feeCents,
+      currency: String(quote.currency_type ?? "USD").toUpperCase(),
       dropoffEta: quote.dropoff_eta ?? null,
       duration: quote.duration ?? null,
       pickupDuration: quote.pickup_duration ?? null,
@@ -770,7 +801,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   const cashDiscountAmount = financial.cashDiscountAmount;
   const { taxSnapshot, cashDiscountSnapshot, nonTaxableSubtotal } = financial;
   const checkoutConfirmation = body.data.checkoutConfirmation ?? null;
-  const deliveryQuote = body.data.deliveryQuote ?? null;
+  const clientDeliveryQuote = body.data.deliveryQuote ?? null;
   const explicitDeliveryMethod = body.data.deliveryMethod ?? null;
   const isCsrDelivery = explicitDeliveryMethod === "csr_delivery";
   const orderType = resolveOrderType(body.data.orderType, isCsrDelivery);
@@ -782,9 +813,35 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
   // CSR personal delivery fee: $6 flat + 3% of sale total → goes to CSR as gratuity
   const csrDeliveryFee = isCsrDelivery ? Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100 : 0;
-  const deliveryFee = isCsrDelivery
-    ? csrDeliveryFee
-    : deliveryQuote?.fee != null ? Math.max(0, Math.round(Number(deliveryQuote.fee) * 100) / 100) : 0;
+  let trustedUberQuote: typeof uberDeliveryQuotesTable.$inferSelect | null = null;
+  if (explicitDeliveryMethod === "uber_direct") {
+    if (!clientDeliveryQuote?.quoteId || clientDeliveryQuote.provider !== "uber_direct" || !body.data.shippingAddress) {
+      res.status(422).json({ error: "A current Uber delivery quote is required." });
+      return;
+    }
+    const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
+      eq(uberDeliveryQuotesTable.id, clientDeliveryQuote.quoteId),
+      eq(uberDeliveryQuotesTable.tenantId, houseTenantId),
+      eq(uberDeliveryQuotesTable.customerId, actor.id),
+      eq(uberDeliveryQuotesTable.status, "quoted"),
+      gt(uberDeliveryQuotesTable.expiresAt, new Date()),
+    )).limit(1);
+    const normalizedAddress = normalizeUberAddress(body.data.shippingAddress);
+    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || JSON.stringify(quote.dropoffAddress) !== JSON.stringify(normalizedAddress)) {
+      res.status(422).json({ error: "Your Uber delivery quote is missing, expired, or no longer matches this checkout. Please calculate delivery again." });
+      return;
+    }
+    trustedUberQuote = quote;
+  } else if (clientDeliveryQuote) {
+    res.status(422).json({ error: "A delivery quote is only valid for Uber Courier delivery." });
+    return;
+  }
+  const deliveryQuote = trustedUberQuote ? {
+    provider: "uber_direct" as const, quoteId: trustedUberQuote.id,
+    fee: trustedUberQuote.feeCents / 100, feeCents: trustedUberQuote.feeCents,
+    currency: trustedUberQuote.currency, expires: trustedUberQuote.expiresAt.toISOString(),
+  } : null;
+  const deliveryFee = isCsrDelivery ? csrDeliveryFee : trustedUberQuote ? trustedUberQuote.feeCents / 100 : 0;
   let tipAmount: number;
   try {
     tipAmount = normalizeCheckoutTip(checkoutConfirmation?.tipAmount);
@@ -888,6 +945,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   try {
 
     order = await db.transaction(async (tx) => {
+      if (trustedUberQuote) {
+        const consumed = await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: now })
+          .where(and(eq(uberDeliveryQuotesTable.id, trustedUberQuote.id), eq(uberDeliveryQuotesTable.status, "quoted")))
+          .returning({ id: uberDeliveryQuotesTable.id });
+        if (!consumed.length) throw new UberQuoteConsumedError();
+      }
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
         customerId: actor.id,
@@ -904,7 +967,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         customerCreditApplied: "0.00",
         remainingTenderAmount: String(finalTotal.toFixed(2)),
         financialFinalizedAt: now,
-        shippingAddress: body.data.shippingAddress ?? null,
+        shippingAddress: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : (body.data.shippingAddress ?? null),
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
           : (deliveryQuote?.provider ?? (body.data.shippingAddress ? "manual_delivery" : "pickup")),
@@ -990,6 +1053,16 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         luciferCheckoutSnapshot,
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
       }).where(eq(ordersTable.id, createdOrder.id));
+
+      if (trustedUberQuote) {
+        await tx.insert(uberDeliveryFulfillmentsTable).values({
+          tenantId: houseTenantId,
+          orderId: createdOrder.id,
+          quoteId: trustedUberQuote.id,
+          externalOrderReference: `myorder-${houseTenantId}-${createdOrder.id}`,
+          requestState: "payment_pending",
+        });
+      }
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
@@ -1077,6 +1150,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       return createdOrder;
     });
   } catch (err) {
+    if (err instanceof UberQuoteConsumedError) {
+      res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
+      return;
+    }
     if (err instanceof InsufficientInventoryError) {
       res.status(409).json({ error: err.message, legacyError: "Insufficient inventory", catalogItemId: err.catalogItemId }); // error: "Insufficient inventory"
       return;
@@ -1550,6 +1627,9 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     return;
   }
   emitUpdated(outcome.updated, "cash_closeout_completed");
+  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(error => {
+    logger.warn({ tenantId, orderId: outcome.updated.id, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery");
+  });
   res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, idempotent: outcome.idempotent } });
 });
 

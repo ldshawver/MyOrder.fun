@@ -243,7 +243,7 @@ export default function NewOrder() {
   };
 
   const handleDeliveryQuote = async () => {
-    if (cart.length === 0 || !shippingAddress.trim()) return;
+    if (cart.length === 0 || !shippingAddress.trim() || !conversionPreview) return;
     setIsQuotingDelivery(true);
     setDeliveryQuoteError(null);
     try {
@@ -257,6 +257,9 @@ export default function NewOrder() {
         body: JSON.stringify({
           items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
           dropoffAddress: shippingAddress,
+          checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
+          checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
+          checkoutConfirmation: conversionPreview.confirmation,
         }),
       });
       const data = await res.json();
@@ -280,7 +283,7 @@ export default function NewOrder() {
     const paymentMethod = paymentMethodOverride as "cash" | "paypal" | "paypal_card" | "customer_credit";
 
     try {
-      const checkoutConversionToken = conversionPreview.conversionToken;
+      const checkoutConversionToken = conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken;
       const checkoutConversionSnapshot = checkoutSnapshotFromConversion(conversionPreview);
       const checkoutConfirmation = {
         acceptedAllSalesFinal: true as const,

@@ -260,6 +260,13 @@
       "when": 1789200000000,
       "tag": "0059_print_bridge_discovery_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789916400000,
+      "tag": "0060_uber_direct_durable_quotes",
+      "breakpoints": true
     }
   ]
 }

@@ -24,8 +24,9 @@ const dbState: {
   inventoryLocations: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
   taxSnapshots: Array<Record<string, unknown>>;
+  uberQuotes: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], disclaimerAcceptances: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -80,8 +81,10 @@ vi.mock("../../lib/uberDirect", () => {
     getUberPickupAction: () => "default",
     createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
       uberQuoteCalls.push({ manifestItems: input.manifestItems });
-      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default" };
+      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default", expires: new Date(Date.now() + 15 * 60_000).toISOString() };
     },
+    normalizeUberAddress: (value: string) => ({ street_address: [value], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
+    formatUberAddress: () => "500 Test Street, Test City, CA 94105, US",
     UberDirectConfigError,
     UberDirectApiError,
   };
@@ -168,7 +171,7 @@ vi.mock("@workspace/db", () => {
   const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
   const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
-  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId" };
+  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
@@ -177,6 +180,7 @@ vi.mock("@workspace/db", () => {
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
+  const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -191,6 +195,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
+    if (t.__t === "uber_quotes") return dbState.uberQuotes;
     return [];
   }
 
@@ -296,7 +301,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve()) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -394,12 +399,13 @@ beforeEach(() => {
   ];
   dbState.shifts = [];
   dbState.settings = [{
-    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1,
+    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1, enabledProcessors: ["cash", "paypal"],
   }];
   dbState.tenants = [{ id: 1 }];
   dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
+  dbState.uberQuotes = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   uberQuoteCalls.length = 0;
@@ -483,7 +489,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted/i);
+    expect(res.body.error).toMatch(/prepared/i);
   });
 
   it("POST /api/orders/delivery-quote rejects unconverted provider payloads with 422", async () => {
@@ -493,7 +499,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA" });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted/i);
+    expect(res.body.error).toMatch(/prepared/i);
     expect(uberQuoteCalls).toHaveLength(0);
   });
 

@@ -33,10 +33,12 @@ import taxConfigurationsRouter from "./tax-configurations";
 import printBridgeDiscoveryRouter from "./print-bridge-discovery";
 import returnsRouter from "./returns";
 import publicBrandingRouter from "./public-branding";
+import uberDirectWebhooksRouter from "./uber-direct-webhooks";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
+router.use(uberDirectWebhooksRouter);
 router.use(publicBrandingRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);

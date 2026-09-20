@@ -11,6 +11,8 @@ import { deductPaidOrderInventory } from "../payments/inventory";
 import { db, ordersTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { releaseCustomerCredit } from "../payments/customerCredit";
+import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Payment requests rate-limited" } });
@@ -42,7 +44,7 @@ router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
 
 router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res) => {
   let body: z.infer<typeof Capture> | undefined; let orderId: number | undefined;
-  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().capture({ tenantId: actor.tenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: actor.tenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
+  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().capture({ tenantId: actor.tenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); await queueUberDeliveryForPaidOrder(actor.tenantId!, orderId).catch(error => logger.warn({ tenantId: actor.tenantId, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: actor.tenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
   catch (error) {
     const actor = req.dbUser!;
     // Release only on a definitive decline. Unknown outcomes retain the
@@ -67,7 +69,7 @@ router.post("/admin/payments/paypal/orders/:orderId/refund", ...auth, requirePer
 });
 
 router.get("/admin/payments/paypal/orders/:orderId/reconciliation", ...auth, requirePermission("orders.refund"), async (req, res) => {
-  try { const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().reconcile({ tenantId: actor.tenantId!, orderId, finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); res.json(result); }
+  try { const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().reconcile({ tenantId: actor.tenantId!, orderId, finalize: order => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }) }); if (result.localState === "captured") await queueUberDeliveryForPaidOrder(actor.tenantId!, orderId).catch(error => logger.warn({ tenantId: actor.tenantId, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); res.json(result); }
   catch (error) { fail(res, error); }
 });
 
