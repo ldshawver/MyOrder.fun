@@ -60,6 +60,9 @@ services:
       CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:?VITE_CLERK_PROXY_URL is required}
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET:?CLERK_WEBHOOK_SECRET is required}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      # Stable staging-only key for tenant credentials at rest. It must be
+      # managed outside source control and must not be changed between deploys.
+      SETTINGS_ENC_KEY: ${SETTINGS_ENC_KEY:-}
       OPENAI_API_KEY: ""
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:?PAYMENT_PROVIDER is required}
       PAYMENT_MODE: ${PAYMENT_MODE:?PAYMENT_MODE is required}

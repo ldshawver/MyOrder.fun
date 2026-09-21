@@ -1,7 +1,29 @@
-import { bigint, bigserial, foreignKey, integer, jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { bigint, bigserial, boolean, check, foreignKey, integer, jsonb, pgTable, serial, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { ordersTable } from "./orders";
+import { inventoryLocationsTable } from "./shifts";
+
+// Tenant-owned Direct credentials. Secrets are AES-GCM ciphertext and are
+// intentionally not modelled as a browser-readable setting.
+export const uberDirectSettingsTable = pgTable("uber_direct_settings", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  enabled: boolean("enabled").notNull().default(false),
+  environment: text("environment").notNull().default("sandbox"),
+  customerId: text("customer_id"),
+  clientId: text("client_id"),
+  clientSecretCiphertext: text("client_secret_ciphertext"),
+  webhookSigningKeyCiphertext: text("webhook_signing_key_ciphertext"),
+  pickupLocationId: integer("pickup_location_id"),
+  dispatchEnabled: boolean("dispatch_enabled").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, table => ({
+  tenant: unique("uber_direct_settings_tenant_unique").on(table.tenantId),
+  environmentCheck: check("uber_direct_settings_environment_check", sql`${table.environment} IN ('sandbox', 'production')`),
+  tenantPickupLocation: foreignKey({ name: "uber_direct_settings_tenant_pickup_location_fk", columns: [table.tenantId, table.pickupLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+}));
 
 export const uberDeliveryQuotesTable = pgTable("uber_delivery_quotes", {
   id: text("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), customerId: integer("customer_id").notNull().references(() => usersTable.id),

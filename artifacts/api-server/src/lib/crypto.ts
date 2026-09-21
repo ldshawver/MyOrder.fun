@@ -22,6 +22,11 @@ const PREFIX = "enc:v1:";
 
 let cachedKey: Buffer | null = null;
 
+/** Tenant credential writes must not use the deploy-SHA development fallback. */
+export function hasConfiguredSettingsEncryptionKey(): boolean {
+  return Boolean(process.env["SETTINGS_ENC_KEY"]?.trim());
+}
+
 function loadKey(): Buffer {
   if (cachedKey) return cachedKey;
   const raw = process.env["SETTINGS_ENC_KEY"];

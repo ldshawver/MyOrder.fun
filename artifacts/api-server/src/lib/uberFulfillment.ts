@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, usersTable } from "@workspace/db";
-import { createUberDelivery, getUberPickupContact, getUberPickupAction, isUberDirectDispatchEnabled, type UberAddress, type UberManifestItem } from "./uberDirect";
+import { createUberDelivery, getUberPickupAction, type UberAddress, type UberManifestItem } from "./uberDirect";
+import { getUberDirectPickupContact, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
 import { logger } from "./logger";
 
 const RETRYABLE = new Set(["delivery_create_pending", "retry_pending"]);
@@ -34,7 +35,7 @@ export async function queueUberDeliveryForPaidOrder(tenantId: number, orderId: n
     await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: new Date() })
       .where(and(eq(uberDeliveryQuotesTable.id, quote.id), eq(uberDeliveryQuotesTable.status, "quoted")));
   });
-  if (isUberDirectDispatchEnabled()) await dispatchPendingUberDelivery(tenantId, orderId);
+  if (await isUberDirectDispatchEnabledForTenant(tenantId)) await dispatchPendingUberDelivery(tenantId, orderId);
 }
 
 /** A worker/recovery-safe dispatch attempt. It uses the durable unique external reference. */
@@ -45,9 +46,9 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.paymentStatus, "paid"))).limit(1);
   const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.tenantId, tenantId))).limit(1);
   const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1) : [];
-  const pickup = getUberPickupContact();
+  const [pickup, config] = await Promise.all([getUberDirectPickupContact(tenantId), getUberDirectRuntimeConfig(tenantId)]);
   const customerName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
-  if (!order || !quote || !pickup || !customerName || !customer?.phone) {
+  if (!order || !quote || !pickup || !config || !customerName || !customer?.phone) {
     await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "configuration_required", lastSanitizedError: "delivery_contact_configuration_required", updatedAt: new Date() })
       .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
     return;
@@ -61,7 +62,7 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
       pickupAddress: quote.pickupAddress as UberAddress, pickupName: pickup.name, pickupPhoneNumber: pickup.phone,
       dropoffAddress: quote.dropoffAddress as UberAddress, dropoffName: customerName, dropoffPhoneNumber: customer.phone,
       manifestItems: quote.manifestItems as UberManifestItem[], pickupAction: getUberPickupAction(),
-    });
+    }, config);
     await db.update(uberDeliveryFulfillmentsTable).set({ providerDeliveryId: delivery.id, providerStatus: delivery.status ?? "created", requestState: "delivery_created", lastSanitizedError: null, updatedAt: new Date() })
       .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
   } catch (error) {

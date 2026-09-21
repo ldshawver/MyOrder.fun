@@ -1,16 +1,27 @@
 import { Router, type IRouter } from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { db, adminSettingsTable, customerDisclaimerAcceptancesTable } from "@workspace/db";
+import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, uberDirectSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { getHouseTenantId } from "../lib/singleTenant";
-import { encrypt, safeDecrypt } from "../lib/crypto";
+import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
 import { loadPaymentConfig } from "../payments/config";
 import { PayPalProvider } from "../payments/paypal";
+import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, type UberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
+import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
 import { z } from "zod";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+const uberTestAttempts = new Map<string, number[]>();
+function allowUberAdminTest(tenantId: number, userId: number): boolean {
+  const key = `${tenantId}:${userId}`;
+  const now = Date.now();
+  const attempts = (uberTestAttempts.get(key) ?? []).filter(at => at > now - 60_000);
+  if (attempts.length >= 5) return false;
+  attempts.push(now); uberTestAttempts.set(key, attempts); return true;
+}
 
 function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
   const actor = req.dbUser!;
@@ -672,6 +683,116 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
     res.json(mapSettings(updated));
   } catch (err) {
     res.status(500).json({ error: (err as Error)?.message ?? "Failed to save WooCommerce settings" });
+  }
+});
+
+// ─── Uber Direct tenant configuration ───────────────────────────────────────
+// These routes intentionally do not accept a tenant ID. The authenticated
+// actor's assigned tenant is the only scope, including for global admins.
+const UberSettingsBody = z.object({
+  enabled: z.boolean().optional(),
+  environment: z.enum(["sandbox", "production"]).optional(),
+  customerId: z.string().trim().min(1).max(200).optional(),
+  clientId: z.string().trim().min(1).max(200).optional(),
+  clientSecret: z.string().max(4096).optional(),
+  webhookSigningKey: z.string().max(4096).optional(),
+  pickupLocationId: z.number().int().positive().nullable().optional(),
+  dispatchEnabled: z.boolean().optional(),
+}).strict();
+
+function requireUberAdmin(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
+  const role = req.dbUser?.role;
+  if (role !== "admin" && role !== "global_admin") { res.status(403).json({ error: "Uber Direct settings require an administrator." }); return; }
+  next();
+}
+
+function uberTenantId(req: import("express").Request): number | null {
+  // A global admin without an assignment may only reach the canonical house
+  // tenant through the existing settings resolver; no request-controlled scope.
+  return req.dbUser?.tenantId ?? null;
+}
+
+router.get("/admin/settings/uber-direct", requireUberAdmin, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = uberTenantId(req);
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required for Uber Direct settings." }); return; }
+  res.json(await getUberDirectAdminSettings(tenantId));
+});
+
+router.put("/admin/settings/uber-direct", requireUberAdmin, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = uberTenantId(req);
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required for Uber Direct settings." }); return; }
+  const parsed = UberSettingsBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid Uber Direct settings", details: parsed.error.issues.map(issue => issue.path.join(".") || "body") }); return; }
+  const input = parsed.data;
+  if (Object.keys(input).length === 0) { res.status(400).json({ error: "No fields provided" }); return; }
+  if ((input.clientSecret?.trim() || input.webhookSigningKey?.trim()) && !hasConfiguredSettingsEncryptionKey()) {
+    res.status(503).json({ error: "Tenant secret storage is unavailable until the staging encryption key is configured." }); return;
+  }
+  if (input.pickupLocationId != null) {
+    const available = await getUberDirectAdminSettings(tenantId);
+    if (!available.pickupLocations.some(location => location.id === input.pickupLocationId && location.eligible)) {
+      res.status(400).json({ error: "Pickup location must be this tenant's active Storefront location." }); return;
+    }
+  }
+  const update: Record<string, unknown> = {};
+  if (input.enabled !== undefined) update.enabled = input.enabled;
+  if (input.environment !== undefined) update.environment = input.environment;
+  if (input.customerId !== undefined) update.customerId = input.customerId;
+  if (input.clientId !== undefined) update.clientId = input.clientId;
+  // Blank input means preserve the encrypted secret. A nonblank value is an
+  // explicit replacement; neither secret is ever returned.
+  if (input.clientSecret !== undefined && input.clientSecret.trim()) update.clientSecretCiphertext = encrypt(input.clientSecret.trim());
+  if (input.webhookSigningKey !== undefined && input.webhookSigningKey.trim()) update.webhookSigningKeyCiphertext = encrypt(input.webhookSigningKey.trim());
+  if (input.pickupLocationId !== undefined) update.pickupLocationId = input.pickupLocationId;
+  if (input.dispatchEnabled !== undefined) update.dispatchEnabled = input.dispatchEnabled;
+  const [existing] = await db.select({ id: uberDirectSettingsTable.id }).from(uberDirectSettingsTable).where(eq(uberDirectSettingsTable.tenantId, tenantId)).limit(1);
+  if (existing) {
+    if (Object.keys(update).length) await db.update(uberDirectSettingsTable).set(update).where(eq(uberDirectSettingsTable.tenantId, tenantId));
+  } else {
+    await db.insert(uberDirectSettingsTable).values({
+      tenantId, enabled: input.enabled ?? false, environment: input.environment ?? "sandbox", customerId: input.customerId ?? null,
+      clientId: input.clientId ?? null, clientSecretCiphertext: update.clientSecretCiphertext as string | undefined,
+      webhookSigningKeyCiphertext: update.webhookSigningKeyCiphertext as string | undefined,
+      pickupLocationId: input.pickupLocationId ?? null, dispatchEnabled: input.dispatchEnabled ?? false,
+    });
+  }
+  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId, action: "settings.uber_direct.updated", resourceType: "uber_direct_settings", resourceId: String(tenantId), metadata: { fields: Object.keys(input).filter(key => !["clientSecret", "webhookSigningKey"].includes(key)), clientSecretUpdated: Boolean(input.clientSecret?.trim()), webhookSigningKeyUpdated: Boolean(input.webhookSigningKey?.trim()) }, ipAddress: req.ip });
+  res.json(await getUberDirectAdminSettings(tenantId));
+});
+
+router.post("/admin/settings/uber-direct/test-connection", requireUberAdmin, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = uberTenantId(req);
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required for Uber Direct settings." }); return; }
+  if (!allowUberAdminTest(tenantId, req.dbUser!.id)) { res.status(429).json({ error: "Too many Uber Direct tests. Try again shortly." }); return; }
+  try {
+    const config = await getUberDirectRuntimeConfig(tenantId);
+    if (!config) { res.status(503).json({ connection: "not_configured" }); return; }
+    await getUberAccessToken(config);
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId, action: "settings.uber_direct.connection_tested", resourceType: "uber_direct_settings", resourceId: String(tenantId), metadata: { environment: config.environment, connected: true }, ipAddress: req.ip });
+    res.json({ connection: "connected", environment: config.environment });
+  } catch { res.status(502).json({ connection: "failed" }); }
+});
+
+const UberTestQuoteBody = z.object({ dropoffAddress: z.string().trim().min(8).max(300) }).strict();
+router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const tenantId = uberTenantId(req);
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required for Uber Direct settings." }); return; }
+  if (!allowUberAdminTest(tenantId, req.dbUser!.id)) { res.status(429).json({ error: "Too many Uber Direct tests. Try again shortly." }); return; }
+  const body = UberTestQuoteBody.safeParse(req.body ?? {});
+  if (!body.success) { res.status(400).json({ error: "A complete test destination is required." }); return; }
+  try {
+    const config = await getUberDirectRuntimeConfig(tenantId);
+    if (!config) { res.status(503).json({ error: "Uber Direct is not configured." }); return; }
+    const quote = await createUberDeliveryQuote({ pickupAddress: requirePickupAddress(await getUberDirectPickupAddress(tenantId)), dropoffAddress: normalizeUberAddress(body.data.dropoffAddress), manifestItems: [{ name: "Uber Direct connection test", quantity: 1, price: 0 }], pickupAction: "default" }, config);
+    const fee = Number(quote.fee);
+    const expires = quote.expires ? new Date(quote.expires) : null;
+    if (!quote.id || !Number.isSafeInteger(fee) || fee < 0 || !expires || Number.isNaN(expires.getTime())) throw new UberDirectApiError(502, "Uber Direct returned an invalid delivery quote.");
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId, action: "settings.uber_direct.quote_tested", resourceType: "uber_direct_settings", resourceId: String(tenantId), metadata: { environment: config.environment, currency: String(quote.currency_type ?? "USD").toUpperCase() }, ipAddress: req.ip });
+    res.json({ amountCents: fee, currency: String(quote.currency_type ?? "USD").toUpperCase(), dropoffEta: quote.dropoff_eta ?? null, expires: quote.expires ?? null });
+  } catch (error) {
+    if (error instanceof UberDirectConfigError) { res.status(422).json({ error: error.message }); return; }
+    if (error instanceof UberDirectApiError) { res.status(error.status >= 400 && error.status < 500 ? 422 : 502).json({ error: error.message }); return; }
+    res.status(502).json({ error: "Uber Direct test quote failed." });
   }
 });
 

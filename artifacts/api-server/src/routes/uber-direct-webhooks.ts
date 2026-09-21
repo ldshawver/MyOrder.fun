@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, eq } from "drizzle-orm";
 import { db, uberDeliveryFulfillmentsTable, uberDeliveryWebhookEventsTable } from "@workspace/db";
-import { hasUberDirectWebhookConfig, verifyUberWebhookSignature } from "../lib/uberDirect";
+import { verifyUberWebhookSignatureForAnyTenant } from "../lib/uberDirectConfig";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -14,7 +14,7 @@ function stringAt(value: unknown, max = 160): string | null {
 router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
   const raw = Buffer.isBuffer(req.body) ? req.body : null;
   const signature = req.get("x-uber-signature") ?? req.get("x-postmates-signature") ?? undefined;
-  if (!raw || raw.length === 0 || raw.length > 262_144 || !hasUberDirectWebhookConfig() || !verifyUberWebhookSignature(raw, signature)) {
+  if (!raw || raw.length === 0 || raw.length > 262_144 || !await verifyUberWebhookSignatureForAnyTenant(raw, signature)) {
     res.status(401).json({ error: "Invalid webhook signature" });
     return;
   }

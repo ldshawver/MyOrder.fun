@@ -77,15 +77,14 @@ import { publishOrderEvent, subscribe, getRecentEventsForClient } from "../lib/o
 import {
   createUberDeliveryQuote,
   formatUberAddress,
-  getConfiguredPickupAddress,
   getUberPickupAction,
-  hasUberDirectConfig,
   normalizeUberAddress,
   UberDirectApiError,
   UberDirectConfigError,
   type UberAddress,
   type UberManifestItem,
 } from "../lib/uberDirect";
+import { getUberDirectPickupAddress, getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
 import {
   IllegalOrderTransitionError,
   normalizeOrderLifecycleState,
@@ -351,30 +350,6 @@ const DeliveryQuoteBody = z.object({
   }).optional(),
 }).strict();
 
-function parseFirstPickupAddressFromSettings(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Array<{ address?: unknown }> | null;
-    if (!Array.isArray(parsed)) return null;
-    for (const location of parsed) {
-      const address = typeof location.address === "string" ? location.address.trim() : "";
-      if (address) return address;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-async function resolveUberPickupAddress(): Promise<string | null> {
-  const envPickupAddress = getConfiguredPickupAddress();
-  if (envPickupAddress) return envPickupAddress;
-  const [settings] = await db.select({ shiftLocationOptions: adminSettingsTable.shiftLocationOptions })
-    .from(adminSettingsTable)
-    .limit(1);
-  return parseFirstPickupAddressFromSettings(settings?.shiftLocationOptions);
-}
-
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
   buildSafeMerchantPayloadLines(lines);
   return lines.map(line => ({
@@ -536,12 +511,13 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     return;
   }
 
-  if (!hasUberDirectConfig()) {
+  const uberConfig = await getUberDirectRuntimeConfig(tenantId);
+  if (!uberConfig) {
     res.status(503).json({ error: "Uber Courier is not configured." });
     return;
   }
 
-  const pickupAddress = await resolveUberPickupAddress();
+  const pickupAddress = await getUberDirectPickupAddress(tenantId);
   if (!pickupAddress) {
     res.status(503).json({ error: "Uber Courier pickup address is not configured." });
     return;
@@ -556,7 +532,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       dropoffAddress: normalizedDropoff,
       manifestItems,
       pickupAction: getUberPickupAction(),
-    });
+    }, uberConfig);
     const feeCents = Number(quote.fee);
     const expiresAt = quote.expires ? new Date(quote.expires) : null;
     if (!quote.id || !Number.isSafeInteger(feeCents) || feeCents < 0 || !expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= new Date()) {

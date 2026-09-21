@@ -89,6 +89,14 @@ vi.mock("../../lib/uberDirect", () => {
     UberDirectApiError,
   };
 });
+vi.mock("../../lib/uberDirectConfig", () => ({
+  getUberDirectRuntimeConfig: async () => ({ tenantId: 1, environment: "sandbox", customerId: "customer-test", clientId: "client-test", clientSecret: "test-only" }),
+  getUberDirectPickupAddress: async () => ({ street_address: ["123 Pickup St"], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
+  requirePickupAddress: (value: unknown) => value,
+  getUberDirectPickupContact: async () => null,
+  isUberDirectDispatchEnabledForTenant: async () => false,
+  verifyUberWebhookSignatureForAnyTenant: async () => false,
+}));
 vi.mock("../../lib/checkoutNormalizer", async () => {
   const { z } = await import("zod");
   class CheckoutMappingError extends Error {
