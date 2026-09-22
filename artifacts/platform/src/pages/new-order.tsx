@@ -381,8 +381,8 @@ export default function NewOrder() {
           <ArrowLeft size={20} />
         </Link>
         <div>
-          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">Cart & Checkout</h1>
-          <p className="text-muted-foreground">Review your cart, choose fulfillment, and pay securely.</p>
+          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">My Order</h1>
+          <p className="text-muted-foreground">Review your order, choose fulfillment, and pay securely.</p>
         </div>
       </div>
 
@@ -438,7 +438,8 @@ export default function NewOrder() {
               {cart.length === 0 ? (
                 <div className="h-72 flex flex-col items-center justify-center text-center text-muted-foreground text-sm font-mono uppercase tracking-wider border border-dashed border-border/50 rounded-sm">
                   <ShoppingCart size={24} className="mb-3" />
-                  Cart is empty
+                  Your order is empty
+                  <Link href="/catalog" className="mt-3 text-primary normal-case font-semibold hover:underline">Browse Catalogue</Link>
                 </div>
               ) : (
                 cart.map(item => {

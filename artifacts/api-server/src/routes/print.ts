@@ -1926,14 +1926,17 @@ router.post(
       Math.max(1, parseInt(String(b.copies ?? 1), 10)),
     );
 
-    // Resolve label printer
     const operator = await selectActiveOperator(tenantId);
-    const labelPrinter = await resolveLabelPrinter(
-      operator?.profile ?? null,
+    const { resolveThankYouStickerRouting } =
+      await import("../lib/printRoutingResolver.js");
+    const routing = await resolveThankYouStickerRouting({
+      id: 0,
       tenantId,
-    );
+      locationId: operator?.locationId ?? null,
+    });
+    const labelPrinter = routing.eligible ? routing.selectedPrinter : null;
     if (!labelPrinter) {
-      res.status(503).json({ error: "No label printer configured" });
+      res.status(503).json({ error: routing.blockedReason ?? "No Thank You printer configured" });
       return;
     }
 
@@ -2238,12 +2241,16 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
   });
 
   const operator = await selectActiveOperator(tenantId);
-  const labelPrinter = await resolveLabelPrinter(
-    operator?.profile ?? null,
+  const { resolveThankYouStickerRouting } =
+    await import("../lib/printRoutingResolver.js");
+  const routing = await resolveThankYouStickerRouting({
+    id: orderId,
     tenantId,
-  );
+    locationId: operator?.locationId ?? null,
+  });
+  const labelPrinter = routing.eligible ? routing.selectedPrinter : null;
   if (!labelPrinter) {
-    res.status(503).json({ error: "No label printer configured" });
+    res.status(503).json({ error: routing.blockedReason ?? "No Thank You printer configured" });
     return;
   }
 

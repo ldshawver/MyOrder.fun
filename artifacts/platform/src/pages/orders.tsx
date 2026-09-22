@@ -60,7 +60,7 @@ export default function Orders() {
           </p>
         </div>
         <Link
-          href="/orders/new"
+          href="/catalog"
           className="shrink-0 inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
           data-testid="link-new-order"
         >
@@ -89,7 +89,7 @@ export default function Orders() {
               : "Place your first order to get started."}
           </p>
           <Link
-            href="/orders/new"
+            href="/catalog"
             className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-2.5 rounded-xl hover:opacity-90 transition-all"
           >
             <Plus size={15} />

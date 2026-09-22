@@ -116,8 +116,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
       title: "Navigation",
       roles: ALL_ROLES,
       items: [
-        { href: "/cart", label: "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         { href: "/catalog", label: "Catalogue", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+        { href: "/cart", label: isCustomer ? "My Order" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
           label: isCustomer ? "Order Status" : "Orders",
@@ -127,7 +127,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           mobileShow: true,
           children: isCustomer ? [
             { href: "/orders", label: "Order Status", icon: ListTodo, roles: ALL_ROLES },
-            { href: "/cart", label: "Cart", icon: ShoppingCart, roles: ALL_ROLES },
+            { href: "/cart", label: "My Order", icon: ShoppingCart, roles: ALL_ROLES },
           ] : undefined,
         },
         {

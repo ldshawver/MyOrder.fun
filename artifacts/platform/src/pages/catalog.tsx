@@ -947,7 +947,7 @@ export default function Catalog() {
         <div className="relative z-10 flex h-full flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
           <div className="flex flex-wrap justify-end gap-2">
             <Link href="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur" data-testid="catalog-cart-link">
-              <ShoppingCart size={14} /> Cart{itemCount > 0 ? ` (${itemCount})` : ""}
+              <ShoppingCart size={14} /> My Order{itemCount > 0 ? ` (${itemCount})` : ""}
             </Link>
             {itemCount > 0 && <Link href="/checkout" className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-lg" data-testid="catalog-checkout-link">Checkout</Link>}
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">

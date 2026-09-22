@@ -17,4 +17,12 @@ describe("cart quantity integrity", () => {
     expect(updateQuantity).toContain("return quantity > 0 ? [{ ...i, quantity }] : [];");
     expect(cartContext).toContain("if (!Number.isSafeInteger(quantity)) return;");
   });
+
+  it("keeps persisted carts scoped to the authenticated customer", () => {
+    expect(cartContext).toContain('import { useAuth } from "@clerk/react";');
+    expect(cartContext).toContain("const storageKey = isLoaded && userId ? `${STORAGE_KEY}:${userId}` : null;");
+    expect(cartContext).toContain("cartState.storageKey !== storageKey");
+    expect(cartContext).toContain("localStorage.getItem(storageKey)");
+    expect(cartContext).not.toContain("localStorage.getItem(STORAGE_KEY)");
+  });
 });
