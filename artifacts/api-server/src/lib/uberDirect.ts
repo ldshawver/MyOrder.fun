@@ -101,6 +101,10 @@ export function hasUberDirectWebhookConfig(): boolean {
 
 export function verifyUberWebhookSignature(rawBody: Buffer, suppliedSignature: string | undefined): boolean {
   const signingKey = envValue("UBER_DIRECT_WEBHOOK_SIGNING_KEY");
+  return verifyUberWebhookSignatureForSecret(rawBody, suppliedSignature, signingKey);
+}
+
+export function verifyUberWebhookSignatureForSecret(rawBody: Buffer, suppliedSignature: string | undefined, signingKey: string | null): boolean {
   if (!signingKey || !suppliedSignature || !/^[a-f0-9]{64}$/i.test(suppliedSignature)) return false;
   const expected = createHmac("sha256", signingKey).update(rawBody).digest("hex");
   const expectedBytes = Buffer.from(expected, "hex");

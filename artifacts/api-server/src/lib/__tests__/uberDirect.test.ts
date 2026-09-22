@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature } from "../uberDirect";
+import { UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
 
 describe("Uber Direct security boundaries", () => {
   it("normalizes a complete plain-text delivery address into provider fields", () => {
@@ -23,5 +23,12 @@ describe("Uber Direct security boundaries", () => {
     expect(verifyUberWebhookSignature(Buffer.from('{"event_id":"evt_2"}', "utf8"), signature)).toBe(false);
     if (previous === undefined) delete process.env.UBER_DIRECT_WEBHOOK_SIGNING_KEY;
     else process.env.UBER_DIRECT_WEBHOOK_SIGNING_KEY = previous;
+  });
+
+  it("does not accept another tenant's webhook signing key", () => {
+    const raw = Buffer.from('{"event_id":"evt_1"}', "utf8");
+    const tenantOneSignature = createHmac("sha256", "tenant-one-key").update(raw).digest("hex");
+    expect(verifyUberWebhookSignatureForSecret(raw, tenantOneSignature, "tenant-one-key")).toBe(true);
+    expect(verifyUberWebhookSignatureForSecret(raw, tenantOneSignature, "tenant-two-key")).toBe(false);
   });
 });

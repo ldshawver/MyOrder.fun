@@ -1,8 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, eq } from "drizzle-orm";
 import { db, uberDeliveryFulfillmentsTable, uberDeliveryWebhookEventsTable } from "@workspace/db";
-import { verifyUberWebhookSignatureForAnyTenant } from "../lib/uberDirectConfig";
-import { logger } from "../lib/logger";
+import { verifyUberWebhookSignatureForTenant } from "../lib/uberDirectConfig";
 
 const router: IRouter = Router();
 const terminal = new Set(["delivered", "canceled", "cancelled"]);
@@ -14,7 +13,7 @@ function stringAt(value: unknown, max = 160): string | null {
 router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
   const raw = Buffer.isBuffer(req.body) ? req.body : null;
   const signature = req.get("x-uber-signature") ?? req.get("x-postmates-signature") ?? undefined;
-  if (!raw || raw.length === 0 || raw.length > 262_144 || !await verifyUberWebhookSignatureForAnyTenant(raw, signature)) {
+  if (!raw || raw.length === 0 || raw.length > 262_144) {
     res.status(401).json({ error: "Invalid webhook signature" });
     return;
   }
@@ -29,11 +28,15 @@ router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
   const providerDeliveryId = stringAt(meta.delivery_id ?? data.delivery_id ?? event.delivery_id, 160);
   const providerStatus = stringAt(data.status ?? event.status, 80)?.toLowerCase() ?? null;
   if (!eventId || !eventType) { res.status(400).json({ error: "Invalid webhook event" }); return; }
-  const [existing] = await db.select({ id: uberDeliveryWebhookEventsTable.id }).from(uberDeliveryWebhookEventsTable).where(eq(uberDeliveryWebhookEventsTable.providerEventId, eventId)).limit(1);
-  if (existing) { res.status(200).json({ received: true, replayed: true }); return; }
   const [fulfillment] = externalReference?.startsWith("myorder-")
     ? await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.externalOrderReference, externalReference)).limit(1)
     : [];
+  if (!fulfillment || !await verifyUberWebhookSignatureForTenant(fulfillment.tenantId, raw, signature)) {
+    res.status(401).json({ error: "Invalid webhook signature" });
+    return;
+  }
+  const [existing] = await db.select({ id: uberDeliveryWebhookEventsTable.id }).from(uberDeliveryWebhookEventsTable).where(eq(uberDeliveryWebhookEventsTable.providerEventId, eventId)).limit(1);
+  if (existing) { res.status(200).json({ received: true, replayed: true }); return; }
   const inserted = await db.insert(uberDeliveryWebhookEventsTable).values({
     providerEventId: eventId, eventType, tenantId: fulfillment?.tenantId ?? null,
     fulfillmentId: fulfillment?.id ?? null, providerDeliveryId, providerStatus,
@@ -51,8 +54,6 @@ router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
         updatedAt: new Date(),
       }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.tenantId, fulfillment.tenantId)));
     }
-  } else if (!fulfillment) {
-    logger.info({ eventType, hasExternalReference: Boolean(externalReference), hasProviderDeliveryId: Boolean(providerDeliveryId) }, "Ignored Uber Direct webhook without a server-owned fulfillment");
   }
   res.status(200).json({ received: true, replayed: false });
 });

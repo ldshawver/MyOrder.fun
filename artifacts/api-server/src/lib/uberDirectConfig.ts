@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { db, inventoryLocationsTable, tenantSettingsTable, uberDirectSettingsTable } from "@workspace/db";
 import { safeDecrypt } from "./crypto";
-import { normalizeUberAddress, type UberAddress, type UberDirectRuntimeConfig, UberDirectConfigError } from "./uberDirect";
+import { normalizeUberAddress, type UberAddress, type UberDirectRuntimeConfig, UberDirectConfigError, verifyUberWebhookSignatureForSecret } from "./uberDirect";
 
 type BusinessAddress = { line1?: unknown; line2?: unknown; city?: unknown; region?: unknown; postalCode?: unknown; country?: unknown };
 
@@ -93,18 +93,13 @@ export async function getUberDirectPickupContact(tenantId: number): Promise<{ na
   return name && phone ? { name, phone } : null;
 }
 
-export async function verifyUberWebhookSignatureForAnyTenant(rawBody: Buffer, suppliedSignature: string | undefined): Promise<boolean> {
-  if (!suppliedSignature || !/^[a-f0-9]{64}$/i.test(suppliedSignature)) return false;
-  const { createHmac, timingSafeEqual } = await import("node:crypto");
-  const rows = await db.select({ secret: uberDirectSettingsTable.webhookSigningKeyCiphertext }).from(uberDirectSettingsTable)
-    .where(eq(uberDirectSettingsTable.enabled, true));
-  const supplied = Buffer.from(suppliedSignature, "hex");
-  return rows.some(row => {
-    const key = safeDecrypt(row.secret);
-    if (!key) return false;
-    const expected = Buffer.from(createHmac("sha256", key).update(rawBody).digest("hex"), "hex");
-    return expected.length === supplied.length && timingSafeEqual(expected, supplied);
-  });
+/** Webhooks are authenticated against the fulfillment's tenant only. */
+export async function verifyUberWebhookSignatureForTenant(tenantId: number, rawBody: Buffer, suppliedSignature: string | undefined): Promise<boolean> {
+  if (!Number.isInteger(tenantId) || tenantId <= 0 || !suppliedSignature || !/^[a-f0-9]{64}$/i.test(suppliedSignature)) return false;
+  const [settings] = await db.select({ secret: uberDirectSettingsTable.webhookSigningKeyCiphertext }).from(uberDirectSettingsTable)
+    .where(and(eq(uberDirectSettingsTable.tenantId, tenantId), eq(uberDirectSettingsTable.enabled, true))).limit(1);
+  const signingKey = settings?.secret ? safeDecrypt(settings.secret) : null;
+  return verifyUberWebhookSignatureForSecret(rawBody, suppliedSignature, signingKey);
 }
 
 export function requirePickupAddress(value: UberAddress | null): UberAddress {
