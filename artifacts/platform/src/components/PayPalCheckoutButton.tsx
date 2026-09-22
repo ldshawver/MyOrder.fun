@@ -31,7 +31,7 @@ const idempotencyKey = (prefix: string) => `${prefix}:${crypto.randomUUID()}`;
 export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCaptured, onAbandoned, disabled = false }: Props) {
   const walletContainer = useRef<HTMLDivElement>(null);
   const internalOrderId = useRef<number | undefined>(orderId);
-  const wallet = useRef<WalletSession>(); const attempt = useRef<{ id: number; providerOrderId: string }>();
+  const wallet = useRef<WalletSession | undefined>(undefined); const attempt = useRef<{ id: number; providerOrderId: string } | undefined>(undefined);
   const busyRef = useRef(false);
   const [walletEligible, setWalletEligible] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState<string | null>(null);

@@ -162,6 +162,22 @@ export default function NewOrder() {
 
   const createOrderMutation = useCreateOrder();
   const upsellMutation = useAiUpsellSuggestions();
+  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
+  const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
+  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
+  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
+    ? deliveryQuote.fee
+    : deliveryMethod === "csr_delivery"
+      ? csrDeliveryFee
+      : 0;
+  const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
+  const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
+  const tipAmount = tipMode === "none"
+    ? 0
+    : tipMode === "custom"
+      ? Math.round(customTipAmount * 100) / 100
+      : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
 
   useEffect(() => {
     setConversionPreview(null);
@@ -347,22 +363,6 @@ export default function NewOrder() {
   };
 
   const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
-  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
-  const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
-  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
-  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
-    ? deliveryQuote.fee
-    : deliveryMethod === "csr_delivery"
-      ? csrDeliveryFee
-      : 0;
-  const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
-  const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
-  const tipAmount = tipMode === "none"
-    ? 0
-    : tipMode === "custom"
-      ? Math.round(customTipAmount * 100) / 100
-      : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
   const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
