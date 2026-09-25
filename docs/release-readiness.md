@@ -51,3 +51,17 @@ Database migrations are not automatically reversible. If an application
 rollback is incompatible with an applied migration, restore the verified backup
 into a controlled recovery environment first; do not overwrite the production
 database without a separately approved recovery procedure.
+
+# Compose health-check topology
+
+Both production and staging use container-local probes with binaries already
+included in their images. PostgreSQL uses `pg_isready`; the Node API uses its
+built-in `fetch` against `127.0.0.1:8080/healthz`; the platform nginx listens
+on `127.0.0.1:3000`; and the edge nginx listens on `127.0.0.1:80`.
+
+The edge nginx service waits for healthy API and platform services, rather than
+merely started containers. Use a 10-second interval, 5-second timeout, ten
+retries, and a 10-second startup period for nginx platform/edge probes (the API
+retains its 15-second startup period). Do not substitute port 80 for the
+platform probe: port 80 belongs to the edge nginx container, not the platform
+container.

@@ -133,6 +133,14 @@ services:
         - clerk_publishable_key
         - clerk_proxy_url
     restart: unless-stopped
+    # deploy/nginx-spa.conf listens on 3000 inside this nginx:alpine image.
+    # wget is provided by nginx:alpine and avoids adding a runtime dependency.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks: [internal]
 
   nginx:
@@ -147,7 +155,15 @@ services:
       api:
         condition: service_healthy
       platform:
-        condition: service_started
+        condition: service_healthy
+    # This reverse proxy listens on port 80 inside nginx:alpine; wget is
+    # available in that image and validates both nginx startup and routing.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks: [internal]
 
 volumes:

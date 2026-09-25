@@ -135,7 +135,9 @@ services:
         VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      # deploy/nginx-spa.conf listens on 3000 inside the platform container.
+      # nginx:alpine includes wget; probe the actual internal SPA listener.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
