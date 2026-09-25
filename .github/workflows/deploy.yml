@@ -60,7 +60,11 @@ jobs:
       VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       DEPLOY_PATH: /opt/alavont
-      COMPOSE_PROJECT_NAME: alavont
+      # The production database and current application containers belong to
+      # the `deploy` project.  Never create a second `alavont` stack: it has a
+      # separate, empty database volume and would collide with the live nginx
+      # loopback port.
+      COMPOSE_PROJECT_NAME: deploy
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
       TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
@@ -243,6 +247,25 @@ jobs:
               echo "Deploy path: ${DEPLOY_PATH}/deploy"
               echo "Compose project: ${COMPOSE_PROJECT_NAME}"
 
+              # Fail closed before building or starting anything.  This
+              # release flow is only valid for the established production
+              # project and its existing data volume; it must never initialize
+              # the unused `alavont_postgres_data` volume.
+              test "${DEPLOY_PATH}" = "/opt/alavont"
+              test "${COMPOSE_PROJECT_NAME}" = "deploy"
+              test -f nginx/nginx.conf
+              test ! -d nginx/nginx.conf
+
+              ACTIVE_DB_ID="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps -aq db)"
+              test -n "${ACTIVE_DB_ID}"
+              test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
+              test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}')" = "deploy_postgres_data"
+
+              ACTIVE_NGINX_ID="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps -aq nginx)"
+              test -n "${ACTIVE_NGINX_ID}"
+              test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
+              test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{range $p, $bindings := .HostConfig.PortBindings}}{{if eq $p \"80/tcp\"}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}{{end}}{{end}}{{end}}')" = "127.0.0.1:8081"
+
               echo "Building images without taking the live site down..."
               DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
 
@@ -266,14 +289,20 @@ jobs:
               echo "Running migrations..."
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose run --rm migrate
 
+              EXPECTED_MIGRATIONS="$(node -p "require('./lib/db/drizzle/meta/_journal.json').entries.length")"
+              APPLIED_MIGRATIONS="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')"
+              test "${APPLIED_MIGRATIONS}" = "${EXPECTED_MIGRATIONS}"
+
               echo "Starting app services..."
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
 
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
 
               for i in $(seq 1 45); do
-                if curl -fsS http://127.0.0.1/api/healthz; then
-                  echo "API healthy"
+                HEALTH_JSON="$(curl -fsS http://127.0.0.1:8081/api/healthz || true)"
+                HEALTH_SHA="$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).sha || "")); } catch {}' "${HEALTH_JSON}")"
+                if [ "${HEALTH_SHA}" = "${DEPLOY_SHA}" ]; then
+                  echo "API healthy with expected release SHA"
                   break
                 fi
 
@@ -288,6 +317,9 @@ jobs:
                 sleep 2
               done
 
+              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T api node -e 'const u = new URL(process.env.DATABASE_URL); if (u.hostname !== "db") process.exit(1); process.stdout.write(`API database target: ${u.hostname}${u.pathname}\n`);'
+              test "$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')" = "${EXPECTED_MIGRATIONS}"
+
               COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
               docker image prune -f
               echo "Deploy complete"
@@ -298,8 +330,10 @@ jobs:
           set -euo pipefail
 
           for i in $(seq 1 45); do
-            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
-              echo "Public health check passed"
+            HEALTH_JSON="$(curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz || true)"
+            HEALTH_SHA="$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).sha || "")); } catch {}' "${HEALTH_JSON}")"
+            if [ "${HEALTH_SHA}" = "${GITHUB_SHA}" ]; then
+              echo "Public health check passed with expected release SHA"
               exit 0
             fi
 

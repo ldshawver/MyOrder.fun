@@ -52,7 +52,7 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
     expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
-    expect(layout).toContain('{ href: "/cart", label: "Cart"');
+    expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Order" : "Cart"');
     expect(app).toContain('path="/cart" component={NewOrder}');
     expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
   });
@@ -247,7 +247,7 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
     expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
     expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
-    expect(deploy).toContain("COMPOSE_PROJECT_NAME: alavont");
+    expect(deploy).toContain("COMPOSE_PROJECT_NAME: deploy");
     expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
     expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
     expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
@@ -256,8 +256,9 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain("docker compose run --rm migrate");
     expect(deploy).toContain("docker compose up -d api platform nginx");
     expect(deploy).toContain("docker compose ps");
-    expect(deploy).toContain("curl -fsS http://127.0.0.1/api/healthz");
-    expect(deploy).toContain("curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz");
+    expect(deploy).toContain("deploy_postgres_data");
+    expect(deploy).toContain("http://127.0.0.1:8081/api/healthz");
+    expect(deploy).toContain("Public health check passed with expected release SHA");
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");
