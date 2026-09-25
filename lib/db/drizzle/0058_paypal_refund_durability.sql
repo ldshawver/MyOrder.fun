@@ -20,7 +20,7 @@ UPDATE "payment_refunds"
 ALTER TABLE "payment_refunds" DROP CONSTRAINT IF EXISTS "payment_refunds_state_check";
 ALTER TABLE "payment_refunds"
   ADD CONSTRAINT "payment_refunds_state_check"
-  CHECK ("state" IN ('requested','provider_succeeded','locally_finalized','pending','failed','reconciliation_required'));
+  CHECK ("state" IN ('requested','provider_succeeded','locally_finalized','completed','pending','failed','reconciliation_required'));
 ALTER TABLE "payment_refunds"
   ALTER COLUMN "provider_request_id" DROP NOT NULL;
 ALTER TABLE "payment_refunds"
