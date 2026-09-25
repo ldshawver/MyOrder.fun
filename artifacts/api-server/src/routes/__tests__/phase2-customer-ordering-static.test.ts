@@ -31,7 +31,7 @@ describe("Phase 2 customer ordering boundaries", () => {
     expect(app).toContain('path="/checkout" component={NewOrder}');
     expect(app).toContain('path="/order-workspace" component={LegacyCartRedirect}');
     expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
-    expect(cart).toContain("Cart & Checkout");
+    expect(cart).toContain('data-testid="text-title">My Order</h1>');
     expect(cart).toContain("Optional Zappy suggestions");
     expect(catalog).toContain('data-testid="catalog-cart-link"');
     expect(catalog).toContain('data-testid="catalog-checkout-link"');
