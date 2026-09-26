@@ -77,62 +77,39 @@ if (!clerkPubKey) {
   throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY in .env file");
 }
 
-function AuthBrandWrapper({ children }: { children: ReactNode }) {
-  const { branding, publicBrandLoading } = useBrand();
-  const name = branding.customer.displayName;
-  if (publicBrandLoading) {
-    return <main className="min-h-screen bg-background text-foreground flex items-center justify-center"><span className="text-sm text-muted-foreground">Loading storefront…</span></main>;
-  }
+function AuthBrandWrapper({ children, registration = false }: { children: ReactNode; registration?: boolean }) {
   return (
-    <div
-      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden"
-      style={{ background: "#0A0000" }}
-    >
-      <div
-        className="pointer-events-none fixed inset-0"
-        style={{
-          backgroundImage:
-            "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(180,0,0,0.015) 4px)",
-        }}
-      />
-      <div
-        className="pointer-events-none fixed inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage:
-            "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E\")",
-          backgroundRepeat: "repeat",
-          backgroundSize: "128px",
-        }}
-      />
-      <div
-        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none"
-        style={{
-          background: "radial-gradient(circle, rgba(220,20,60,0.08) 0%, transparent 70%)",
-          filter: "blur(60px)",
-        }}
-      />
-      <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
-        <div className="flex flex-col items-center gap-3 mb-2">
-          <img
-            src={branding.customer.logoUrl}
-            alt={name}
-            className="h-16 w-auto object-contain"
-          />
-          <div className="text-center">
-            <div className="font-bold tracking-[0.12em] text-base" style={{ color: "#C0C0C0" }}>
-              {name}
-            </div>
-            <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Private storefront
-            </div>
-          </div>
+    <main className="relative min-h-screen overflow-hidden bg-[#090909] px-4 py-10 text-white sm:px-6 sm:py-14">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(176,132,57,0.14),transparent_55%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#b89456] to-transparent" />
+      <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md flex-col items-center justify-center gap-7 sm:min-h-[calc(100vh-7rem)]">
+        <img src="/lc-logo.webp" alt="Lucifer Cruz" className="h-auto w-48 object-contain sm:w-56" />
+        <div className="text-center">
+          <div className="mx-auto mb-5 h-px w-16 bg-[#b89456]" />
+          <h1 className="font-serif text-3xl tracking-wide text-white sm:text-4xl">
+            {registration ? "Create your account" : "Sign into your account"}
+          </h1>
+          <p className="mt-3 text-sm tracking-[0.2em] text-[#d5b777]">18+ Adult Boutique</p>
         </div>
-        {children}
-        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>
-          SECURE · PRIVATE · AUDITED
+        <div className="w-full [&_.cl-rootBox]:mx-auto [&_.cl-rootBox]:w-full [&_.cl-cardBox]:w-full">
+          {children}
+        </div>
+        {!registration && (
+          <a
+            href={`${basePath}/sign-up`}
+            className="flex min-h-12 w-full items-center justify-center rounded-md border border-[#c7a664] bg-[#b89456] px-6 py-3 text-sm font-semibold tracking-wide text-[#17120a] transition-colors hover:bg-[#d5b777] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d5b777]"
+          >
+            Create an Account
+          </a>
+        )}
+        <a href="https://lucifercruz.com" target="_blank" rel="noopener noreferrer" className="text-sm text-[#e5d4b2] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d5b777]">
+          Visit Lucifer Cruz
+        </a>
+        <p className="max-w-sm text-center text-xs leading-relaxed text-[#aaa49b]">
+          For adults 18 and older. Age verification may be required before purchase.
         </p>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -140,6 +117,7 @@ function SignInPage() {
   return (
     <AuthBrandWrapper>
       <SignIn
+        appearance={{ elements: { headerTitle: { display: "none" } } }}
         routing="path"
         path={`${basePath}/sign-in`}
         signUpUrl={`${basePath}/sign-up`}
@@ -151,8 +129,8 @@ function SignInPage() {
 
 function SignUpPage() {
   return (
-    <AuthBrandWrapper>
-      <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
+    <AuthBrandWrapper registration>
+      <SignUp appearance={{ elements: { headerTitle: { display: "none" } } }} routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
     </AuthBrandWrapper>
   );
 }
