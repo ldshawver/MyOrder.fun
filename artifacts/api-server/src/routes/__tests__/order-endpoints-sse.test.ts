@@ -421,6 +421,60 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("offers enabled Cash but marks PayPal unavailable when the provider is disabled", async () => {
+    mockActor = dbState.users[0]!;
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+
+    expect(converted.status).toBe(200);
+    expect(converted.body.converted.paymentMethods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "cash" }),
+      expect.objectContaining({ id: "paypal", available: false }),
+    ]));
+  });
+
+  it("omits Cash when the tenant disables it and rejects a forged Cash checkout", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.settings[0]!.enabledProcessors = ["paypal"];
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+    expect(converted.status).toBe(200);
+    expect(converted.body.converted.paymentMethods).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "cash" })]));
+
+    const conversionToken = converted.body.conversionToken as string;
+    const checkoutConversionSnapshot = { ...converted.body } as Record<string, unknown>;
+    for (const field of ["conversionToken", "checkoutConversionToken", "conversionExpiresAt", "snapshotHash"]) delete checkoutConversionSnapshot[field];
+    const order = await supertest(buildApp()).post("/api/orders").send({
+      items: convertedItems,
+      checkoutConversionToken: conversionToken,
+      checkoutConversionSnapshot,
+      checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+    });
+    expect(order.status).toBe(422);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
+  it("rejects PayPal order creation while global payment configuration is disabled", async () => {
+    mockActor = dbState.users[0]!;
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+    const conversionToken = converted.body.conversionToken as string;
+    const checkoutConversionSnapshot = { ...converted.body } as Record<string, unknown>;
+    for (const field of ["conversionToken", "checkoutConversionToken", "conversionExpiresAt", "snapshotHash"]) delete checkoutConversionSnapshot[field];
+    const order = await supertest(buildApp()).post("/api/orders").send({
+      items: convertedItems,
+      checkoutConversionToken: conversionToken,
+      checkoutConversionSnapshot,
+      checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "paypal" },
+    });
+    expect(order.status).toBe(422);
+    expect(order.body.error).toMatch(/PayPal checkout is unavailable/);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
   it("POST /api/cart/convert returns conversionToken and POST /api/orders accepts converted Cash checkout", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
@@ -447,7 +501,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect([200, 201]).toContain(res.status);
     expect(dbState.orders).toHaveLength(1);
-    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
     expect(conversionExpiresAt).toEqual(expect.any(String));
     expect(snapshotHash).toEqual(expect.any(String));
@@ -481,7 +535,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect([200, 201]).toContain(order.status);
     expect(dbState.orders).toHaveLength(1);
-    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
     expect(conversionExpiresAt).toEqual(expect.any(String));
     expect(snapshotHash).toEqual(expect.any(String));

@@ -56,7 +56,7 @@ type ConversionPreview = {
     brandName: string;
     headline: string;
     zappyMessage: string;
-    paymentMethods: Array<{ id: string; label: string; promoted?: boolean; message?: string }>;
+    paymentMethods: Array<{ id: string; label: string; promoted?: boolean; available?: boolean; message?: string }>;
     items: Array<{
       catalogItemId: number;
       displayName: string;
@@ -248,9 +248,9 @@ export default function NewOrder() {
       }
       const converted = data as ConversionPreview;
       setConversionPreview(converted);
-      setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current)
+      setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current && method.available !== false)
         ? current
-        : converted.converted.paymentMethods[0]?.id || "customer_credit");
+        : converted.converted.paymentMethods.find(method => method.available !== false)?.id || "customer_credit");
     } catch (e) {
       setConversionError(e instanceof Error ? e.message : "Could not prepare checkout.");
     } finally {
@@ -292,6 +292,9 @@ export default function NewOrder() {
 
   const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
     if (cart.length === 0 || !conversionPreview) throw new Error("Checkout is not ready.");
+    if (!conversionPreview.converted.paymentMethods.some(method => method.id === paymentMethodOverride && method.available !== false)) {
+      throw new Error("This payment method is unavailable. Review the checkout options again.");
+    }
     if (deliveryMethod === "uber_direct" && !deliveryQuote) throw new Error("A current delivery quote is required.");
     if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
@@ -337,7 +340,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, shippingAddress, tipAmount, tipMode]);
+  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
@@ -372,6 +375,7 @@ export default function NewOrder() {
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending;
   const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
+  const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
 
   return (
@@ -727,14 +731,15 @@ export default function NewOrder() {
                           key={method.id}
                           type="button"
                           onClick={() => handlePaymentMethodClick(method.id)}
-                          className={`rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
+                          disabled={method.available === false}
+                          className={`rounded-sm border p-3 text-left transition-colors ${method.available === false ? "border-border/50 bg-muted/30 text-muted-foreground cursor-not-allowed" : active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
                           data-testid={`payment-method-${method.id}`}
                         >
                           <span className="flex items-center gap-2 text-sm font-semibold">
                             <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
                             {method.label}
                           </span>
-                          {method.message && <span className="block mt-1 text-[11px] text-emerald-600">{method.message}</span>}
+                          {method.message && <span className={`block mt-1 text-[11px] ${method.available === false ? "text-destructive" : "text-emerald-600"}`}>{method.message}</span>}
                         </button>
                       );
                     })}
@@ -753,21 +758,21 @@ export default function NewOrder() {
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
               )}
 
-              {selectedPaymentMethod === "paypal" ? (
+              {selectedPaymentMethod === "paypal" && selectedMethodAvailable ? (
                 <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
                   <p className="text-sm font-semibold">Pay securely with PayPal</p>
                   <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
                   <PayPalCheckoutButton
                     createOrder={() => createCheckoutOrder("paypal")}
                     getToken={getToken}
-                    disabled={!canSubmit}
+                    disabled={!canSubmit || !selectedMethodAvailable}
                     onCaptured={(orderId) => { void finishCheckout(orderId); }}
                   />
                 </div>
               ) : (
                 <Button
                   className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider"
-                  disabled={!canSubmit}
+                  disabled={!canSubmit || !selectedMethodAvailable}
                   onClick={() => void handleSubmit()}
                   data-testid="button-submit-order"
                 >

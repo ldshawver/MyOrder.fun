@@ -97,9 +97,13 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
   useEffect(() => {
     let disposed = false;
     async function start() {
-      const configResponse = await fetch("/api/payments/config", { headers: await authHeaders(), credentials: "same-origin" });
+      const configResponse = await fetch("/api/payments/config", { headers: await authHeaders(), credentials: "same-origin", cache: "no-store" });
       const config = await configResponse.json() as Config;
-      if (!configResponse.ok || !config.enabled || !config.clientId) { setMessage("Online PayPal checkout is disabled."); return; }
+      if (!configResponse.ok || !config.enabled || !config.clientId) {
+        setWalletEligible(false);
+        setMessage("PayPal checkout is unavailable because live payment configuration is incomplete.");
+        return;
+      }
       let script = document.querySelector<HTMLScriptElement>('script[data-myorder-paypal-sdk="v6"]');
       if (!script) { script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; script.src = config.mode === "sandbox" ? "https://www.sandbox.paypal.com/web-sdk/v6/core" : "https://www.paypal.com/web-sdk/v6/core"; script.async = true; document.head.appendChild(script); }
       if (!window.paypal) await new Promise<void>((resolve, reject) => { script!.addEventListener("load", () => resolve(), { once: true }); script!.addEventListener("error", () => reject(new Error("PayPal SDK unavailable")), { once: true }); });
@@ -119,7 +123,8 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
   }, [authHeaders, cancelAfterBuyerCancellation, capture, startWallet]);
 
   return <div className="space-y-3" aria-busy={busy}>
-    <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet">{walletEligible === null && <p className="text-xs text-muted-foreground">Loading secure PayPal checkout…</p>}</div>
+    <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet" />
+    {walletEligible === null && <p className="text-xs text-muted-foreground">Loading secure PayPal checkout…</p>}
     {walletEligible === false && <p className="text-xs text-muted-foreground">PayPal Wallet is unavailable for this account or session.</p>}
     {message && <p className="text-xs text-muted-foreground" role="status">{message}</p>}
   </div>;

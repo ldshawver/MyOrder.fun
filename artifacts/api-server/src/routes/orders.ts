@@ -62,6 +62,8 @@ import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
 import { consumeCustomerCredit } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
+import { loadPaymentConfig } from "../payments/config";
+import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
@@ -261,12 +263,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
   const branding = tenantId ? await getBranding(tenantId) : null;
   const [paymentSettings] = tenantId ? await db.select({ enabledProcessors: adminSettingsTable.enabledProcessors })
     .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1) : [];
-  const enabledProcessors = new Set(paymentSettings?.enabledProcessors ?? ["paypal"]);
-  const paymentMethods = [
-    ...(enabledProcessors.has("cash") ? [{ id: "cash", label: "Cash", promoted: true, message: "Cash is accepted by an eligible employee in an open accountable session." }] : []),
-    ...(enabledProcessors.has("paypal") ? [{ id: "paypal", label: "PayPal", promoted: false }] : []),
-    { id: "customer_credit", label: "Customer Credit", promoted: false },
-  ];
+  const paymentMethods = checkoutPaymentMethods(paymentSettings?.enabledProcessors ?? ["paypal"], loadPaymentConfig().enabled);
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -768,6 +765,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
   if ((tender === "cash" || tender === "paypal") && !financialSettings?.enabledProcessors?.includes(tender)) {
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
+    return;
+  }
+  if (tender === "paypal" && !loadPaymentConfig().enabled) {
+    res.status(422).json({ error: "PayPal checkout is unavailable until live payment configuration is completed" });
     return;
   }
   const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });

@@ -33,6 +33,7 @@ function fail(res: Response, error: unknown) {
 }
 
 router.get("/payments/config", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   try { const config = loadPaymentConfig(); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
