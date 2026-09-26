@@ -67,6 +67,7 @@ import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
+import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
 import { buildSafeMerchantPayloadLines } from "../lib/merchantPayloadValidator";
@@ -1517,11 +1518,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
       eq(generalQueueCashSessionsTable.status, "open"),
     )).orderBy(desc(generalQueueCashSessionsTable.openedAt)).limit(2);
 
-    if (openSessions.length > 1) {
+    const useGeneralQueueSession = usesGeneralQueueCashSession(order.routeSource, openSessions.length);
+    if (useGeneralQueueSession && openSessions.length > 1) {
       return { status: 409, error: "Multiple General Queue cash sessions are active; resolve the location configuration before accepting cash" } as const;
     }
 
-    if (openSessions.length === 1) {
+    if (useGeneralQueueSession) {
       [session] = openSessions;
       if (!assignedToActor && !parsed.data.supervisorOverride) return { status: 403, error: "Claim this General Queue order before accepting cash" } as const;
       const [participant] = await tx.select().from(generalQueueCashSessionParticipantsTable).where(and(
