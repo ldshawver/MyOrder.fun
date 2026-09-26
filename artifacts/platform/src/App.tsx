@@ -659,11 +659,13 @@ function ClerkProviderWithRoutes() {
       routerPush={(to) => setLocation(stripBase(to))}
       routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
     >
-      <QueryClientProvider client={queryClient}>
-        <ClerkAuthTokenSetter />
-        <ClerkQueryClientCacheInvalidator />
-        <Router />
-      </QueryClientProvider>
+      <CartProvider>
+        <QueryClientProvider client={queryClient}>
+          <ClerkAuthTokenSetter />
+          <ClerkQueryClientCacheInvalidator />
+          <Router />
+        </QueryClientProvider>
+      </CartProvider>
     </ClerkProvider>
   );
 }
@@ -713,16 +715,14 @@ export function ClerkInitializationError() {
 function App() {
   return (
     <BrandProvider>
-      <CartProvider>
-        <TooltipProvider>
-          <WouterRouter base={basePath}>
-            <ClerkInitializationBoundary>
-              <ClerkProviderWithRoutes />
-            </ClerkInitializationBoundary>
-          </WouterRouter>
-          <Toaster />
-        </TooltipProvider>
-      </CartProvider>
+      <TooltipProvider>
+        <WouterRouter base={basePath}>
+          <ClerkInitializationBoundary>
+            <ClerkProviderWithRoutes />
+          </ClerkInitializationBoundary>
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
     </BrandProvider>
   );
 }

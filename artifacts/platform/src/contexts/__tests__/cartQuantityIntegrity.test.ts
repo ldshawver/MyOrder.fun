@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const cartContext = readFileSync(new URL("../CartContext.tsx", import.meta.url), "utf8");
 const newOrder = readFileSync(new URL("../../pages/new-order.tsx", import.meta.url), "utf8");
+const app = readFileSync(new URL("../../App.tsx", import.meta.url), "utf8");
 
 describe("cart quantity integrity", () => {
   it("shows direct increment and decrement controls in the order cart", () => {
@@ -24,5 +25,12 @@ describe("cart quantity integrity", () => {
     expect(cartContext).toContain("cartState.storageKey !== storageKey");
     expect(cartContext).toContain("localStorage.getItem(storageKey)");
     expect(cartContext).not.toContain("localStorage.getItem(STORAGE_KEY)");
+  });
+
+  it("mounts the cart provider within Clerk before rendering routes", () => {
+    const clerkTree = app.slice(app.indexOf("function ClerkProviderWithRoutes()"), app.indexOf("class ClerkInitializationBoundary"));
+    const appTree = app.slice(app.indexOf("function App()"));
+    expect(clerkTree).toMatch(/<ClerkProvider\b[\s\S]*<CartProvider>[\s\S]*<Router\s*\/>[\s\S]*<\/CartProvider>[\s\S]*<\/ClerkProvider>/);
+    expect(appTree).not.toContain("<CartProvider>");
   });
 });
