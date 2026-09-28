@@ -211,6 +211,38 @@ describe("bridge profile registration", () => {
     );
   });
 
+  it("stores a per-bridge key without ever echoing it, and probes with that key", async () => {
+    const PI_KEY = "pi-bridge-key-0123456789abcdef0123456789abcdef";
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await createBridge({ name: "Raspberry Pi", bridgeUrl: "http://100.64.0.9:3100", apiKey: PI_KEY, priority: 20 });
+    expect(res.status).toBe(201);
+    expect(JSON.stringify(res.body)).not.toContain(PI_KEY);
+    expect(store.tables.printBridgeProfilesTable[0]).toMatchObject({ apiKey: PI_KEY, priority: 20, routingScope: "general" });
+    const list = await api.get("/api/print/bridge-profiles");
+    expect(JSON.stringify(list.body)).not.toContain(PI_KEY);
+    await api.post(`/api/print/bridge-profiles/${res.body.id}/probe`);
+    expect(fetchMock).toHaveBeenCalledWith("http://100.64.0.9:3100/health", expect.objectContaining({ headers: { "x-api-key": PI_KEY } }));
+  });
+
+  it.each(["short", "has space 0123456789abcdef0123456789abcdef", "line\nbreak0123456789abcdef0123456789abcdef", 12345])(
+    "rejects an invalid bridge key %j on create", async (apiKey) => {
+      const res = await createBridge({ apiKey });
+      expect(res.status).toBe(400);
+      expect(store.tables.printBridgeProfilesTable ?? []).toHaveLength(0);
+    });
+
+  it("validates key updates and never echoes the key from PATCH", async () => {
+    const { body: bridge } = await createBridge();
+    const NEW_KEY = "rotated-bridge-key-0123456789abcdef0123456789";
+    const bad = await api.patch(`/api/print/bridge-profiles/${bridge.id}`).send({ apiKey: "short" });
+    expect(bad.status).toBe(400);
+    const ok = await api.patch(`/api/print/bridge-profiles/${bridge.id}`).send({ apiKey: NEW_KEY });
+    expect(ok.status).toBe(200);
+    expect(JSON.stringify(ok.body)).not.toContain(NEW_KEY);
+    expect(store.tables.printBridgeProfilesTable[0].apiKey).toBe(NEW_KEY);
+  });
+
   it("refuses to probe another tenant's bridge", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

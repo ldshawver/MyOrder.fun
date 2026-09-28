@@ -647,6 +647,13 @@ const isHttpBridgeUrl = (value: unknown): boolean => {
     return false;
   }
 };
+// Empty means "use the central PRINT_BRIDGE_API_KEY"; otherwise a strong,
+// header-safe secret unique to that bridge.
+const BRIDGE_KEY = /^[A-Za-z0-9._~+/=-]{32,256}$/;
+const BRIDGE_KEY_ERROR = "apiKey must be empty or 32-256 URL-safe characters";
+const isValidBridgeKey = (value: unknown): boolean =>
+  value === undefined || value === null || value === "" ||
+  (typeof value === "string" && BRIDGE_KEY.test(value));
 const VALID_CONN_TYPES = [
   "ethernet_direct",
   "mac_bridge",
@@ -2558,6 +2565,10 @@ router.post(
       res.status(400).json({ error: "bridgeUrl must be an http(s) URL" });
       return;
     }
+    if (!isValidBridgeKey(b.apiKey)) {
+      res.status(400).json({ error: BRIDGE_KEY_ERROR });
+      return;
+    }
     const locationId = b.locationId ? Number(b.locationId) : null;
     if (locationId) {
       const [location] = await db
@@ -2629,7 +2640,13 @@ router.patch(
     if (b.name !== undefined) updates.name = String(b.name);
     if (b.bridgeType !== undefined) updates.bridgeType = String(b.bridgeType);
     if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
-    if (b.apiKey !== undefined) updates.apiKey = String(b.apiKey);
+    if (b.apiKey !== undefined) {
+      if (!isValidBridgeKey(b.apiKey)) {
+        res.status(400).json({ error: BRIDGE_KEY_ERROR });
+        return;
+      }
+      updates.apiKey = String(b.apiKey ?? "");
+    }
     if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
     if (b.priority !== undefined) updates.priority = Number(b.priority);
     if (b.networkSubnetHint !== undefined)
@@ -2675,7 +2692,7 @@ router.patch(
         resourceId: String(row.id),
         metadata: { fields: Object.keys(updates) },
       });
-    res.json(row);
+    res.json({ ...row, apiKey: undefined });
   },
 );
 

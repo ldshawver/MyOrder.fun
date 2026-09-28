@@ -34,7 +34,8 @@ type AutoPrintSettings = {
 };
 type ProbeResult = { ok: boolean; httpStatus?: number; error?: string };
 const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
-const emptyBridgeForm = { name: "", bridgeUrl: "", priority: "10" };
+const emptyBridgeForm = { name: "", bridgeUrl: "", priority: "10", apiKey: "" };
+const BRIDGE_KEY = /^[A-Za-z0-9._~+/=-]{32,256}$/;
 export const REGISTRATION_ROLES = ["receipt", "label"] as const;
 const emptyPrinterForm = {
   role: "receipt" as string,
@@ -64,6 +65,8 @@ export function bridgeFormError(form: typeof emptyBridgeForm) {
     return "Bridge URL must be http(s)";
   }
   if (!Number.isInteger(Number(form.priority))) return "Priority must be a whole number";
+  if (form.apiKey && !BRIDGE_KEY.test(form.apiKey))
+    return "Bridge key must be empty or 32-256 URL-safe characters";
   return null;
 }
 
@@ -250,7 +253,7 @@ export default function RegisteredPrintAdmin({
     const error = bridgeFormError(bridgeForm);
     if (error) return setMessage({ kind: "error", text: error });
     return runAction("bridge", async () => {
-      // Omit the bridge key so the server uses its central bridge credential.
+      // An empty key is omitted so the server uses its central credential.
       const bridge = await api("/api/print/bridge-profiles", {
         method: "POST",
         body: JSON.stringify({
@@ -258,6 +261,7 @@ export default function RegisteredPrintAdmin({
           bridgeUrl: bridgeForm.bridgeUrl.trim(),
           priority: Number(bridgeForm.priority),
           isActive: true,
+          ...(bridgeForm.apiKey ? { apiKey: bridgeForm.apiKey } : {}),
         }),
       });
       setBridgeForm(emptyBridgeForm);
@@ -434,8 +438,18 @@ export default function RegisteredPrintAdmin({
                   value={bridgeForm.priority}
                   onChange={(e) => setBridgeForm({ ...bridgeForm, priority: e.target.value })}
                 />
+                <Input
+                  aria-label="Bridge key"
+                  type="password"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  placeholder="Bridge key (optional)"
+                  value={bridgeForm.apiKey}
+                  onChange={(e) => setBridgeForm({ ...bridgeForm, apiKey: e.target.value })}
+                />
                 <p className="text-xs text-muted-foreground">
-                  General scope. Uses the server's central bridge credential.
+                  General scope. Leave the key empty to use the server's central
+                  bridge credential. A key entered here is never shown again.
                 </p>
                 <Button size="sm" disabled={busy !== null} onClick={() => void createBridge()}>
                   Register bridge

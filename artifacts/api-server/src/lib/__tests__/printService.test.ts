@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const updateSets: Array<Record<string, unknown>> = [];
 const insertedAttempts: Array<Record<string, unknown>> = [];
+const bridgeProfiles = vi.hoisted(() => [] as Array<{ id: number; tenantId: number; apiKey: string }>);
 
 vi.mock("@workspace/db", () => {
   const update = vi.fn(() => {
@@ -19,8 +20,21 @@ vi.mock("@workspace/db", () => {
       return Promise.resolve([]);
     }),
   }));
+  // Bridge profile lookup: evaluates the eq() predicates on id and tenantId.
+  const select = vi.fn(() => ({
+    from: () => ({
+      where: (predicates: Array<{ column: string; value: unknown }>) => ({
+        limit: async () => bridgeProfiles
+          .filter((row) => predicates.every(({ column, value }) =>
+            (column === "bridgeProfileId" && row.id === value) ||
+            (column === "bridgeTenantId" && row.tenantId === value)))
+          .map((row) => ({ apiKey: row.apiKey })),
+      }),
+    }),
+  }));
   return {
-    db: { update, insert, select: vi.fn() },
+    db: { update, insert, select },
+    printBridgeProfilesTable: { id: "bridgeProfileId", tenantId: "bridgeTenantId", apiKey: "bridgeApiKey" },
     printPrintersTable: { id: "printerId", role: "role", isActive: "isActive" },
     printJobsTable: { id: "jobId", idempotencyKey: "idempotencyKey" },
     printJobAttemptsTable: {},
@@ -62,6 +76,7 @@ describe("print job status integrity", () => {
     updateSets.length = 0;
     insertedAttempts.length = 0;
     process.env.PRINT_BRIDGE_API_KEY = "central-secret";
+    bridgeProfiles.length = 0;
     vi.restoreAllMocks();
   });
 
@@ -210,5 +225,45 @@ describe("print job status integrity", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(updateSets.at(-1)).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("tenant/location") });
     expect(insertedAttempts).toHaveLength(0);
+  });
+
+  describe("bridge credential per bridge profile", () => {
+    const PI_KEY = "pi-bridge-key-0123456789abcdef0123456789abcdef";
+    const job = { id: 95, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 1, renderedText: "TEST", renderFormat: "text", payloadJson: {} } as never;
+    const printer = (extra: Record<string, unknown> = {}) => ({
+      id: 96, tenantId: 1, locationId: null, routingScope: "general", isActive: true, name: "Pi receipt",
+      bridgePrinterName: "Pi_Receipt", connectionType: "bridge", bridgeProfileId: 7,
+      bridgeUrl: "http://pi.test:3100", timeoutMs: 8000, copies: 1, apiKey: null, ...extra,
+    }) as never;
+    const sentKey = async (p: never) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+      await dispatchReceiptJob(job, p);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      return (fetchSpy.mock.calls[0]![1]!.headers as Record<string, string>)["x-api-key"];
+    };
+
+    it("sends the printer's own bridge profile key", async () => {
+      bridgeProfiles.push({ id: 7, tenantId: 1, apiKey: PI_KEY });
+      expect(await sentKey(printer())).toBe(PI_KEY);
+    });
+
+    it("falls back to the central key when the bridge profile key is empty", async () => {
+      bridgeProfiles.push({ id: 7, tenantId: 1, apiKey: "" });
+      expect(await sentKey(printer())).toBe("central-secret");
+    });
+
+    it("never uses another tenant's bridge profile key", async () => {
+      bridgeProfiles.push({ id: 7, tenantId: 2, apiKey: PI_KEY });
+      expect(await sentKey(printer())).toBe("central-secret");
+    });
+
+    it("keeps a legacy per-printer key ahead of the profile key", async () => {
+      bridgeProfiles.push({ id: 7, tenantId: 1, apiKey: PI_KEY });
+      expect(await sentKey(printer({ apiKey: "legacy-printer-key" }))).toBe("legacy-printer-key");
+    });
+
+    it("uses the central key for printers without a bridge profile", async () => {
+      expect(await sentKey(printer({ bridgeProfileId: null }))).toBe("central-secret");
+    });
   });
 });

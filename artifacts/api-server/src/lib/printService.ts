@@ -15,6 +15,7 @@ import net from "net";
 import { db } from "@workspace/db";
 import {
   printPrintersTable,
+  printBridgeProfilesTable,
   printJobsTable,
   printJobAttemptsTable,
   printSettingsTable,
@@ -141,11 +142,33 @@ async function dispatchEthernet(
 
 // ── HTTP Bridge Dispatch ───────────────────────────────────────────────────────
 
+/**
+ * The credential for a printer's bridge: a legacy per-printer key, else the
+ * key on the printer's own tenant bridge profile, else the central key. This
+ * lets each bridge (Mac, Pi, ...) hold its own secret.
+ */
+async function resolvePrinterBridgeKey(printer: PrintPrinter): Promise<string> {
+  if (printer.apiKey) return printer.apiKey;
+  let profileKey = "";
+  if (printer.bridgeProfileId) {
+    const [profile] = await db
+      .select({ apiKey: printBridgeProfilesTable.apiKey })
+      .from(printBridgeProfilesTable)
+      .where(and(
+        eq(printBridgeProfilesTable.tenantId, printer.tenantId),
+        eq(printBridgeProfilesTable.id, printer.bridgeProfileId),
+      ))
+      .limit(1);
+    profileKey = profile?.apiKey ?? "";
+  }
+  return profileKey || process.env.PRINT_BRIDGE_API_KEY || "";
+}
+
 async function dispatchBridge(
   job: PrintJob,
   printer: PrintPrinter
 ): Promise<{ success: boolean; error?: string; responsePayload?: object }> {
-  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+  const apiKey = await resolvePrinterBridgeKey(printer);
   const timeoutMs = printer.timeoutMs ?? 8000;
   const text = decodeStoredReceiptText(job.renderedText ?? "");
   const fullText = text.repeat(Math.max(1, Math.min(printer.copies ?? 1, 5)));

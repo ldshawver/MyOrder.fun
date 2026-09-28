@@ -105,8 +105,12 @@ describe("registered printer UI workflow", () => {
     );
     expect(ui).toContain('throw new Error("Server did not confirm automatic printing is paused")');
     const createBridge = ui.slice(ui.indexOf("function createBridge()"), ui.indexOf("async function probeBridge"));
-    expect(createBridge).not.toContain("apiKey:");
+    expect(createBridge).toContain("...(bridgeForm.apiKey ? { apiKey: bridgeForm.apiKey } : {})");
     expect(createBridge).not.toContain("locationId");
+    const keyInput = ui.slice(ui.indexOf('aria-label="Bridge key"'), ui.indexOf("/>", ui.indexOf('aria-label="Bridge key"')));
+    expect(keyInput).toContain('type="password"');
+    expect(keyInput).toContain('autoComplete="new-password"');
+    expect(ui).toContain('return "Bridge key must be empty or 32-256 URL-safe characters"');
     const createPrinter = ui.slice(ui.indexOf("function createPrinter()"), ui.indexOf("function setPrinterActive"));
     expect(createPrinter).toContain("role: printerForm.role");
     expect(createPrinter).not.toContain("locationId");
