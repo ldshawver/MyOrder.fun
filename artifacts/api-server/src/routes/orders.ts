@@ -41,6 +41,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
+import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
@@ -1107,7 +1108,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
-          catalogItemName: line.catalog_display_name,
+          catalogItemName: option ? `${option.productName}${option.label === "Standard" ? "" : ` — ${option.label}`}` : line.catalog_display_name,
+          optionId: option?.optionId ?? null,
+          optionLabelSnapshot: option?.label ?? null,
+          skuSnapshot: option?.sku ?? line.merchant_sku,
+          inventoryItemId: option?.inventoryItemId ?? null,
+          inventoryQuantitySnapshot: physicalQuantity,
           quantity: line.quantity,
           unitPrice: String(line.unit_price.toFixed(2)),
           totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
@@ -1121,7 +1127,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }).returning({ id: orderItemsTable.id });
 
         if (shouldReserveInventory) {
-          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType);
+          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
+            inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
+            option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
           if (!reservations) {
             throw new InsufficientInventoryError(line.catalog_item_id);
           }
@@ -1129,8 +1137,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             .set({ inventoryDeductions: reservations })
             .where(eq(orderItemsTable.id, orderItem.id));
           const deductionDetails = shouldConfirmReservationImmediately
-            ? (await confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.productId === line.catalog_item_id)
-            : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
+            ? (await confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.orderItemId === orderItem.id)
+            : reservations.map(reservation => ({ ...reservation, productId: inventoryCatalogItemId }));
           if (shouldConfirmReservationImmediately) {
             await tx.update(orderItemsTable)
               .set({ inventoryDeductions: deductionDetails.map(({ productId: _productId, ...deduction }) => deduction) })
@@ -1158,16 +1166,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
                 SELECT SUM(quantity_on_hand)
                 FROM inventory_balances
                 WHERE tenant_id = ${houseTenantId}
-                  AND product_id = ${line.catalog_item_id}
+                  AND product_id = ${inventoryCatalogItemId}
               ), 0),
               inventory_amount = COALESCE((
                 SELECT SUM(quantity_on_hand)
                 FROM inventory_balances
                 WHERE tenant_id = ${houseTenantId}
-                  AND product_id = ${line.catalog_item_id}
+                  AND product_id = ${inventoryCatalogItemId}
               ), 0)
             WHERE tenant_id = ${houseTenantId}
-              AND id = ${line.catalog_item_id}
+              AND id IN (SELECT catalog_item_id FROM catalogue_options WHERE tenant_id = ${houseTenantId}
+                AND inventory_item_id = ${option?.inventoryItemId ?? null}
+                UNION SELECT ${line.catalog_item_id})
           `);
       }
 

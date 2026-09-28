@@ -74,8 +74,10 @@ export async function reserveCheckoutInventoryByOrderType(
   tenantId: number,
   orderId: number,
   productId: number,
-  quantity: number,
+  quantity: string | number,
   orderType: InventoryOrderType,
+  orderItemId?: number,
+  locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS" = "COMBINED_LOCATIONS",
 ): Promise<CheckoutInventoryLocationDeduction[] | null> {
   assertKernelCatalogItemId(productId, "checkout.inventoryReservation.orderTypeAware");
   return executeTransaction(tenantId, executor, "inventoryReservations.reserveCheckout", async tx => {
@@ -94,7 +96,9 @@ export async function reserveCheckoutInventoryByOrderType(
   })
     .from(inventoryReservationsTable)
     .innerJoin(inventoryLocationsTable, and(eq(inventoryLocationsTable.id, inventoryReservationsTable.locationId), eq(inventoryLocationsTable.tenantId, tenantId)))
-    .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId), eq(inventoryReservationsTable.status, "reserved"), sql`(${inventoryReservationsTable.expiresAt} > now() OR EXISTS (SELECT 1 FROM payment_attempts p WHERE p.order_id = ${orderId} AND p.tenant_id = ${tenantId} AND p.state IN ('creating','created','approved','capturing','reconciliation_required')))`));
+    .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId),
+      orderItemId == null ? sql`${inventoryReservationsTable.orderItemId} IS NULL` : eq(inventoryReservationsTable.orderItemId, orderItemId),
+      eq(inventoryReservationsTable.status, "reserved"), sql`(${inventoryReservationsTable.expiresAt} > now() OR EXISTS (SELECT 1 FROM payment_attempts p WHERE p.order_id = ${orderId} AND p.tenant_id = ${tenantId} AND p.state IN ('creating','created','approved','capturing','reconciliation_required')))`));
   const existingQuantity = existingReservations.reduce((sum, reservation) => sum + quantityUnits(reservation.quantity), 0n);
   if (existingQuantity >= requestedQuantity) {
     return existingReservations.map(reservation => ({ locationId: reservation.locationId, locationName: null, quantity: Number(reservation.quantity), remainingStock: 0 }));
@@ -134,11 +138,12 @@ export async function reserveCheckoutInventoryByOrderType(
     `));
     const available = quantityUnits(String(row.quantityOnHand ?? 0)) - quantityUnits(String(reservedQuantity ?? 0));
     if (available <= 0n) continue;
+    if (locationEvaluation === "PER_LOCATION" && available < remaining) continue;
     const reserveQuantity = remaining < available ? remaining : available;
-    const key = reservationIdempotencyKey({ orderId, catalogItemId: productId, locationId: row.locationId, orderType });
+    const key = reservationIdempotencyKey({ orderId, catalogItemId: productId, locationId: row.locationId, orderType, orderItemId });
     const inserted = rowsFrom<{ id: number }>(await tx.execute(sql`
-      INSERT INTO inventory_reservations (order_id, catalog_item_id, location_id, quantity, status, idempotency_key, expires_at)
-      VALUES (${orderId}, ${productId}, ${row.locationId}, ${quantityText(reserveQuantity)}::numeric, 'reserved', ${key}, ${expiresAt})
+      INSERT INTO inventory_reservations (order_id, order_item_id, catalog_item_id, location_id, quantity, status, idempotency_key, expires_at)
+      VALUES (${orderId}, ${orderItemId ?? null}, ${productId}, ${row.locationId}, ${quantityText(reserveQuantity)}::numeric, 'reserved', ${key}, ${expiresAt})
       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
       DO UPDATE SET quantity = EXCLUDED.quantity, status = 'reserved', expires_at = EXCLUDED.expires_at, updated_at = now()
       WHERE inventory_reservations.status = 'released'
@@ -156,7 +161,9 @@ export async function reserveCheckoutInventoryByOrderType(
   if (remaining > 0n) {
     await tx.update(inventoryReservationsTable)
       .set({ status: "released", updatedAt: new Date() })
-      .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId), eq(inventoryReservationsTable.status, "reserved")));
+      .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.catalogItemId, productId),
+        orderItemId == null ? sql`${inventoryReservationsTable.orderItemId} IS NULL` : eq(inventoryReservationsTable.orderItemId, orderItemId),
+        eq(inventoryReservationsTable.status, "reserved")));
     return null;
   }
   return reservations;
@@ -168,7 +175,7 @@ export async function confirmInventoryReservationsForOrder(
   tenantId: number,
   orderId: number,
   actor: InventoryMovementActor,
-): Promise<Array<CheckoutInventoryLocationDeduction & { productId: number }>> {
+): Promise<Array<CheckoutInventoryLocationDeduction & { productId: number; orderItemId: number | null }>> {
   return executeTransaction(tenantId, executor, "inventoryReservations.confirm", async tx => {
   await releaseExpiredInventoryReservations(tx, tenantId);
   const owner = rowsFrom<{ id: number }>(await tx.execute(sql`SELECT id FROM orders WHERE id = ${orderId} AND tenant_id = ${tenantId} FOR UPDATE`));
@@ -176,6 +183,7 @@ export async function confirmInventoryReservationsForOrder(
   const reservations = await tx
     .select({
       id: inventoryReservationsTable.id,
+      orderItemId: inventoryReservationsTable.orderItemId,
       productId: inventoryReservationsTable.catalogItemId,
       locationId: inventoryReservationsTable.locationId,
       quantity: inventoryReservationsTable.quantity,
@@ -189,6 +197,7 @@ export async function confirmInventoryReservationsForOrder(
     const confirmedReservations = await tx
       .select({
         id: inventoryReservationsTable.id,
+        orderItemId: inventoryReservationsTable.orderItemId,
         productId: inventoryReservationsTable.catalogItemId,
         locationId: inventoryReservationsTable.locationId,
         quantity: inventoryReservationsTable.quantity,
@@ -199,6 +208,7 @@ export async function confirmInventoryReservationsForOrder(
       .where(and(eq(inventoryReservationsTable.orderId, orderId), eq(inventoryReservationsTable.status, "confirmed")));
     return confirmedReservations.map(reservation => ({
       productId: reservation.productId,
+      orderItemId: reservation.orderItemId,
       locationId: reservation.locationId,
       locationName: reservation.locationName,
       quantity: Number(reservation.quantity),
@@ -206,7 +216,7 @@ export async function confirmInventoryReservationsForOrder(
     }));
   }
 
-  const deductions: Array<CheckoutInventoryLocationDeduction & { productId: number }> = [];
+  const deductions: Array<CheckoutInventoryLocationDeduction & { productId: number; orderItemId: number | null }> = [];
   const [order] = await tx.select({ tenantId: ordersTable.tenantId }).from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) throw new Error(`Order ${orderId} was not found while confirming inventory`);
   for (const reservation of reservations) {
@@ -220,6 +230,7 @@ export async function confirmInventoryReservationsForOrder(
     });
     deductions.push({
       productId: reservation.productId,
+      orderItemId: reservation.orderItemId,
       locationId: reservation.locationId,
       locationName: reservation.locationName,
       quantity: reservation.quantity,

@@ -242,6 +242,7 @@ export function assertKernelCatalogItemId(catalogItemId: number, context: string
   assertCatalogIdInventoryLookup(catalogItemId, `inventoryKernel.${context}`);
 }
 
-export function reservationIdempotencyKey(params: { orderId: number; catalogItemId: number; locationId: number; orderType?: string }): string {
-  return [params.orderId, params.catalogItemId, params.locationId, params.orderType ?? "UNKNOWN"].join(":");
+export function reservationIdempotencyKey(params: { orderId: number; catalogItemId: number; locationId: number; orderType?: string; orderItemId?: number }): string {
+  const legacy = [params.orderId, params.catalogItemId, params.locationId, params.orderType ?? "UNKNOWN"].join(":");
+  return params.orderItemId == null ? legacy : `${legacy}:${params.orderItemId}`;
 }

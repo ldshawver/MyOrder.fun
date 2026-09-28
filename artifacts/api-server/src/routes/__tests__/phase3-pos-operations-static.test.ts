@@ -141,7 +141,8 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(catalog).toContain('router.get("/admin/product-master"');
       expect(shifts).toContain("balanceByProductId.set(b.productId");
       expect(shifts).toContain("quantityStart: String(");
-      expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
+      expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+      expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
       expect(shifts).toContain("expectedEnding: i.quantityEnd ?? i.quantityStart - i.quantitySold");
     });
   });

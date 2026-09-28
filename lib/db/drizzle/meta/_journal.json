@@ -281,6 +281,13 @@
       "when": 1790200000000,
       "tag": "0064_inventory_tenant_quantity_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790200000001,
+      "tag": "0065_catalogue_products_options_reorder",
+      "breakpoints": true
     }
   ]
 }
