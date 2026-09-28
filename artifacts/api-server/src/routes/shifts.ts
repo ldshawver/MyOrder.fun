@@ -127,9 +127,14 @@ async function createShiftReceiptPrintJob(args: {
 }): Promise<void> {
   try {
     const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
-    const { dispatchReceiptJob } = await import("../lib/printService");
+    const { dispatchReceiptJob, getSettings } = await import("../lib/printService");
+    // Shift reports are automatic prints: honor the same receipt auto-print
+    // switch as orders so registering a printer never starts printing alone.
+    const autoPrintEnabled = Boolean((await getSettings()).autoPrintReceipts);
     const profile = await getOperatorProfile(args.tenantId, args.operatorUserId);
-    const { primary: receiptPrinter } = await resolveReceiptPrinters(profile, { tenantId: args.tenantId, shiftId: args.shiftId });
+    const receiptPrinter = autoPrintEnabled
+      ? (await resolveReceiptPrinters(profile, { tenantId: args.tenantId, shiftId: args.shiftId })).primary
+      : null;
     const [job] = await db.insert(printJobsTable).values({
       tenantId: args.tenantId,
       shiftId: args.shiftId,
@@ -142,7 +147,11 @@ async function createShiftReceiptPrintJob(args: {
       renderFormat: "text",
       payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
       renderedText: args.renderedText,
-      errorMessage: receiptPrinter ? null : "No active receipt printer assigned or configured",
+      errorMessage: receiptPrinter
+        ? null
+        : autoPrintEnabled
+          ? "No active receipt printer assigned or configured"
+          : "Automatic receipt printing is disabled",
     }).returning();
     if (receiptPrinter) dispatchReceiptJob(job, receiptPrinter).catch(() => {});
   } catch {

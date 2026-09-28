@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
-import { Loader2, Printer, RefreshCw, Server } from "lucide-react";
+import { Loader2, PauseCircle, Printer, RefreshCw, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type Bridge = {
   id: number;
@@ -26,6 +27,55 @@ type RegisteredPrinter = {
   paperWidth: string;
   copies: number;
 };
+type AutoPrintSettings = {
+  autoPrintOrders: boolean;
+  autoPrintReceipts: boolean;
+  autoPrintLabels: boolean;
+};
+type ProbeResult = { ok: boolean; httpStatus?: number; error?: string };
+const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
+const emptyBridgeForm = { name: "", bridgeUrl: "", priority: "10" };
+const emptyPrinterForm = {
+  name: "",
+  bridgeProfileId: "",
+  bridgePrinterName: "",
+  paperWidth: "80mm",
+  copies: "1",
+};
+
+export function isAutoPrintPaused(settings: AutoPrintSettings | null) {
+  return Boolean(
+    settings &&
+      !settings.autoPrintOrders &&
+      !settings.autoPrintReceipts &&
+      !settings.autoPrintLabels,
+  );
+}
+
+export function bridgeFormError(form: typeof emptyBridgeForm) {
+  if (!form.name.trim()) return "Bridge name is required";
+  try {
+    const url = new URL(form.bridgeUrl.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:")
+      return "Bridge URL must be http(s)";
+  } catch {
+    return "Bridge URL must be http(s)";
+  }
+  if (!Number.isInteger(Number(form.priority))) return "Priority must be a whole number";
+  return null;
+}
+
+export function printerFormError(form: typeof emptyPrinterForm) {
+  if (!form.name.trim()) return "Printer name is required";
+  if (!form.bridgeProfileId) return "Select an active bridge";
+  if (!BRIDGE_QUEUE_NAME.test(form.bridgePrinterName.trim()))
+    return "Queue name is invalid";
+  const copies = Number(form.copies);
+  if (!Number.isInteger(copies) || copies < 1 || copies > 5)
+    return "Copies must be 1-5";
+  return null;
+}
+
 type Profile = {
   id: number;
   locationId: number | null;
@@ -55,6 +105,11 @@ export default function RegisteredPrintAdmin({
   const [templates, setTemplates] = useState<Template[]>([]);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState<number | null>(null);
+  const [autoPrint, setAutoPrint] = useState<AutoPrintSettings | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [probes, setProbes] = useState<Record<number, ProbeResult>>({});
+  const [bridgeForm, setBridgeForm] = useState(emptyBridgeForm);
+  const [printerForm, setPrinterForm] = useState(emptyPrinterForm);
   const [message, setMessage] = useState<{
     kind: "success" | "error";
     text: string;
@@ -87,13 +142,20 @@ export default function RegisteredPrintAdmin({
     setLoading(true);
     setMessage(null);
     try {
-      const [bridgeRows, printerRows, profileRows, templateRows] =
+      const [bridgeRows, printerRows, profileRows, templateRows, settingsRow] =
         await Promise.all([
           api("/api/print/bridge-profiles"),
           api("/api/print/printers"),
           api("/api/print/profiles"),
           api("/api/print/templates"),
+          api("/api/print/settings"),
         ]);
+      const settings = settingsRow.settings ?? {};
+      setAutoPrint({
+        autoPrintOrders: Boolean(settings.autoPrintOrders),
+        autoPrintReceipts: Boolean(settings.autoPrintReceipts),
+        autoPrintLabels: Boolean(settings.autoPrintLabels),
+      });
       setBridges(Array.isArray(bridgeRows) ? bridgeRows : []);
       setPrinters(
         Array.isArray(printerRows.printers) ? printerRows.printers : [],
@@ -145,6 +207,100 @@ export default function RegisteredPrintAdmin({
     } finally {
       setTesting(null);
     }
+  }
+
+  async function runAction(key: string, action: () => Promise<string>) {
+    setBusy(key);
+    setMessage(null);
+    try {
+      const text = await action();
+      await load();
+      setMessage({ kind: "success", text });
+    } catch (error) {
+      setMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Request failed",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function pauseAutoPrint() {
+    return runAction("pause", async () => {
+      const result = await api("/api/print/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          autoPrintOrders: false,
+          autoPrintReceipts: false,
+          autoPrintLabels: false,
+        }),
+      });
+      if (!isAutoPrintPaused(result.settings ?? null))
+        throw new Error("Server did not confirm automatic printing is paused");
+      return "Automatic printing paused";
+    });
+  }
+
+  function createBridge() {
+    const error = bridgeFormError(bridgeForm);
+    if (error) return setMessage({ kind: "error", text: error });
+    return runAction("bridge", async () => {
+      // Omit the bridge key so the server uses its central bridge credential.
+      const bridge = await api("/api/print/bridge-profiles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: bridgeForm.name.trim(),
+          bridgeUrl: bridgeForm.bridgeUrl.trim(),
+          priority: Number(bridgeForm.priority),
+          isActive: true,
+        }),
+      });
+      setBridgeForm(emptyBridgeForm);
+      return `Bridge registered (#${bridge.id})`;
+    });
+  }
+
+  async function probeBridge(bridge: Bridge) {
+    setBusy(`probe-${bridge.id}`);
+    try {
+      const result = await api(`/api/print/bridge-profiles/${bridge.id}/probe`, {
+        method: "POST",
+      });
+      setProbes((prev) => ({ ...prev, [bridge.id]: result }));
+    } catch (error) {
+      setProbes((prev) => ({
+        ...prev,
+        [bridge.id]: {
+          ok: false,
+          error: error instanceof Error ? error.message : "Probe failed",
+        },
+      }));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function createPrinter() {
+    const error = printerFormError(printerForm);
+    if (error) return setMessage({ kind: "error", text: error });
+    return runAction("printer", async () => {
+      const result = await api("/api/print/printers", {
+        method: "POST",
+        body: JSON.stringify({
+          name: printerForm.name.trim(),
+          role: "receipt",
+          connectionType: "bridge",
+          bridgeProfileId: Number(printerForm.bridgeProfileId),
+          bridgePrinterName: printerForm.bridgePrinterName.trim(),
+          paperWidth: printerForm.paperWidth,
+          copies: Number(printerForm.copies),
+          isActive: true,
+        }),
+      });
+      setPrinterForm(emptyPrinterForm);
+      return `Printer registered (#${result.printer?.id})`;
+    });
   }
 
   async function assignFunction(printer: RegisteredPrinter, role: string) {
@@ -210,6 +366,118 @@ export default function RegisteredPrintAdmin({
           </p>
         </div>
       ) : null}
+      {mode === "printers" ? (
+        <section
+          className="rounded-lg border border-border/50 p-4 space-y-4 text-sm"
+          data-testid="panel-printer-registration"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div data-testid="auto-print-state">
+              <h3 className="font-semibold">Automatic printing</h3>
+              <p className="text-xs text-muted-foreground">
+                Orders {autoPrint?.autoPrintOrders ? "on" : "off"} · Receipts{" "}
+                {autoPrint?.autoPrintReceipts ? "on" : "off"} · Labels{" "}
+                {autoPrint?.autoPrintLabels ? "on" : "off"}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null || isAutoPrintPaused(autoPrint)}
+              onClick={() => void pauseAutoPrint()}
+            >
+              <PauseCircle size={13} className="mr-1" />
+              Pause all automatic printing
+            </Button>
+          </div>
+          {!isAutoPrintPaused(autoPrint) ? (
+            <p className="text-xs text-amber-300" role="status">
+              Pause automatic printing before registering printers so a new
+              printer cannot start printing orders or shift reports.
+            </p>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <h4 className="font-medium">Register bridge</h4>
+                <Input
+                  aria-label="Bridge name"
+                  placeholder="Name"
+                  value={bridgeForm.name}
+                  onChange={(e) => setBridgeForm({ ...bridgeForm, name: e.target.value })}
+                />
+                <Input
+                  aria-label="Bridge URL"
+                  placeholder="http://host:3100"
+                  value={bridgeForm.bridgeUrl}
+                  onChange={(e) => setBridgeForm({ ...bridgeForm, bridgeUrl: e.target.value })}
+                />
+                <Input
+                  aria-label="Bridge priority"
+                  inputMode="numeric"
+                  value={bridgeForm.priority}
+                  onChange={(e) => setBridgeForm({ ...bridgeForm, priority: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  General scope. Uses the server's central bridge credential.
+                </p>
+                <Button size="sm" disabled={busy !== null} onClick={() => void createBridge()}>
+                  Register bridge
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-medium">Register receipt printer</h4>
+                <Input
+                  aria-label="Printer name"
+                  placeholder="Name"
+                  value={printerForm.name}
+                  onChange={(e) => setPrinterForm({ ...printerForm, name: e.target.value })}
+                />
+                <select
+                  aria-label="Printer bridge"
+                  className="h-9 w-full rounded border bg-background px-2"
+                  value={printerForm.bridgeProfileId}
+                  onChange={(e) => setPrinterForm({ ...printerForm, bridgeProfileId: e.target.value })}
+                >
+                  <option value="">Select bridge…</option>
+                  {bridges
+                    .filter((bridge) => bridge.isActive && bridge.routingScope === "general")
+                    .map((bridge) => (
+                      <option key={bridge.id} value={bridge.id}>
+                        {bridge.name} (#{bridge.id})
+                      </option>
+                    ))}
+                </select>
+                <Input
+                  aria-label="Bridge queue name"
+                  placeholder="CUPS queue, e.g. Brightek_POS80"
+                  value={printerForm.bridgePrinterName}
+                  onChange={(e) => setPrinterForm({ ...printerForm, bridgePrinterName: e.target.value })}
+                />
+                <div className="flex gap-2">
+                  <select
+                    aria-label="Paper width"
+                    className="h-9 rounded border bg-background px-2"
+                    value={printerForm.paperWidth}
+                    onChange={(e) => setPrinterForm({ ...printerForm, paperWidth: e.target.value })}
+                  >
+                    <option value="80mm">80mm</option>
+                    <option value="58mm">58mm</option>
+                  </select>
+                  <Input
+                    aria-label="Copies"
+                    inputMode="numeric"
+                    value={printerForm.copies}
+                    onChange={(e) => setPrinterForm({ ...printerForm, copies: e.target.value })}
+                  />
+                </div>
+                <Button size="sm" disabled={busy !== null} onClick={() => void createPrinter()}>
+                  Register printer
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+      ) : null}
       <section className="space-y-2">
         <h3 className="text-sm font-semibold flex items-center gap-2">
           <Server size={15} />
@@ -218,16 +486,41 @@ export default function RegisteredPrintAdmin({
         {bridges.map((bridge) => (
           <div
             key={bridge.id}
-            className="rounded-lg border border-border/50 p-3 text-sm"
+            className="rounded-lg border border-border/50 p-3 text-sm flex flex-wrap items-center justify-between gap-2"
           >
-            <span className="font-medium">{bridge.name}</span>
-            <span className="ml-2 text-muted-foreground">
-              #{bridge.id} · {bridge.bridgeType} · {bridge.routingScope}
-              {bridge.locationId
-                ? ` · location ${bridge.locationId}`
-                : ""} · {bridge.supportedRoles} ·{" "}
-              {bridge.isActive ? "active" : "inactive"}
-            </span>
+            <div>
+              <span className="font-medium">{bridge.name}</span>
+              <span className="ml-2 text-muted-foreground">
+                #{bridge.id} · {bridge.bridgeType} · {bridge.routingScope}
+                {bridge.locationId
+                  ? ` · location ${bridge.locationId}`
+                  : ""} · {bridge.supportedRoles} ·{" "}
+                {bridge.isActive ? "active" : "inactive"}
+              </span>
+              {probes[bridge.id] ? (
+                <div
+                  className={`text-xs ${probes[bridge.id].ok ? "text-green-300" : "text-red-300"}`}
+                  role="status"
+                >
+                  Probe {probes[bridge.id].ok ? "ok" : "failed"}
+                  {probes[bridge.id].httpStatus ? ` · HTTP ${probes[bridge.id].httpStatus}` : ""}
+                  {probes[bridge.id].error ? ` · ${probes[bridge.id].error}` : ""}
+                </div>
+              ) : null}
+            </div>
+            {mode === "printers" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => void probeBridge(bridge)}
+              >
+                {busy === `probe-${bridge.id}` ? (
+                  <Loader2 size={13} className="animate-spin mr-1" />
+                ) : null}
+                Probe
+              </Button>
+            ) : null}
           </div>
         ))}
       </section>
@@ -255,6 +548,7 @@ export default function RegisteredPrintAdmin({
               <label className="mt-2 block text-xs text-muted-foreground">Routing function
                 <select aria-label={`Routing function for ${printer.name}`} className="ml-2 h-7 rounded border bg-background px-1" value={printer.role} onChange={event => void assignFunction(printer, event.target.value)}>
                   <option value="unassigned">Unassigned</option>
+                  <option value="receipt">Receipt (general)</option>
                   <option value="customer_receipt">Customer Receipt</option>
                   <option value="thank_you">Thank You</option>
                   <option value="report">Reports / Inventory Exports</option>

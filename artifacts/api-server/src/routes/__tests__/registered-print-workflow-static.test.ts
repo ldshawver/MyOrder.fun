@@ -11,6 +11,10 @@ const ui = readFileSync(
   resolve(root, "artifacts/platform/src/pages/admin/registered-print.tsx"),
   "utf8",
 );
+const shifts = readFileSync(
+  resolve(root, "artifacts/api-server/src/routes/shifts.ts"),
+  "utf8",
+);
 const receipts = readFileSync(
   resolve(root, "artifacts/platform/src/pages/admin/receipts.tsx"),
   "utf8",
@@ -90,5 +94,33 @@ describe("registered printer UI workflow", () => {
     expect(printerList).not.toContain("bridgeUrl:");
     expect(bridgeList).not.toContain("apiKey:");
     expect(bridgeList).not.toContain("bridgeUrl:");
+  });
+
+  it("gates registration behind paused auto-print and never sends a bridge credential", () => {
+    expect(ui).toContain("!settings.autoPrintOrders &&");
+    expect(ui).toContain("!settings.autoPrintReceipts &&");
+    expect(ui).toContain("!settings.autoPrintLabels");
+    expect(ui.indexOf("!isAutoPrintPaused(autoPrint) ? (")).toBeLessThan(
+      ui.indexOf("Register bridge"),
+    );
+    expect(ui).toContain('throw new Error("Server did not confirm automatic printing is paused")');
+    const createBridge = ui.slice(ui.indexOf("function createBridge()"), ui.indexOf("async function probeBridge"));
+    expect(createBridge).not.toContain("apiKey:");
+    expect(createBridge).not.toContain("locationId");
+    const createPrinter = ui.slice(ui.indexOf("function createPrinter()"), ui.indexOf("async function assignFunction"));
+    expect(createPrinter).toContain('role: "receipt"');
+    expect(createPrinter).not.toContain("locationId");
+  });
+
+  it("does not auto-print shift reports unless receipt auto-print is enabled", () => {
+    const shiftPrint = shifts.slice(
+      shifts.indexOf("async function createShiftReceiptPrintJob"),
+      shifts.indexOf("async function createShiftOperationalPrintJob"),
+    );
+    expect(shiftPrint).toContain("(await getSettings()).autoPrintReceipts");
+    expect(shiftPrint.indexOf("const receiptPrinter = autoPrintEnabled")).toBeLessThan(
+      shiftPrint.indexOf("resolveReceiptPrinters(profile"),
+    );
+    expect(shiftPrint).toContain('"Automatic receipt printing is disabled"');
   });
 });

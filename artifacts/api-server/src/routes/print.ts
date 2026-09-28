@@ -638,6 +638,15 @@ router.post(
 // Discovery uses `unassigned`; only an authenticated tenant admin assigns a
 // routing function. Legacy roles remain readable during migration.
 const VALID_ROLES = ["unassigned", "customer_receipt", "thank_you", "report", "kitchen", "receipt", "expo", "label", "bar"];
+const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
+const isHttpBridgeUrl = (value: unknown): boolean => {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
 const VALID_CONN_TYPES = [
   "ethernet_direct",
   "mac_bridge",
@@ -673,6 +682,14 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
     res
       .status(400)
       .json({ error: "bridgeProfileId is required for bridge printers" });
+    return;
+  }
+  if (
+    b.bridgePrinterName !== undefined &&
+    b.bridgePrinterName !== null &&
+    !BRIDGE_QUEUE_NAME.test(String(b.bridgePrinterName).trim())
+  ) {
+    res.status(400).json({ error: "bridgePrinterName is invalid" });
     return;
   }
   if (connType === "ethernet_direct" && !b.directIp) {
@@ -738,7 +755,7 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
       bridgeProfileId: bridgeProfile?.id ?? null,
       bridgeUrl: bridgeProfile?.bridgeUrl ?? "",
       bridgePrinterName: b.bridgePrinterName
-        ? String(b.bridgePrinterName)
+        ? String(b.bridgePrinterName).trim()
         : null,
       apiKey: null,
       timeoutMs: b.timeoutMs ? Number(b.timeoutMs) : 8000,
@@ -764,7 +781,7 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
         bridgeProfileId: printer.bridgeProfileId,
       },
     });
-  res.status(201).json({ printer });
+  res.status(201).json({ printer: { ...printer, apiKey: undefined } });
 });
 
 // ── PATCH /api/print/printers/:id ─────────────────────────────────────────
@@ -828,7 +845,7 @@ router.patch(
     if (b.directPort !== undefined) updates.directPort = Number(b.directPort);
     if (b.bridgePrinterName !== undefined) {
       const queue = String(b.bridgePrinterName).trim();
-      if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/.test(queue)) { res.status(400).json({ error: "bridgePrinterName is invalid" }); return; }
+      if (!BRIDGE_QUEUE_NAME.test(queue)) { res.status(400).json({ error: "bridgePrinterName is invalid" }); return; }
       updates.bridgePrinterName = queue;
     }
     if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
@@ -1687,6 +1704,7 @@ router.get("/print/settings", adminOnly, async (_req, res): Promise<void> => {
 });
 
 router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
   if (b.autoPrintOrders !== undefined)
@@ -1723,6 +1741,20 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
     .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
     .where(eq(printSettingsTable.id, settings.id))
     .returning();
+  const autoPrintFields = ["autoPrintOrders", "autoPrintReceipts", "autoPrintLabels"]
+    .filter((field) => field in updates);
+  if (autoPrintFields.length) {
+    await db.insert(auditLogsTable).values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_AUTO_PRINT_UPDATED",
+      resourceType: "print_settings",
+      resourceId: String(updated.id),
+      metadata: Object.fromEntries(autoPrintFields.map((field) => [field, updates[field]])),
+    });
+  }
   res.json({ settings: updated });
 });
 
@@ -2522,6 +2554,10 @@ router.post(
       res.status(400).json({ error: "name and bridgeUrl are required" });
       return;
     }
+    if (!isHttpBridgeUrl(b.bridgeUrl)) {
+      res.status(400).json({ error: "bridgeUrl must be an http(s) URL" });
+      return;
+    }
     const locationId = b.locationId ? Number(b.locationId) : null;
     if (locationId) {
       const [location] = await db
@@ -2577,7 +2613,7 @@ router.post(
           bridgeType: row.bridgeType,
         },
       });
-    res.status(201).json(row);
+    res.status(201).json({ ...row, apiKey: undefined });
   },
 );
 
