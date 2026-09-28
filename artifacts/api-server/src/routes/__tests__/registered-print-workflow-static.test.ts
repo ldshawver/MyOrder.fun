@@ -107,9 +107,33 @@ describe("registered printer UI workflow", () => {
     const createBridge = ui.slice(ui.indexOf("function createBridge()"), ui.indexOf("async function probeBridge"));
     expect(createBridge).not.toContain("apiKey:");
     expect(createBridge).not.toContain("locationId");
-    const createPrinter = ui.slice(ui.indexOf("function createPrinter()"), ui.indexOf("async function assignFunction"));
-    expect(createPrinter).toContain('role: "receipt"');
+    const createPrinter = ui.slice(ui.indexOf("function createPrinter()"), ui.indexOf("function setPrinterActive"));
+    expect(createPrinter).toContain("role: printerForm.role");
     expect(createPrinter).not.toContain("locationId");
+  });
+
+  it("registers receipt or label printers and adds label to routing functions", () => {
+    expect(ui).toContain('export const REGISTRATION_ROLES = ["receipt", "label"] as const;');
+    expect(ui).toContain('role: "receipt" as string');
+    expect(ui).toContain('return "Select receipt or label"');
+    const roleSelect = ui.slice(ui.indexOf('aria-label="Printer role"'), ui.indexOf('aria-label="Printer name"'));
+    expect(roleSelect).toContain('<option value="receipt">Receipt</option>');
+    expect(roleSelect).toContain('<option value="label">Label</option>');
+    const routing = ui.slice(ui.indexOf("Routing function for"), ui.indexOf("</select>", ui.indexOf("Routing function for")));
+    expect(routing).toContain('<option value="label">Label</option>');
+    expect(routing).toContain('<option value="receipt">Receipt (general)</option>');
+    expect(ui).toContain('...(printerForm.role === "receipt" ? { paperWidth: printerForm.paperWidth } : {})');
+    expect(ui).not.toMatch(/labelWidth|labelHeight|dpi|media:/i);
+  });
+
+  it("toggles printer activation through PATCH and never deletes printers", () => {
+    const toggle = ui.slice(ui.indexOf("function setPrinterActive"), ui.indexOf("async function assignFunction"));
+    expect(toggle).toContain('method: "PATCH"');
+    expect(toggle).toContain("JSON.stringify({ isActive })");
+    expect(toggle).toContain('throw new Error("Server did not confirm the printer state change")');
+    expect(ui).toContain("onClick={() => void setPrinterActive(printer, !printer.isActive)}");
+    expect(ui).toContain('{printer.isActive ? "Deactivate" : "Activate"}');
+    expect(ui).not.toContain('method: "DELETE"');
   });
 
   it("does not auto-print shift reports unless receipt auto-print is enabled", () => {

@@ -35,7 +35,9 @@ type AutoPrintSettings = {
 type ProbeResult = { ok: boolean; httpStatus?: number; error?: string };
 const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
 const emptyBridgeForm = { name: "", bridgeUrl: "", priority: "10" };
+export const REGISTRATION_ROLES = ["receipt", "label"] as const;
 const emptyPrinterForm = {
+  role: "receipt" as string,
   name: "",
   bridgeProfileId: "",
   bridgePrinterName: "",
@@ -66,6 +68,8 @@ export function bridgeFormError(form: typeof emptyBridgeForm) {
 }
 
 export function printerFormError(form: typeof emptyPrinterForm) {
+  if (!(REGISTRATION_ROLES as readonly string[]).includes(form.role))
+    return "Select receipt or label";
   if (!form.name.trim()) return "Printer name is required";
   if (!form.bridgeProfileId) return "Select an active bridge";
   if (!BRIDGE_QUEUE_NAME.test(form.bridgePrinterName.trim()))
@@ -289,17 +293,30 @@ export default function RegisteredPrintAdmin({
         method: "POST",
         body: JSON.stringify({
           name: printerForm.name.trim(),
-          role: "receipt",
+          role: printerForm.role,
           connectionType: "bridge",
           bridgeProfileId: Number(printerForm.bridgeProfileId),
           bridgePrinterName: printerForm.bridgePrinterName.trim(),
-          paperWidth: printerForm.paperWidth,
+          // Labels are sized by the rendered image and the CUPS queue.
+          ...(printerForm.role === "receipt" ? { paperWidth: printerForm.paperWidth } : {}),
           copies: Number(printerForm.copies),
           isActive: true,
         }),
       });
       setPrinterForm(emptyPrinterForm);
-      return `Printer registered (#${result.printer?.id})`;
+      return `Printer registered (#${result.printer?.id}, ${result.printer?.role})`;
+    });
+  }
+
+  function setPrinterActive(printer: RegisteredPrinter, isActive: boolean) {
+    return runAction(`active-${printer.id}`, async () => {
+      const result = await api(`/api/print/printers/${printer.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ isActive }),
+      });
+      if (result.printer?.isActive !== isActive)
+        throw new Error("Server did not confirm the printer state change");
+      return `${printer.name} (#${printer.id}) ${isActive ? "activated" : "deactivated"}`;
     });
   }
 
@@ -425,7 +442,16 @@ export default function RegisteredPrintAdmin({
                 </Button>
               </div>
               <div className="space-y-2">
-                <h4 className="font-medium">Register receipt printer</h4>
+                <h4 className="font-medium">Register printer</h4>
+                <select
+                  aria-label="Printer role"
+                  className="h-9 w-full rounded border bg-background px-2"
+                  value={printerForm.role}
+                  onChange={(e) => setPrinterForm({ ...printerForm, role: e.target.value })}
+                >
+                  <option value="receipt">Receipt</option>
+                  <option value="label">Label</option>
+                </select>
                 <Input
                   aria-label="Printer name"
                   placeholder="Name"
@@ -454,15 +480,17 @@ export default function RegisteredPrintAdmin({
                   onChange={(e) => setPrinterForm({ ...printerForm, bridgePrinterName: e.target.value })}
                 />
                 <div className="flex gap-2">
-                  <select
-                    aria-label="Paper width"
-                    className="h-9 rounded border bg-background px-2"
-                    value={printerForm.paperWidth}
-                    onChange={(e) => setPrinterForm({ ...printerForm, paperWidth: e.target.value })}
-                  >
-                    <option value="80mm">80mm</option>
-                    <option value="58mm">58mm</option>
-                  </select>
+                  {printerForm.role === "receipt" ? (
+                    <select
+                      aria-label="Paper width"
+                      className="h-9 rounded border bg-background px-2"
+                      value={printerForm.paperWidth}
+                      onChange={(e) => setPrinterForm({ ...printerForm, paperWidth: e.target.value })}
+                    >
+                      <option value="80mm">80mm</option>
+                      <option value="58mm">58mm</option>
+                    </select>
+                  ) : null}
                   <Input
                     aria-label="Copies"
                     inputMode="numeric"
@@ -550,11 +578,25 @@ export default function RegisteredPrintAdmin({
                   <option value="unassigned">Unassigned</option>
                   <option value="receipt">Receipt (general)</option>
                   <option value="customer_receipt">Customer Receipt</option>
+                  <option value="label">Label</option>
                   <option value="thank_you">Thank You</option>
                   <option value="report">Reports / Inventory Exports</option>
                 </select>
               </label>
             </div>
+            {mode === "printers" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => void setPrinterActive(printer, !printer.isActive)}
+              >
+                {busy === `active-${printer.id}` ? (
+                  <Loader2 size={13} className="animate-spin mr-1" />
+                ) : null}
+                {printer.isActive ? "Deactivate" : "Activate"}
+              </Button>
+            ) : null}
             {mode === "test" &&
             printer.role === "receipt" &&
             printer.routingScope === "general" &&

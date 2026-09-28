@@ -162,6 +162,7 @@ describe("print registration authorization", () => {
     ["get", "/api/print/printers"],
     ["post", "/api/print/printers"],
     ["post", "/api/print/printers/1/test"],
+    ["patch", "/api/print/printers/1"],
     ["patch", "/api/print/settings"],
   ] as const)("rejects non-admins on %s %s", async (method, path) => {
     asUser(1, "csr");
@@ -260,6 +261,49 @@ describe("printer registration", () => {
     const res = await api.post("/api/print/printers").send(printerBody(bridge.id, { bridgePrinterName: queue }));
     expect(res.status).toBe(400);
     expect(store.tables.printPrintersTable ?? []).toHaveLength(0);
+  });
+
+  it("registers a label printer as role=label with its explicit queue and no invented dimensions", async () => {
+    const { body: bridge } = await createBridge();
+    const res = await api.post("/api/print/printers").send({
+      name: "PL70e-BT Label Printer",
+      role: "label",
+      connectionType: "bridge",
+      bridgeProfileId: bridge.id,
+      bridgePrinterName: "Label_Themal_Printer",
+      copies: 1,
+      isActive: true,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.printer).not.toHaveProperty("apiKey");
+    expect(store.tables.printPrintersTable[0]).toMatchObject({
+      tenantId: 1, locationId: null, routingScope: "general", role: "label", connectionType: "bridge",
+      bridgeProfileId: bridge.id, bridgePrinterName: "Label_Themal_Printer", copies: 1, isActive: true,
+    });
+    expect(store.tables.auditLogsTable.at(-1)).toMatchObject({ action: "PRINT_PRINTER_CREATED", metadata: { role: "label" } });
+  });
+
+  it("deactivates and reactivates a tenant printer through PATCH without deleting it", async () => {
+    const { body: bridge } = await createBridge();
+    const { body } = await api.post("/api/print/printers").send(printerBody(bridge.id));
+    const id = body.printer.id;
+    const off = await api.patch(`/api/print/printers/${id}`).send({ isActive: false });
+    expect(off.status).toBe(200);
+    expect(off.body.printer.isActive).toBe(false);
+    expect(store.tables.printPrintersTable).toHaveLength(1);
+    expect(store.tables.auditLogsTable.at(-1)).toMatchObject({ action: "PRINT_PRINTER_UPDATED", metadata: { fields: ["isActive"] } });
+    const on = await api.patch(`/api/print/printers/${id}`).send({ isActive: true });
+    expect(on.body.printer.isActive).toBe(true);
+    expect(store.tables.printPrintersTable[0]).toMatchObject({ id, isActive: true, role: "receipt", bridgePrinterName: "Brightek_POS80" });
+  });
+
+  it("refuses to change another tenant's printer state", async () => {
+    const { body: bridge } = await createBridge();
+    const { body } = await api.post("/api/print/printers").send(printerBody(bridge.id));
+    asUser(2);
+    const res = await api.patch(`/api/print/printers/${body.printer.id}`).send({ isActive: false });
+    expect(res.status).toBe(404);
+    expect(store.tables.printPrintersTable[0].isActive).toBe(true);
   });
 
   it("lists only the caller's tenant printers", async () => {
