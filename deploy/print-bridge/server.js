@@ -29,6 +29,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
+const { parseAllowedQueues, filterPrinters, checkPrintTarget } = require("./queue-policy");
 
 try {
   require("dotenv").config();
@@ -54,6 +55,16 @@ const DISCOVERY_CREDENTIAL = process.env.PRINT_BRIDGE_CREDENTIAL ?? "";
 const DISCOVERY_BRIDGE_ID = process.env.PRINT_BRIDGE_ID ?? "";
 const DISCOVERY_ENVIRONMENT = process.env.PRINT_BRIDGE_ENVIRONMENT ?? "staging";
 const DISCOVERY_INTERVAL_MS = Math.max(60_000, Math.min(Number(process.env.PRINT_BRIDGE_DISCOVERY_INTERVAL_MS ?? 300_000), 3_600_000));
+
+// Optional queue allowlist (hardened bridges such as the Raspberry Pi).
+// Unset keeps the previous behaviour; set-but-invalid refuses to start.
+let QUEUE_POLICY;
+try {
+  QUEUE_POLICY = parseAllowedQueues(process.env.ALLOWED_QUEUES, PRINTER_NAME);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 if (!API_KEY) {
   console.error("PRINT_BRIDGE_API_KEY is required");
@@ -125,7 +136,12 @@ function clampCopies(copies) {
   return Math.min(Math.floor(n), MAX_COPIES);
 }
 
+// Every caller sees only allowlisted queues when ALLOWED_QUEUES is set.
 function listPrinters() {
+  return filterPrinters(listCupsPrinters(), QUEUE_POLICY);
+}
+
+function listCupsPrinters() {
   try {
     const out = execFileSync("lpstat", ["-p"], {
       timeout: 5000,
@@ -366,6 +382,11 @@ async function handlePrint(req, res) {
     media = "",
   } = body;
   const printerName = explicitPrinterName || printer || "";
+  const target = checkPrintTarget({ printerName, imagePath }, QUEUE_POLICY);
+  if (!target.ok) {
+    log("warn", "Print rejected by queue policy", { jobId, error: target.error });
+    return respond(res, target.status, { success: false, error: target.error });
+  }
   const decodedText = payloadBase64 ? Buffer.from(payloadBase64, "base64").toString("binary") : "";
   const printableText = text || decodedText;
   const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
@@ -564,6 +585,7 @@ server.listen(PORT, BIND_HOST, () => {
     cupsPrinter: PRINTER_NAME || "default",
     usbDevice: USB_DEVICE || "none",
     cupsRaw: CUPS_RAW,
+    allowedQueues: QUEUE_POLICY.configured ? [...QUEUE_POLICY.queues] : "any",
   });
   void discoverPrinters();
   if (discoveryConfigured()) setInterval(() => { void discoverPrinters(); }, DISCOVERY_INTERVAL_MS).unref();
