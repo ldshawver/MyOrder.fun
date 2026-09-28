@@ -220,10 +220,9 @@ describe("authenticated CSR claim client contract", () => {
 describe("receipts and deploy workflow", () => {
   it("centralizes receipt and printer sections", () => {
     const receipts = platform("pages/admin/receipts.tsx");
-    for (const label of ["Receipts & Printers", "Reprint Receipts", "Templates", "Printers", "Routing", "Test Print"]) {
+    for (const label of ["Receipts & Printers", "Printers", "Bridges", "Routing", "Receipt Layout", "Automatic Printing", "Test Printing", "Reprint Receipts"]) {
       expect(receipts).toContain(label);
     }
-    expect(receipts).toContain("integration errors are shown clearly");
     expect(receipts).toContain("aria-selected={activeTab === key}");
     expect(receipts).toContain("<RegisteredPrintAdmin mode={activeTab} />");
     const checkout = platform("pages/new-order.tsx");

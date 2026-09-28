@@ -5,15 +5,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import RegisteredPrintAdmin from "./registered-print";
 import AutoPrintControls from "./auto-print-controls";
+import ReceiptDesigner from "./receipt-designer";
+import PrintRouting from "./print-routing";
+import DocumentTestPrint from "./document-test-print";
 
-type ReceiptTab = "reprint" | "templates" | "printers" | "routing" | "test";
+type ReceiptTab = "printers" | "bridges" | "routing" | "layout" | "automatic" | "test" | "reprint";
 const RECEIPT_TABS: Array<{ key: ReceiptTab; label: string }> = [
-  { key: "reprint", label: "Reprint Receipts" },
-  { key: "templates", label: "Templates" },
   { key: "printers", label: "Printers" },
+  { key: "bridges", label: "Bridges" },
   { key: "routing", label: "Routing" },
-  { key: "test", label: "Test Print" },
+  { key: "layout", label: "Receipt Layout" },
+  { key: "automatic", label: "Automatic Printing" },
+  { key: "test", label: "Test Printing" },
+  { key: "reprint", label: "Reprint Receipts" },
 ];
+/** Old links keep working. */
+const TAB_ALIASES: Record<string, ReceiptTab> = { templates: "layout" };
 
 type ReceiptSettings = {
   brandName: string;
@@ -47,12 +54,11 @@ export default function AdminReceipts() {
   const [preview, setPreview] = useState<string>("");
   const [previewing, setPreviewing] = useState(false);
   const [activeTab, setActiveTab] = useState<ReceiptTab>(() => {
-    const requested = new URLSearchParams(window.location.search).get(
-      "tab",
-    ) as ReceiptTab | null;
+    const raw = new URLSearchParams(window.location.search).get("tab") ?? "";
+    const requested = (TAB_ALIASES[raw] ?? raw) as ReceiptTab;
     return RECEIPT_TABS.some((tab) => tab.key === requested)
-      ? requested!
-      : "reprint";
+      ? requested
+      : "printers";
   });
 
   function selectTab(tab: ReceiptTab) {
@@ -191,10 +197,8 @@ export default function AdminReceipts() {
         <div>
           <h1 className="text-xl font-bold">Receipts & Printers</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Centralized receipt templates, reprint receipt preview, printer
-            management, routing, and test-print configuration. Printer
-            integration errors are shown clearly when hardware is not
-            configured.
+            What prints, where it prints, which bridge serves it, and whether
+            automatic printing is on.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -208,7 +212,7 @@ export default function AdminReceipts() {
           >
             <RefreshCw size={12} /> Reload
           </Button>
-          {(activeTab === "templates" || activeTab === "routing") && (
+          {activeTab === "layout" && (
             <Button
               onClick={save}
               disabled={saving}
@@ -237,7 +241,7 @@ export default function AdminReceipts() {
       )}
 
       <div
-        className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs"
+        className="grid grid-cols-2 md:grid-cols-7 gap-2 text-xs"
         data-testid="receipts-printers-tabs"
         role="tablist"
         aria-label="Receipt and printer administration"
@@ -262,13 +266,20 @@ export default function AdminReceipts() {
         ))}
       </div>
 
-      {activeTab === "templates" && (
+      {activeTab === "layout" && (
         <div
-          id="panel-receipts-templates"
+          id="panel-receipts-layout"
           role="tabpanel"
           className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
-          data-testid="panel-receipts-templates"
+          data-testid="panel-receipts-layout"
         >
+          <ReceiptDesigner />
+          <div className="border-t border-border/40 pt-4">
+            <h2 className="text-sm font-semibold">Fallback receipt</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Used only until a receipt layout is saved and in use. Saved with the Save button above.
+            </p>
+          </div>
           <div>
             <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
               Brand name (header)
@@ -381,14 +392,29 @@ export default function AdminReceipts() {
           className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
           data-testid="panel-receipts-routing"
         >
-          <div>
-            <h2 className="text-sm font-semibold">Automatic print routing</h2>
-            <p className="text-xs text-muted-foreground mt-1">
-              General printers use tenant-owned profiles. Location printers
-              require an authoritative active-shift assignment.
-            </p>
-          </div>
+          <PrintRouting />
+        </div>
+      )}
+
+      {activeTab === "automatic" && (
+        <div
+          id="panel-receipts-automatic"
+          role="tabpanel"
+          className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
+          data-testid="panel-receipts-automatic"
+        >
           <AutoPrintControls />
+        </div>
+      )}
+
+      {activeTab === "test" && (
+        <div
+          id="panel-receipts-test"
+          role="tabpanel"
+          className="rounded-xl border border-border/40 bg-card/30 p-5 space-y-4"
+          data-testid="panel-receipts-test"
+        >
+          <DocumentTestPrint />
         </div>
       )}
 
@@ -432,7 +458,7 @@ export default function AdminReceipts() {
         </div>
       )}
 
-      {(activeTab === "printers" || activeTab === "test") && (
+      {(activeTab === "printers" || activeTab === "bridges") && (
         <div
           id={`panel-receipts-${activeTab}`}
           role="tabpanel"

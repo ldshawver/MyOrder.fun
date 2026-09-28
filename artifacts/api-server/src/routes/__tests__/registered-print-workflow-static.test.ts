@@ -23,18 +23,27 @@ const receipts = readFileSync(
   resolve(root, "artifacts/platform/src/pages/admin/receipts.tsx"),
   "utf8",
 );
+const testUi = readFileSync(
+  resolve(root, "artifacts/platform/src/pages/admin/document-test-print.tsx"),
+  "utf8",
+);
+const routingUi = readFileSync(
+  resolve(root, "artifacts/platform/src/pages/admin/print-routing.tsx"),
+  "utf8",
+);
 
 describe("registered printer UI workflow", () => {
   it("uses the authenticated registered-printer API instead of legacy queue settings", () => {
     expect(ui).toContain("/api/print/printers");
     expect(ui).toContain("/api/print/bridge-profiles");
-    expect(ui).toContain("/api/print/printers/${printer.id}/test");
+    expect(testUi).toContain('"/api/print/documents/test"');
+    expect(routingUi).toContain('"/api/print/routes"');
     expect(ui).not.toContain("receiptPrinterName");
     expect(ui).not.toContain("local_cups");
   });
 
   it("wires every visible tab to a distinct accessible view state", () => {
-    for (const tab of ["reprint", "templates", "printers", "routing", "test"]) {
+    for (const tab of ["printers", "bridges", "routing", "layout", "automatic", "test", "reprint"]) {
       expect(receipts).toContain(`key: "${tab}"`);
     }
     expect(receipts).toContain("id={`panel-receipts-${activeTab}`}");
@@ -56,15 +65,13 @@ describe("registered printer UI workflow", () => {
     );
   });
 
-  it("gives the controlled test visible pending, success, and error states", () => {
-    expect(ui).toContain("disabled={testing !== null}");
-    expect(ui).toContain('kind: "success"');
-    expect(ui).toContain('kind: "error"');
-    expect(ui).toContain(
-      'role={message.kind === "error" ? "alert" : "status"}',
-    );
-    expect(ui).toContain("Test print accepted:");
-    expect(ui).toContain("Test print failed");
+  it("gives test printing an explicit printer, a confirmation, and visible results", () => {
+    expect(testUi).toContain("disabled={busy || !printer || !confirmed}");
+    expect(testUi).toContain("JSON.stringify({ documentType, printerId: printer.id, testId })");
+    expect(testUi).not.toMatch(/bridgePrinterName|queue:/);
+    expect(testUi).toContain('kind: "success"');
+    expect(testUi).toContain('kind: "error"');
+    expect(testUi).toContain('role={message.kind === "error" ? "alert" : "status"}');
   });
 
   it("keeps controlled test content and routing server-authoritative", () => {
@@ -107,7 +114,7 @@ describe("registered printer UI workflow", () => {
     expect(controlsUi).toContain("return { expectedVersion: controls.version, [flag]: value };");
     expect(ui).toContain("<AutoPrintControls onChange={setAutoPrint} />");
     expect(ui.indexOf("!isAutoPrintPaused(autoPrint) ? (")).toBeLessThan(
-      ui.indexOf("Register bridge"),
+      ui.indexOf("Register printer</h4>"),
     );
     expect(ui).not.toContain('"/api/print/settings"');
     const createBridge = ui.slice(ui.indexOf("function createBridge()"), ui.indexOf("async function probeBridge"));
@@ -118,26 +125,28 @@ describe("registered printer UI workflow", () => {
     expect(keyInput).toContain('autoComplete="new-password"');
     expect(ui).toContain('return "Bridge key must be empty or 32-256 URL-safe characters"');
     const createPrinter = ui.slice(ui.indexOf("function createPrinter()"), ui.indexOf("function setPrinterActive"));
-    expect(createPrinter).toContain("role: printerForm.role");
-    expect(createPrinter).not.toContain("locationId");
+    expect(createPrinter).toContain("JSON.stringify(printerRequestBody(printerForm))");
   });
 
-  it("registers receipt or label printers and adds label to routing functions", () => {
-    expect(ui).toContain('export const REGISTRATION_ROLES = ["receipt", "label"] as const;');
-    expect(ui).toContain('role: "receipt" as string');
-    expect(ui).toContain('return "Select receipt or label"');
-    const roleSelect = ui.slice(ui.indexOf('aria-label="Printer role"'), ui.indexOf('aria-label="Printer name"'));
+  it("registers thermal (50/80mm) or full-page printers and adds label to routing functions", () => {
+    expect(ui).toContain('export const REGISTRATION_ROLES = ["receipt", "label", "report"] as const;');
+    expect(ui).toContain('printerClass: "thermal" as "thermal" | "full_page"');
+    const roleSelect = ui.slice(ui.indexOf('aria-label="Printer role"'), ui.indexOf('aria-label="Printer location"'));
     expect(roleSelect).toContain('<option value="receipt">Receipt</option>');
     expect(roleSelect).toContain('<option value="label">Label</option>');
+    const widthSelect = ui.slice(ui.indexOf('aria-label="Paper width"'), ui.indexOf("</select>", ui.indexOf('aria-label="Paper width"')));
+    expect(widthSelect.match(/<option value=/g)).toHaveLength(2);
+    expect(widthSelect).toContain('value="50mm"');
+    expect(widthSelect).toContain('value="80mm"');
     const routing = ui.slice(ui.indexOf("Routing function for"), ui.indexOf("</select>", ui.indexOf("Routing function for")));
     expect(routing).toContain('<option value="label">Label</option>');
     expect(routing).toContain('<option value="receipt">Receipt (general)</option>');
-    expect(ui).toContain('...(printerForm.role === "receipt" ? { paperWidth: printerForm.paperWidth } : {})');
+    expect(ui).toContain('...(form.printerClass === "thermal" ? { paperWidth: form.paperWidth } : {})');
     expect(ui).not.toMatch(/labelWidth|labelHeight|dpi|media:/i);
   });
 
   it("toggles printer activation through PATCH and never deletes printers", () => {
-    const toggle = ui.slice(ui.indexOf("function setPrinterActive"), ui.indexOf("async function assignFunction"));
+    const toggle = ui.slice(ui.indexOf("function setPrinterActive"), ui.indexOf("function assignFunction"));
     expect(toggle).toContain('method: "PATCH"');
     expect(toggle).toContain("JSON.stringify({ isActive })");
     expect(toggle).toContain('throw new Error("Server did not confirm the printer state change")');
@@ -146,15 +155,15 @@ describe("registered printer UI workflow", () => {
     expect(ui).not.toContain('method: "DELETE"');
   });
 
-  it("does not auto-print shift reports unless receipt auto-print is enabled", () => {
+  it("does not auto-print shift documents unless receipt auto-print is enabled", () => {
     const shiftPrint = shifts.slice(
-      shifts.indexOf("async function createShiftReceiptPrintJob"),
-      shifts.indexOf("async function createShiftOperationalPrintJob"),
+      shifts.indexOf("async function printShiftDocuments"),
+      shifts.indexOf("// Always-on structured log for every shift auth decision."),
     );
-    expect(shiftPrint).toContain("(await getPrintControls(args.tenantId)).autoPrintReceipts");
-    expect(shiftPrint.indexOf("const receiptPrinter = autoPrintEnabled")).toBeLessThan(
-      shiftPrint.indexOf("resolveReceiptPrinters(profile"),
-    );
-    expect(shiftPrint).toContain('"Automatic receipt printing is disabled"');
+    const gate = shiftPrint.indexOf("if (!(await getPrintControls(tenantId)).autoPrintReceipts) return;");
+    expect(gate).toBeGreaterThan(0);
+    expect(gate).toBeLessThan(shiftPrint.indexOf("loadShiftDocumentContext("));
+    expect(gate).toBeLessThan(shiftPrint.indexOf("printClockInDocuments("));
+    expect(shifts).not.toMatch(/child_process|escposPrinter|printReceiptEscPos/);
   });
 });
