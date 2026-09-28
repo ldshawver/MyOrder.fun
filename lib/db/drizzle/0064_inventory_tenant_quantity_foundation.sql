@@ -8,7 +8,10 @@ DO $$ BEGIN
     END IF;
   END IF;
   IF to_regclass('inventory_reservations') IS NOT NULL THEN
+    ALTER TABLE inventory_reservations ADD COLUMN IF NOT EXISTS idempotency_key text;
     ALTER TABLE inventory_reservations ALTER COLUMN quantity TYPE numeric(20, 6) USING quantity::numeric(20, 6);
+    UPDATE inventory_reservations SET idempotency_key = 'legacy:' || id::text
+      WHERE idempotency_key IS NULL OR btrim(idempotency_key) = '';
   END IF;
 END $$;
 ALTER TABLE inventory_balances ALTER COLUMN quantity_on_hand TYPE numeric(20, 6) USING quantity_on_hand::numeric(20, 6);
