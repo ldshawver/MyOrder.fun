@@ -231,10 +231,13 @@ export function renderReceipt(
   template: ReceiptTemplateRecord | null,
   presentation: LegacyReceiptPresentation,
   output: "escpos" | "plain",
+  /** Columns of the printer this will print on; overrides the template/settings width. */
+  columns?: number,
 ): RenderedReceipt {
+  if (columns) presentation = { ...presentation, paperWidth: columns <= 32 ? "58mm" : "80mm" };
   if (template) {
     try {
-      const lines = renderReceiptFromTemplate(template.layout, data, charWidth(template.paperWidth));
+      const lines = renderReceiptFromTemplate(template.layout, data, columns ?? charWidth(template.paperWidth));
       return {
         text: output === "escpos" ? encodeStoredReceiptText(encodeReceiptEscPos(lines)) : encodeReceiptPlain(lines),
         source: "template",
@@ -265,14 +268,14 @@ function renderFallback(
 }
 
 /** Receipt text for a stored print job of one of the tenant's orders. */
-export async function renderOrderReceipt(tenantId: number, orderId: number): Promise<{ receipt: RenderedReceipt; data: ReceiptData } | null> {
+export async function renderOrderReceipt(tenantId: number, orderId: number, columns?: number): Promise<{ receipt: RenderedReceipt; data: ReceiptData } | null> {
   const data = await loadReceiptData(tenantId, orderId);
   if (!data) return null;
   const [template, presentation] = await Promise.all([
     resolveTenantReceiptTemplate(tenantId),
     loadLegacyReceiptPresentation(tenantId),
   ]);
-  return { receipt: renderReceipt(data, template, presentation, "escpos"), data };
+  return { receipt: renderReceipt(data, template, presentation, "escpos", columns), data };
 }
 
 /** Preview text built from fixed synthetic data; never a real order, never printed. */

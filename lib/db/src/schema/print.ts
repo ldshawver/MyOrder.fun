@@ -88,6 +88,8 @@ export const printPrintersTable = pgTable("print_printers", {
   copies: integer("copies").notNull().default(1),
   paperWidth: text("paper_width").notNull().default("80mm"),
   supportsCut: boolean("supports_cut").notNull().default(true),
+  // thermal (50mm/80mm roll) or full_page (US Letter). See migration 0063.
+  printerClass: text("printer_class").notNull().default("thermal"),
   supportsCashDrawer: boolean("supports_cash_drawer").notNull().default(false),
   expectedDeviceUriHash: text("expected_device_uri_hash"),
   receiptCapable: boolean("receipt_capable").notNull().default(true),
@@ -279,7 +281,8 @@ export const printJobAttemptsTable = pgTable("print_job_attempts", {
 export const printRoutesTable = pgTable("print_routes", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
-  locationId: integer("location_id").notNull(),
+  // NULL = tenant-wide default route for this document type.
+  locationId: integer("location_id"),
   jobType: text("job_type").notNull(),
   bridgeProfileId: integer("bridge_profile_id").notNull(),
   printerId: integer("printer_id").notNull(),
@@ -288,6 +291,7 @@ export const printRoutesTable = pgTable("print_routes", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, table => ({
   routeUnique: unique("print_routes_scope_job_uq").on(table.tenantId, table.locationId, table.jobType),
+  defaultRouteUnique: uniqueIndex("print_routes_tenant_default_job_uq").on(table.tenantId, table.jobType).where(sql`${table.locationId} IS NULL`),
   locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
   bridgeFk: foreignKey({ columns: [table.tenantId, table.bridgeProfileId], foreignColumns: [printBridgeProfilesTable.tenantId, printBridgeProfilesTable.id] }),
   printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),

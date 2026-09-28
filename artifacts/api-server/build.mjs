@@ -28,6 +28,7 @@ async function buildAll() {
       "maintenance-repair-shift13-closeout-nan": path.resolve(artifactDir, "src/maintenance/repairShift13CloseoutNan.ts"),
       "maintenance-repair-tenant-tax-configuration": path.resolve(artifactDir, "src/maintenance/repairTenantTaxConfiguration.ts"),
       "maintenance-repair-order22-inventory-integrity": path.resolve(artifactDir, "src/maintenance/repairOrder22InventoryIntegrity.ts"),
+      "maintenance-set-bridge-key": path.resolve(artifactDir, "src/maintenance/setBridgeKey.ts"),
     },
     platform: "node",
     bundle: true,

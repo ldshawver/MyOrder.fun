@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 
 type Row = Record<string, unknown>;
 type Col = { table: string; col: string };
-type Pred = { op: "eq"; c: Col; v: unknown } | { op: "and" | "or"; p: Pred[] } | { op: "true" };
+type Pred = { op: "eq"; c: Col; v: unknown } | { op: "isnull"; c: Col } | { op: "and" | "or"; p: Pred[] } | { op: "true" };
 
 const store = vi.hoisted(() => ({
   tables: {} as Record<string, Record<string, unknown>[]>,
@@ -23,6 +23,8 @@ const store = vi.hoisted(() => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: (c: unknown, v: unknown) => ({ op: "eq", c, v }),
+  isNull: (c: unknown) => ({ op: "isnull", c }),
+  asc: (c: unknown) => c,
   and: (...p: unknown[]) => ({ op: "and", p: p.filter(Boolean) }),
   or: (...p: unknown[]) => ({ op: "or", p: p.filter(Boolean) }),
   inArray: () => ({ op: "true" }),
@@ -39,6 +41,7 @@ vi.mock("@workspace/db", () => {
   const matches = (row: Row, p?: Pred): boolean => {
     if (!p) return true;
     if (p.op === "eq") return row[p.c.col] === p.v;
+    if (p.op === "isnull") return row[p.c.col] === null || row[p.c.col] === undefined;
     if (p.op === "and") return p.p.every((x) => matches(row, x));
     if (p.op === "or") return p.p.some((x) => matches(row, x));
     return true;
@@ -117,7 +120,10 @@ vi.mock("../../lib/printService", () => ({
     includeOperatorName: true, showDiscreetNotice: false, autoPrintOrders: false, autoPrintReceipts: false, autoPrintLabels: false,
   }),
 }));
-const RECEIPT_PRINTER = { id: 1, tenantId: 1, name: "Brightek POS80", role: "receipt", routingScope: "general", locationId: null, isActive: true };
+const RECEIPT_PRINTER = {
+  id: 1, tenantId: 1, name: "Brightek POS80", role: "receipt", routingScope: "general", locationId: null, isActive: true,
+  printerClass: "thermal", paperWidth: "80mm", bridgeProfileId: 7,
+};
 vi.mock("../../lib/printRouter", () => ({
   selectActiveOperator: vi.fn(async () => null),
   probePrinter: vi.fn(),
@@ -137,7 +143,6 @@ vi.mock("../../config/tenantConfig", () => ({
 }));
 vi.mock("../../config/brandingConfig", () => ({ getBranding: async () => ({ supplier: { displayName: "Lucifer Cruz" } }) }));
 vi.mock("../../lib/logger", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
-vi.mock("../../lib/escposPrinter", () => ({ printReceiptEscPos: vi.fn() }));
 vi.mock("sharp", () => ({ default: vi.fn() }));
 
 const { default: printRouter } = await import("../print");
@@ -188,6 +193,7 @@ function seedOrder(tenantId: number) {
 
 beforeEach(() => {
   store.tables = {
+    printBridgeProfilesTable: [{ id: 7, tenantId: 1, isActive: true, name: "Mac" }],
     usersTable: [
       { id: 900, firstName: "Casey", lastName: "Jones" },
       { id: 901, firstName: "Luke", lastName: "S" },
@@ -320,7 +326,8 @@ describe("reprint uses the shared receipt data builder", () => {
     const res = await api.post(`/api/print/orders/${order.id}/receipt`).send({});
     expect(res.status).toBe(200);
     const [job] = store.tables.printJobsTable!;
-    const expected = await renderOrderReceipt(1, order.id);
+    // Rendered for the chosen printer's width (80mm = 48 columns).
+    const expected = await renderOrderReceipt(1, order.id, 48);
     expect(job!.renderedText).toBe(expected!.receipt.text);
     expect(job).toMatchObject({ tenantId: 1, orderId: order.id, printerId: 1, templateId: expected!.receipt.templateId });
     expect(JSON.stringify(job!.payloadJson)).not.toMatch(/Casey|Jones|tok_/);
@@ -355,15 +362,17 @@ describe("automatic and reprint receipts share one path (source contract)", () =
 
   it("renders automatic receipts through renderOrderReceipt", () => {
     const helper = printService.slice(printService.indexOf("async function renderAutomaticReceipt"), printService.indexOf("export async function enqueueOrderPrintJobs"));
-    expect(helper).toContain("renderOrderReceipt(tenantId, orderId)");
-    const receiptBranch = printService.slice(printService.indexOf("// ── Receipt ──"), printService.indexOf("// ── Kitchen ticket"));
-    expect(receiptBranch).toContain("await renderAutomaticReceipt(tenantId, order.id, printOrder)");
+    expect(helper).toContain("renderOrderReceipt(tenantId, orderId, columns)");
+    const receiptBranch = printService.slice(printService.indexOf("// ── Receipt, expo and work tickets"), printService.indexOf("// ── Label ──"));
+    expect(receiptBranch).toContain("renderAutomaticReceipt(tenantId, order.id, printOrder, columns)");
+    expect(receiptBranch).toContain('documentType: "ORDER_RECEIPT"');
     expect(receiptBranch).not.toContain("renderCustomerReceipt(printOrder)");
   });
 
   it("renders reprints through renderOrderReceipt and previews through renderReceiptPreview", () => {
     const reprint = printRoutes.slice(printRoutes.indexOf('router.post("/print/orders/:id/receipt"'), printRoutes.indexOf('router.post("/print/orders/:id/label"'));
-    expect(reprint).toContain("renderOrderReceipt(tenantId, orderId)");
+    expect(reprint).toContain("renderOrderReceipt(tenantId, orderId, columns)");
+    expect(reprint).toContain('documentType: "ORDER_RECEIPT"');
     expect(reprint).not.toContain("renderCustomerReceipt");
     const preview = printRoutes.slice(printRoutes.indexOf('"/print/preview/receipt",'), printRoutes.indexOf('"/print/preview/inventory-start",'));
     expect(preview).toContain("renderReceiptPreview(");

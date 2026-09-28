@@ -119,7 +119,6 @@ vi.mock("../../lib/printRouter", () => ({
   resolveLabelPrinter: vi.fn(),
   resolveBridgeApiKey: (key: string | null) => key || "central-key",
 }));
-vi.mock("../../lib/escposPrinter", () => ({ printReceiptEscPos: vi.fn() }));
 vi.mock("../../lib/print/index", () => ({
   renderBlocks: vi.fn(), renderBodyOnly: vi.fn(), buildCustomerReceiptBlocks: vi.fn(),
   buildInventoryStartBlocks: vi.fn(), buildInventoryEndBlocks: vi.fn(), buildLabelBlocks: vi.fn(),

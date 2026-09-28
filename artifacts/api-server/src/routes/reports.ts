@@ -222,7 +222,7 @@ router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<
   res.send(`${lines.join("\n")}\n`);
 });
 
-async function salesTaxReport(tenantId: number, query: Record<string, unknown>) {
+export async function salesTaxReport(tenantId: number, query: Record<string, unknown>) {
   const from = typeof query.dateFrom === "string" ? new Date(`${query.dateFrom}T00:00:00.000Z`) : new Date("1970-01-01T00:00:00.000Z");
   const to = typeof query.dateTo === "string" ? new Date(`${query.dateTo}T23:59:59.999Z`) : new Date();
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) throw Object.assign(new Error("Invalid reporting date range"), { status: 400 });

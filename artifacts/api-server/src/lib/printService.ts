@@ -23,7 +23,7 @@ import {
   shiftPrintAssignmentsTable,
 } from "@workspace/db";
 import { eq, and, inArray, sql } from "drizzle-orm";
-import { decodeStoredReceiptText, renderKitchenTicket, renderCustomerReceipt } from "./receiptRenderer";
+import { decodeStoredReceiptText, renderCustomerReceipt } from "./receiptRenderer";
 import { charWidth, getLogo } from "./print/index";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
 import {
@@ -197,7 +197,9 @@ async function dispatchBridge(
     // Sanitize the payload for PNG jobs — don't log full base64
     const payloadForLog = job.renderFormat === "png"
       ? { ...((job.payloadJson as object) ?? {}), imageData: "[base64 omitted]" }
-      : job.payloadJson;
+      : job.renderFormat === "pdf"
+        ? { ...((job.payloadJson as object) ?? {}), pdfBase64: "[base64 omitted]" }
+        : job.payloadJson;
 
     pLog.info({
       event: "bridge_dispatch",
@@ -218,14 +220,28 @@ async function dispatchBridge(
       ? ((job.payloadJson as Record<string, unknown>)?.imageData as string | undefined)
       : undefined;
 
+    // Full-page documents are server-rendered PDFs; the bridge prints the
+    // bytes to the registered queue (never a raw/ESC-POS job).
+    const documentBase64 = job.renderFormat === "pdf"
+      ? ((job.payloadJson as Record<string, unknown>)?.pdfBase64 as string | undefined)
+      : undefined;
+    if (job.renderFormat === "pdf" && !documentBase64) {
+      return { success: false, error: "PDF print job has no document" };
+    }
+
     const bridgeBody: Record<string, unknown> = {
       printerName,
       jobId: job.id,
       format: job.renderFormat,
-      text: fullText,
+      text: documentBase64 ? "" : fullText,
       copies: 1,
       role: job.jobType,
     };
+    if (documentBase64) {
+      bridgeBody.documentBase64 = documentBase64;
+      bridgeBody.raw = false;
+      bridgeBody.copies = Math.max(1, Math.min(printer.copies ?? 1, 5));
+    }
     if (imageBase64) {
       bridgeBody.imageBase64 = imageBase64;
       const requestedMedia = (job.payloadJson as Record<string, unknown>)?.media;
@@ -448,10 +464,11 @@ async function renderAutomaticReceipt(
   tenantId: number,
   orderId: number,
   legacyOrder: Parameters<typeof renderCustomerReceipt>[0],
+  columns: number,
 ): Promise<{ text: string; templateId: number | null; templateVersion: number | null }> {
   try {
     const { renderOrderReceipt } = await import("./print/receiptPipeline");
-    const rendered = await renderOrderReceipt(tenantId, orderId);
+    const rendered = await renderOrderReceipt(tenantId, orderId, columns);
     if (rendered) {
       const { text, templateId, templateVersion } = rendered.receipt;
       return { text, templateId, templateVersion };
@@ -461,7 +478,8 @@ async function renderAutomaticReceipt(
     pLog.warn({ event: "receipt_pipeline_error", orderId, err: err instanceof Error ? err.message : String(err) },
       "receipt pipeline failed; using legacy receipt");
   }
-  return { text: renderCustomerReceipt(legacyOrder), templateId: null, templateVersion: null };
+  const paperWidth = columns <= 32 ? "58mm" : "80mm";
+  return { text: renderCustomerReceipt({ ...legacyOrder, paperWidth }), templateId: null, templateVersion: null };
 }
 
 export async function enqueueOrderPrintJobs(order: {
@@ -559,118 +577,56 @@ export async function enqueueOrderPrintJobs(order: {
     shippingAddress: order.shippingAddress ?? null,
   };
 
-  // ── Receipt ───────────────────────────────────────────────────────────────
+  // ── Receipt, expo and work tickets ────────────────────────────────────────
+  // Each is routed by document type to exactly one registered printer. The
+  // legacy resolvers keep today's destinations when no route is configured.
   const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
-  const { primary: receiptPrinter } = await resolveReceiptPrinters(profile, routeContext);
-  const receiptRender = controls.autoPrintReceipts || controls.autoPrintOrders
-    ? await renderAutomaticReceipt(tenantId, order.id, printOrder)
-    : null;
+  const { queueDocumentPrint } = await import("./print/documentJobs");
+  const { shiftLocationId } = await import("./print/shiftDocuments");
+  const documentBase = {
+    tenantId,
+    locationId: routeContext.locationId ?? (routeContext.shiftId ? await shiftLocationId(tenantId, routeContext.shiftId) : null),
+    shiftId: routeContext.shiftId,
+    orderId: order.id,
+    operatorUserId: operator?.userId ?? null,
+    metadata: { orderId: order.id },
+  };
 
-  if (receiptRender && !receiptPrinter) {
-    const renderedText = receiptRender.text;
-    const key = `order:${order.id}:receipt:no-printer`;
-    const existing = await db.select().from(printJobsTable)
-      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
-    if (!existing.length) {
-      await db.insert(printJobsTable).values({
-        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
-        orderId: order.id,
-        printerId: null,
-        jobType: "customer_receipt",
-        status: "failed",
-        idempotencyKey: key,
-        renderFormat: "text",
-        payloadJson: printOrder,
-        renderedText,
-        templateId: receiptRender.templateId,
-        templateVersion: receiptRender.templateVersion,
-        operatorUserId: operator?.userId ?? null,
-        errorMessage: "No active receipt printer assigned or configured",
+  if (controls.autoPrintReceipts || controls.autoPrintOrders) {
+    const result = await queueDocumentPrint({
+      ...documentBase,
+      documentType: "ORDER_RECEIPT",
+      jobType: "customer_receipt",
+      idempotencyKey: `order_receipt:${tenantId}:${order.id}`,
+      render: { kind: "thermal-text", text: (_printer, columns) => renderAutomaticReceipt(tenantId, order.id, printOrder, columns) },
+      legacyFallback: async () => (await resolveReceiptPrinters(profile, routeContext)).primary,
+    });
+    if (result.status === "queued") dispatchReceiptJob(result.job, result.printer).catch(() => {});
+    else if (result.status === "no-route") pLog.warn({ event: "receipt_no_route", orderId: order.id, reason: result.reason }, "receipt not printed: no route");
+  }
+
+  if (controls.autoPrintOrders) {
+    const { loadReceiptData } = await import("./print/receiptPipeline");
+    const { buildExpoTicket, buildWorkTicket } = await import("./print/documents");
+    const ticketData = await loadReceiptData(tenantId, order.id);
+    const expoFallback = routeContext.locationId && routeContext.shiftId
+      ? () => resolveExpoPrinter({ tenantId, locationId: routeContext.locationId!, shiftId: routeContext.shiftId! })
+      : undefined;
+    const tickets = [
+      { documentType: "EXPO" as const, jobType: "expo_ticket", build: buildExpoTicket, legacyFallback: expoFallback },
+      { documentType: "WORK" as const, jobType: "order_ticket", build: buildWorkTicket, legacyFallback: undefined },
+    ];
+    for (const ticket of ticketData ? tickets : []) {
+      const result = await queueDocumentPrint({
+        ...documentBase,
+        documentType: ticket.documentType,
+        jobType: ticket.jobType,
+        idempotencyKey: `${ticket.jobType}:${tenantId}:${order.id}`,
+        render: { kind: "thermal", lines: () => ticket.build(ticketData!) },
+        legacyFallback: ticket.legacyFallback,
+        recordNoRoute: false,
       });
-    }
-    pLog.warn({ event: "receipt_no_printer", orderId: order.id }, "receipt skipped: no printer available");
-  }
-
-  if (receiptRender && receiptPrinter) {
-    const renderedText = receiptRender.text;
-    const key = makeIdempotencyKey(order.id, receiptPrinter.id, "customer_receipt");
-    const existing = await db.select().from(printJobsTable)
-      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
-
-    let job = existing[0];
-    if (!job) {
-      [job] = await db.insert(printJobsTable).values({
-        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
-        orderId: order.id,
-        printerId: receiptPrinter.id,
-        jobType: "customer_receipt",
-        status: "queued",
-        idempotencyKey: key,
-        renderFormat: "text",
-        payloadJson: printOrder,
-        renderedText,
-        templateId: receiptRender.templateId,
-        templateVersion: receiptRender.templateVersion,
-        operatorUserId: operator?.userId ?? null,
-      }).returning();
-    }
-
-    dispatchReceiptJob(job, receiptPrinter).catch(() => {});
-  }
-
-  // ── Kitchen ticket ────────────────────────────────────────────────────────
-  // Falls back to any active kitchen/expo printer if no profile
-  const kitchenPrinters: PrintPrinter[] = [];
-
-  for (const kp of kitchenPrinters) {
-    const renderedText = renderKitchenTicket(printOrder);
-    const key = makeIdempotencyKey(order.id, kp.id, "expo_ticket");
-    const existing = await db.select().from(printJobsTable)
-      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
-
-    if (!existing.length) {
-      const [job] = await db.insert(printJobsTable).values({
-        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
-        orderId: order.id,
-        printerId: kp.id,
-        jobType: "expo_ticket",
-        status: "queued",
-        idempotencyKey: key,
-        renderFormat: "text",
-        payloadJson: printOrder,
-        renderedText,
-        operatorUserId: operator?.userId ?? null,
-      }).returning();
-      dispatchJob(job, kp).catch(() => {});
-    }
-  }
-
-  // ── Expo ticket ───────────────────────────────────────────────────────────
-  // Expo printers get the same kitchen ticket as a bump-screen / pass station.
-  const assignedExpo = controls.autoPrintOrders && routeContext.locationId && routeContext.shiftId
-    ? await resolveExpoPrinter({ tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId }) : null;
-  const expoPrinters = assignedExpo ? [assignedExpo] : [];
-
-  for (const ep of expoPrinters) {
-    const renderedText = renderKitchenTicket(printOrder);
-    const key = makeIdempotencyKey(order.id, ep.id, "expo_ticket");
-    const existing = await db.select().from(printJobsTable)
-      .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
-
-    if (!existing.length) {
-      const [job] = await db.insert(printJobsTable).values({
-        tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId,
-        orderId: order.id,
-        printerId: ep.id,
-        jobType: "expo_ticket",
-        status: "queued",
-        idempotencyKey: key,
-        renderFormat: "text",
-        payloadJson: printOrder,
-        renderedText,
-        operatorUserId: operator?.userId ?? null,
-      }).returning();
-      dispatchJob(job, ep).catch(() => {});
+      if (result.status === "queued") dispatchJob(result.job, result.printer).catch(() => {});
     }
   }
 

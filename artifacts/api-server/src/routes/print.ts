@@ -3,15 +3,12 @@ import { eq, desc, inArray, and, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
-  renderBodyOnly,
-  buildCustomerReceiptBlocks,
   buildInventoryStartBlocks,
   buildInventoryEndBlocks,
   buildLabelBlocks,
   getLogo,
   charWidth,
 } from "../lib/print/index";
-import { printReceiptEscPos } from "../lib/escposPrinter";
 import {
   printPrintersTable,
   printBridgeProfilesTable,
@@ -23,8 +20,6 @@ import {
   printAssetsTable,
   usersTable,
   ordersTable,
-  orderItemsTable,
-  adminSettingsTable,
   auditLogsTable,
   printTemplateVersionsTable,
   inventoryLocationsTable,
@@ -67,6 +62,10 @@ import {
   type ReceiptTemplateRecord,
 } from "../lib/print/receiptPipeline";
 import { SAMPLE_RECEIPT_DATA } from "../lib/print/receiptData";
+import { FULL_PAGE_SIZE, THERMAL_WIDTHS, type PrinterClass } from "../lib/print/documentTypes";
+import { queueDocumentPrint } from "../lib/print/documentJobs";
+import { BRIDGE_KEY_PATTERN } from "../lib/print/bridgeKey";
+import { shiftLocationId } from "../lib/print/shiftDocuments";
 import multer from "multer";
 import sharp from "sharp";
 import crypto from "node:crypto";
@@ -352,6 +351,7 @@ router.get("/print/printers", adminOnly, async (req, res): Promise<void> => {
       bridgePrinterName: printPrintersTable.bridgePrinterName,
       isActive: printPrintersTable.isActive,
       paperWidth: printPrintersTable.paperWidth,
+      printerClass: printPrintersTable.printerClass,
       copies: printPrintersTable.copies,
     })
     .from(printPrintersTable)
@@ -653,6 +653,22 @@ router.post(
 // routing function. Legacy roles remain readable during migration.
 const VALID_ROLES = ["unassigned", "customer_receipt", "thank_you", "report", "kitchen", "receipt", "expo", "label", "bar"];
 const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
+
+/**
+ * Printer class and paper: thermal rolls are 50mm or 80mm only; full-page
+ * printers are always US Letter. Returns the stored pair or an error.
+ */
+function printerPaper(printerClass: unknown, paperWidth: unknown): { printerClass: PrinterClass; paperWidth: string } | { error: string } {
+  const cls = printerClass === undefined ? "thermal" : printerClass;
+  if (cls !== "thermal" && cls !== "full_page") return { error: "printerClass must be thermal or full_page" };
+  if (cls === "full_page") {
+    if (paperWidth !== undefined && paperWidth !== null && paperWidth !== FULL_PAGE_SIZE) return { error: "Full-page printers use US Letter; omit paperWidth" };
+    return { printerClass: "full_page", paperWidth: FULL_PAGE_SIZE };
+  }
+  const width = paperWidth === undefined || paperWidth === null ? "80mm" : paperWidth;
+  if (!(THERMAL_WIDTHS as readonly unknown[]).includes(width)) return { error: "Thermal paperWidth must be 50mm or 80mm" };
+  return { printerClass: "thermal", paperWidth: width as string };
+}
 const isHttpBridgeUrl = (value: unknown): boolean => {
   try {
     const url = new URL(String(value));
@@ -663,7 +679,7 @@ const isHttpBridgeUrl = (value: unknown): boolean => {
 };
 // Empty means "use the central PRINT_BRIDGE_API_KEY"; otherwise a strong,
 // header-safe secret unique to that bridge.
-const BRIDGE_KEY = /^[A-Za-z0-9._~+/=-]{32,256}$/;
+const BRIDGE_KEY = BRIDGE_KEY_PATTERN;
 const BRIDGE_KEY_ERROR = "apiKey must be empty or 32-256 URL-safe characters";
 const isValidBridgeKey = (value: unknown): boolean =>
   value === undefined || value === null || value === "" ||
@@ -711,6 +727,11 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
     !BRIDGE_QUEUE_NAME.test(String(b.bridgePrinterName).trim())
   ) {
     res.status(400).json({ error: "bridgePrinterName is invalid" });
+    return;
+  }
+  const paper = printerPaper(b.printerClass, b.paperWidth);
+  if ("error" in paper) {
+    res.status(400).json({ error: paper.error });
     return;
   }
   if (connType === "ethernet_direct" && !b.directIp) {
@@ -781,7 +802,8 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
       apiKey: null,
       timeoutMs: b.timeoutMs ? Number(b.timeoutMs) : 8000,
       copies: b.copies ? Math.min(5, Math.max(1, Number(b.copies))) : 1,
-      paperWidth: b.paperWidth ? String(b.paperWidth) : "80mm",
+      printerClass: paper.printerClass,
+      paperWidth: paper.paperWidth,
       isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
     })
     .returning();
@@ -799,6 +821,7 @@ router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
         locationId,
         routingScope,
         role: printer.role,
+        printerClass: printer.printerClass,
         bridgeProfileId: printer.bridgeProfileId,
       },
     });
@@ -872,7 +895,16 @@ router.patch(
     if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
     if (b.copies !== undefined)
       updates.copies = Math.min(5, Math.max(1, Number(b.copies)));
-    if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
+    if (b.printerClass !== undefined || b.paperWidth !== undefined) {
+      const [current] = await db.select({ printerClass: printPrintersTable.printerClass, paperWidth: printPrintersTable.paperWidth })
+        .from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+      const nextClass = b.printerClass ?? current?.printerClass ?? "thermal";
+      const nextWidth = b.paperWidth !== undefined ? b.paperWidth : nextClass === current?.printerClass ? current?.paperWidth : undefined;
+      const paper = printerPaper(nextClass, nextClass === "full_page" && b.paperWidth === undefined ? undefined : nextWidth);
+      if ("error" in paper) { res.status(400).json({ error: paper.error }); return; }
+      updates.printerClass = paper.printerClass;
+      updates.paperWidth = paper.paperWidth;
+    }
     if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
     const [row] = await db
       .update(printPrintersTable)
@@ -1302,6 +1334,11 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
     return;
   }
   const parsedLayout = parsed.data;
+  const jobType = String(b.jobType ?? "label");
+  if (jobType === "receipt" && b.paperWidth !== undefined && !(THERMAL_WIDTHS as readonly unknown[]).includes(b.paperWidth)) {
+    res.status(400).json({ error: "Receipt templates use a 50mm or 80mm roll" });
+    return;
+  }
   if (b.backgroundAssetId) {
     const [asset] = await db
       .select()
@@ -1321,12 +1358,17 @@ router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
       return;
     }
   }
+  // One default receipt template per tenant.
+  if (jobType === "receipt" && b.isDefault) {
+    await db.update(printTemplatesTable).set({ isDefault: false })
+      .where(and(eq(printTemplatesTable.tenantId, tenantId), eq(printTemplatesTable.jobType, "receipt")));
+  }
   const [t] = await db
     .insert(printTemplatesTable)
     .values({
       tenantId,
       name: String(b.name),
-      jobType: String(b.jobType ?? "label"),
+      jobType,
       backgroundAssetId: b.backgroundAssetId
         ? Number(b.backgroundAssetId)
         : null,
@@ -1387,6 +1429,15 @@ router.patch(
       res.status(404).json({ error: "Template not found" });
       return;
     }
+    // A save made from an older version must not overwrite a newer one.
+    if (b.expectedVersion !== undefined && b.expectedVersion !== existing.version) {
+      res.status(409).json({ error: "This template changed since you opened it; reload before saving", version: existing.version });
+      return;
+    }
+    if (existing.jobType === "receipt" && b.paperWidth !== undefined && !(THERMAL_WIDTHS as readonly unknown[]).includes(b.paperWidth)) {
+      res.status(400).json({ error: "Receipt templates use a 50mm or 80mm roll" });
+      return;
+    }
     const updates: Record<string, unknown> = {};
     if (b.name !== undefined) updates.name = String(b.name);
     if (b.jobType !== undefined) updates.jobType = String(b.jobType);
@@ -1432,6 +1483,10 @@ router.patch(
       updates.paperHeight = String(b.paperHeight);
     if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
     if (b.isDefault !== undefined) updates.isDefault = Boolean(b.isDefault);
+    if (updates.isDefault === true && (updates.jobType ?? existing.jobType) === "receipt") {
+      await db.update(printTemplatesTable).set({ isDefault: false })
+        .where(and(eq(printTemplatesTable.tenantId, tenantId), eq(printTemplatesTable.jobType, "receipt")));
+    }
     updates.version = existing.version + 1;
     const [t] = await db
       .update(printTemplatesTable)
@@ -2183,55 +2238,33 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     locationId: assignment?.locationId ?? null,
     shiftId: order.assignedShiftId ?? null,
   };
-  const { primary: receiptPrinter } = await resolveReceiptPrinters(
-    operator?.profile ?? null,
-    routeContext,
-  );
-  if (!receiptPrinter) {
-    res
-      .status(503)
-      .json({ error: "No receipt printer configured or available" });
-    return;
-  }
-
-  // Same receipt data builder and renderer as automatic receipts.
-  const rendered = await renderOrderReceipt(tenantId, orderId);
-  if (!rendered) {
-    res.status(404).json({ error: "Order not found" });
-    return;
-  }
-  const renderedText = rendered.receipt.text;
-
-  // Always create a fresh job for reprints (unique key per timestamp)
-  const iKey = makeIdempotencyKey(
+  // Same routing and receipt pipeline as automatic receipts; a fresh job per reprint.
+  const result = await queueDocumentPrint({
+    tenantId,
+    locationId: routeContext.locationId ?? (routeContext.shiftId ? await shiftLocationId(tenantId, routeContext.shiftId) : null),
+    shiftId: routeContext.shiftId,
     orderId,
-    receiptPrinter.id,
-    `receipt:reprint:${Date.now()}`,
-  );
-  const [job] = await db
-    .insert(printJobsTable)
-    .values({
-      tenantId,
-      locationId: routeContext.locationId,
-      shiftId: routeContext.shiftId,
-      orderId,
-      printerId: receiptPrinter.id,
-      jobType: "receipt",
-      status: "queued",
-      idempotencyKey: iKey,
-      renderFormat: "text",
-      payloadJson: {
-        orderId,
-        receiptSource: rendered.receipt.source,
-        templateId: rendered.receipt.templateId,
-        templateVersion: rendered.receipt.templateVersion,
+    operatorUserId: operator?.userId ?? null,
+    documentType: "ORDER_RECEIPT",
+    jobType: "receipt",
+    idempotencyKey: `order_receipt_reprint:${tenantId}:${orderId}:${req.dbUser!.id}:${Date.now()}`,
+    render: {
+      kind: "thermal-text",
+      text: async (_printer, columns) => {
+        const rendered = await renderOrderReceipt(tenantId, orderId, columns);
+        if (!rendered) throw new Error("Order not found");
+        return rendered.receipt;
       },
-      renderedText,
-      templateId: rendered.receipt.templateId,
-      templateVersion: rendered.receipt.templateVersion,
-      operatorUserId: operator?.userId ?? null,
-    })
-    .returning();
+    },
+    metadata: { orderId, reprint: true },
+    legacyFallback: async () => (await resolveReceiptPrinters(operator?.profile ?? null, routeContext)).primary,
+    recordNoRoute: false,
+  });
+  if (result.status !== "queued") {
+    res.status(503).json({ error: result.status === "no-route" ? result.reason : "Duplicate reprint request" });
+    return;
+  }
+  const { job, printer: receiptPrinter } = result;
   await db
     .insert(auditLogsTable)
     .values({
@@ -2242,7 +2275,7 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
       action: "ORDER_RECEIPT_REPRINTED",
       resourceType: "print_job",
       resourceId: String(job.id),
-      metadata: { orderId, printerId: receiptPrinter.id },
+      metadata: { orderId, printerId: receiptPrinter.id, routeSource: result.source },
     });
 
   await dispatchReceiptJob(job, receiptPrinter).catch(() => {});
@@ -3035,11 +3068,9 @@ router.get("/print/users", adminOnly, async (req, res): Promise<void> => {
   res.json({ users: rows });
 });
 
-// ── Secure local CUPS receipt printing ────────────────────────────────────
-//
-// Receipt content is built entirely server-side from trusted DB data.
-// Clients supply only the orderId — no receipt content, no printer commands.
-// ESC/POS framing (\x1b@ reset, \x1dV1 cut) is added by escposPrinter, not here.
+// ── Retired local CUPS receipt endpoints ─────────────────────────────────
+// These permanently answer 410; receipts print only through registered
+// printers and authenticated bridges.
 
 const staffOrAbove = requireRole("global_admin", "admin");
 
@@ -3061,123 +3092,6 @@ router.post(
           "Direct local CUPS printing is disabled; use the tenant-scoped registered-printer receipt endpoint",
       });
     return;
-    const orderId = parseInt(String(req.params.orderId), 10);
-    if (isNaN(orderId)) {
-      res.status(400).json({ error: "Invalid orderId" });
-      return;
-    }
-
-    const [order] = await db
-      .select()
-      .from(ordersTable)
-      .where(eq(ordersTable.id, orderId))
-      .limit(1);
-
-    if (!order) {
-      res.status(404).json({ error: "Order not found" });
-      return;
-    }
-
-    const items = await db
-      .select()
-      .from(orderItemsTable)
-      .where(eq(orderItemsTable.orderId, orderId));
-
-    const settings = await getSettings();
-    const s = settings as Record<string, unknown>;
-    const width = charWidth((s.paperWidth as string | undefined) ?? "80mm");
-    const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-
-    let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" =
-      "lucifer_only";
-    try {
-      const [adminRow] = await db
-        .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
-        .from(adminSettingsTable)
-        .limit(1);
-      if (adminRow?.receiptLineNameMode) {
-        receiptLineNameMode =
-          adminRow.receiptLineNameMode as typeof receiptLineNameMode;
-      }
-    } catch {
-      /* no admin settings row — use default */
-    }
-
-    const blocks = buildCustomerReceiptBlocks({
-      orderId: order.id,
-      orderNumber: String(order.id),
-      createdAt: order.createdAt,
-      fulfillmentType: "Pickup",
-      paymentStatus: order.paymentStatus ?? undefined,
-      paymentMethod: order.paymentMethod ?? undefined,
-      notes: order.notes ?? undefined,
-      items: items.map((i) => ({
-        name: i.receiptName ?? i.catalogItemName,
-        quantity: i.quantity,
-        unitPrice: parseFloat(String(i.unitPrice)),
-        totalPrice: parseFloat(String(i.totalPrice)),
-      })),
-      subtotal: parseFloat(String(order.subtotal)),
-      tax: order.tax ? parseFloat(String(order.tax)) : undefined,
-      total: parseFloat(String(order.total)),
-      logoLines,
-      dualBrandName: (s.brandName as string | undefined) ?? undefined,
-      footerMessage: (s.footerMessage as string | undefined) ?? undefined,
-      showDiscreetNotice: Boolean(s.showDiscreetNotice),
-      showOperatorName: s.includeOperatorName !== false,
-    });
-
-    const body = renderBodyOnly(blocks, width);
-    const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
-    const iKey = `lp:${orderId}:receipt:${Date.now()}`;
-
-    const [job] = await db
-      .insert(printJobsTable)
-      .values({
-        tenantId: requestTenantId(req),
-        orderId: order.id,
-        printerId: null,
-        jobType: "receipt",
-        status: "queued",
-        idempotencyKey: iKey,
-        renderFormat: "escpos",
-        payloadJson: { orderId, printerName, receiptLineNameMode },
-        renderedText: body,
-        operatorUserId: req.dbUser!.id,
-      })
-      .returning();
-
-    try {
-      const { jobRef } = await printReceiptEscPos(body);
-      await db
-        .update(printJobsTable)
-        .set({
-          status: "printed",
-          printedVia: "lp_cups",
-          printedAt: new Date(),
-        })
-        .where(eq(printJobsTable.id, job.id));
-
-      req.log.info(
-        { event: "receipt_printed", jobId: job.id, orderId, jobRef },
-        "Receipt printed via lp_cups",
-      );
-
-      res.json({ ok: true, jobId: job.id, jobRef });
-    } catch (err) {
-      const msg = (err as Error).message;
-      await db
-        .update(printJobsTable)
-        .set({ status: "failed", errorMessage: msg })
-        .where(eq(printJobsTable.id, job.id));
-
-      req.log.warn(
-        { event: "receipt_print_failed", jobId: job.id, orderId },
-        "Receipt print failed",
-      );
-
-      res.status(500).json({ ok: false, jobId: job.id, error: msg });
-    }
   },
 );
 
@@ -3199,98 +3113,6 @@ router.post(
           "Direct local CUPS reprinting is disabled; use the tenant-scoped registered-printer reprint endpoint",
       });
     return;
-    const jobId = parseInt(String(req.params.jobId), 10);
-    if (isNaN(jobId)) {
-      res.status(400).json({ error: "Invalid jobId" });
-      return;
-    }
-
-    const [original] = await db
-      .select()
-      .from(printJobsTable)
-      .where(eq(printJobsTable.id, jobId))
-      .limit(1);
-
-    if (!original) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
-    if (!original.renderedText) {
-      res
-        .status(400)
-        .json({ error: "Job has no stored receipt body — cannot reprint" });
-      return;
-    }
-    const originalRenderedText = String(original.renderedText);
-    if (original.renderFormat !== "escpos") {
-      res
-        .status(400)
-        .json({
-          error:
-            "Job was not printed via lp_cups — use the standard reprint endpoint",
-        });
-      return;
-    }
-
-    const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
-    const iKey = `lp:reprint:${jobId}:${Date.now()}`;
-
-    const [newJob] = await db
-      .insert(printJobsTable)
-      .values({
-        tenantId: requestTenantId(req),
-        orderId: original.orderId,
-        printerId: null,
-        jobType: "receipt",
-        status: "queued",
-        idempotencyKey: iKey,
-        renderFormat: "escpos",
-        payloadJson: { reprintOf: jobId, printerName },
-        renderedText: originalRenderedText,
-        operatorUserId: req.dbUser!.id,
-      })
-      .returning();
-
-    try {
-      const { jobRef } = await printReceiptEscPos(originalRenderedText);
-      await db
-        .update(printJobsTable)
-        .set({
-          status: "printed",
-          printedVia: "lp_cups",
-          printedAt: new Date(),
-        })
-        .where(eq(printJobsTable.id, newJob.id));
-
-      req.log.info(
-        {
-          event: "receipt_reprinted",
-          newJobId: newJob.id,
-          originalJobId: jobId,
-          jobRef,
-        },
-        "Receipt reprinted via lp_cups",
-      );
-
-      res.json({ ok: true, jobId: newJob.id, jobRef });
-    } catch (err) {
-      const msg = (err as Error).message;
-      await db
-        .update(printJobsTable)
-        .set({ status: "failed", errorMessage: msg })
-        .where(eq(printJobsTable.id, newJob.id));
-
-      req.log.warn(
-        {
-          event: "receipt_reprint_failed",
-          newJobId: newJob.id,
-          originalJobId: jobId,
-        },
-        "Receipt reprint failed",
-      );
-
-      res.status(500).json({ ok: false, jobId: newJob.id, error: msg });
-    }
   },
 );
 

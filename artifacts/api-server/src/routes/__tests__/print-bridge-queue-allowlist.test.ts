@@ -163,6 +163,24 @@ describe("bridge server with fake CUPS (integration)", { timeout: 30_000 }, () =
     expect(lpCalls()[0]).toContain("-d Pi_Receipt");
   });
 
+  it("prints server-rendered PDFs non-raw to the allowlisted queue and rejects anything else", async () => {
+    const url = await startBridge({ ALLOWED_QUEUES: "Office_Laser", PRINTER_NAME: "Office_Laser" });
+    const pdf = Buffer.from("%PDF-1.7\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n").toString("base64");
+    const send = (body: Record<string, unknown>) => fetch(`${url}/print`, {
+      method: "POST", headers: { "content-type": "application/json", "x-api-key": KEY },
+      body: JSON.stringify({ printerName: "Office_Laser", format: "pdf", role: "report", ...body }),
+    });
+    expect((await send({ documentBase64: Buffer.from("not a pdf").toString("base64") })).status).toBe(400);
+    expect((await send({ documentBase64: pdf, imageBase64: pdf })).status).toBe(400);
+    expect((await send({ documentBase64: pdf, printerName: "Other_Queue" })).status).toBe(403);
+    expect(lpCalls()).toEqual([]);
+    const ok = await send({ documentBase64: pdf, copies: 2 });
+    expect(ok.status).toBe(200);
+    const [call] = lpCalls();
+    expect(call).toMatch(/^-d Office_Laser -n 2 \S+\.pdf$/);
+    expect(call).not.toContain("raw");
+  });
+
   it("still requires the bridge key when configured", async () => {
     const url = await startBridge({ ALLOWED_QUEUES: "Pi_Receipt" });
     expect((await fetch(`${url}/printers`)).status).toBe(401);

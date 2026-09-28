@@ -204,6 +204,12 @@ function fitToWidth(line: ReceiptLine, width: number): ReceiptLine[] {
   return [line];
 }
 
+/** Lays out already-built semantic lines for a roll width (used by non-template thermal documents). */
+export function fitReceiptLines(lines: readonly ReceiptLine[], width: number): RenderedReceiptLines {
+  const safeWidth = Math.min(MAX_RECEIPT_WIDTH, Math.max(MIN_RECEIPT_WIDTH, Math.trunc(width)));
+  return { width: safeWidth, lines: lines.flatMap((line) => fitToWidth(line, safeWidth)), skipped: [] };
+}
+
 /**
  * Renders a receipt template against server-built ReceiptData.
  * Throws if the layout is not valid under the strict template schema.

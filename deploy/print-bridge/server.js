@@ -371,6 +371,7 @@ async function handlePrint(req, res) {
     text = "",
     imagePath = "",
     imageBase64 = "",
+    documentBase64 = "",
     payloadBase64 = "",
     format = "text",
     printerName: explicitPrinterName = "",
@@ -389,17 +390,32 @@ async function handlePrint(req, res) {
   }
   const decodedText = payloadBase64 ? Buffer.from(payloadBase64, "base64").toString("binary") : "";
   const printableText = text || decodedText;
-  const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
+  // Server-rendered PDFs (full-page documents) are never sent raw.
+  const rawMode = documentBase64 ? false : typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
 
   // Printer purpose is assigned by the tenant registry, not by a CUPS queue
   // name. The bridge accepts only the already-registered explicit queue sent
   // by the server and never selects a default queue on its own.
 
-  if (!printableText && !imagePath && !imageBase64) {
+  if (!printableText && !imagePath && !imageBase64 && !documentBase64) {
     return respond(res, 400, {
       success: false,
-      error: "Missing text, payloadBase64, imagePath, or imageBase64 payload",
+      error: "Missing text, payloadBase64, imagePath, imageBase64 or documentBase64 payload",
     });
+  }
+  if (documentBase64 && (imageBase64 || imagePath)) {
+    return respond(res, 400, { success: false, error: "Send one document or image, not both" });
+  }
+
+  // A full-page document: only real PDFs, written to a private temp file.
+  let tempDocumentPath = null;
+  if (documentBase64) {
+    const pdf = Buffer.from(String(documentBase64), "base64");
+    if (pdf.length < 8 || pdf.subarray(0, 5).toString("latin1") !== "%PDF-") {
+      return respond(res, 400, { success: false, error: "documentBase64 must be a PDF" });
+    }
+    tempDocumentPath = path.join(os.tmpdir(), `print_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`);
+    fs.writeFileSync(tempDocumentPath, pdf, { mode: 0o600 });
   }
 
   // If an imageBase64 payload came in, decode it to a temp PNG so CUPS can print it.
@@ -429,7 +445,7 @@ async function handlePrint(req, res) {
     });
   }
 
-  const resolvedImagePath = tempImagePath || imagePath || null;
+  const resolvedImagePath = tempDocumentPath || tempImagePath || imagePath || null;
   const safeCopies = clampCopies(copies);
   const methodTargetPrinter = printerName || PRINTER_NAME || null;
 
@@ -474,6 +490,9 @@ async function handlePrint(req, res) {
 
   // Helper: clean up the temp PNG after we're done (success or failure)
   const cleanupTemp = () => {
+    if (tempDocumentPath) {
+      try { fs.unlinkSync(tempDocumentPath); } catch {}
+    }
     if (tempImagePath) {
       try { fs.unlinkSync(tempImagePath); } catch {}
     }

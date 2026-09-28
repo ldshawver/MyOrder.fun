@@ -117,63 +117,34 @@ function logAndSendShiftDatabaseError(
   });
 }
 
-async function createShiftReceiptPrintJob(args: {
-  shiftId: number;
-  tenantId: number;
-  operatorUserId: number;
-  jobType: string;
-  payload: Record<string, unknown>;
-  renderedText: string;
-}): Promise<void> {
+/**
+ * Automatic shift documents (clock-in/out slips, deposit, shift reports).
+ * Gated by the shift tenant's receipt auto-print switch and routed by
+ * document type through the shift's location. Never blocks the shift.
+ */
+async function printShiftDocuments(
+  args: { tenantId: number | null; shiftId: number; operatorUserId: number },
+  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures },
+): Promise<void> {
+  if (!args.tenantId) return;
+  const tenantId = args.tenantId;
   try {
-    const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
-    const { dispatchReceiptJob } = await import("../lib/printService");
     const { getPrintControls } = await import("../lib/printControls");
-    // Shift reports are automatic prints: honor the tenant's receipt
-    // auto-print switch so registering a printer never starts printing alone.
-    const autoPrintEnabled = (await getPrintControls(args.tenantId)).autoPrintReceipts;
-    const profile = await getOperatorProfile(args.tenantId, args.operatorUserId);
-    const receiptPrinter = autoPrintEnabled
-      ? (await resolveReceiptPrinters(profile, { tenantId: args.tenantId, shiftId: args.shiftId })).primary
-      : null;
-    const [job] = await db.insert(printJobsTable).values({
-      tenantId: args.tenantId,
-      shiftId: args.shiftId,
-      orderId: null,
-      printerId: receiptPrinter?.id ?? null,
-      operatorUserId: args.operatorUserId,
-      jobType: args.jobType,
-      status: receiptPrinter ? "queued" : "failed",
-      idempotencyKey: `${args.jobType}:${args.shiftId}`,
-      renderFormat: "text",
-      payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
-      renderedText: args.renderedText,
-      errorMessage: receiptPrinter
-        ? null
-        : autoPrintEnabled
-          ? "No active receipt printer assigned or configured"
-          : "Automatic receipt printing is disabled",
-    }).returning();
-    if (receiptPrinter) dispatchReceiptJob(job, receiptPrinter).catch(() => {});
+    if (!(await getPrintControls(tenantId)).autoPrintReceipts) return;
+    const shiftDocs = await import("../lib/print/shiftDocuments");
+    const ctx = await shiftDocs.loadShiftDocumentContext(tenantId, args.shiftId);
+    if (!ctx) return;
+    const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
+    // Existing receipt-printer resolution, used only for thermal slips when no route is configured.
+    const legacyFallback = async () => (await resolveReceiptPrinters(
+      await getOperatorProfile(tenantId, args.operatorUserId), { tenantId, shiftId: args.shiftId },
+    )).primary;
+    if (event.kind === "clock_in") await shiftDocs.printClockInDocuments(ctx, legacyFallback);
+    else await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
   } catch {
-    // Receipt creation must never block shift start/end in tests or production.
+    // Printing must never block shift start/end.
   }
 }
-
-/** Enqueue a closeout report as a durable, idempotent print event.  Reports
- * are side effects of a committed shift transaction; printer availability
- * must never roll back the shift. */
-async function createShiftOperationalPrintJob(args: {
-  shiftId: number;
-  tenantId: number;
-  operatorUserId: number;
-  jobType: "shift_sales" | "shift_ending_inventory" | "shift_restock" | "shift_deposit" | "shift_commission";
-  payload: Record<string, unknown>;
-  renderedText: string;
-}): Promise<void> {
-  await createShiftReceiptPrintJob(args);
-}
-
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -1423,20 +1394,7 @@ router.post(
       inventoryItemsInserted = legacyInserts.length;
     }
 
-    await createShiftReceiptPrintJob({
-      shiftId: shift.id,
-      tenantId,
-      operatorUserId: tech.id,
-      jobType: "shift_beginning_inventory",
-      payload: {
-        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
-        box: selectedBox,
-        startingCashBank: 100,
-        startingInventoryCount: inventoryItemsInserted,
-        timestamp: new Date().toISOString(),
-      },
-      renderedText: [`SHIFT START`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${shift.id}`, `Box: ${selectedBox}`, `Starting cash: 100`, `Inventory rows: ${inventoryItemsInserted}`, new Date().toISOString()].join("\n"),
-    });
+    await printShiftDocuments({ tenantId, shiftId: shift.id, operatorUserId: tech.id }, { kind: "clock_in" });
 
     try {
       res.status(201).json({
@@ -1612,44 +1570,10 @@ router.post(
       ipAddress: getClientIp(req),
     });
 
-    await createShiftReceiptPrintJob({
-      shiftId: activeShift.id,
-      tenantId: activeShift.tenantId ?? null,
-      operatorUserId: tech.id,
-      jobType: "shift_sales",
-      payload: {
-        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
-        endingInventory: inventorySummary,
-        salesSummary: stats,
-        cashTotals: { cashBankStart, cashBankEndReported: cashBankEndVal, expectedCashBank },
-        depositAmount: cashBankEndVal,
-        variance: cashDiscrepancy,
-        timestamp: summary.clockedOutAt,
-      },
-      renderedText: [`SHIFT END`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, `Cash expected: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
-    });
-
-    const reportBase = { shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, employee: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email, location: activeShift.boxAssignmentId ?? null, generatedAt: summary.clockedOutAt };
-    await createShiftOperationalPrintJob({
-      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
-      jobType: "shift_ending_inventory", payload: { ...reportBase, inventory: inventorySummary },
-      renderedText: [`ENDING INVENTORY`, `Shift: ${activeShift.id}`, JSON.stringify(inventorySummary), summary.clockedOutAt].join("\n"),
-    });
-    await createShiftOperationalPrintJob({
-      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
-      jobType: "shift_restock", payload: { ...reportBase, sales: stats },
-      renderedText: [`RESTOCK LIST`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, summary.clockedOutAt].join("\n"),
-    });
-    await createShiftOperationalPrintJob({
-      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
-      jobType: "shift_deposit", payload: { ...reportBase, cashBankStart, expectedCashBank, cashBankEndReported: cashBankEndVal, depositAmount: cashBankEndVal, variance: cashDiscrepancy },
-      renderedText: [`DEPOSIT RECEIPT`, `Shift: ${activeShift.id}`, `Expected cash: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
-    });
-    await createShiftOperationalPrintJob({
-      shiftId: activeShift.id, tenantId: activeShift.tenantId ?? null, operatorUserId: tech.id,
-      jobType: "shift_commission", payload: { ...reportBase, commission: (stats as Record<string, unknown>).commission ?? null },
-      renderedText: [`COMMISSION SLIP`, `Shift: ${activeShift.id}`, `Commission: ${String((stats as Record<string, unknown>).commission ?? "0")}`, summary.clockedOutAt].join("\n"),
-    });
+    await printShiftDocuments(
+      { tenantId: activeShift.tenantId ?? null, shiftId: activeShift.id, operatorUserId: tech.id },
+      { kind: "clock_out", figures: { stats, expectedCash: expectedCashBank ?? null, countedCash: cashBankEndVal ?? null, variance: cashDiscrepancy ?? null } },
+    );
 
     res.json({ summary, shift: updatedShift });
   }
@@ -1783,7 +1707,8 @@ router.get(
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, id))
+      // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
+      .where(and(eq(labTechShiftsTable.tenantId, req.dbUser?.tenantId ?? await getHouseTenantId()), eq(labTechShiftsTable.id, id)))
       .limit(1);
 
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
@@ -2407,7 +2332,8 @@ router.get(
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
+      // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
+      .where(and(eq(labTechShiftsTable.tenantId, req.dbUser?.tenantId ?? await getHouseTenantId()), eq(labTechShiftsTable.id, shiftId)))
       .limit(1);
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
 
@@ -2481,108 +2407,55 @@ router.get(
 );
 
 // ─── POST /api/shifts/:id/restock-slip/print ─────────────────────────────────
-// Generates and prints a restock slip for the shift via CUPS.
+// Prints the shift's restock list as a full-page INVENTORY_STOCK_LIST job on
+// the printer routed for the shift's location, through its authenticated
+// bridge. The shift must belong to the caller's tenant.
 router.post(
   "/shifts/:id/restock-slip/print",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
-    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+    if (!Number.isInteger(shiftId) || shiftId <= 0) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
 
-    const [shift] = await db
-      .select()
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
-      .limit(1);
-    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+    const { loadShiftDocumentContext, loadShiftInventoryRows, queueRestockList } = await import("../lib/print/shiftDocuments");
+    const { restockQuantity } = await import("../lib/print/documents");
+    const ctx = await loadShiftDocumentContext(tenantId, shiftId);
+    if (!ctx) { res.status(404).json({ error: "Shift not found" }); return; }
 
-    const shiftItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-
-    const templateIds = shiftItems
-      .filter(i => i.templateItemId != null)
-      .map(i => i.templateItemId as number);
-
-    const templates = templateIds.length
-      ? await db
-          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
-          .from(inventoryTemplatesTable)
-          .where(
-            templateIds.length === 1
-              ? eq(inventoryTemplatesTable.id, templateIds[0])
-              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
-          )
-      : [];
-
-    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
-
-    const lines: string[] = [];
-    const W = 40;
-    const divider = "=".repeat(W);
-    const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
-
-    lines.push(divider);
-    lines.push(center("RESTOCK SLIP"));
-    lines.push(divider);
-    lines.push(`Shift #: ${shiftId}`);
-    lines.push(`Printed: ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`);
-    lines.push(divider);
-
-    let needCount = 0;
-    let currentSection: string | null = null;
-
-    for (const item of shiftItems) {
-      if (item.rowType !== "item") continue;
-
-      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
-      if (parLevel <= 0) continue;
-
-      const actualEnding = item.quantityEndActual != null
-        ? parseFloat(String(item.quantityEndActual))
-        : null;
-      if (actualEnding === null) continue;
-
-      const restockQty = Math.max(0, parLevel - actualEnding);
-      if (restockQty === 0) continue;
-
-      if (item.sectionName && item.sectionName !== currentSection) {
-        currentSection = item.sectionName;
-        lines.push("");
-        lines.push(`[ ${currentSection.toUpperCase()} ]`);
-      }
-
-      const name = item.itemName.length > 26 ? item.itemName.slice(0, 23) + "..." : item.itemName;
-      const qty = `+${Math.round(restockQty * 1000) / 1000}${item.unitType ?? ""}`;
-      lines.push(`  ${name.padEnd(W - qty.length - 2)}${qty}`);
-      lines.push(`    par:${parLevel} | end:${actualEnding}`);
-      needCount++;
-    }
-
-    lines.push("");
-    lines.push(divider);
-    lines.push(center(`TOTAL: ${needCount} items need restock`));
-    lines.push(divider);
-    lines.push("");
-
-    const body = lines.join("\n");
-
+    const needCount = (await loadShiftInventoryRows(shiftId)).filter((row) => restockQuantity(row) > 0).length;
     if (needCount === 0) {
       res.json({ ok: true, printed: false, message: "No items need restocking", shiftId });
       return;
     }
 
-    try {
-      const { printReceiptEscPos } = await import("../lib/escposPrinter");
-      const { jobRef } = await printReceiptEscPos(body);
-      res.json({ ok: true, printed: true, jobRef, itemCount: needCount, shiftId });
-    } catch (err) {
-      const msg = (err as Error).message;
-      req.log.warn({ shiftId, err: msg }, "Restock slip print failed");
-      res.status(500).json({ ok: false, printed: false, error: msg, shiftId });
+    const result = await queueRestockList(ctx, `${req.dbUser!.id}:${Date.now()}`);
+    if (result.status !== "queued") {
+      res.status(503).json({ ok: false, printed: false, error: result.status === "no-route" ? result.reason : "Duplicate print request", shiftId });
+      return;
     }
+    const { dispatchJob } = await import("../lib/printService");
+    await dispatchJob(result.job, result.printer).catch(() => {});
+    const [finalJob] = await db.select().from(printJobsTable)
+      .where(and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, result.job.id))).limit(1);
+
+    await writeAuditLog({
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email,
+      actorRole: req.dbUser!.role,
+      action: "shift.restock_list_printed",
+      tenantId,
+      resourceType: "lab_tech_shift",
+      resourceId: String(shiftId),
+      metadata: { printJobId: result.job.id, printerId: result.printer.id, routeSource: result.source, itemCount: needCount },
+      ipAddress: getClientIp(req),
+    });
+
+    const printed = finalJob?.status === "printed";
+    res.status(printed ? 200 : 502).json({
+      ok: printed, printed, jobId: result.job.id, status: finalJob?.status ?? "unknown", itemCount: needCount, shiftId,
+      error: printed ? undefined : finalJob?.errorMessage ?? "Restock list did not print",
+    });
   }
 );
 
