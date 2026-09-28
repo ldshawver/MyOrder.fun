@@ -86,6 +86,9 @@ type ExtendedCatalogItem = CatalogItem & {
   preferredReorderQuantity?: string | number | null;
 };
 
+type GroupedOption = { id: number; catalogItemId: number; label: string; price: string; sku: string | null };
+type GroupedProduct = { id: number; name: string; options: GroupedOption[] };
+
 type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
 
 interface CatalogItemForm {
@@ -140,11 +143,13 @@ type StringFormKey = {
 
 function CatalogItemCard({
   item,
+  product,
   canEdit,
   onEdit,
   menuMode,
 }: {
   item: ExtendedCatalogItem;
+  product?: GroupedProduct;
   canEdit: boolean;
   onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
@@ -152,9 +157,11 @@ function CatalogItemCard({
   const isLC = menuMode === "lucifer";
   const [imgError, setImgError] = useState(false);
   const [addedFeedback, setAddedFeedback] = useState(false);
+  const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
   const { addItem, cart } = useCart();
-  const isInCart = cart.some(c => c.id === item.id);
-  const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
+  const selectedOption = product?.options.find(option => option.id === selectedOptionId) ?? product?.options[0];
+  const isInCart = cart.some(c => c.id === (selectedOption?.catalogItemId ?? item.id));
+  const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
     ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
@@ -256,24 +263,33 @@ function CatalogItemCard({
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price)).toFixed(2)}
+              ${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}
             </span>
           </div>
-          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
+          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (!product || product.options.length === 1) && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>
               {item.stockQuantity === 0 ? "OUT" : `${item.stockQuantity} avail`}
             </span>
           )}
         </div>
 
+        {product && product.options.length > 1 && (
+          <label className="text-xs font-medium">
+            Option
+            <select className="mt-1 w-full rounded-lg border border-border bg-background p-2" value={selectedOption?.id}
+              onChange={event => setSelectedOptionId(Number(event.target.value))} aria-label={`${product.name} option`}>
+              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+            </select>
+          </label>
+        )}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
             disabled={!item.isAvailable}
             onClick={() => {
-              const name = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
-              const price = parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price));
-              addItem({ id: item.id, name, price, imageUrl: item.imageUrl ?? null });
+              const name = selectedOption && product ? `${product.name}${product.options.length > 1 ? ` — ${selectedOption.label}` : ""}` : (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
+              const price = parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price)));
+              addItem({ id: selectedOption?.catalogItemId ?? item.id, optionId: selectedOption?.id, name, price, imageUrl: item.imageUrl ?? null });
               setAddedFeedback(true);
               setTimeout(() => setAddedFeedback(false), 1800);
             }}
@@ -897,6 +913,15 @@ export default function Catalog() {
       void fetchNextPage();
     }
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+  const { data: grouped } = useQuery({
+    queryKey: ["catalogueProducts"],
+    queryFn: async (): Promise<{ products: GroupedProduct[] }> => {
+      const token = await getToken();
+      const response = await fetch("/api/catalogue/products", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error("Could not load product options");
+      return response.json() as Promise<{ products: GroupedProduct[] }>;
+    },
+  });
 
   const isLC = menuMode === "lucifer";
   const categories = ["all", ...(categoriesRes?.categories ?? [])]
@@ -916,7 +941,16 @@ export default function Catalog() {
   // In LC mode the API returns only WooCommerce-synced Lucifer Cruz products.
   // Alavont rows can still carry LC mapping fields for payment conversion,
   // but those mapped fields do not make them Lucifer Cruz storefront items.
-  const displayItems = allItems;
+  const groupByCatalogId = new Map<number, GroupedProduct>();
+  for (const product of grouped?.products ?? []) for (const option of product.options) groupByCatalogId.set(option.catalogItemId, product);
+  const seenGroups = new Set<number>();
+  const displayItems = allItems.filter(item => {
+    const product = groupByCatalogId.get(item.id);
+    if (!product) return true;
+    if (seenGroups.has(product.id)) return false;
+    seenGroups.add(product.id);
+    return true;
+  });
 
   // Determine empty-state reason for better messaging
   const hasItemsInResponse = allItems.length > 0;
@@ -1076,6 +1110,7 @@ export default function Catalog() {
             <CatalogItemCard
               key={item.id}
               item={item}
+              product={groupByCatalogId.get(item.id)}
               canEdit={canEdit}
               onEdit={setEditItem}
               menuMode={menuMode}

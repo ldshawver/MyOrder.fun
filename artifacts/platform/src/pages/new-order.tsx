@@ -234,7 +234,7 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: cart.map(i => i.optionId ? ({ optionId: i.optionId, quantity: i.quantity }) : ({ catalogItemId: i.id, quantity: i.quantity })),
           confirmation: {
             acceptedAllSalesFinal: true,
             confirmedAt: new Date().toISOString(),
@@ -271,7 +271,7 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: cart.map(i => i.optionId ? ({ optionId: i.optionId, quantity: i.quantity }) : ({ catalogItemId: i.id, quantity: i.quantity })),
           dropoffAddress: shippingAddress,
           checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
           checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
@@ -311,7 +311,7 @@ export default function NewOrder() {
       };
       const order = await createOrderMutation.mutateAsync({
         data: {
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: cart.map(i => i.optionId ? ({ optionId: i.optionId, quantity: i.quantity }) : ({ catalogItemId: i.id, quantity: i.quantity })) as unknown as Array<{ catalogItemId: number; quantity: number }>,
           shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,

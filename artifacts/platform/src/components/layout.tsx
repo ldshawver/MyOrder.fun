@@ -191,8 +191,9 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           href: "/admin/edit-catalog",
           label: "Products",
           icon: PackageOpen,
-          roles: ["global_admin", "admin"],
+          roles: ["global_admin", "admin", "supervisor"],
           children: [
+            { href: "/admin/catalogue-products", label: "Products & Variants", icon: PackageOpen, roles: ["global_admin", "admin", "supervisor"] },
             { href: "/admin/edit-catalog", label: "Edit Catalog", icon: PackageOpen, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
