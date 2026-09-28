@@ -315,7 +315,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     configureDb({ user: makeUser("customer_service_rep", "approved", true, null) });
     const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Tenant assignment is required");
+    expect(res.body.error).toBe("Tenant assignment required");
   });
 
   it("approved non-shift role is rejected from GET /api/shifts/inventory-template", async () => {

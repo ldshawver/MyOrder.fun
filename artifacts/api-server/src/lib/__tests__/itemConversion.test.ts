@@ -28,12 +28,14 @@ vi.mock("../logger", () => ({
 }));
 
 import {
-  normalizeCheckoutCart,
+  normalizeCheckoutCart as normalizeCheckoutCartWithContext,
   computeCheckoutTotals,
   CheckoutMappingError,
   CartLineInput,
 } from "../checkoutNormalizer";
 import { db } from "@workspace/db";
+const normalizeCheckoutCart: typeof normalizeCheckoutCartWithContext = (lines, mode, strict, tenantId = 1, complete) => normalizeCheckoutCartWithContext(lines, mode, strict, tenantId, complete);
+
 
 // `db` is a vi.mock'd module; `select` is a vi.fn(). We type-narrow it to the
 // vitest mock surface via vi.mocked so we never reach for `as any`.

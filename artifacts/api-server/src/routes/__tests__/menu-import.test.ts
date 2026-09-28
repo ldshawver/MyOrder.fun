@@ -89,6 +89,11 @@ vi.mock("@workspace/db", () => {
       const text = String(q);
       const values = (q as { values?: unknown[] }).values ?? [];
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
+      if (text.includes("SELECT EXISTS (SELECT 1 FROM catalog_items")) {
+        const [catalogTenant, productId, locationTenant, locationId] = values;
+        return Promise.resolve(wrap([{ valid: state.catalog.some(row => row.tenantId === catalogTenant && row.id === productId)
+          && state.locations.some(row => row.tenantId === locationTenant && row.id === locationId) }]));
+      }
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
       if (text.includes("INSERT INTO catalog_import_preview_tokens")) {
@@ -492,7 +497,7 @@ describe("safe catalog import/export", () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
 
     expect(res.status).toBe(200);
-    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
+    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": "5.000000" } });
   });
 
   it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {

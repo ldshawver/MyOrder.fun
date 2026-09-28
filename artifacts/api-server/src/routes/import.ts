@@ -1,18 +1,20 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, catalogItemsTable, auditLogsTable, inventoryTemplatesTable, inventoryLocationsTable, inventoryBalancesTable } from "@workspace/db";
 import { importableCatalogueFields, exportableCatalogueFields, type InventoryFieldDefinition } from "../../../../lib/db/src/inventoryFieldRegistry";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
 import { postImportedInventoryBalanceCorrection, setCatalogBalanceParProjection, type InventoryMovementActor } from "../lib/inventoryMovementLedger";
+import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
+import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import { createHash, randomBytes } from "node:crypto";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 const upload = multer({
@@ -298,6 +300,14 @@ function parseNumber(raw: string, field: string, row: number, errors: { row: num
   if (!Number.isFinite(n) || (opts.min != null && n < opts.min)) { errors.push({ row, message: `${field} must be a valid number${opts.min != null ? ` >= ${opts.min}` : ""}` }); return null; }
   return n;
 }
+function parsePhysicalQuantity(raw: string, field: string, row: number, errors: { row: number; message: string }[]): string {
+  if (!raw.trim()) return "0.000000";
+  try { return quantityText(quantityUnits(raw.replace(/[,\s]/g, ""))); }
+  catch { errors.push({ row, message: `${field} must be a nonnegative decimal with at most six places` }); return "0.000000"; }
+}
+function sumPhysicalQuantities(values: string[]): string {
+  return quantityText(values.reduce((sum, value) => sum + quantityUnits(value), 0n));
+}
 function parseBool(raw: string): boolean { return ["1", "true", "yes", "y", "active", "on"].includes(raw.trim().toLowerCase()); }
 function isExplicitClear(raw: string): boolean { return raw.trim().toUpperCase() === EXPLICIT_CLEAR; }
 function suppliedText(raw: string): string | null | undefined {
@@ -503,7 +513,7 @@ async function findOrCreateImportLocation(tx: typeof db, tenantId: number, impor
   return created;
 }
 
-async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: number, parLevel: number, actor: InventoryMovementActor, idempotencyKey: string) {
+async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catalogItemId: number, locationId: number, quantity: string, parLevel: string, actor: InventoryMovementActor, idempotencyKey: string) {
   assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryRow");
   const movement = await postImportedInventoryBalanceCorrection(tx, {
     tenantId, actor, entityType: "catalog", itemId: catalogItemId, locationId, targetQuantity: String(quantity), sourceType: "inventory_import_baseline",
@@ -513,7 +523,7 @@ async function upsertImportedInventoryRow(tx: typeof db, tenantId: number, catal
   return movement;
 }
 
-async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: number, parLevel: number) {
+async function upsertImportedInventoryTemplate(tx: typeof db, tenantId: number, catalogItemId: number, itemName: string, quantity: string, parLevel: string) {
   assertCatalogIdInventoryLookup(catalogItemId, "upsertImportedInventoryTemplate");
   const [existing] = await tx.select().from(inventoryTemplatesTable).where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.catalogItemId, catalogItemId))).limit(1);
   const values = { itemName, rowType: "item", unitType: "#", startingQuantityDefault: "0", currentStock: null, parLevel: String(parLevel), isActive: true, updatedAt: new Date() };
@@ -557,7 +567,7 @@ function catalogueExportValue(item: Record<string, unknown>, field: InventoryFie
 }
 
 router.get("/admin/products/export", requireRole("global_admin", "admin"), async (req, res) => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const rows = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenantId)) as Array<typeof catalogItemsTable.$inferSelect>;
   const lines = [exportableCatalogueFields.map(field => csvEscape(field.header)).join(",")];
   for (const item of rows) {
@@ -570,7 +580,7 @@ router.get("/admin/products/export", requireRole("global_admin", "admin"), async
 });
 
 router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/product-master"], requireRole("global_admin", "admin"), upload.single("file") as never, async (req, res) => {
-  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
+  const actor = req.dbUser!; const tenantId = req.authorizedTenantId!; const dryRun = req.query.dryRun === "true" || req.body?.dryRun === true;
   const uploadedFileName = req.file?.originalname;
   const confirmed = req.body?.confirm === "true" || req.body?.confirm === true || req.query.confirm === "true";
   if (!req.file?.buffer) { res.status(400).json({ error: "A CSV, TSV, or XLSX file upload is required" }); return; }
@@ -586,7 +596,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
   const usesCanonicalCatalogueHeaders = [...suppliedHeaders].some(header => canonicalOnlyHeaders.has(header));
 
   const errors: { row: number; message: string }[] = [];
-  const prepared: Array<{ row: number; productId: number | null; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, number>; par: Record<string, number>; inventoryColumns: Set<string>; parColumns: Set<string>; compliance: ReturnType<typeof classifyProductMasterCompliance>; activeSale: boolean }> = [];
+  const prepared: Array<{ row: number; productId: number | null; rec: ImportRow; values: CatalogImportUpsertValues; updateValues: Partial<CatalogImportUpsertValues>; inventory: Record<string, string>; par: Record<string, string>; inventoryColumns: Set<string>; parColumns: Set<string>; compliance: ReturnType<typeof classifyProductMasterCompliance>; activeSale: boolean }> = [];
   for (let i = 0; i < parsed.rows.length; i++) {
     const rowNum = i + 2; const rec = buildRecord(parsed.rows[i], parsed.headers);
     const productIdCell = rec["Product ID"]?.trim() ?? "";
@@ -602,16 +612,16 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const inventoryColumns = new Set(["Box 1 Inventory", "Box 2 Inventory", "Storefront Inventory", "Backstock Inventory"].filter(header => suppliedHeaders.has(header as CatalogImportHeader) && Boolean(rec[header as CatalogImportHeader].trim())).map(header => header.replace(" Inventory", "")));
     const parColumns = new Set(["Box 1 PAR", "Box 2 PAR", "Storefront PAR", "Backstock PAR"].filter(header => suppliedHeaders.has(header as CatalogImportHeader) && Boolean(rec[header as CatalogImportHeader].trim())).map(header => header.replace(" PAR", "")));
     const inventory = {
-      "Box 1": parseNumber(rec["Box 1 Inventory"], "Box 1 Inventory", rowNum, errors, { min: 0 }) ?? 0,
-      "Box 2": parseNumber(rec["Box 2 Inventory"], "Box 2 Inventory", rowNum, errors, { min: 0 }) ?? 0,
-      Storefront: parseNumber(rec["Storefront Inventory"], "Storefront Inventory", rowNum, errors, { min: 0 }) ?? 0,
-      Backstock: parseNumber(rec["Backstock Inventory"], "Backstock Inventory", rowNum, errors, { min: 0 }) ?? 0,
+      "Box 1": parsePhysicalQuantity(rec["Box 1 Inventory"], "Box 1 Inventory", rowNum, errors),
+      "Box 2": parsePhysicalQuantity(rec["Box 2 Inventory"], "Box 2 Inventory", rowNum, errors),
+      Storefront: parsePhysicalQuantity(rec["Storefront Inventory"], "Storefront Inventory", rowNum, errors),
+      Backstock: parsePhysicalQuantity(rec["Backstock Inventory"], "Backstock Inventory", rowNum, errors),
     };
     const par = {
-      "Box 1": parseNumber(rec["Box 1 PAR"], "Box 1 PAR", rowNum, errors, { min: 0 }) ?? 0,
-      "Box 2": parseNumber(rec["Box 2 PAR"], "Box 2 PAR", rowNum, errors, { min: 0 }) ?? 0,
-      Storefront: parseNumber(rec["Storefront PAR"], "Storefront PAR", rowNum, errors, { min: 0 }) ?? 0,
-      Backstock: parseNumber(rec["Backstock PAR"], "Backstock PAR", rowNum, errors, { min: 0 }) ?? 0,
+      "Box 1": parsePhysicalQuantity(rec["Box 1 PAR"], "Box 1 PAR", rowNum, errors),
+      "Box 2": parsePhysicalQuantity(rec["Box 2 PAR"], "Box 2 PAR", rowNum, errors),
+      Storefront: parsePhysicalQuantity(rec["Storefront PAR"], "Storefront PAR", rowNum, errors),
+      Backstock: parsePhysicalQuantity(rec["Backstock PAR"], "Backstock PAR", rowNum, errors),
     };
     if (!sku && !productId) { errors.push({ row: rowNum, message: "Product ID or SKU is required" }); continue; }
     const imageUrl = safeUrl(rec["Alavont Image"], "Alavont Image", rowNum, errors); const customerSafeImageUrl = safeUrl(rec["Safe Image"], "Safe Image", rowNum, errors);
@@ -620,8 +630,8 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
     const customerSafeCategory = safeText(rec["Safe Category"] || category, "Safe Category", rowNum, errors) || category;
     const compliance = classifyProductMasterCompliance({ name, category, description: rec["Alavont Description"] });
     const { complianceHold } = compliance;
-    const totalInventory = String(Object.values(inventory).reduce((a, b) => a + b, 0).toFixed(2));
-    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: (checkoutPrice ?? regularPrice ?? 0).toFixed(2), regularPrice: (regularPrice ?? 0).toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: customerSafeName, luciferCruzDescription: customerSafeDescription, luciferCruzCategory: customerSafeCategory, luciferCruzImageUrl: customerSafeImageUrl, customerSafeName: customerSafeName, customerSafeDescription: customerSafeDescription, merchantName: customerSafeName, merchantDescription: customerSafeDescription, merchantCategory: customerSafeCategory, merchantImage: customerSafeImageUrl, merchantBrand: "alavont", parLevel: String(Object.values(par).reduce((a, b) => a + b, 0).toFixed(2)), isWooManaged: false, isLocalAlavont: true, receiptName: customerSafeName, labelName: customerSafeName, labName: sku, metadata: refreshedProductMasterMetadata({}, compliance, activeSale) };
+    const totalInventory = sumPhysicalQuantities(Object.values(inventory));
+    const importValues: CatalogImportUpsertValues = { tenantId, sku, merchantSku: sku, name, description: safeText(rec["Alavont Description"], "Alavont Description", rowNum, errors) || null, category, price: (checkoutPrice ?? regularPrice ?? 0).toFixed(2), regularPrice: (regularPrice ?? 0).toFixed(2), compareAtPrice: salePrice !== null ? salePrice.toFixed(2) : null, stockUnit: "#", inventoryAmount: totalInventory, stockQuantity: totalInventory, isAvailable: !complianceHold, imageUrl, alavontName: name, alavontDescription: rec["Alavont Description"] || null, alavontCategory: category, alavontImageUrl: imageUrl, alavontInStock: !complianceHold, alavontId: sku, externalMenuId: sku, luciferCruzName: customerSafeName, luciferCruzDescription: customerSafeDescription, luciferCruzCategory: customerSafeCategory, luciferCruzImageUrl: customerSafeImageUrl, customerSafeName: customerSafeName, customerSafeDescription: customerSafeDescription, merchantName: customerSafeName, merchantDescription: customerSafeDescription, merchantCategory: customerSafeCategory, merchantImage: customerSafeImageUrl, merchantBrand: "alavont", parLevel: sumPhysicalQuantities(Object.values(par)), isWooManaged: false, isLocalAlavont: true, receiptName: customerSafeName, labelName: customerSafeName, labName: sku, metadata: refreshedProductMasterMetadata({}, compliance, activeSale) };
     const updateValues: Partial<CatalogImportUpsertValues> = { updatedAt: new Date() };
     const has = (header: CatalogImportHeader) => suppliedHeaders.has(header) && Boolean(rec[header].trim());
     const text = (header: CatalogImportHeader) => suppliedText(rec[header]);
@@ -823,12 +833,12 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
         for (const importName of suppliedInventoryLocations) {
           const location = await findOrCreateImportLocation(tx, tenantId, importName);
           if (p.inventoryColumns.has(importName)) {
-            await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, p.inventory[importName] ?? 0, p.parColumns.has(importName) ? (p.par[importName] ?? 0) : 0, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, `import:${confirmationRequestId}:${resolvedCatalogItemId}:${location.id}`);
+            await upsertImportedInventoryRow(tx, tenantId, resolvedCatalogItemId, location.id, p.inventory[importName] ?? "0.000000", p.parColumns.has(importName) ? (p.par[importName] ?? "0.000000") : "0.000000", { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, `import:${confirmationRequestId}:${resolvedCatalogItemId}:${location.id}`);
           } else if (p.parColumns.has(importName)) {
             await setCatalogBalanceParProjection(tx, { tenantId, itemId: resolvedCatalogItemId, locationId: location.id, parLevel: String(p.par[importName] ?? 0) });
           }
         }
-        if (suppliedInventoryLocations.size) await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.customerSafeName), [...p.inventoryColumns].reduce((sum, location) => sum + (p.inventory[location] ?? 0), 0), [...p.parColumns].reduce((sum, location) => sum + (p.par[location] ?? 0), 0));
+        if (suppliedInventoryLocations.size) await upsertImportedInventoryTemplate(tx, tenantId, resolvedCatalogItemId, String(p.values.name ?? p.values.alavontName ?? p.values.customerSafeName), sumPhysicalQuantities([...p.inventoryColumns].map(location => p.inventory[location] ?? "0.000000")), sumPhysicalQuantities([...p.parColumns].map(location => p.par[location] ?? "0.000000")));
       }
       await tx.insert(auditLogsTable).values({
         actorId: actor.id,
@@ -860,7 +870,7 @@ router.post(["/admin/products/import", "/admin/import/catalog", "/admin/import/p
 });
 
 router.post("/admin/products/import/rollback", requireRole("global_admin", "admin"), async (req, res) => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId(); await ensureSnapshotSchema();
+  const tenantId = req.authorizedTenantId!; await ensureSnapshotSchema();
   const snapshotRows = executeRows<{ id: number; snapshot: SnapshotPayload }>(await db.execute(sql`SELECT id, snapshot FROM catalog_import_snapshots WHERE tenant_id = ${tenantId} AND rolled_back_at IS NULL ORDER BY created_at DESC LIMIT 1`));
   const snapshotRow = snapshotRows[0];
   if (!snapshotRow) { res.status(404).json({ error: "No unrolled catalog import snapshot found for this tenant" }); return; }

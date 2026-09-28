@@ -274,6 +274,13 @@
       "when": 1790002800000,
       "tag": "0061_uber_direct_tenant_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790200000000,
+      "tag": "0064_inventory_tenant_quantity_foundation",
+      "breakpoints": true
     }
   ]
 }

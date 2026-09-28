@@ -26,7 +26,7 @@ export async function deductPaidOrderInventory(
   if (!shift?.boxAssignmentId) return;
   const items = await executor.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
-  await executeTransaction(executor, "payments.inventoryDeduct", async tx => {
+  await executeTransaction(order.tenantId, executor, "payments.inventoryDeduct", async tx => {
     const existing = await tx.select({ status: inventoryReservationsTable.status, expiresAt: inventoryReservationsTable.expiresAt }).from(inventoryReservationsTable).where(eq(inventoryReservationsTable.orderId, order.id));
     const hasConfirmed = existing.some(row => row.status === "confirmed");
     const hasActiveReservation = existing.some(row => row.status === "reserved" && row.expiresAt > new Date());
@@ -46,7 +46,7 @@ export async function deductPaidOrderInventory(
       }
     }
     if (!auditContext) throw new Error("Inventory sale confirmation requires an audit actor");
-    const confirmed = await confirmInventoryReservationsForOrder(tx, order.id, { id: auditContext.actorId, email: auditContext.actorEmail, role: auditContext.actorRole, ipAddress: auditContext.ipAddress });
+    const confirmed = await confirmInventoryReservationsForOrder(tx, order.tenantId, order.id, { id: auditContext.actorId, email: auditContext.actorEmail, role: auditContext.actorRole, ipAddress: auditContext.ipAddress });
     for (const item of items) {
       if (!item.catalogItemId) continue;
       const orderType = orderTypeForPaidDeduction(order);

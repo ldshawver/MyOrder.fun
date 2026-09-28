@@ -9,10 +9,11 @@ import { loadPaymentConfig } from "../payments/config";
 import { PayPalProvider } from "../payments/paypal";
 import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, type UberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
 import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
+import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 const uberTestAttempts = new Map<string, number[]>();
 function allowUberAdminTest(tenantId: number, userId: number): boolean {
@@ -284,8 +285,8 @@ function isCustomerRole(role: string | null | undefined): boolean {
 }
 
 async function resolveSettingsTenantId(actor?: { tenantId?: number | null; role?: string | null }): Promise<number> {
-  if (actor && !isGlobalAdmin({ role: actor.role ?? "user" }) && actor.tenantId != null) return actor.tenantId;
-  return getHouseTenantId();
+  if (actor?.tenantId != null) return actor.tenantId;
+  throw new Error("Explicit tenant context is required for settings");
 }
 
 async function getTenantScopedSettingsForActor(actor: { tenantId?: number | null; role?: string | null }, createIfMissing = true) {
@@ -327,13 +328,13 @@ async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: st
  * Returns null for either field if decryption fails or the column is empty.
  * Used by the woocommerce route to load creds for syncs / connection tests.
  */
-async function getDecryptedWooCreds(): Promise<{
+async function getDecryptedWooCreds(tenantId: number): Promise<{
   storeUrl: string;
   consumerKey: string | null;
   consumerSecret: string | null;
   enabled: boolean;
 }> {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings({ tenantId });
   return {
     storeUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
     consumerKey: safeDecrypt(s.wcConsumerKey),
@@ -404,7 +405,7 @@ router.post("/customer/disclaimer/accept", async (req, res): Promise<void> => {
 
 // GET /api/admin/settings/customer-disclaimer
 router.get("/admin/settings/customer-disclaimer", requireRole("global_admin", "admin", "supervisor"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
-  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  const settings = await getTenantScopedSettingsForActor({ tenantId: req.authorizedTenantId!, role: req.dbUser!.role });
   if (!settings) {
     res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
     return;
@@ -429,7 +430,7 @@ router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "a
     res.status(400).json({ error: `text must be between 20 and ${CUSTOMER_DISCLAIMER_MAX_CHARS} characters` });
     return;
   }
-  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  const settings = await getTenantScopedSettingsForActor({ tenantId: req.authorizedTenantId!, role: req.dbUser!.role });
   if (!settings) {
     res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
     return;
@@ -457,7 +458,7 @@ router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "a
 
 // GET /api/admin/settings
 router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings(_req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json(mapSettings(s));
 });
 
@@ -601,7 +602,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     }
   }
 
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   if (Object.keys(update).length === 0) {
     res.json(mapSettings(existing));
     return;
@@ -621,7 +622,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
  * only boolean flags indicating whether they have been saved.
  */
 router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings(_req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -675,7 +676,7 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
       return;
     }
 
-    const existing = await getOrCreateSettings(req.dbUser);
+    const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
     const [updated] = await db.update(adminSettingsTable)
       .set(update)
       .where(eq(adminSettingsTable.id, existing.id))
@@ -799,7 +800,7 @@ router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireT
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
 router.get("/admin/csr-settings", requirePermission("shift_settings.view"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! }) as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
     shiftLocationOptions: parseShiftLocations(s.shiftLocationOptions),
@@ -814,7 +815,7 @@ router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), as
   const deliveryOptions = req.body?.deliveryOptions;
   const printerNetworkConfig = req.body?.printerNetworkConfig;
   const update: Record<string, unknown> = {};
-  const existing = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! }) as AdminSettingsWithCsr;
 
   if (pickupInstructionOptions !== undefined) {
     if (!Array.isArray(pickupInstructionOptions) || pickupInstructionOptions.length > 20) {
@@ -899,7 +900,7 @@ function parseIds(raw: string | null | undefined): number[] {
 
 // GET /api/concierge/promoted — authenticated users: returns full catalog items
 router.get("/concierge/promoted", async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   const ids = parseIds(s.conciergePromotedItemIds);
   if (ids.length === 0) { res.json([]); return; }
   const { catalogItemsTable } = await import("@workspace/db");
@@ -918,7 +919,7 @@ router.get("/concierge/promoted", async (req, res): Promise<void> => {
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
 router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
 
@@ -929,7 +930,7 @@ router.put("/admin/concierge/promoted", requireRole("global_admin", "admin"), as
     res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });
     return;
   }
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   await db.update(adminSettingsTable)
     .set({ conciergePromotedItemIds: JSON.stringify(ids) })
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)));
@@ -971,13 +972,13 @@ function containsProhibitedConciergeLanguage(steps: Array<{ title: string; body:
 
 // GET /api/concierge/intro-steps — any authenticated user
 router.get("/concierge/intro-steps", async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
 // GET /api/admin/concierge-steps — admin/supervisor read
 router.get("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
@@ -992,7 +993,7 @@ router.put("/admin/concierge-steps", requireRole("global_admin", "admin", "super
     res.status(400).json({ error: "Intro steps contain unsafe or prohibited marketplace language." });
     return;
   }
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   const [updated] = await db.update(adminSettingsTable)
     .set({ conciergeIntroSteps: JSON.stringify(parsed.data) })
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))

@@ -1,3 +1,4 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod/v4";
@@ -8,7 +9,6 @@ import {
 } from "@workspace/db";
 import { isShiftOrderRoutable } from "../lib/orderRouting";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
 import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
@@ -57,7 +57,7 @@ router.use(async (_req, res, next) => {
   }
 });
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 async function activeCsrShifts(tenantId: number) {
   return db.select({
@@ -106,8 +106,7 @@ async function latestRoutingConfig(tenantId: number) {
 }
 
 router.get("/shift-queue/status", requirePermission("queue.view"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const shifts = await activeCsrShifts(tenantId);
   const config = await latestRoutingConfig(tenantId);
   const activeShift = shifts[0] ?? null;
@@ -140,7 +139,7 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
 
 router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const role = normalizeRole(actor.role);
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
@@ -156,8 +155,7 @@ router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, r
 });
 
 router.get("/shift-queue/general", requirePermission("queue.view"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const orders = await db.select({
     id: ordersTable.id, status: ordersTable.status, fulfillmentStatus: ordersTable.fulfillmentStatus,
     assignedCsrUserId: ordersTable.assignedCsrUserId, acceptedAt: ordersTable.acceptedAt,
@@ -170,8 +168,7 @@ router.get("/shift-queue/general", requirePermission("queue.view"), async (req, 
 });
 
 router.get("/shift-queue/general/session", requirePermission("cash_sessions.view"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const requestedLocationId = req.query.locationId == null ? undefined : Number(req.query.locationId);
   if (requestedLocationId != null && !Number.isInteger(requestedLocationId)) { res.status(400).json({ error: "Invalid location" }); return; }
   const session = await currentGeneralQueueSession(tenantId, requestedLocationId);
@@ -216,8 +213,7 @@ router.get("/shift-queue/general/session", requirePermission("cash_sessions.view
 });
 
 router.get("/shift-queue/general/session/options", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [locations, boxes, eligibleCsrs] = await Promise.all([
     db.select({ locationId: inventoryLocationsTable.id, locationName: inventoryLocationsTable.name, csrBoxId: inventoryLocationsTable.csrBoxId })
       .from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
@@ -244,7 +240,7 @@ router.post("/shift-queue/general/session/open", requirePermission("cash_session
     idempotencyKey: z.string().trim().min(8).max(128),
   }).strict().safeParse(req.body ?? {});
   if (!parsed.success) { res.status(422).json({ error: "Select an authorized register and location" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   try {
     const session = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${parsed.data.locationId})`);
@@ -278,7 +274,7 @@ router.post("/shift-queue/general/session/open", requirePermission("cash_session
 const participantBody = z.object({ userId: z.number().int().positive() }).strict();
 
 router.post("/shift-queue/general/session/:id/participants", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const sessionId = Number(req.params.id);
+  const actor = req.dbUser!; const tenantId = req.authorizedTenantId!; const sessionId = Number(req.params.id);
   const parsed = participantBody.safeParse(req.body ?? {});
   if (!Number.isInteger(sessionId) || !parsed.success) { res.status(422).json({ error: "Select an eligible CSR" }); return; }
   const [[session], [target]] = await Promise.all([
@@ -294,7 +290,7 @@ router.post("/shift-queue/general/session/:id/participants", requirePermission("
 });
 
 router.delete("/shift-queue/general/session/:id/participants/:userId", requirePermission("cash_sessions.manage"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!; const tenantId = actor.tenantId ?? await getHouseTenantId(); const sessionId = Number(req.params.id); const userId = Number(req.params.userId);
+  const actor = req.dbUser!; const tenantId = req.authorizedTenantId!; const sessionId = Number(req.params.id); const userId = Number(req.params.userId);
   if (!Number.isInteger(sessionId) || !Number.isInteger(userId)) { res.status(400).json({ error: "Invalid participant" }); return; }
   const [session] = await db.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
   if (!session) { res.status(404).json({ error: "Open General Queue session not found" }); return; }
@@ -308,7 +304,7 @@ router.delete("/shift-queue/general/session/:id/participants/:userId", requirePe
 
 router.post("/shift-queue/general/session/:id/join", requirePermission("cash_sessions.join"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const sessionId = Number(req.params.id);
   if (!Number.isInteger(sessionId)) { res.status(400).json({ error: "Invalid session id" }); return; }
   const [session] = await db.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open"))).limit(1);
@@ -326,7 +322,7 @@ router.post("/shift-queue/general/session/:id/close", requirePermission("cash_se
   if (!supervisorRoles.has(role)) { res.status(403).json({ error: "Supervisor permission is required" }); return; }
   const parsed = z.object({ closingBalance: z.number().finite().min(0).max(100000), idempotencyKey: z.string().trim().min(8).max(128), discrepancyReason: z.string().trim().min(3).max(500).optional() }).strict().safeParse(req.body ?? {});
   if (!parsed.success) { res.status(422).json({ error: "A valid closing balance is required" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const sessionId = Number(req.params.id);
   const closed = await db.transaction(async (tx) => {
     const [session] = await tx.select().from(generalQueueCashSessionsTable).where(and(eq(generalQueueCashSessionsTable.id, sessionId), eq(generalQueueCashSessionsTable.tenantId, tenantId))).for("update").limit(1);

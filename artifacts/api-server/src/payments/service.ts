@@ -6,6 +6,7 @@ import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
 import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
 import { logger } from "../lib/logger";
+import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservations";
 
 const CURRENCY = "USD";
 const money = (value: unknown) => Number(value).toFixed(2);
@@ -29,6 +30,7 @@ export class PaymentService {
       if (!order.checkoutConversionSnapshot || !order.legalDisclaimerAccepted || !order.finalConfirmationAt) throw new PaymentServiceError(422, "CHECKOUT_NOT_VERIFIED", "Checkout conversion and confirmation are required");
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
+      if (existing?.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt with a new idempotency key");
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
 
       // A new browser session must resume an existing durable PayPal order,
@@ -62,6 +64,7 @@ export class PaymentService {
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
       if (!attempt?.providerOrderId) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (existingCapture?.state === "completed" && order.paymentStatus === "paid") return { status: "captured", captureId: existingCapture.providerCaptureId, replayed: true };
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
@@ -201,6 +204,11 @@ export class PaymentService {
         return { localState: "captured", providerState: capture.status, recovered: order.paymentStatus !== "paid" };
       }
       const nextState = authoritative.status === "APPROVED" ? "approved" : authoritative.status === "CREATED" ? "created" : "reconciliation_required";
+      if (authoritative.status === "VOIDED" && !authoritative.capture && order.paymentStatus !== "paid") {
+        await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_voided" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { localState: "failed", providerState: authoritative.status, recovered: false };
+      }
       await tx.update(paymentAttemptsTable).set({ state: nextState, reconciliationState: nextState === "reconciliation_required" ? "manual_review" : "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { localState: nextState, providerState: authoritative.status, recovered: false };
     });

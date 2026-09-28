@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import { db, ordersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { computeCheckoutTotals, getCheckoutTaxSettings, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
 
 export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Checkout needs to be prepared before payment";
@@ -53,8 +53,8 @@ export async function requireVerifiedCheckoutConversion(input: { tenantId: numbe
   } catch (err) { if (err instanceof CheckoutConversionRequiredError) throw err; throw new CheckoutConversionRequiredError(); }
 }
 
-export async function requireOrderHasVerifiedCheckoutConversion(orderId: number): Promise<void> {
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+export async function requireOrderHasVerifiedCheckoutConversion(tenantId: number, orderId: number): Promise<void> {
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   if (!order?.legalDisclaimerAccepted || !order.finalConfirmationAt || !order.checkoutConversionSnapshot || !order.checkoutConversionExpiresAt) throw new CheckoutConversionRequiredError();
   if (new Date(order.checkoutConversionExpiresAt as Date).getTime() <= Date.now()) throw new CheckoutConversionRequiredError();
 }

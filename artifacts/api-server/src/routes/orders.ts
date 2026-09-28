@@ -40,7 +40,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
 import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
@@ -56,6 +56,7 @@ import {
   ensureInventoryReservationsTable,
   releaseInventoryReservationsForOrder,
   reserveCheckoutInventoryByOrderType,
+  releaseInventoryReservationsForOrder,
 } from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
@@ -141,6 +142,7 @@ router.get(
   loadDbUser,
   requireDbUser,
   requireApproved,
+  requireTenantContext,
   (req, res): void => {
     const actor = req.dbUser!;
     res.setHeader("Content-Type", "text/event-stream");
@@ -150,7 +152,7 @@ router.get(
     res.flushHeaders?.();
     res.write(`event: hello\ndata: ${JSON.stringify({ userId: actor.id, role: actor.role })}\n\n`);
 
-    const teardown = subscribe({ res, userId: actor.id, role: actor.role });
+    const teardown = subscribe({ res, tenantId: req.authorizedTenantId!, userId: actor.id, role: actor.role });
     const keepalive = setInterval(() => {
       try { res.write(`: keepalive\n\n`); } catch { /* ignore */ }
     }, 25_000);
@@ -171,11 +173,12 @@ router.get(
   loadDbUser,
   requireDbUser,
   requireApproved,
+  requireTenantContext,
   (req, res): void => {
     const actor = req.dbUser!;
     const since = typeof req.query.since === "string" ? req.query.since : new Date(Date.now() - 60_000).toISOString();
     const events = getRecentEventsForClient(
-      { res, userId: actor.id, role: actor.role },
+      { res, tenantId: req.authorizedTenantId!, userId: actor.id, role: actor.role },
       since,
     );
     res.json({ events, serverTime: new Date().toISOString() });
@@ -190,7 +193,8 @@ router.get(
   requireDbUser,
   requireApproved,
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  requireTenantContext,
+  async (req, res): Promise<void> => {
     // Push the delayed predicate into SQL so we don't load the full
     // orders table to filter in memory. Excludes terminal fulfillment
     // and terminal legacy status values to keep parity with the
@@ -200,6 +204,7 @@ router.get(
     const TERMINAL_STATUS = ["completed", "cancelled", "ready", "delivered", "refunded"];
     const delayed = await db.select().from(ordersTable).where(
       and(
+        eq(ordersTable.tenantId, req.authorizedTenantId!),
         isNotNull(ordersTable.estimatedReadyAt),
         lt(ordersTable.estimatedReadyAt, now),
         or(
@@ -214,7 +219,7 @@ router.get(
   },
 );
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 const conversionSnapshots = new Map<string, { tenantId: number; userId: number; itemKey: string; snapshot: unknown; createdAt: number }>();
 function cartItemKey(items: Array<{ catalogItemId: number; quantity: number }>): string {
@@ -389,7 +394,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, actor.tenantId ?? await getHouseTenantId(), true);
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, req.authorizedTenantId!, true);
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       await writeAuditLog({
@@ -412,7 +417,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
   const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
   const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview, token.checkoutConversionToken);
@@ -442,7 +447,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message, details: body.error.issues });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   try {
     const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
     // Static regression guard legacy substring: const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
@@ -487,7 +492,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message, details: body.error.issues });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const conversionCheck = verifyConversionSnapshot(body.data.checkoutConversionToken, tenantId, actor.id, body.data.items);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
@@ -666,7 +671,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(ordersTable)
     .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id)))
     .orderBy(desc(ordersTable.createdAt));
@@ -708,7 +713,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
 
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
     return;
@@ -1028,7 +1033,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         alavontCartSnapshot,
         luciferCheckoutSnapshot,
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
-      }).where(eq(ordersTable.id, createdOrder.id));
+      }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, createdOrder.id)));
 
       if (trustedUberQuote) {
         await tx.insert(uberDeliveryFulfillmentsTable).values({
@@ -1067,7 +1072,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             .set({ inventoryDeductions: reservations })
             .where(eq(orderItemsTable.id, orderItem.id));
           const deductionDetails = shouldConfirmReservationImmediately
-            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.productId === line.catalog_item_id)
+            ? (await confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.productId === line.catalog_item_id)
             : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
           if (shouldConfirmReservationImmediately) {
             await tx.update(orderItemsTable)
@@ -1229,6 +1234,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   publishOrderEvent({
     type: "order.assigned",
     orderId: order.id,
+    tenantId: order.tenantId,
     customerId: actor.id,
     assignedCsrUserId: routing.assignedCsrUserId,
     routeSource: routing.routeSource,
@@ -1248,6 +1254,7 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   publishOrderEvent({
     type: "order.updated",
     orderId: o.id,
+    tenantId: o.tenantId,
     customerId: o.customerId,
     assignedCsrUserId: o.assignedCsrUserId ?? null,
     fulfillmentStatus: o.fulfillmentStatus ?? null,
@@ -1262,13 +1269,13 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
 
 async function acceptOrder(req: Request, res: Response): Promise<void> {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   if (!z.object({}).strict().safeParse(req.body ?? {}).success) {
     res.status(422).json({ error: "Claim does not accept actor or assignment fields" });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
@@ -1355,6 +1362,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     publishOrderEvent({
       type: "order.updated",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: null,
       fulfillmentStatus: updated.fulfillmentStatus ?? null,
@@ -1385,7 +1393,7 @@ router.post("/orders/:id/claim", requirePermission("queue.claim"), acceptOrder);
 
 router.post("/orders/:id/release", requireRole("csr", "supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
   const orderId = Number(req.params.id);
   const parsed = z.object({ reason: z.string().trim().min(3).max(240).optional() }).strict().safeParse(req.body ?? {});
@@ -1404,7 +1412,7 @@ router.post("/orders/:id/release", requireRole("csr", "supervisor", "admin", "gl
 
 router.post("/orders/:id/assign", requireRole("supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const orderId = Number(req.params.id);
   const parsed = z.object({ assigneeUserId: z.number().int().positive(), reason: z.string().trim().min(3).max(240) }).strict().safeParse(req.body ?? {});
   if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "Invalid assignment request" }); return; }
@@ -1424,8 +1432,8 @@ router.post("/orders/:id/assign", requireRole("supervisor", "admin", "global_adm
 // PATCH /api/orders/:id/eta — supervisor adjusts the customer hourglass
 router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { estimatedReadyAt, promisedMinutes } = req.body as { estimatedReadyAt?: string; promisedMinutes?: number };
   let when: Date;
   let promised: number | undefined;
@@ -1439,11 +1447,11 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
     res.status(400).json({ error: "Provide estimatedReadyAt (ISO) or promisedMinutes (number > 0)" });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
   const [updated] = await db.update(ordersTable)
     .set({ estimatedReadyAt: when, etaAdjustedBySupervisor: true, ...(promised != null ? { promisedMinutes: promised } : {}) })
-    .where(eq(ordersTable.id, orderId)).returning();
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).returning();
   emitUpdated(updated, "eta_adjusted");
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -1477,7 +1485,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
   const orderId = Number(req.params.id);
   const parsed = CashCloseoutBody.safeParse(req.body ?? {});
   if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "A valid cash tender and idempotency key are required" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const role = normalizeRole(actor.role);
   const canOverride = ["supervisor", "admin", "global_admin"].includes(role);
   if (parsed.data.supervisorOverride && !canOverride) { res.status(403).json({ error: "Supervisor override permission is required" }); return; }
@@ -1612,17 +1620,18 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 // POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
 router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
   const now = new Date();
   const [updated] = await db.update(ordersTable)
     .set({ readyAt: now, status: "ready", fulfillmentStatus: "ready" })
-    .where(eq(ordersTable.id, orderId)).returning();
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).returning();
   publishOrderEvent({
     type: "order.ready",
     orderId,
+    tenantId: updated.tenantId,
     customerId: updated.customerId,
     assignedCsrUserId: updated.assignedCsrUserId ?? null,
     readyAt: now.toISOString(),
@@ -1639,10 +1648,10 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
 // POST /api/orders/:id/reassign — supervisor reassigns to a specific user
 router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { assignedCsrUserId } = req.body as { assignedCsrUserId?: number | null };
   if (assignedCsrUserId !== null && typeof assignedCsrUserId !== "number") {
     res.status(400).json({ error: "assignedCsrUserId must be a user id or null" });
@@ -1669,6 +1678,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
     publishOrderEvent({
       type: "order.updated",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: previousAssignedCsrUserId,
       fulfillmentStatus: updated.fulfillmentStatus ?? null,
@@ -1695,6 +1705,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
   publishOrderEvent({
     type: "order.assigned",
     orderId: updated.id,
+    tenantId: updated.tenantId,
     customerId: updated.customerId,
     assignedCsrUserId: updated.assignedCsrUserId ?? null,
     routeSource: "supervisor_override",
@@ -1716,8 +1727,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
 
 // GET /api/orders/active-csrs — supervisor reassign dropdown source.
 router.get("/orders/active-csrs", requirePermission("queue.manage"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) {
     res.status(403).json({ error: "Tenant assignment is required" });
     return;
@@ -1766,8 +1776,8 @@ router.get("/orders/active-csrs", requirePermission("queue.manage"), async (req,
 });
 
 // GET /api/orders/summary
-router.get("/orders/summary", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const orders = await db.select().from(ordersTable);
+router.get("/orders/summary", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const orders = await db.select().from(ordersTable).where(eq(ordersTable.tenantId, req.authorizedTenantId!));
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfWeek = new Date(now);
@@ -1801,6 +1811,7 @@ router.get("/orders/recent", requireRole("global_admin", "admin"), async (req, r
   }
   const limit = query.data.limit ?? 10;
   const orders = await db.select().from(ordersTable)
+    .where(eq(ordersTable.tenantId, req.authorizedTenantId!))
     .orderBy(desc(ordersTable.createdAt))
     .limit(limit);
   const orderObjs = await Promise.all(orders.map(buildOrderResponse));
@@ -1811,12 +1822,12 @@ router.get("/orders/recent", requireRole("global_admin", "admin"), async (req, r
 router.get("/orders/:id", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = GetOrderParams.safeParse({ id: parseInt(raw, 10) });
+  const params = GetOrderParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, params.data.id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
     res.status(404).json({ error: "This order could not be found or you do not have access to it." });
@@ -1869,7 +1880,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(400).json({ error: "Reason is required" });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
     res.status(404).json({ error: "This order could not be found or you do not have access to it." });
@@ -1926,6 +1937,10 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(409).json({ error: "Order must be paid or closed out before it can be completed" });
     return;
   }
+  if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
+    try { await releaseInventoryReservationsForOrder(db, tenantId, id); }
+    catch { res.status(409).json({ error: "Payment must be resolved before reserved inventory can be released" }); return; }
+  }
   const now = new Date();
   const stamps: Partial<typeof ordersTable.$inferInsert> =
     normalizedTarget === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
@@ -1970,7 +1985,7 @@ router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin",
   const actor = req.dbUser!;
   const parsed = StaleArchiveBody.safeParse(req.body ?? {});
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const now = new Date();
   const cutoff = new Date(now.getTime() - parsed.data.olderThanMinutes * 60_000);
   const conditions = [
@@ -2012,7 +2027,7 @@ router.post("/orders/:id/void", (req, res) => { void transitionOrder(req, res, "
 router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = UpdateOrderStatusParams.safeParse({ id: parseInt(raw, 10) });
+  const params = UpdateOrderStatusParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -2022,14 +2037,14 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Not found" });
     return;
   }
   const [updated] = await db.update(ordersTable)
     .set({ status: body.data.status, notes: body.data.notes ?? order.notes })
-    .where(eq(ordersTable.id, params.data.id))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id)))
     .returning();
 
   // Delivery is a fulfillment state, not a second inventory authority. Physical
@@ -2084,17 +2099,18 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
 router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = GetOrderNotesParams.safeParse({ id: parseInt(raw, 10) });
+  const params = GetOrderNotesParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
   }
   let notes = await db.select().from(orderNotesTable).where(eq(orderNotesTable.orderId, params.data.id)).orderBy(desc(orderNotesTable.createdAt));
+  if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Order not found" }); return; }
   // Customers cannot see internal notes
   if (actor.role === "user") {
     notes = notes.filter(n => n.isInternal !== "true");
@@ -2104,7 +2120,7 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   const authors = authorIds.length > 0
     ? await db.select({ id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
         .from(usersTable)
-        .where(sql`${usersTable.id} = ANY(${sql.raw(`ARRAY[${authorIds.join(",")}]`)})`)
+        .where(and(eq(usersTable.tenantId, req.authorizedTenantId!), inArray(usersTable.id, authorIds)))
     : [];
   const authorMap = new Map(authors.map(a => [a.id, a]));
 
@@ -2129,8 +2145,8 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
 router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const orderId = parseInt(raw, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(raw);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { trackingUrl } = req.body as { trackingUrl?: string };
   if (trackingUrl) {
     const parsedTracking = SubmitTrackingLinkBody.safeParse({ trackingUrl });
@@ -2139,11 +2155,11 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
       return;
     }
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const [updated] = await db.update(ordersTable)
     .set({ trackingUrl: trackingUrl ?? null })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2158,8 +2174,8 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
 async function updateOrderFulfillment(req: Request, res: Response, forcedFulfillmentStatus?: string): Promise<void> {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const { fulfillmentStatus: bodyFulfillment } = req.body as { fulfillmentStatus?: string };
   const rawFulfillment = forcedFulfillmentStatus ?? bodyFulfillment;
@@ -2179,11 +2195,11 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
   }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
   const role = normalizeRole(actor.role);
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(
@@ -2246,6 +2262,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     publishOrderEvent({
       type: "order.ready",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: updated.assignedCsrUserId ?? null,
       readyAt: (updated.readyAt ?? now).toISOString(),
@@ -2264,10 +2281,10 @@ router.post("/orders/:id/ready", requireRole("global_admin", "admin", "csr"), (r
 // POST /api/orders/:id/purge — purge order data (admin only)
 router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
   const { mode } = req.body as { mode?: string };
@@ -2284,7 +2301,7 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
       notes: null, shippingAddress: null, alavontCartSnapshot: null,
       luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
       status: "purged",
-    }).where(eq(ordersTable.id, orderId));
+    }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   } else if (purgeMode === "partial") {
     // Remove PII only, keep anonymous financial record
     await db.delete(orderNotesTable).where(eq(orderNotesTable.orderId, orderId));
@@ -2292,11 +2309,11 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
       notes: null, shippingAddress: null, alavontCartSnapshot: null,
       luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
       status: "purged",
-    }).where(eq(ordersTable.id, orderId));
+    }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   } else {
     // delayed — just mark for purge, background job handles it
     await db.update(ordersTable).set({ purgedAt: new Date(), auditToken, status: "pending_purge" })
-      .where(eq(ordersTable.id, orderId));
+      .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   }
 
   await writeAuditLog({
@@ -2313,7 +2330,7 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
 router.post("/orders/:id/notes", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = AddOrderNoteParams.safeParse({ id: parseInt(raw, 10) });
+  const params = AddOrderNoteParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -2323,11 +2340,12 @@ router.post("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
   }
+  if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Order not found" }); return; }
   // Staff can add internal notes; regular users cannot
   const isInternal = (actor.role !== "user") && (body.data.isInternal ?? false);
 
@@ -2380,11 +2398,11 @@ const HandoffChecklistBody = z.object({
 // POST /api/orders/:id/delivery/tracking-link — customer submits Uber trip-share link
 router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const body = SubmitTrackingLinkBody.safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizeRole(actor.role));
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
@@ -2393,7 +2411,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   }
   const [updated] = await db.update(ordersTable)
     .set({ trackingUrl: body.data.trackingUrl, trackingSubmittedAt: new Date() })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2407,17 +2425,17 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
 // PATCH /api/orders/:id/delivery/handoff-checklist — CSR updates courier handoff checklist
 router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const body = HandoffChecklistBody.safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const existing = (order.handoffChecklist as Record<string, boolean> | null) ?? {};
   const merged = { ...existing, ...body.data };
   const [updated] = await db.update(ordersTable)
     .set({ handoffChecklist: merged })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2431,15 +2449,15 @@ router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin
 // POST /api/orders/:id/delivery/handoff-complete — CSR marks courier handoff complete
 router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   if (order.handoffCompletedAt) { res.status(409).json({ error: "Handoff already completed" }); return; }
   const now = new Date();
   const [updated] = await db.update(ordersTable)
     .set({ handoffCompletedAt: now, handoffCompletedByUserId: actor.id })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,

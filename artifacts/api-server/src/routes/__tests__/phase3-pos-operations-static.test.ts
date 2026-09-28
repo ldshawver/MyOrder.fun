@@ -28,7 +28,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
     });
 
     it("is tenant-scoped and cannot list another tenant's products", () => {
-      expect(catalog).toContain("const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId()");
+      expect(catalog).toContain("const tenantId = req.authorizedTenantId!");
       expect(catalog).toContain("eq(catalogItemsTable.tenantId, tenantId)");
       expect(catalog).toContain("eq(inventoryLocationsTable.tenantId, tenantId)");
       expect(catalog).toContain("eq(inventoryBalancesTable.tenantId, tenantId)");

@@ -1,5 +1,5 @@
 import { db, tenantsTable } from "@workspace/db";
-import { asc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { logger } from "./logger";
 
 let _cachedId: number | null = null;
@@ -14,19 +14,19 @@ let _cachedId: number | null = null;
  */
 export async function getHouseTenantId(): Promise<number> {
   if (_cachedId !== null) return _cachedId;
-
-  const [existing] = await db
-    .select({ id: tenantsTable.id })
-    .from(tenantsTable)
-    .orderBy(asc(tenantsTable.id))
-    .limit(1);
-
-  if (existing) {
-    _cachedId = existing.id;
-    return existing.id;
+  const configuredId = Number(process.env.MYORDER_SIGNUP_TENANT_ID);
+  if (Number.isSafeInteger(configuredId) && configuredId > 0) {
+    const [configured] = await db.select({ id: tenantsTable.id }).from(tenantsTable).where(eq(tenantsTable.id, configuredId)).limit(1);
+    if (!configured) throw new Error("Configured signup tenant does not exist");
+    _cachedId = configured.id;
+    return configured.id;
   }
 
-  // No tenant — seed the default house tenant. Idempotent via slug uniqueness.
+  // Preserve a genuine one-tenant deployment, but refuse to choose among tenants.
+  const candidates = await db.select({ id: tenantsTable.id }).from(tenantsTable).limit(2);
+  if (candidates.length > 1) throw new Error("Explicit signup tenant configuration is required");
+  if (candidates.length === 1) { _cachedId = candidates[0].id; return candidates[0].id; }
+  // Empty deployment — seed the default house tenant. Idempotent via slug uniqueness.
   logger.info({ event: "tenant_auto_seed" }, "No tenant row found; seeding default house tenant");
   const [seeded] = await db
     .insert(tenantsTable)
@@ -48,7 +48,7 @@ export async function getHouseTenantId(): Promise<number> {
   const [after] = await db
     .select({ id: tenantsTable.id })
     .from(tenantsTable)
-    .orderBy(asc(tenantsTable.id))
+    .where(eq(tenantsTable.slug, "house"))
     .limit(1);
   if (!after) throw new Error("Failed to auto-seed house tenant");
   _cachedId = after.id;
