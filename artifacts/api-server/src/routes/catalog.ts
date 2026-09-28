@@ -418,11 +418,12 @@ async function getLinkedInventoryStockByCatalogId(tenantId: number) {
   return stockByCatalogId;
 }
 
-async function getShowOutOfStockSetting(): Promise<boolean> {
+async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
   try {
     const [settings] = await db
       .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
       .from(adminSettingsTable)
+      .where(eq(adminSettingsTable.tenantId, tenantId))
       .limit(1);
     return settings?.showOutOfStock === true;
   } catch {
@@ -478,7 +479,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
       (r.labName ?? "").toLowerCase().includes(s)
     );
   }
-  const showOutOfStock = await getShowOutOfStockSetting();
+  const showOutOfStock = await getShowOutOfStockSetting(tenantId);
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
   } else if (!isAdminActor && !showOutOfStock) {
