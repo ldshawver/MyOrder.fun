@@ -5,6 +5,7 @@
  */
 import {
   renderBlocks,
+  renderBodyOnly,
   buildCustomerReceiptBlocks,
   charWidth,
   getLogo,
@@ -14,6 +15,11 @@ const STORED_NUL_PLACEHOLDER = "\u2400";
 
 export function decodeStoredReceiptText(text: string): string {
   return text.replaceAll(STORED_NUL_PLACEHOLDER, "\x00");
+}
+
+/** PostgreSQL text columns reject NUL; store it as a reversible placeholder. */
+export function encodeStoredReceiptText(text: string): string {
+  return text.replaceAll("\x00", STORED_NUL_PLACEHOLDER);
 }
 
 interface OrderItem {
@@ -107,7 +113,7 @@ function expandItemsForMode(items: OrderItem[], mode: "alavont_only" | "lucifer_
   return result;
 }
 
-export function renderKitchenTicket(order: PrintOrder): string {
+function legacyReceiptBlocks(order: PrintOrder) {
   const width = charWidth(order.paperWidth ?? "80mm");
   const logoLines = getLogo(width, order.receiptBrandName);
   const mode = order.receiptLineNameMode ?? "lucifer_only";
@@ -146,9 +152,20 @@ export function renderKitchenTicket(order: PrintOrder): string {
     showOperatorName: order.showOperatorName ?? true,
     receiptTemplateStyle: order.receiptTemplateStyle ?? "clean",
   });
+  return { blocks, width };
+}
+
+export function renderKitchenTicket(order: PrintOrder): string {
+  const { blocks, width } = legacyReceiptBlocks(order);
   // PostgreSQL text columns reject NUL bytes. Keep the queued/rendered receipt
   // human-readable and reversible; the transport restores NUL before dispatch.
-  return renderBlocks(blocks, width).replaceAll("\x00", STORED_NUL_PLACEHOLDER);
+  return encodeStoredReceiptText(renderBlocks(blocks, width));
+}
+
+/** The legacy receipt as plain text (no printer bytes), for previews. */
+export function renderCustomerReceiptBody(order: PrintOrder): string {
+  const { blocks, width } = legacyReceiptBlocks(order);
+  return renderBodyOnly(blocks, width);
 }
 
 export function renderCustomerReceipt(order: PrintOrder): string {

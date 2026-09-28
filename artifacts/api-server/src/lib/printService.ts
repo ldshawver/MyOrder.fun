@@ -438,6 +438,31 @@ export async function dispatchJob(job: PrintJob, printer: PrintPrinter): Promise
 
 // ── Order Print Enqueue ───────────────────────────────────────────────────────
 
+/**
+ * Automatic receipt text through the shared receipt pipeline (the same one
+ * reprint and preview use). Falls back to the legacy render only when the
+ * committed order cannot be loaded, so printing never fails silently.
+ */
+async function renderAutomaticReceipt(
+  tenantId: number,
+  orderId: number,
+  legacyOrder: Parameters<typeof renderCustomerReceipt>[0],
+): Promise<{ text: string; templateId: number | null; templateVersion: number | null }> {
+  try {
+    const { renderOrderReceipt } = await import("./print/receiptPipeline");
+    const rendered = await renderOrderReceipt(tenantId, orderId);
+    if (rendered) {
+      const { text, templateId, templateVersion } = rendered.receipt;
+      return { text, templateId, templateVersion };
+    }
+    pLog.warn({ event: "receipt_data_unavailable", orderId }, "receipt data not found; using legacy receipt");
+  } catch (err) {
+    pLog.warn({ event: "receipt_pipeline_error", orderId, err: err instanceof Error ? err.message : String(err) },
+      "receipt pipeline failed; using legacy receipt");
+  }
+  return { text: renderCustomerReceipt(legacyOrder), templateId: null, templateVersion: null };
+}
+
 export async function enqueueOrderPrintJobs(order: {
   id: number;
   status: string;
@@ -534,9 +559,12 @@ export async function enqueueOrderPrintJobs(order: {
   // ── Receipt ───────────────────────────────────────────────────────────────
   const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
   const { primary: receiptPrinter } = await resolveReceiptPrinters(profile, routeContext);
+  const receiptRender = settings.autoPrintReceipts || settings.autoPrintOrders
+    ? await renderAutomaticReceipt(tenantId, order.id, printOrder)
+    : null;
 
-  if ((settings.autoPrintReceipts || settings.autoPrintOrders) && !receiptPrinter) {
-    const renderedText = renderCustomerReceipt(printOrder);
+  if (receiptRender && !receiptPrinter) {
+    const renderedText = receiptRender.text;
     const key = `order:${order.id}:receipt:no-printer`;
     const existing = await db.select().from(printJobsTable)
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
@@ -551,6 +579,8 @@ export async function enqueueOrderPrintJobs(order: {
         renderFormat: "text",
         payloadJson: printOrder,
         renderedText,
+        templateId: receiptRender.templateId,
+        templateVersion: receiptRender.templateVersion,
         operatorUserId: operator?.userId ?? null,
         errorMessage: "No active receipt printer assigned or configured",
       });
@@ -558,8 +588,8 @@ export async function enqueueOrderPrintJobs(order: {
     pLog.warn({ event: "receipt_no_printer", orderId: order.id }, "receipt skipped: no printer available");
   }
 
-  if ((settings.autoPrintReceipts || settings.autoPrintOrders) && receiptPrinter) {
-    const renderedText = renderCustomerReceipt(printOrder);
+  if (receiptRender && receiptPrinter) {
+    const renderedText = receiptRender.text;
     const key = makeIdempotencyKey(order.id, receiptPrinter.id, "customer_receipt");
     const existing = await db.select().from(printJobsTable)
       .where(eq(printJobsTable.idempotencyKey, key)).limit(1);
@@ -576,6 +606,8 @@ export async function enqueueOrderPrintJobs(order: {
         renderFormat: "text",
         payloadJson: printOrder,
         renderedText,
+        templateId: receiptRender.templateId,
+        templateVersion: receiptRender.templateVersion,
         operatorUserId: operator?.userId ?? null,
       }).returning();
     }

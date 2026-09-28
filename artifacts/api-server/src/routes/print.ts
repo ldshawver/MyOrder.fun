@@ -53,6 +53,14 @@ import {
   resolveBridgeApiKey,
 } from "../lib/printRouter";
 import { receiptTemplateLayoutSchema } from "../lib/printTemplateSchema";
+import {
+  loadLegacyReceiptPresentation,
+  renderOrderReceipt,
+  renderReceiptPreview,
+  resolveTenantReceiptTemplate,
+  type ReceiptTemplateRecord,
+} from "../lib/print/receiptPipeline";
+import { SAMPLE_RECEIPT_DATA } from "../lib/print/receiptData";
 import multer from "multer";
 import sharp from "sharp";
 import crypto from "node:crypto";
@@ -1768,55 +1776,69 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
 // ── Print Previews ─────────────────────────────────────────────────────────
 // Returns rendered plain-text for browser preview and test-dispatch review.
 
+// Preview renders fixed synthetic sample data through the same pipeline as
+// real receipts. It never reads a real order and never prints.
+const PREVIEW_BODY_KEYS = new Set(["templateId", "templateJson", "paperWidth"]);
 router.post(
   "/print/preview/receipt",
   adminOnly,
   async (req, res): Promise<void> => {
-    const settings = await getSettings();
-    const s = settings as Record<string, unknown>;
-    const width = charWidth((s.paperWidth as string) ?? "80mm");
-    const dualBrandName = s.brandName as string | undefined;
-    const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-    const receiptTemplateStyle =
-      (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ??
-      "clean";
-    const body = req.body ?? {};
-    const blocks = buildCustomerReceiptBlocks({
-      orderId: body.orderId ?? 0,
-      orderNumber: body.orderNumber ?? "PREVIEW",
-      createdAt: body.createdAt ?? new Date(),
-      customerName: body.customerName ?? "Preview Customer",
-      fulfillmentType: body.fulfillmentType ?? "Pickup",
-      operatorName: body.operatorName,
-      paymentStatus: body.paymentStatus ?? "paid",
-      paymentMethod: body.paymentMethod ?? "Cash",
-      notes: body.notes,
-      items: body.items ?? [
-        {
-          name: "Blue Dream 3.5g",
-          quantity: 1,
-          unitPrice: 45.0,
-          totalPrice: 45.0,
-        },
-        {
-          name: "House Special",
-          quantity: 2,
-          unitPrice: 30.0,
-          totalPrice: 60.0,
-          notes: "Extra discreet packaging",
-        },
-      ],
-      subtotal: body.subtotal ?? 105.0,
-      tax: body.tax ?? 0,
-      total: body.total ?? 105.0,
-      logoLines,
-      dualBrandName,
-      footerMessage: s.footerMessage as string | undefined,
-      showDiscreetNotice: Boolean(s.showDiscreetNotice),
-      showOperatorName: s.includeOperatorName !== false,
-      receiptTemplateStyle,
-    });
-    res.type("text/plain").send(renderBlocks(blocks, width));
+    const tenantId = requestTenantId(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (Object.keys(body).some((key) => !PREVIEW_BODY_KEYS.has(key))) {
+      res.status(400).json({
+        error: "Preview uses fixed sample data; only templateId, templateJson or paperWidth may be supplied",
+      });
+      return;
+    }
+    let template: ReceiptTemplateRecord | null;
+    if (body.templateJson !== undefined) {
+      const parsed = receiptTemplateLayoutSchema.safeParse(body.templateJson);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid receipt template", issues: parsed.error.issues.slice(0, 20) });
+        return;
+      }
+      const paperWidth = body.paperWidth === "58mm" ? "58mm" : "80mm";
+      template = { id: 0, version: 0, paperWidth, layout: parsed.data };
+    } else if (body.templateId !== undefined) {
+      const id = Number(body.templateId);
+      if (!Number.isInteger(id) || id <= 0) {
+        res.status(400).json({ error: "templateId must be a positive integer" });
+        return;
+      }
+      const [row] = await db
+        .select({
+          id: printTemplatesTable.id,
+          version: printTemplatesTable.version,
+          paperWidth: printTemplatesTable.paperWidth,
+          layout: printTemplatesTable.templateJson,
+        })
+        .from(printTemplatesTable)
+        .where(and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.id, id),
+          eq(printTemplatesTable.jobType, "receipt"),
+        ))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: "Receipt template not found" });
+        return;
+      }
+      template = row;
+    } else {
+      template = await resolveTenantReceiptTemplate(tenantId);
+    }
+    const preview = renderReceiptPreview(
+      SAMPLE_RECEIPT_DATA,
+      template,
+      await loadLegacyReceiptPresentation(tenantId),
+    );
+    res.set("X-Receipt-Source", preview.source);
+    if (preview.fallbackReason) res.set("X-Receipt-Fallback-Reason", preview.fallbackReason);
+    if (preview.skipped.length) {
+      res.set("X-Receipt-Skipped", preview.skipped.map((block) => `${block.field}:${block.reason}`).join(","));
+    }
+    res.type("text/plain").send(preview.text);
   },
 );
 
@@ -2086,20 +2108,6 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     return;
   }
 
-  const items = await db
-    .select()
-    .from(orderItemsTable)
-    .where(eq(orderItemsTable.orderId, orderId));
-
-  const [customer] = await db
-    .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
-    .from(usersTable)
-    .where(eq(usersTable.id, order.customerId))
-    .limit(1);
-  const customerName = customer
-    ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim()
-    : "";
-
   const operator = await selectActiveOperator(tenantId);
   const [assignment] = order.assignedShiftId
     ? await db
@@ -2129,63 +2137,13 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     return;
   }
 
-  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" =
-    "lucifer_only";
-  try {
-    const [adminSettings] = await db
-      .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
-      .from(adminSettingsTable)
-      .where(eq(adminSettingsTable.tenantId, tenantId))
-      .limit(1);
-    if (adminSettings?.receiptLineNameMode) {
-      receiptLineNameMode =
-        adminSettings.receiptLineNameMode as typeof receiptLineNameMode;
-    }
-  } catch {
-    /* non-critical */
+  // Same receipt data builder and renderer as automatic receipts.
+  const rendered = await renderOrderReceipt(tenantId, orderId);
+  if (!rendered) {
+    res.status(404).json({ error: "Order not found" });
+    return;
   }
-
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth((s.paperWidth as string) ?? "80mm");
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-  const operatorName = operator
-    ? `${operator.firstName ?? ""} ${operator.lastName ?? ""}`.trim() ||
-      operator.email ||
-      undefined
-    : undefined;
-
-  const printOrder = {
-    id: order.id,
-    customerName,
-    notes: order.notes ?? undefined,
-    receiptLineNameMode,
-    items: items.map((i) => ({
-      quantity: i.quantity,
-      name: i.catalogItemName,
-      alavontName: i.alavontName ?? i.catalogItemName,
-      luciferCruzName: i.luciferCruzName ?? i.catalogItemName,
-      unitPrice: parseFloat(i.unitPrice as string),
-      totalPrice: parseFloat(i.totalPrice as string),
-    })),
-    subtotal: parseFloat(order.subtotal as string),
-    tax: parseFloat((order.tax as string) ?? "0"),
-    total: parseFloat(order.total as string),
-    paymentStatus: order.paymentStatus,
-    createdAt: order.createdAt,
-    logoLines,
-    dualBrandName: s.brandName as string | undefined,
-    footerMessage: s.footerMessage as string | undefined,
-    showDiscreetNotice: Boolean(s.showDiscreetNotice),
-    showOperatorName: s.includeOperatorName !== false,
-    operatorName,
-    receiptTemplateStyle:
-      (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ??
-      "clean",
-  };
-
-  const { renderCustomerReceipt } = await import("../lib/receiptRenderer.js");
-  const renderedText = renderCustomerReceipt(printOrder);
+  const renderedText = rendered.receipt.text;
 
   // Always create a fresh job for reprints (unique key per timestamp)
   const iKey = makeIdempotencyKey(
@@ -2205,8 +2163,15 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
       status: "queued",
       idempotencyKey: iKey,
       renderFormat: "text",
-      payloadJson: printOrder as object,
+      payloadJson: {
+        orderId,
+        receiptSource: rendered.receipt.source,
+        templateId: rendered.receipt.templateId,
+        templateVersion: rendered.receipt.templateVersion,
+      },
       renderedText,
+      templateId: rendered.receipt.templateId,
+      templateVersion: rendered.receipt.templateVersion,
       operatorUserId: operator?.userId ?? null,
     })
     .returning();
