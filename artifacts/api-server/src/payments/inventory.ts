@@ -1,9 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
-import { db, inventoryReservationsTable, labTechShiftsTable, orderItemsTable, ordersTable } from "@workspace/db";
+import { eq, sql } from "drizzle-orm";
+import { db, orderItemsTable, ordersTable } from "@workspace/db";
 import { writeAuditLog } from "../lib/auth";
 import { type InventoryOrderType } from "../lib/inventoryBalances";
-import { executeTransaction, type InventoryKernelExecutor } from "../lib/inventoryKernel";
 import { confirmInventoryReservationsForOrder, ensureInventoryReservationsTable, reserveCheckoutInventoryByOrderType } from "../lib/inventoryReservations";
+import { quantityText, quantityUnits } from "../lib/exactQuantity";
+
+function rows<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | undefined)?.rows ?? []); }
 
 export class PaymentInventoryError extends Error {
   constructor(public readonly catalogItemId: number) { super(`Insufficient inventory for catalog item ${catalogItemId}`); this.name = "PaymentInventoryError"; }
@@ -15,47 +17,58 @@ function orderTypeForPaidDeduction(order: typeof ordersTable.$inferSelect): Inve
   return order.deliveryMethod === "csr_delivery" ? "CSR" : "ONLINE";
 }
 
-export async function deductPaidOrderInventory(
-  order: typeof ordersTable.$inferSelect,
-  auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string },
-  executor: InventoryKernelExecutor = db,
-): Promise<void> {
-  if (!order.assignedShiftId || order.routeSource !== "active_csr") return;
-  await ensureInventoryReservationsTable();
-  const [shift] = await executor.select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId }).from(labTechShiftsTable).where(eq(labTechShiftsTable.id, order.assignedShiftId)).limit(1);
-  if (!shift?.boxAssignmentId) return;
-  const items = await executor.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+export type PaymentTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Reacquire released reservations before a payment retry can contact PayPal. */
+export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, order: typeof ordersTable.$inferSelect): Promise<void> {
+  const items = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+  for (const item of items) {
+    const reservationItemId = item.inventoryItemId == null ? null : item.id;
+    const consumed = rows<{ id: number }>(await tx.execute(sql`
+      SELECT id FROM inventory_reservations WHERE order_id = ${order.id}
+        AND (order_item_id = ${item.id} OR (${reservationItemId === null} AND order_item_id IS NULL AND catalog_item_id = ${item.catalogItemId}))
+        AND status = 'confirmed' LIMIT 1
+    `));
+    if (consumed.length) continue;
+    const source = item.inventoryItemId == null ? undefined : rows<{ catalogItemId: number; locationEvaluation: string }>(await tx.execute(sql`
+      SELECT ii.catalog_item_id AS "catalogItemId", cp.location_evaluation AS "locationEvaluation"
+      FROM inventory_items ii JOIN catalogue_options co ON co.tenant_id = ii.tenant_id AND co.inventory_item_id = ii.id
+      JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
+      WHERE ii.tenant_id = ${order.tenantId} AND ii.id = ${item.inventoryItemId} AND co.id = ${item.optionId} LIMIT 1
+    `))[0];
+    if (item.inventoryItemId != null && !source) throw new PaymentInventoryError(item.catalogItemId);
+    const inventoryCatalogItemId = source?.catalogItemId ?? item.catalogItemId;
+    const physicalQuantity = item.inventoryQuantitySnapshot ?? quantityText(quantityUnits(String(item.quantity)));
+    const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id,
+      inventoryCatalogItemId, physicalQuantity, orderTypeForPaidDeduction(order), reservationItemId ?? undefined,
+      source?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
+    if (!reservations) throw new PaymentInventoryError(item.catalogItemId);
+    await tx.update(orderItemsTable).set({ inventoryDeductions: reservations }).where(eq(orderItemsTable.id, item.id));
+  }
+}
+
+export async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string }, executor?: PaymentTransaction): Promise<void> {
+  const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
+  if (method === "cash") return;
+  if (!executor) await ensureInventoryReservationsTable();
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
-  await executeTransaction(order.tenantId, executor, "payments.inventoryDeduct", async tx => {
-    const existing = await tx.select({ status: inventoryReservationsTable.status, expiresAt: inventoryReservationsTable.expiresAt }).from(inventoryReservationsTable).where(eq(inventoryReservationsTable.orderId, order.id));
-    const hasConfirmed = existing.some(row => row.status === "confirmed");
-    const hasActiveReservation = existing.some(row => row.status === "reserved" && row.expiresAt > new Date());
-    if (!hasConfirmed && !hasActiveReservation) {
-      // A paid capture may arrive after the checkout hold expires. Preserve
-      // the expired reservation row as history, but rotate its key so the
-      // authoritative paid-sale recovery can reserve again without violating
-      // reservation identity invariants.
-      await tx.update(inventoryReservationsTable)
-        .set({ status: "released", idempotencyKey: sql`${inventoryReservationsTable.idempotencyKey} || ':expired'`, updatedAt: new Date() })
-        .where(and(eq(inventoryReservationsTable.orderId, order.id), eq(inventoryReservationsTable.status, "reserved")));
-      for (const item of items) {
-        if (!item.catalogItemId) continue;
-        const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id, item.catalogItemId, Number(item.quantity), orderTypeForPaidDeduction(order));
-        if (!reservations) throw new PaymentInventoryError(item.catalogItemId);
-        await tx.update(orderItemsTable).set({ inventoryDeductions: reservations }).where(eq(orderItemsTable.id, item.id));
-      }
-    }
+  const deduct = async (tx: PaymentTransaction) => {
+    const items = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+    await ensurePaidOrderInventoryReserved(tx, order);
     if (!auditContext) throw new Error("Inventory sale confirmation requires an audit actor");
     const confirmed = await confirmInventoryReservationsForOrder(tx, order.tenantId, order.id, { id: auditContext.actorId, email: auditContext.actorEmail, role: auditContext.actorRole, ipAddress: auditContext.ipAddress });
     for (const item of items) {
       if (!item.catalogItemId) continue;
       const orderType = orderTypeForPaidDeduction(order);
-      const details = confirmed.filter(row => row.productId === item.catalogItemId);
+      const details = confirmed.filter(row => row.orderItemId === item.id || (row.orderItemId == null && row.productId === item.catalogItemId));
       if (details.length === 0) throw new PaymentInventoryError(item.catalogItemId);
-      await tx.update(orderItemsTable).set({ inventoryDeductions: details.map(({ productId: _id, ...row }) => row) }).where(eq(orderItemsTable.id, item.id));
+      await tx.update(orderItemsTable).set({ inventoryDeductions: details.map(({ productId: _id, orderItemId: _orderItemId, ...row }) => row) }).where(eq(orderItemsTable.id, item.id));
       for (const used of details) auditEntries.push({ productId: item.catalogItemId, locationUsed: used.locationName, locationId: used.locationId, quantity: used.quantity, remainingStock: used.remainingStock, orderType });
-      await tx.execute(sql`UPDATE catalog_items SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0), inventory_amount = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${item.catalogItemId}), 0) WHERE tenant_id = ${order.tenantId} AND id = ${item.catalogItemId}`);
+      const inventoryCatalogItemId = details[0].productId;
+      await tx.execute(sql`UPDATE catalog_items SET stock_quantity = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0), inventory_amount = COALESCE((SELECT SUM(quantity_on_hand) FROM inventory_balances WHERE tenant_id = ${order.tenantId} AND product_id = ${inventoryCatalogItemId}), 0) WHERE tenant_id = ${order.tenantId} AND id IN (SELECT catalog_item_id FROM catalogue_options WHERE tenant_id = ${order.tenantId} AND inventory_item_id = ${item.inventoryItemId ?? null} UNION SELECT ${inventoryCatalogItemId})`);
     }
-  });
-  if (auditContext) for (const entry of auditEntries) await writeAuditLog({ actorId: auditContext.actorId, actorEmail: auditContext.actorEmail, actorRole: auditContext.actorRole, action: "INVENTORY_DEDUCTED", tenantId: order.tenantId, resourceType: "order", resourceId: String(order.id), metadata: { orderId: order.id, ...entry }, ipAddress: auditContext.ipAddress });
+  };
+  if (executor) await deduct(executor);
+  else await db.transaction(deduct);
+  if (!executor && auditContext) for (const entry of auditEntries) await writeAuditLog({ actorId: auditContext.actorId, actorEmail: auditContext.actorEmail, actorRole: auditContext.actorRole, action: "INVENTORY_DEDUCTED", tenantId: order.tenantId, resourceType: "order", resourceId: String(order.id), metadata: { orderId: order.id, ...entry }, ipAddress: auditContext.ipAddress });
 }

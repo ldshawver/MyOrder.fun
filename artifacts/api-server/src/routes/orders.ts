@@ -111,6 +111,8 @@ class InsufficientInventoryError extends Error {
     this.name = "InsufficientInventoryError";
   }
 }
+class OptionSelectionError extends Error {}
+type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
 
@@ -220,6 +222,44 @@ router.get(
 );
 
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+
+function queryRows<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  return ((value as { rows?: T[] } | undefined)?.rows ?? []);
+}
+
+// The new storefront sends option IDs. Resolve them under the authorized tenant
+// before the existing conversion and order schemas see a catalogue identity.
+router.use(async (req, res, next) => {
+  if (req.method !== "POST" || !["/orders", "/cart/convert", "/orders/preview-conversion", "/orders/delivery-quote"].includes(req.path)) { next(); return; }
+  const incoming = (req.body as { items?: unknown } | undefined)?.items;
+  if (!Array.isArray(incoming) || !incoming.some(line => line && typeof line === "object" && "optionId" in line)) { next(); return; }
+  const count = z.number().int().positive();
+  const parsed = z.array(z.union([
+    z.object({ optionId: z.number().int().positive(), quantity: count }).strict(),
+    z.object({ catalogItemId: z.number().int().positive(), quantity: count }).strict(),
+  ])).min(1).safeParse(incoming);
+  if (!parsed.success) { res.status(400).json({ error: "Cart items must contain an optionId or legacy catalogItemId and quantity" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const mapped = [];
+  const selectedOptionByCatalog = new Map<number, number>();
+  for (const line of parsed.data) {
+    if ("catalogItemId" in line) { mapped.push(line); continue; }
+    const option = queryRows<{ catalogItemId: number }>(await db.execute(sql`
+      SELECT co.catalog_item_id AS "catalogItemId" FROM catalogue_options co
+      JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
+      JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+      WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
+        AND co.active = true AND cp.active = true AND ci.is_available = true LIMIT 1
+    `))[0];
+    if (!option) { res.status(404).json({ error: "Option not available" }); return; }
+    selectedOptionByCatalog.set(option.catalogItemId, line.optionId);
+    mapped.push({ catalogItemId: option.catalogItemId, quantity: line.quantity });
+  }
+  (req.body as { items: unknown }).items = mapped;
+  (req as OptionCheckoutRequest).selectedOptionByCatalog = selectedOptionByCatalog;
+  next();
+});
 
 const conversionSnapshots = new Map<string, { tenantId: number; userId: number; itemKey: string; snapshot: unknown; createdAt: number }>();
 function cartItemKey(items: Array<{ catalogItemId: number; quantity: number }>): string {
@@ -1047,6 +1087,23 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
+        const option = queryRows<{ optionId: number; productName: string; label: string; sku: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
+          SELECT co.id AS "optionId", cp.name AS "productName", co.label, ci.sku,
+            co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
+            co.consumption_quantity AS "consumptionQuantity", cp.location_evaluation AS "locationEvaluation"
+          FROM catalogue_options co
+          JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
+          JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+          JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+          WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
+            AND co.active = true AND cp.active = true AND ci.is_available = true LIMIT 1
+        `))[0];
+        const selectedOptionId = (req as OptionCheckoutRequest).selectedOptionByCatalog?.get(line.catalog_item_id);
+        if (selectedOptionId !== undefined && option?.optionId !== selectedOptionId) {
+          throw new OptionSelectionError("Selected option changed or is no longer available");
+        }
+        const inventoryCatalogItemId = option?.inventoryCatalogItemId ?? line.catalog_item_id;
+        const physicalQuantity = quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
@@ -1135,6 +1192,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
       return;
     }
+    if (err instanceof OptionSelectionError) { res.status(409).json({ error: err.message }); return; }
     if (err instanceof InsufficientInventoryError) {
       res.status(409).json({ error: err.message, legacyError: "Insufficient inventory", catalogItemId: err.catalogItemId }); // error: "Insufficient inventory"
       return;
