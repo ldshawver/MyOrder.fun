@@ -3,14 +3,15 @@
  *
  * Fire-and-forget receipt printing triggered automatically after order creation.
  * Called from POST /api/orders when RECEIPT_PRINT_ENABLED=true and
- * print settings autoPrintReceipts=true.
+ * the order tenant's print controls have autoPrintReceipts=true.
  *
  * Never throws — all errors are logged and silently dropped so order creation
  * is never blocked by a printer being offline.
  */
 import { eq } from "drizzle-orm";
 import { db, ordersTable, orderItemsTable } from "@workspace/db";
-import { enqueueOrderPrintJobs, getSettings } from "./printService";
+import { enqueueOrderPrintJobs } from "./printService";
+import { getPrintControls } from "./printControls";
 import { logger as _logger } from "./logger";
 
 const log = _logger.child({ module: "autoReceiptPrint" });
@@ -20,17 +21,15 @@ export async function autoReceiptPrint(orderId: number): Promise<void> {
   if (process.env.RECEIPT_PRINT_ENABLED !== "true") return;
 
   try {
-    // Guard: DB setting must also enable auto-print
-    const settings = await getSettings();
-    const s = settings as Record<string, unknown>;
-    if (!s.autoPrintReceipts) return;
-
     const [order] = await db
       .select()
       .from(ordersTable)
       .where(eq(ordersTable.id, orderId))
       .limit(1);
-    if (!order) return;
+    if (!order?.tenantId) return;
+
+    // Guard: the order's own tenant must have automatic receipts enabled.
+    if (!(await getPrintControls(order.tenantId)).autoPrintReceipts) return;
 
     const items = await db
       .select()

@@ -127,10 +127,11 @@ async function createShiftReceiptPrintJob(args: {
 }): Promise<void> {
   try {
     const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
-    const { dispatchReceiptJob, getSettings } = await import("../lib/printService");
-    // Shift reports are automatic prints: honor the same receipt auto-print
-    // switch as orders so registering a printer never starts printing alone.
-    const autoPrintEnabled = Boolean((await getSettings()).autoPrintReceipts);
+    const { dispatchReceiptJob } = await import("../lib/printService");
+    const { getPrintControls } = await import("../lib/printControls");
+    // Shift reports are automatic prints: honor the tenant's receipt
+    // auto-print switch so registering a printer never starts printing alone.
+    const autoPrintEnabled = (await getPrintControls(args.tenantId)).autoPrintReceipts;
     const profile = await getOperatorProfile(args.tenantId, args.operatorUserId);
     const receiptPrinter = autoPrintEnabled
       ? (await resolveReceiptPrinters(profile, { tenantId: args.tenantId, shiftId: args.shiftId })).primary

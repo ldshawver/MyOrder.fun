@@ -18,12 +18,17 @@ vi.mock("@clerk/express", () => ({
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => {
-    req.dbUser = { id: 1, role: "admin", status: "approved" };
+    req.dbUser = { id: 1, role: "admin", status: "approved", tenantId: 1 };
     next();
   },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
+// Automatic printing is per tenant; this legacy surface only mirrors it.
+vi.mock("../../lib/printControls", () => ({
+  getPrintControls: async () => ({ autoPrintOrders: false, autoPrintReceipts: false, autoPrintLabels: false, version: 0, updatedAt: null }),
 }));
 
 vi.mock("../../lib/logger", () => ({
@@ -145,7 +150,9 @@ describe("/api/admin/printers/settings round-trip", () => {
     expect(patch.body.ok).toBe(true);
     expect(patch.body.settings.receiptMethod).toBe("bridge");
     expect(patch.body.settings.labelEnabled).toBe(false);
-    expect(patch.body.settings.autoPrintReceipts).toBe(true);
+    // Automatic printing is not writable here; the tenant value is reported.
+    expect(patch.body.settings.autoPrintReceipts).toBe(false);
+    expect(patch.body.ignoredFields).toEqual(["autoPrintReceipts"]);
 
     // A second GET returns the updated values.
     const get2 = await supertest(app).get("/api/admin/printers/settings");

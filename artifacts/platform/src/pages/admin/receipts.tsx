@@ -4,6 +4,7 @@ import { Loader2, Save, RefreshCw, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import RegisteredPrintAdmin from "./registered-print";
+import AutoPrintControls from "./auto-print-controls";
 
 type ReceiptTab = "reprint" | "templates" | "printers" | "routing" | "test";
 const RECEIPT_TABS: Array<{ key: ReceiptTab; label: string }> = [
@@ -21,8 +22,6 @@ type ReceiptSettings = {
   includeLogo: boolean;
   includeOperatorName: boolean;
   showDiscreetNotice: boolean;
-  autoPrintReceipts: boolean;
-  autoPrintLabels: boolean;
   receiptTemplateStyle: string;
   labelTemplateStyle: string;
 };
@@ -34,8 +33,6 @@ const DEFAULTS: ReceiptSettings = {
   includeLogo: true,
   includeOperatorName: true,
   showDiscreetNotice: false,
-  autoPrintReceipts: false,
-  autoPrintLabels: false,
   receiptTemplateStyle: "clean",
   labelTemplateStyle: "thank_you_personalized",
 };
@@ -88,8 +85,6 @@ export default function AdminReceipts() {
         includeLogo: s.includeLogo !== false,
         includeOperatorName: s.includeOperatorName !== false,
         showDiscreetNotice: Boolean(s.showDiscreetNotice),
-        autoPrintReceipts: Boolean(s.autoPrintReceipts),
-        autoPrintLabels: Boolean(s.autoPrintLabels),
         receiptTemplateStyle: s.receiptTemplateStyle ?? "clean",
         labelTemplateStyle: s.labelTemplateStyle ?? "thank_you_personalized",
       });
@@ -133,8 +128,6 @@ export default function AdminReceipts() {
         includeLogo: s.includeLogo !== false,
         includeOperatorName: s.includeOperatorName !== false,
         showDiscreetNotice: Boolean(s.showDiscreetNotice),
-        autoPrintReceipts: Boolean(s.autoPrintReceipts),
-        autoPrintLabels: Boolean(s.autoPrintLabels),
         receiptTemplateStyle:
           s.receiptTemplateStyle ?? prev.receiptTemplateStyle,
         labelTemplateStyle: s.labelTemplateStyle ?? prev.labelTemplateStyle,
@@ -364,18 +357,6 @@ export default function AdminReceipts() {
               onChange={(v) => update("showDiscreetNotice", v)}
               testId="toggle-receipt-discreet"
             />
-            <ToggleRow
-              label="Auto-print receipts on payment"
-              checked={settings.autoPrintReceipts}
-              onChange={(v) => update("autoPrintReceipts", v)}
-              testId="toggle-receipt-autoprint"
-            />
-            <ToggleRow
-              label="Auto-print delivery thank-you labels"
-              checked={settings.autoPrintLabels}
-              onChange={(v) => update("autoPrintLabels", v)}
-              testId="toggle-label-autoprint"
-            />
           </div>
           <div className="rounded-lg border border-border/40 bg-background/40 p-3 flex items-center gap-3">
             <img
@@ -407,18 +388,7 @@ export default function AdminReceipts() {
               require an authoritative active-shift assignment.
             </p>
           </div>
-          <ToggleRow
-            label="Auto-print receipts on payment"
-            checked={settings.autoPrintReceipts}
-            onChange={(v) => update("autoPrintReceipts", v)}
-            testId="toggle-routing-receipt-autoprint"
-          />
-          <ToggleRow
-            label="Auto-print delivery thank-you labels"
-            checked={settings.autoPrintLabels}
-            onChange={(v) => update("autoPrintLabels", v)}
-            testId="toggle-routing-label-autoprint"
-          />
+          <AutoPrintControls />
         </div>
       )}
 

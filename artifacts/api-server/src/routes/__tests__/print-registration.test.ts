@@ -364,16 +364,3 @@ describe("controlled printer test", () => {
   });
 });
 
-describe("auto-print settings", () => {
-  it("pauses all automatic printing and audits the change against the caller's tenant", async () => {
-    const res = await api
-      .patch("/api/print/settings")
-      .send({ autoPrintOrders: false, autoPrintReceipts: false, autoPrintLabels: false });
-    expect(res.body.settings).toMatchObject({ autoPrintOrders: false, autoPrintReceipts: false, autoPrintLabels: false });
-    expect(store.tables.auditLogsTable[0]).toMatchObject({
-      tenantId: 1,
-      action: "PRINT_AUTO_PRINT_UPDATED",
-      metadata: { autoPrintOrders: false, autoPrintReceipts: false, autoPrintLabels: false },
-    });
-  });
-});

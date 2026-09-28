@@ -54,6 +54,12 @@ import {
 } from "../lib/printRouter";
 import { receiptTemplateLayoutSchema } from "../lib/printTemplateSchema";
 import {
+  getPrintControls,
+  pauseAllPrintControls,
+  updatePrintControls,
+  type PrintControls,
+} from "../lib/printControls";
+import {
   loadLegacyReceiptPresentation,
   renderOrderReceipt,
   renderReceiptPreview,
@@ -1713,21 +1719,30 @@ router.post(
 );
 
 // ── Settings ──────────────────────────────────────────────────────────────
-router.get("/print/settings", adminOnly, async (_req, res): Promise<void> => {
-  const settings = await getSettings();
-  res.json({ settings });
+// Legacy global presentation settings. Automatic printing is NOT controlled
+// here any more: it is per tenant (/print/controls). The auto-print values in
+// responses mirror the caller's tenant controls, and auto-print fields sent
+// here are ignored so a stale screen can never re-enable printing.
+const AUTO_PRINT_FIELDS = ["autoPrintOrders", "autoPrintReceipts", "autoPrintLabels"] as const;
+
+router.get("/print/settings", adminOnly, async (req, res): Promise<void> => {
+  const [settings, controls] = await Promise.all([getSettings(), getPrintControls(requestTenantId(req))]);
+  res.json({ settings: { ...settings, ...pickAutoPrint(controls) } });
 });
+
+function pickAutoPrint(controls: PrintControls) {
+  return {
+    autoPrintOrders: controls.autoPrintOrders,
+    autoPrintReceipts: controls.autoPrintReceipts,
+    autoPrintLabels: controls.autoPrintLabels,
+  };
+}
 
 router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
   const tenantId = requestTenantId(req);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
-  if (b.autoPrintOrders !== undefined)
-    updates.autoPrintOrders = Boolean(b.autoPrintOrders);
-  if (b.autoPrintReceipts !== undefined)
-    updates.autoPrintReceipts = Boolean(b.autoPrintReceipts);
-  if (b.autoPrintLabels !== undefined)
-    updates.autoPrintLabels = Boolean(b.autoPrintLabels);
+  const ignoredFields = AUTO_PRINT_FIELDS.filter((field) => b[field] !== undefined);
   if (b.retryBackoffBaseMs !== undefined)
     updates.retryBackoffBaseMs = Number(b.retryBackoffBaseMs);
   if (b.staleJobMinutes !== undefined)
@@ -1751,26 +1766,68 @@ router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
       b.labelTemplateStyle || "thank_you_personalized",
     );
   const settings = await getSettings();
-  const [updated] = await db
-    .update(printSettingsTable)
-    .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
-    .where(eq(printSettingsTable.id, settings.id))
-    .returning();
-  const autoPrintFields = ["autoPrintOrders", "autoPrintReceipts", "autoPrintLabels"]
-    .filter((field) => field in updates);
-  if (autoPrintFields.length) {
-    await db.insert(auditLogsTable).values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "PRINT_AUTO_PRINT_UPDATED",
-      resourceType: "print_settings",
-      resourceId: String(updated.id),
-      metadata: Object.fromEntries(autoPrintFields.map((field) => [field, updates[field]])),
-    });
+  const [updated] = Object.keys(updates).length
+    ? await db
+        .update(printSettingsTable)
+        .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
+        .where(eq(printSettingsTable.id, settings.id))
+        .returning()
+    : [settings];
+  const controls = await getPrintControls(tenantId);
+  res.json({ settings: { ...updated, ...pickAutoPrint(controls) }, ignoredFields });
+});
+
+// ── Automatic-print controls (per tenant) ──────────────────────────────────
+const printControlsPatchSchema = z.object({
+  expectedVersion: z.number().int().min(0),
+  autoPrintOrders: z.boolean().optional(),
+  autoPrintReceipts: z.boolean().optional(),
+  autoPrintLabels: z.boolean().optional(),
+}).strict().refine(
+  (body) => AUTO_PRINT_FIELDS.some((field) => body[field] !== undefined),
+  { message: "Change at least one automatic-print flag" },
+);
+
+const controlsActor = (req: Request) => ({
+  id: req.dbUser!.id,
+  email: req.dbUser!.email ?? null,
+  role: req.dbUser!.role,
+});
+
+router.get("/print/controls", adminOnly, async (req, res): Promise<void> => {
+  res.json({ controls: await getPrintControls(requestTenantId(req)) });
+});
+
+router.patch("/print/controls", adminOnly, async (req, res): Promise<void> => {
+  const parsed = printControlsPatchSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid automatic-print change", issues: parsed.error.issues.slice(0, 10) });
+    return;
   }
-  res.json({ settings: updated });
+  const { expectedVersion, ...changes } = parsed.data;
+  const result = await updatePrintControls({
+    tenantId: requestTenantId(req),
+    actor: controlsActor(req),
+    expectedVersion,
+    changes,
+  });
+  if (result.status === "conflict") {
+    res.status(409).json({
+      error: "Automatic-print settings changed since you loaded them; nothing was changed. Reload and try again.",
+      controls: result.controls,
+    });
+    return;
+  }
+  res.json({ controls: result.controls });
+});
+
+router.post("/print/controls/pause-all", adminOnly, async (req, res): Promise<void> => {
+  if (Object.keys(req.body ?? {}).length) {
+    res.status(400).json({ error: "Pause all takes no parameters" });
+    return;
+  }
+  const controls = await pauseAllPrintControls({ tenantId: requestTenantId(req), actor: controlsActor(req) });
+  res.json({ controls });
 });
 
 // ── Print Previews ─────────────────────────────────────────────────────────

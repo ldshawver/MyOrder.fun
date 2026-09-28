@@ -34,6 +34,7 @@ import {
 } from "./printRouter";
 import type { PrintJob, PrintPrinter } from "@workspace/db";
 import { logger as _logger } from "./logger";
+import { getPrintControls } from "./printControls";
 import { getBranding } from "../config/brandingConfig";
 
 const pLog = _logger.child({ module: "printService" });
@@ -493,8 +494,10 @@ export async function enqueueOrderPrintJobs(order: {
     return;
   }
   const tenantId = order.tenantId;
+  // Automatic printing is switched per tenant; no row means everything off.
+  const controls = await getPrintControls(tenantId);
+  if (!controls.autoPrintOrders && !controls.autoPrintReceipts && !controls.autoPrintLabels) return;
   const settings = await getSettings();
-  if (!settings.autoPrintOrders && !settings.autoPrintReceipts && !settings.autoPrintLabels) return;
 
   // Load receiptLineNameMode from admin settings (dual-brand receipt control)
   let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
@@ -559,7 +562,7 @@ export async function enqueueOrderPrintJobs(order: {
   // ── Receipt ───────────────────────────────────────────────────────────────
   const routeContext = { tenantId, locationId: orderAssignment?.locationId ?? null, shiftId: order.assignedShiftId ?? null };
   const { primary: receiptPrinter } = await resolveReceiptPrinters(profile, routeContext);
-  const receiptRender = settings.autoPrintReceipts || settings.autoPrintOrders
+  const receiptRender = controls.autoPrintReceipts || controls.autoPrintOrders
     ? await renderAutomaticReceipt(tenantId, order.id, printOrder)
     : null;
 
@@ -644,7 +647,7 @@ export async function enqueueOrderPrintJobs(order: {
 
   // ── Expo ticket ───────────────────────────────────────────────────────────
   // Expo printers get the same kitchen ticket as a bump-screen / pass station.
-  const assignedExpo = settings.autoPrintOrders && routeContext.locationId && routeContext.shiftId
+  const assignedExpo = controls.autoPrintOrders && routeContext.locationId && routeContext.shiftId
     ? await resolveExpoPrinter({ tenantId, locationId: routeContext.locationId, shiftId: routeContext.shiftId }) : null;
   const expoPrinters = assignedExpo ? [assignedExpo] : [];
 
@@ -672,7 +675,7 @@ export async function enqueueOrderPrintJobs(order: {
   }
 
   // ── Label ─────────────────────────────────────────────────────────────────
-  if (settings.autoPrintLabels) {
+  if (controls.autoPrintLabels) {
     const { resolveRoutingDecision, shouldPrintLabel } = await import("./printRoutingResolver.js");
 
     // Label eligibility gate — only delivery orders or Lucifer Cruz shipments

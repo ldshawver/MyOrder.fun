@@ -365,6 +365,27 @@ export const commissionSnapshotsTable = pgTable("commission_snapshots", {
 }));
 
 // ── Print Settings ─────────────────────────────────────────────────────────────
+/**
+ * Per-tenant automatic-print switches. This is the authoritative source for
+ * automatic order/receipt/label printing; the auto_print_* columns on the
+ * global print_settings row are legacy and no longer read. A tenant with no
+ * row has all automatic printing OFF. `version` supports optimistic
+ * concurrency so a stale screen cannot overwrite a newer change.
+ */
+export const tenantPrintControlsTable = pgTable("tenant_print_controls", {
+  tenantId: integer("tenant_id").primaryKey().references(() => tenantsTable.id, { onDelete: "cascade" }),
+  autoPrintOrders: boolean("auto_print_orders").notNull().default(false),
+  autoPrintReceipts: boolean("auto_print_receipts").notNull().default(false),
+  autoPrintLabels: boolean("auto_print_labels").notNull().default(false),
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedByUserId: integer("updated_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  versionPositive: check("tenant_print_controls_version_positive", sql`${table.version} > 0`),
+}));
+
+export type TenantPrintControls = typeof tenantPrintControlsTable.$inferSelect;
+
 export const printSettingsTable = pgTable("print_settings", {
   id: serial("id").primaryKey(),
   autoPrintOrders: boolean("auto_print_orders").notNull().default(true),

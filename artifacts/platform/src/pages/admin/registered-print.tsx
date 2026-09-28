@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
-import { Loader2, PauseCircle, Printer, RefreshCw, Server } from "lucide-react";
+import { Loader2, Printer, RefreshCw, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import AutoPrintControls from "./auto-print-controls";
 
 type Bridge = {
   id: number;
@@ -149,20 +150,13 @@ export default function RegisteredPrintAdmin({
     setLoading(true);
     setMessage(null);
     try {
-      const [bridgeRows, printerRows, profileRows, templateRows, settingsRow] =
+      const [bridgeRows, printerRows, profileRows, templateRows] =
         await Promise.all([
           api("/api/print/bridge-profiles"),
           api("/api/print/printers"),
           api("/api/print/profiles"),
           api("/api/print/templates"),
-          api("/api/print/settings"),
         ]);
-      const settings = settingsRow.settings ?? {};
-      setAutoPrint({
-        autoPrintOrders: Boolean(settings.autoPrintOrders),
-        autoPrintReceipts: Boolean(settings.autoPrintReceipts),
-        autoPrintLabels: Boolean(settings.autoPrintLabels),
-      });
       setBridges(Array.isArray(bridgeRows) ? bridgeRows : []);
       setPrinters(
         Array.isArray(printerRows.printers) ? printerRows.printers : [],
@@ -231,22 +225,6 @@ export default function RegisteredPrintAdmin({
     } finally {
       setBusy(null);
     }
-  }
-
-  function pauseAutoPrint() {
-    return runAction("pause", async () => {
-      const result = await api("/api/print/settings", {
-        method: "PATCH",
-        body: JSON.stringify({
-          autoPrintOrders: false,
-          autoPrintReceipts: false,
-          autoPrintLabels: false,
-        }),
-      });
-      if (!isAutoPrintPaused(result.settings ?? null))
-        throw new Error("Server did not confirm automatic printing is paused");
-      return "Automatic printing paused";
-    });
   }
 
   function createBridge() {
@@ -392,24 +370,8 @@ export default function RegisteredPrintAdmin({
           className="rounded-lg border border-border/50 p-4 space-y-4 text-sm"
           data-testid="panel-printer-registration"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div data-testid="auto-print-state">
-              <h3 className="font-semibold">Automatic printing</h3>
-              <p className="text-xs text-muted-foreground">
-                Orders {autoPrint?.autoPrintOrders ? "on" : "off"} · Receipts{" "}
-                {autoPrint?.autoPrintReceipts ? "on" : "off"} · Labels{" "}
-                {autoPrint?.autoPrintLabels ? "on" : "off"}
-              </p>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy !== null || isAutoPrintPaused(autoPrint)}
-              onClick={() => void pauseAutoPrint()}
-            >
-              <PauseCircle size={13} className="mr-1" />
-              Pause all automatic printing
-            </Button>
+          <div data-testid="auto-print-state">
+            <AutoPrintControls onChange={setAutoPrint} />
           </div>
           {!isAutoPrintPaused(autoPrint) ? (
             <p className="text-xs text-amber-300" role="status">

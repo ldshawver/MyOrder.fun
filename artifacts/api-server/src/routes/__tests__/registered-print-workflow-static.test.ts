@@ -15,6 +15,10 @@ const shifts = readFileSync(
   resolve(root, "artifacts/api-server/src/routes/shifts.ts"),
   "utf8",
 );
+const controlsUi = readFileSync(
+  resolve(root, "artifacts/platform/src/pages/admin/auto-print-controls.tsx"),
+  "utf8",
+);
 const receipts = readFileSync(
   resolve(root, "artifacts/platform/src/pages/admin/receipts.tsx"),
   "utf8",
@@ -97,13 +101,15 @@ describe("registered printer UI workflow", () => {
   });
 
   it("gates registration behind paused auto-print and never sends a bridge credential", () => {
-    expect(ui).toContain("!settings.autoPrintOrders &&");
-    expect(ui).toContain("!settings.autoPrintReceipts &&");
-    expect(ui).toContain("!settings.autoPrintLabels");
+    expect(controlsUi).toContain("!controls.autoPrintOrders && !controls.autoPrintReceipts && !controls.autoPrintLabels");
+    expect(controlsUi).toContain('"/api/print/controls/pause-all"');
+    expect(controlsUi).toContain('text: result.body.error ?? "Server did not confirm automatic printing is paused"');
+    expect(controlsUi).toContain("return { expectedVersion: controls.version, [flag]: value };");
+    expect(ui).toContain("<AutoPrintControls onChange={setAutoPrint} />");
     expect(ui.indexOf("!isAutoPrintPaused(autoPrint) ? (")).toBeLessThan(
       ui.indexOf("Register bridge"),
     );
-    expect(ui).toContain('throw new Error("Server did not confirm automatic printing is paused")');
+    expect(ui).not.toContain('"/api/print/settings"');
     const createBridge = ui.slice(ui.indexOf("function createBridge()"), ui.indexOf("async function probeBridge"));
     expect(createBridge).toContain("...(bridgeForm.apiKey ? { apiKey: bridgeForm.apiKey } : {})");
     expect(createBridge).not.toContain("locationId");
@@ -145,7 +151,7 @@ describe("registered printer UI workflow", () => {
       shifts.indexOf("async function createShiftReceiptPrintJob"),
       shifts.indexOf("async function createShiftOperationalPrintJob"),
     );
-    expect(shiftPrint).toContain("(await getSettings()).autoPrintReceipts");
+    expect(shiftPrint).toContain("(await getPrintControls(args.tenantId)).autoPrintReceipts");
     expect(shiftPrint.indexOf("const receiptPrinter = autoPrintEnabled")).toBeLessThan(
       shiftPrint.indexOf("resolveReceiptPrinters(profile"),
     );
