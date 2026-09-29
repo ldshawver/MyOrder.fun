@@ -22,7 +22,7 @@ import {
   adminSettingsTable,
   shiftPrintAssignmentsTable,
 } from "@workspace/db";
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, lt, sql } from "drizzle-orm";
 import { decodeStoredReceiptText, renderCustomerReceipt } from "./receiptRenderer";
 import { charWidth, getLogo } from "./print/index";
 import { generateThankYouLabel } from "./print/templates/thankYouLabel.js";
@@ -718,6 +718,27 @@ export async function enqueueOrderPrintJobs(order: {
 
 // ── Retry Worker ──────────────────────────────────────────────────────────────
 
+/** Longer than any bridge timeout, so a live dispatch is never interrupted. */
+export const STALE_SENDING_MS = 5 * 60_000;
+export const STALE_SENDING_ERROR = "Interrupted while sending; it may have printed. Not retried automatically — reprint if it did not print.";
+
+/**
+ * A job left in "sending" (the API restarted mid-dispatch) may already have
+ * reached the printer, so resending it could print twice. It is failed for an
+ * operator to reprint instead of retried, keeping dispatch at-most-once.
+ */
+export async function failStaleSendingJobs(now = new Date()): Promise<number> {
+  const stale = await db.update(printJobsTable)
+    .set({ status: "failed", errorMessage: STALE_SENDING_ERROR })
+    .where(and(
+      eq(printJobsTable.status, "sending"),
+      lt(printJobsTable.lastAttemptAt, new Date(now.getTime() - STALE_SENDING_MS)),
+    ))
+    .returning({ id: printJobsTable.id });
+  if (stale.length > 0) pLog.warn({ event: "stale_sending_failed", jobIds: stale.map((job) => job.id) }, "failed jobs interrupted while sending");
+  return stale.length;
+}
+
 let workerRunning = false;
 
 export function startPrintWorker() {
@@ -726,6 +747,7 @@ export function startPrintWorker() {
 
   async function tick() {
     try {
+      await failStaleSendingJobs();
       const retrying = await db.select().from(printJobsTable)
         .where(and(inArray(printJobsTable.status, ["queued", "retrying"]), sql`${printJobsTable.jobType} <> 'thank_you_sticker'`))
         .limit(10);

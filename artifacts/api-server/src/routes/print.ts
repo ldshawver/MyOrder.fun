@@ -62,7 +62,8 @@ import {
   type ReceiptTemplateRecord,
 } from "../lib/print/receiptPipeline";
 import { SAMPLE_RECEIPT_DATA } from "../lib/print/receiptData";
-import { FULL_PAGE_SIZE, THERMAL_WIDTHS, type PrinterClass } from "../lib/print/documentTypes";
+import { THERMAL_WIDTHS } from "../lib/print/documentTypes";
+import { BRIDGE_QUEUE_NAME, PrintAdminError, VALID_ROLES, createRegisteredPrinter, printerPaper } from "../lib/print/printerAdmin";
 import { queueDocumentPrint } from "../lib/print/documentJobs";
 import { BRIDGE_KEY_PATTERN } from "../lib/print/bridgeKey";
 import { shiftLocationId } from "../lib/print/shiftDocuments";
@@ -649,26 +650,6 @@ router.post(
 );
 
 
-// Discovery uses `unassigned`; only an authenticated tenant admin assigns a
-// routing function. Legacy roles remain readable during migration.
-const VALID_ROLES = ["unassigned", "customer_receipt", "thank_you", "report", "kitchen", "receipt", "expo", "label", "bar"];
-const BRIDGE_QUEUE_NAME = /^[A-Za-z0-9][A-Za-z0-9_. -]{0,63}$/;
-
-/**
- * Printer class and paper: thermal rolls are 50mm or 80mm only; full-page
- * printers are always US Letter. Returns the stored pair or an error.
- */
-function printerPaper(printerClass: unknown, paperWidth: unknown): { printerClass: PrinterClass; paperWidth: string } | { error: string } {
-  const cls = printerClass === undefined ? "thermal" : printerClass;
-  if (cls !== "thermal" && cls !== "full_page") return { error: "printerClass must be thermal or full_page" };
-  if (cls === "full_page") {
-    if (paperWidth !== undefined && paperWidth !== null && paperWidth !== FULL_PAGE_SIZE) return { error: "Full-page printers use US Letter; omit paperWidth" };
-    return { printerClass: "full_page", paperWidth: FULL_PAGE_SIZE };
-  }
-  const width = paperWidth === undefined || paperWidth === null ? "80mm" : paperWidth;
-  if (!(THERMAL_WIDTHS as readonly unknown[]).includes(width)) return { error: "Thermal paperWidth must be 50mm or 80mm" };
-  return { printerClass: "thermal", paperWidth: width as string };
-}
 const isHttpBridgeUrl = (value: unknown): boolean => {
   try {
     const url = new URL(String(value));
@@ -684,148 +665,15 @@ const BRIDGE_KEY_ERROR = "apiKey must be empty or 32-256 URL-safe characters";
 const isValidBridgeKey = (value: unknown): boolean =>
   value === undefined || value === null || value === "" ||
   (typeof value === "string" && BRIDGE_KEY.test(value));
-const VALID_CONN_TYPES = [
-  "ethernet_direct",
-  "mac_bridge",
-  "pi_bridge",
-  "bridge",
-];
-
 // ── POST /api/print/printers ──────────────────────────────────────────────
 router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
-  const b = req.body ?? {};
-  const tenantId = requestTenantId(req);
-  if (!b.name) {
-    res.status(400).json({ error: "name is required" });
-    return;
+  try {
+    const printer = await createRegisteredPrinter(requestTenantId(req), req.dbUser!, req.body ?? {});
+    res.status(201).json({ printer: { ...printer, apiKey: undefined } });
+  } catch (err) {
+    if (!(err instanceof PrintAdminError)) throw err;
+    res.status(err.status).json({ error: err.message });
   }
-  if (b.role && !VALID_ROLES.includes(b.role)) {
-    res
-      .status(400)
-      .json({ error: `role must be one of: ${VALID_ROLES.join(", ")}` });
-    return;
-  }
-  if (b.connectionType && !VALID_CONN_TYPES.includes(b.connectionType)) {
-    res
-      .status(400)
-      .json({
-        error: `connectionType must be one of: ${VALID_CONN_TYPES.join(", ")}`,
-      });
-    return;
-  }
-  const connType: string = b.connectionType ?? "bridge";
-  const needsBridge = ["mac_bridge", "pi_bridge", "bridge"].includes(connType);
-  if (needsBridge && !b.bridgeProfileId) {
-    res
-      .status(400)
-      .json({ error: "bridgeProfileId is required for bridge printers" });
-    return;
-  }
-  if (
-    b.bridgePrinterName !== undefined &&
-    b.bridgePrinterName !== null &&
-    !BRIDGE_QUEUE_NAME.test(String(b.bridgePrinterName).trim())
-  ) {
-    res.status(400).json({ error: "bridgePrinterName is invalid" });
-    return;
-  }
-  const paper = printerPaper(b.printerClass, b.paperWidth);
-  if ("error" in paper) {
-    res.status(400).json({ error: paper.error });
-    return;
-  }
-  if (connType === "ethernet_direct" && !b.directIp) {
-    res
-      .status(400)
-      .json({ error: "directIp is required for ethernet_direct printers" });
-    return;
-  }
-
-  const bridgeProfile = b.bridgeProfileId
-    ? (
-        await db
-          .select()
-          .from(printBridgeProfilesTable)
-          .where(
-            and(
-              eq(printBridgeProfilesTable.tenantId, tenantId),
-              eq(printBridgeProfilesTable.id, Number(b.bridgeProfileId)),
-              eq(printBridgeProfilesTable.isActive, true),
-            ),
-          )
-          .limit(1)
-      )[0]
-    : null;
-  if (needsBridge && !bridgeProfile) {
-    res
-      .status(400)
-      .json({ error: "Active bridge profile not found in this tenant" });
-    return;
-  }
-  const locationId = b.locationId ? Number(b.locationId) : null;
-  const routingScope = locationId ? "location" : "general";
-  if (locationId) {
-    const [location] = await db
-      .select()
-      .from(inventoryLocationsTable)
-      .where(
-        and(
-          eq(inventoryLocationsTable.tenantId, tenantId),
-          eq(inventoryLocationsTable.id, locationId),
-          eq(inventoryLocationsTable.isActive, true),
-        ),
-      )
-      .limit(1);
-    if (!location) {
-      res
-        .status(400)
-        .json({ error: "Active location not found in this tenant" });
-      return;
-    }
-  }
-  const [printer] = await db
-    .insert(printPrintersTable)
-    .values({
-      tenantId,
-      locationId,
-      routingScope,
-      name: String(b.name),
-      role: String(b.role ?? "kitchen"),
-      connectionType: connType,
-      directIp: b.directIp ? String(b.directIp) : null,
-      directPort: b.directPort ? Number(b.directPort) : 9100,
-      bridgeProfileId: bridgeProfile?.id ?? null,
-      bridgeUrl: bridgeProfile?.bridgeUrl ?? "",
-      bridgePrinterName: b.bridgePrinterName
-        ? String(b.bridgePrinterName).trim()
-        : null,
-      apiKey: null,
-      timeoutMs: b.timeoutMs ? Number(b.timeoutMs) : 8000,
-      copies: b.copies ? Math.min(5, Math.max(1, Number(b.copies))) : 1,
-      printerClass: paper.printerClass,
-      paperWidth: paper.paperWidth,
-      isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
-    })
-    .returning();
-  await db
-    .insert(auditLogsTable)
-    .values({
-      tenantId,
-      actorId: req.dbUser!.id,
-      actorEmail: req.dbUser!.email ?? "",
-      actorRole: req.dbUser!.role,
-      action: "PRINT_PRINTER_CREATED",
-      resourceType: "print_printer",
-      resourceId: String(printer.id),
-      metadata: {
-        locationId,
-        routingScope,
-        role: printer.role,
-        printerClass: printer.printerClass,
-        bridgeProfileId: printer.bridgeProfileId,
-      },
-    });
-  res.status(201).json({ printer: { ...printer, apiKey: undefined } });
 });
 
 // ── PATCH /api/print/printers/:id ─────────────────────────────────────────

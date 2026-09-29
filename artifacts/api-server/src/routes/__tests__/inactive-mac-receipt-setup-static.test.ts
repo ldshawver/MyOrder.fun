@@ -9,7 +9,7 @@ const source = readFileSync(
 );
 const setup = source.slice(
   source.indexOf('router.post(\n  "/print/setup/inactive-mac-receipt"'),
-  source.indexOf("const VALID_ROLES"),
+  source.indexOf("const isHttpBridgeUrl"),
 );
 
 describe("inactive Mac receipt setup", () => {

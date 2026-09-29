@@ -29,6 +29,7 @@ async function buildAll() {
       "maintenance-repair-tenant-tax-configuration": path.resolve(artifactDir, "src/maintenance/repairTenantTaxConfiguration.ts"),
       "maintenance-repair-order22-inventory-integrity": path.resolve(artifactDir, "src/maintenance/repairOrder22InventoryIntegrity.ts"),
       "maintenance-set-bridge-key": path.resolve(artifactDir, "src/maintenance/setBridgeKey.ts"),
+      "maintenance-configure-print-location": path.resolve(artifactDir, "src/maintenance/configurePrintLocation.ts"),
     },
     platform: "node",
     bundle: true,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const updateSets: Array<Record<string, unknown>> = [];
+const updateWheres: unknown[] = [];
 const insertedAttempts: Array<Record<string, unknown>> = [];
 const bridgeProfiles = vi.hoisted(() => [] as Array<{ id: number; tenantId: number; apiKey: string }>);
 // Rows returned by the atomic "sending" claim; empty means another dispatcher won.
@@ -13,9 +14,9 @@ vi.mock("@workspace/db", () => {
       updateSets.push(values);
       return chain;
     });
-    chain.where = vi.fn(() => Object.assign(Promise.resolve([]), {
+    chain.where = vi.fn((predicate: unknown) => (updateWheres.push(predicate), Object.assign(Promise.resolve([]), {
       returning: vi.fn(async () => claimRows.rows),
-    }));
+    })));
     return chain;
   });
   const insert = vi.fn(() => ({
@@ -40,7 +41,7 @@ vi.mock("@workspace/db", () => {
     db: { update, insert, select },
     printBridgeProfilesTable: { id: "bridgeProfileId", tenantId: "bridgeTenantId", apiKey: "bridgeApiKey" },
     printPrintersTable: { id: "printerId", role: "role", isActive: "isActive" },
-    printJobsTable: { id: "jobId", idempotencyKey: "idempotencyKey" },
+    printJobsTable: { id: "jobId", idempotencyKey: "idempotencyKey", status: "status", tenantId: "jobTenantId", lastAttemptAt: "lastAttemptAt" },
     printJobAttemptsTable: {},
     printSettingsTable: {},
     adminSettingsTable: {},
@@ -50,7 +51,8 @@ vi.mock("@workspace/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((column, value) => ({ column, value })),
   and: vi.fn((...values) => values),
-  inArray: vi.fn(),
+  inArray: vi.fn((column, values) => ({ column, values })),
+  lt: vi.fn((column, value) => ({ column, lt: value })),
   sql: vi.fn(),
 }));
 
@@ -73,16 +75,43 @@ vi.mock("../receiptRenderer", () => ({
 vi.mock("../print/index", () => ({ charWidth: vi.fn(), getLogo: vi.fn() }));
 vi.mock("../print/templates/thankYouLabel.js", () => ({ generateThankYouLabel: vi.fn() }));
 
-import { dispatchReceiptJob } from "../printService";
+import { dispatchReceiptJob, failStaleSendingJobs, STALE_SENDING_MS } from "../printService";
 
 describe("print job status integrity", () => {
   beforeEach(() => {
     updateSets.length = 0;
+    updateWheres.length = 0;
     insertedAttempts.length = 0;
     process.env.PRINT_BRIDGE_API_KEY = "central-secret";
     bridgeProfiles.length = 0;
     claimRows.rows = [{ id: 1 }];
     vi.restoreAllMocks();
+  });
+
+  it("claims only queued or retrying jobs of the job's tenant", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ success: true }), { status: 200 }));
+    await dispatchReceiptJob({ id: 43, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 5, renderedText: "TEST", renderFormat: "text", payloadJson: {} } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80" } as never);
+    expect(updateSets[0]).toMatchObject({ status: "sending" });
+    expect(updateWheres[0]).toEqual([
+      { column: "jobTenantId", value: 1 },
+      { column: "jobId", value: 43 },
+      { column: "status", values: ["queued", "retrying"] },
+    ]);
+    expect(updateSets.at(-1)).toMatchObject({ status: "printed" });
+  });
+
+  it("fails jobs stranded in sending instead of resending them", async () => {
+    claimRows.rows = [{ id: 7 }];
+    const now = new Date("2026-09-29T12:00:00.000Z");
+    expect(await failStaleSendingJobs(now)).toBe(1);
+    expect(updateSets.at(-1)).toMatchObject({ status: "failed", errorMessage: expect.stringContaining("may have printed") });
+    expect(updateWheres.at(-1)).toEqual([
+      { column: "status", value: "sending" },
+      { column: "lastAttemptAt", lt: new Date(now.getTime() - STALE_SENDING_MS) },
+    ]);
+    // Never back to a dispatchable state.
+    expect(updateSets.some((update) => update.status === "queued" || update.status === "retrying")).toBe(false);
   });
 
   it("sends a job at most once when the worker and the request race for it", async () => {

@@ -17,7 +17,7 @@
  * taken from the request except as ids of this tenant's registered printers.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
   db,
@@ -58,6 +58,7 @@ import {
   type ReceiptTemplateRecord,
 } from "../lib/print/receiptPipeline";
 import { salesTaxReport } from "./reports";
+import { PrintAdminError, setDocumentRoute } from "../lib/print/printerAdmin";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -130,29 +131,12 @@ const setRouteSchema = z.object({
 router.put("/print/routes", adminOnly, async (req, res): Promise<void> => {
   const parsed = setRouteSchema.safeParse(req.body ?? {});
   if (!parsed.success) { badRequest(res, "Invalid route", parsed.error.issues.slice(0, 10)); return; }
-  const tenantId = tenantOf(req);
-  const { documentType, locationId, printerId } = parsed.data;
-  if (locationId !== null && !(await tenantLocation(tenantId, locationId))) {
-    badRequest(res, "Active location not found in this tenant"); return;
+  try {
+    res.json({ route: await setDocumentRoute(tenantOf(req), req.dbUser!, parsed.data) });
+  } catch (err) {
+    if (!(err instanceof PrintAdminError)) throw err;
+    res.status(err.status).json({ error: err.message });
   }
-  const printer = await tenantPrinter(tenantId, printerId);
-  const problem = await validatePrinterForDocument(printer, { tenantId, locationId, documentType });
-  if (problem) { badRequest(res, `Printer cannot handle this route: ${problem}`); return; }
-
-  const [existing] = await db.select().from(printRoutesTable).where(and(
-    eq(printRoutesTable.tenantId, tenantId),
-    locationId === null ? isNull(printRoutesTable.locationId) : eq(printRoutesTable.locationId, locationId),
-    eq(printRoutesTable.jobType, documentType),
-  )).limit(1);
-  const values = { printerId: printer!.id, bridgeProfileId: printer!.bridgeProfileId!, isActive: true };
-  const [route] = existing
-    ? await db.update(printRoutesTable).set(values)
-        .where(and(eq(printRoutesTable.tenantId, tenantId), eq(printRoutesTable.id, existing.id))).returning()
-    : await db.insert(printRoutesTable).values({ tenantId, locationId, jobType: documentType, ...values }).returning();
-  await audit(req, "PRINT_ROUTE_SET", "print_route", String(route!.id), {
-    documentType, locationId, printerId: printer!.id, previousPrinterId: existing?.printerId ?? null,
-  });
-  res.json({ route: { id: route!.id, documentType, locationId, printerId: route!.printerId, bridgeProfileId: route!.bridgeProfileId, isActive: route!.isActive } });
 });
 
 router.delete("/print/routes/:id", adminOnly, async (req, res): Promise<void> => {
