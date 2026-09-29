@@ -7,6 +7,7 @@ import {
   ordersTable,
 } from "@workspace/db";
 import { postInventoryMovement, type InventoryMovementActor } from "./inventoryMovementLedger";
+import { quantityText, quantityUnits } from "./exactQuantity";
 
 export const PRELAUNCH_TEST_VOID_REASON = "PRE_LAUNCH_TEST_ORDER_VOID" as const;
 
@@ -91,7 +92,7 @@ export async function voidPrelaunchTestOrder(input: PrelaunchTestVoidInput): Pro
     const itemByCatalog = new Map(items.map(item => [item.catalogItemId, item]));
     let releasedReservations = 0;
     let reconciledReservations = 0;
-    let restoredQuantity = 0;
+    let restoredQuantity = 0n;
     const correctionMovementIds: number[] = [];
 
     for (const reservation of reservations) {
@@ -139,7 +140,7 @@ export async function voidPrelaunchTestOrder(input: PrelaunchTestVoidInput): Pro
         correlationId: input.idempotencyKey,
       });
       correctionMovementIds.push(movement.id);
-      restoredQuantity += reservation.quantity;
+      restoredQuantity += quantityUnits(reservation.quantity);
       await tx.update(inventoryReservationsTable).set({ status: "reconciled", updatedAt: new Date() }).where(eq(inventoryReservationsTable.id, reservation.id));
       reconciledReservations += 1;
     }
@@ -149,10 +150,10 @@ export async function voidPrelaunchTestOrder(input: PrelaunchTestVoidInput): Pro
     await tx.insert(auditLogsTable).values({
       tenantId: input.tenantId, actorId: input.actor.id, actorEmail: input.actor.email ?? "", actorRole: input.actor.role,
       action: "order.prelaunch_test_void", resourceType: "order", resourceId: String(input.orderId),
-      metadata: { orderId: input.orderId, previousStatus: order.status, reason: PRELAUNCH_TEST_VOID_REASON, releasedReservations, reconciledReservations, restoredQuantity: String(restoredQuantity), unknownCostQuantity: String(restoredQuantity), correctionMovementIds, recoveryId: input.idempotencyKey },
+      metadata: { orderId: input.orderId, previousStatus: order.status, reason: PRELAUNCH_TEST_VOID_REASON, releasedReservations, reconciledReservations, restoredQuantity: quantityText(restoredQuantity), unknownCostQuantity: quantityText(restoredQuantity), correctionMovementIds, recoveryId: input.idempotencyKey },
       ipAddress: input.actor.ipAddress ?? null,
     });
-    return { orderId: input.orderId, previousStatus: order.status, finalStatus: "cancelled", releasedReservations, reconciledReservations, restoredQuantity: String(restoredQuantity), unknownCostQuantity: String(restoredQuantity), correctionMovementIds, idempotent: false };
+    return { orderId: input.orderId, previousStatus: order.status, finalStatus: "cancelled", releasedReservations, reconciledReservations, restoredQuantity: quantityText(restoredQuantity), unknownCostQuantity: quantityText(restoredQuantity), correctionMovementIds, idempotent: false };
   });
 }
 

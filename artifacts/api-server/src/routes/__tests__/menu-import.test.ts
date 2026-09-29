@@ -261,7 +261,7 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(4);
     expect(state.balances.map(b => b.productId)).toEqual([1, 1, 1, 1]);
     expect(state.inventory).toHaveLength(1);
-    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "0", parLevel: "16" });
+    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "0", parLevel: "16.000000" });
     const { db } = await import("@workspace/db");
     expect(db.transaction).toHaveBeenCalled();
   });
@@ -390,7 +390,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "15.00", inventoryAmount: "15.00" });
+    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "15.000000", inventoryAmount: "15.000000" });
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 

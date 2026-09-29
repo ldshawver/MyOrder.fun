@@ -1690,7 +1690,7 @@ router.get(
   "/shifts/active-techs",
   requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
@@ -1731,7 +1731,7 @@ router.post("/shifts/:id/reassign", requireRole("global_admin", "admin", "superv
   const shiftId = Number(req.params.id);
   const parsed = ShiftReassignmentBody.safeParse(req.body);
   if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift reassignment request" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const result = await db.transaction(async tx => {
     const [source] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId))).for("update").limit(1);
     const [target] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, parsed.data.targetShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
@@ -1752,7 +1752,7 @@ router.post("/shifts/:id/terminate", requireRole("global_admin", "admin", "super
   const shiftId = Number(req.params.id);
   const parsed = ShiftTerminationBody.safeParse(req.body);
   if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift termination request" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
   if (!shift) { res.status(409).json({ error: "Shift is not active in this tenant" }); return; }
   const openOrders = await db.select({ id: ordersTable.id }).from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES])));
@@ -2302,7 +2302,7 @@ router.post(
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
 
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
@@ -2583,7 +2583,7 @@ router.get(
   "/shifts/pending-supervisor",
   requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)

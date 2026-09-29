@@ -233,7 +233,7 @@ export async function confirmInventoryReservationsForOrder(
       orderItemId: reservation.orderItemId,
       locationId: reservation.locationId,
       locationName: reservation.locationName,
-      quantity: reservation.quantity,
+      quantity: Number(reservation.quantity),
       remainingStock: Number(movement.postQuantity),
     });
   }

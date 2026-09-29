@@ -337,7 +337,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, shippingAddress, tipAmount, tipMode]);
+  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);

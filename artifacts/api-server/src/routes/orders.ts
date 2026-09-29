@@ -57,7 +57,6 @@ import {
   ensureInventoryReservationsTable,
   releaseInventoryReservationsForOrder,
   reserveCheckoutInventoryByOrderType,
-  releaseInventoryReservationsForOrder,
 } from "../lib/inventoryReservations";
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
@@ -1988,7 +1987,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
   }
   if (!transition.changed) {
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-      const released = await db.transaction((tx) => releaseInventoryReservationsForOrder(tx, id));
+      const released = await db.transaction((tx) => releaseInventoryReservationsForOrder(tx, tenantId, id));
       if (released > 0) {
         await writeAuditLog({
           actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2022,7 +2021,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     // movement. Cancelling an unpaid order must release it with the status
     // change so a failed payment cannot leave stock unavailable.
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-      await releaseInventoryReservationsForOrder(tx, id);
+      await releaseInventoryReservationsForOrder(tx, tenantId, id);
     }
     return tx.update(ordersTable)
       .set({ status: normalizedTarget, updatedAt: now, ...stamps })
@@ -2072,7 +2071,7 @@ router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin",
     const candidates = await tx.select().from(ordersTable).where(and(...conditions));
     const result = [];
     for (const order of candidates) {
-      await releaseInventoryReservationsForOrder(tx, order.id);
+      await releaseInventoryReservationsForOrder(tx, tenantId, order.id);
       const [updated] = await tx.update(ordersTable).set({
         status: "archived", fulfillmentStatus: "cancelled", archivedAt: now, archivedByUserId: actor.id, updatedAt: now,
       }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, tenantId))).returning();

@@ -7,7 +7,6 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } 
 import { logger } from "../lib/logger";
 import { assertCatalogIdInventoryLookup } from "../lib/inventoryIdentityGuard";
 import { postImportedInventoryBalanceCorrection, setCatalogBalanceParProjection, type InventoryMovementActor } from "../lib/inventoryMovementLedger";
-import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import multer from "multer";
 import * as XLSX from "xlsx";

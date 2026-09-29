@@ -34,9 +34,10 @@ vi.mock("@workspace/db", () => {
   }
   const tx = {
     execute: vi.fn(async () => []),
-    select: vi.fn(() => ({ from: (table: { table: string }) => ({ where: (condition: unknown) => ({
-      limit: async () => (table.table === "orders" ? [order] : table.table === "captures" ? state.captures : state.attempts).filter(row => matches(row, condition)).slice(0, 1),
-    }) }) })),
+    select: vi.fn(() => ({ from: (table: { table: string }) => ({ where: (condition: unknown) => {
+      const limit = async () => (table.table === "orders" ? [order] : table.table === "captures" ? state.captures : state.attempts).filter(row => matches(row, condition)).slice(0, 1);
+      return { limit, orderBy: () => ({ limit }) };
+    } }) })),
     insert: vi.fn((table: { table?: string }) => ({ values: (values: Record<string, unknown>) => {
       const target = table.table === "captures" ? state.captures : state.attempts;
       const inserted = { id: target.length + 1, ...values };
