@@ -340,13 +340,30 @@ async function failClosedScopeMismatch(job: PrintJob, printer: PrintPrinter): Pr
 // ── Full Dispatch with Failover ────────────────────────────────────────────────
 
 /**
+ * Atomically moves a queued/retrying job to "sending". A request's inline
+ * dispatch and the retry worker can both hold the same new job; only the one
+ * that wins the claim sends it, so a job reaches the printer at most once.
+ */
+async function claimJob(job: PrintJob): Promise<boolean> {
+  const claimed = await db.update(printJobsTable)
+    .set({ status: "sending", lastAttemptAt: new Date() })
+    .where(and(
+      eq(printJobsTable.tenantId, job.tenantId),
+      eq(printJobsTable.id, job.id),
+      inArray(printJobsTable.status, ["queued", "retrying"]),
+    ))
+    .returning({ id: printJobsTable.id });
+  if (claimed.length > 0) return true;
+  pLog.info({ event: "dispatch_skipped_already_claimed", jobId: job.id }, "job already claimed by another dispatcher");
+  return false;
+}
+
+/**
  * Dispatch a receipt job: ethernet_direct → pi_bridge → mark retrying.
  */
 export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
   if (await failClosedScopeMismatch(job, printer)) return;
-  await db.update(printJobsTable)
-    .set({ status: "sending", lastAttemptAt: new Date() })
-    .where(eq(printJobsTable.id, job.id));
+  if (!(await claimJob(job))) return;
 
   const attemptBase = (job.retryCount ?? 0) + 1;
   const maxRetries = job.jobType === "thank_you_sticker" ? 1 : (job.maxRetries ?? 5);
@@ -399,9 +416,7 @@ export async function dispatchReceiptJob(job: PrintJob, printer: PrintPrinter): 
  */
 export async function dispatchLabelJob(job: PrintJob, printer: PrintPrinter): Promise<void> {
   if (await failClosedScopeMismatch(job, printer)) return;
-  await db.update(printJobsTable)
-    .set({ status: "sending", lastAttemptAt: new Date() })
-    .where(eq(printJobsTable.id, job.id));
+  if (!(await claimJob(job))) return;
 
   const attemptNumber = (job.retryCount ?? 0) + 1;
   const maxRetries = job.jobType === "thank_you_sticker" ? 1 : (job.maxRetries ?? 5);

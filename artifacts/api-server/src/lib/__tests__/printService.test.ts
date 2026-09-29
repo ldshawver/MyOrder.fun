@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const updateSets: Array<Record<string, unknown>> = [];
 const insertedAttempts: Array<Record<string, unknown>> = [];
 const bridgeProfiles = vi.hoisted(() => [] as Array<{ id: number; tenantId: number; apiKey: string }>);
+// Rows returned by the atomic "sending" claim; empty means another dispatcher won.
+const claimRows = vi.hoisted(() => ({ rows: [{ id: 1 }] as Array<{ id: number }> }));
 
 vi.mock("@workspace/db", () => {
   const update = vi.fn(() => {
@@ -11,7 +13,9 @@ vi.mock("@workspace/db", () => {
       updateSets.push(values);
       return chain;
     });
-    chain.where = vi.fn(() => Promise.resolve([]));
+    chain.where = vi.fn(() => Object.assign(Promise.resolve([]), {
+      returning: vi.fn(async () => claimRows.rows),
+    }));
     return chain;
   });
   const insert = vi.fn(() => ({
@@ -77,7 +81,19 @@ describe("print job status integrity", () => {
     insertedAttempts.length = 0;
     process.env.PRINT_BRIDGE_API_KEY = "central-secret";
     bridgeProfiles.length = 0;
+    claimRows.rows = [{ id: 1 }];
     vi.restoreAllMocks();
+  });
+
+  it("sends a job at most once when the worker and the request race for it", async () => {
+    // The request's inline dispatch already claimed the job; the worker loses.
+    claimRows.rows = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await dispatchReceiptJob({ id: 43, tenantId: 1, locationId: null, retryCount: 0, maxRetries: 5, renderedText: "TEST", renderFormat: "text", payloadJson: {} } as never,
+      { id: 1, tenantId: 1, locationId: null, routingScope: "general", isActive: true, connectionType: "bridge", bridgeUrl: "http://mac.test:3100", bridgePrinterName: "Brightek_POS80" } as never);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(insertedAttempts).toHaveLength(0);
+    expect(updateSets.some((update) => update.status === "printed" || update.status === "failed")).toBe(false);
   });
 
   it("does not mark a job printed when the bridge returns HTTP 200 with success=false", async () => {
