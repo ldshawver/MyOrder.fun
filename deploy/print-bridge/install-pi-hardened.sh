@@ -3,10 +3,11 @@
 # (or any Debian host) as a hardened, queue-allowlisted, Tailscale-only service.
 #
 # Usage (as root, from this directory):
-#   sudo bash install-pi-hardened.sh --queue <CUPS_QUEUE> [--allow-from 100.85.15.43] [--port 3100]
+#   sudo bash install-pi-hardened.sh --queue <CUPS_QUEUE> [--allow-from 100.85.15.43] [--port 3100] [--node-bin /path/to/node]
 #
 #   --queue       the ONE approved CUPS queue this bridge may use (must exist)
 #   --allow-from  the only Tailscale address allowed to reach the bridge (MyOrder server)
+#   --node-bin    Node.js binary to run the bridge (default /usr/bin/node; Node 16+)
 #
 # The bridge key is generated here, written only to a root-owned file, and
 # never printed; the script shows its SHA-256 fingerprint. Re-running keeps an
@@ -16,12 +17,14 @@ set -euo pipefail
 QUEUE=""
 ALLOW_FROM="100.85.15.43"
 PORT="3100"
+NODE_BIN="/usr/bin/node"
 ROTATE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --queue) QUEUE="${2:-}"; shift 2 ;;
     --allow-from) ALLOW_FROM="${2:-}"; shift 2 ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --node-bin) NODE_BIN="${2:-}"; shift 2 ;;
     --rotate-key) ROTATE=1; shift ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -50,11 +53,12 @@ TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 [[ "$TS_IP" =~ ^100\. ]] || fail "Tailscale is not connected (run: sudo tailscale up)"
 ok "Tailscale connected: $TS_IP"
 
-command -v node >/dev/null || fail "Node.js is not installed (Node 20 or 22 LTS required)"
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-(( NODE_MAJOR >= 18 )) || fail "Node $NODE_MAJOR is too old; install Node 20 or 22 LTS"
-ok "Node $(node -v)"
+[[ "$NODE_BIN" == /* && -x "$NODE_BIN" ]] || fail "Node.js not found at $NODE_BIN (use --node-bin)"
+NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]')"
+(( NODE_MAJOR >= 16 )) || fail "Node $NODE_MAJOR is too old; Node 16+ required"
+ok "Node $("$NODE_BIN" -v) at $NODE_BIN"
 
+apt-get update -qq >/dev/null
 apt-get install -y --no-install-recommends cups cups-client ufw openssl >/dev/null
 systemctl enable --now cups >/dev/null
 lpstat -p "$QUEUE" >/dev/null 2>&1 || fail "CUPS queue '$QUEUE' does not exist (lpstat -p)"
@@ -69,7 +73,8 @@ ok "service account printbridge"
 
 install -d -o root -g root -m 0755 "$APP_DIR"
 install -o root -g root -m 0644 "$SRC_DIR/server.js" "$SRC_DIR/queue-policy.js" "$SRC_DIR/package.json" "$APP_DIR/"
-(cd "$APP_DIR" && npm install --omit=dev --no-audit --no-fund >/dev/null)
+# No npm step: the bridge uses only Node built-ins (dotenv is optional and
+# unused here; systemd supplies the environment).
 chown -R root:root "$APP_DIR"
 ok "bridge code in $APP_DIR (root-owned, read-only to the service)"
 
@@ -103,14 +108,16 @@ systemctl restart systemd-journald
 ok "journald capped (100M / 14 days)"
 
 # ── Firewall: bridge reachable only from the MyOrder server over Tailscale ───
-ufw allow OpenSSH >/dev/null
+ufw allow 22/tcp >/dev/null
+ufw allow 41641/udp >/dev/null
 ufw default deny incoming >/dev/null
 ufw allow in on tailscale0 from "$ALLOW_FROM" to any port "$PORT" proto tcp >/dev/null
 ufw --force enable >/dev/null
-ok "ufw: SSH kept open; port $PORT only from $ALLOW_FROM on tailscale0"
+ok "ufw: SSH (22) and Tailscale (41641/udp) kept open; port $PORT only from $ALLOW_FROM on tailscale0"
 
 # ── Service ──────────────────────────────────────────────────────────────────
-install -o root -g root -m 0644 "$SRC_DIR/myorder-print-bridge.service" "$UNIT"
+sed "s#^ExecStart=/usr/bin/node #ExecStart=$NODE_BIN #" "$SRC_DIR/myorder-print-bridge.service" > "$UNIT"
+chown root:root "$UNIT"; chmod 0644 "$UNIT"
 systemctl daemon-reload
 systemctl enable myorder-print-bridge >/dev/null
 systemctl restart myorder-print-bridge
