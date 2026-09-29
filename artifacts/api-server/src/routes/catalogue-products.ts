@@ -43,7 +43,8 @@ function rows<T>(result: unknown): T[] {
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
 type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; consumptionQuantity: string; sku: string | null; price: string; baseUnit: string; active: boolean };
 
-function trustedInventoryItem(model: ProductRow["inventoryModel"], options: Array<{ inventoryItemId: number }>): number {
+type InventoryRelationship = { inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number };
+function trustedInventoryItem(model: ProductRow["inventoryModel"], options: InventoryRelationship[]): number {
   if (!options.length) throw new Error("A product needs an active inventory-consuming option");
   const identities = options.map(option => option.inventoryItemId);
   const distinct = new Set(identities);
@@ -52,6 +53,9 @@ function trustedInventoryItem(model: ProductRow["inventoryModel"], options: Arra
   }
   if (model === "SEPARATE_VARIANTS" && distinct.size !== identities.length) {
     throw new Error("Separate variants must use independent inventory items; controlled reconciliation is required");
+  }
+  if (model === "SEPARATE_VARIANTS" && options.some(option => option.inventoryCatalogItemId !== option.catalogItemId)) {
+    throw new Error("Each separate variant must use its own catalogue inventory item; controlled reconciliation is required");
   }
   return identities[0];
 }
@@ -149,10 +153,13 @@ router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Pr
       `))[0];
       if (!current) return null;
       if (parsed.data.inventoryModel && parsed.data.inventoryModel !== current.inventoryModel) {
-        const options = rows<{ inventoryItemId: number }>(await tx.execute(sql`
-          SELECT inventory_item_id AS "inventoryItemId" FROM catalogue_options
-          WHERE tenant_id = ${tenantId} AND product_id = ${current.id} AND active = true
-          ORDER BY id
+        const options = rows<InventoryRelationship>(await tx.execute(sql`
+          SELECT co.inventory_item_id AS "inventoryItemId", co.catalog_item_id AS "catalogItemId",
+            ii.catalog_item_id AS "inventoryCatalogItemId"
+          FROM catalogue_options co JOIN inventory_items ii
+            ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+          WHERE co.tenant_id = ${tenantId} AND co.product_id = ${current.id} AND co.active = true
+          ORDER BY co.id
         `));
         trustedInventoryItem(parsed.data.inventoryModel, options);
       }
@@ -187,10 +194,13 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         ORDER BY co.id LIMIT 1
       `))[0];
       if (!base) throw new Error("A product needs an active inventory-consuming option");
-      const existingOptions = rows<{ inventoryItemId: number }>(await tx.execute(sql`
-        SELECT inventory_item_id AS "inventoryItemId" FROM catalogue_options
-        WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND active = true
-        ORDER BY id
+      const existingOptions = rows<InventoryRelationship>(await tx.execute(sql`
+        SELECT co.inventory_item_id AS "inventoryItemId", co.catalog_item_id AS "catalogItemId",
+          ii.catalog_item_id AS "inventoryCatalogItemId"
+        FROM catalogue_options co JOIN inventory_items ii
+          ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+        WHERE co.tenant_id = ${tenantId} AND co.product_id = ${product.id} AND co.active = true
+        ORDER BY co.id
       `));
       const sharedInventoryItemId = trustedInventoryItem(product.inventoryModel, existingOptions);
       const name = `${product.name} ${body.label}`;

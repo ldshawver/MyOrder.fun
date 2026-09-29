@@ -60,7 +60,7 @@ describe("customer product options", () => {
     state.txResults = [
       [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
-      [{ inventoryItemId: 179 }],
+      [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 }],
       [{ id: 184 }],
       [{ id: 181, productId: 181, inventoryItemId: 181 }],
       [], [],
@@ -78,7 +78,9 @@ describe("customer product options", () => {
     state.txResults = [
       [{ id: 1, name: "Existing product", inventoryModel: "SHARED" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 1 }],
-      [{ inventoryItemId: 1 }, { inventoryItemId: 185 }, { inventoryItemId: 186 }],
+      [{ inventoryItemId: 1, catalogItemId: 1, inventoryCatalogItemId: 1 },
+        { inventoryItemId: 185, catalogItemId: 188, inventoryCatalogItemId: 188 },
+        { inventoryItemId: 186, catalogItemId: 189, inventoryCatalogItemId: 189 }],
     ];
     const response = await supertest(app).post("/api/admin/catalogue/products/1/options")
       .send({ label: "Large", price: "5.00", consumptionQuantity: "1.000000" });
@@ -91,7 +93,8 @@ describe("customer product options", () => {
     state.txResults = [
       [{ id: 182, name: "Coffee Beans", inventoryModel: "SHARED" }],
       [{ category: "Coffee", baseUnit: "g", inventoryItemId: 182 }],
-      [{ inventoryItemId: 182 }, { inventoryItemId: 182 }],
+      [{ inventoryItemId: 182, catalogItemId: 182, inventoryCatalogItemId: 182 },
+        { inventoryItemId: 182, catalogItemId: 191, inventoryCatalogItemId: 182 }],
       [{ id: 193 }],
       [{ id: 190, productId: 190, inventoryItemId: 190 }],
       [], [], [],
@@ -105,7 +108,9 @@ describe("customer product options", () => {
   it("rejects a model switch to SHARED while separate options have different inventory items", async () => {
     state.txResults = [
       [{ id: 1, name: "Existing product", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" }],
-      [{ inventoryItemId: 1 }, { inventoryItemId: 185 }, { inventoryItemId: 186 }],
+      [{ inventoryItemId: 1, catalogItemId: 1, inventoryCatalogItemId: 1 },
+        { inventoryItemId: 185, catalogItemId: 188, inventoryCatalogItemId: 188 },
+        { inventoryItemId: 186, catalogItemId: 189, inventoryCatalogItemId: 189 }],
     ];
     const response = await supertest(app).patch("/api/admin/catalogue/products/1")
       .send({ inventoryModel: "SHARED" });
@@ -117,12 +122,27 @@ describe("customer product options", () => {
   it("rejects a model switch to SEPARATE_VARIANTS while options share an inventory item", async () => {
     state.txResults = [
       [{ id: 182, name: "Coffee Beans", inventoryModel: "SHARED", locationEvaluation: "COMBINED_LOCATIONS" }],
-      [{ inventoryItemId: 182 }, { inventoryItemId: 182 }],
+      [{ inventoryItemId: 182, catalogItemId: 182, inventoryCatalogItemId: 182 },
+        { inventoryItemId: 182, catalogItemId: 191, inventoryCatalogItemId: 182 }],
     ];
     const response = await supertest(app).patch("/api/admin/catalogue/products/182")
       .send({ inventoryModel: "SEPARATE_VARIANTS" });
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
     expect(state.txQueries).toHaveLength(2);
+  });
+
+  it("rejects a separate option whose inventory identity belongs to another catalogue item", async () => {
+    state.txResults = [
+      [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
+      [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
+      [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 },
+        { inventoryItemId: 180, catalogItemId: 183, inventoryCatalogItemId: 182 }],
+    ];
+    const response = await supertest(app).post("/api/admin/catalogue/products/179/options")
+      .send({ label: "Large", price: "24.00", consumptionQuantity: "1.000000" });
+    expect(response.status).toBe(409);
+    expect(response.body.error).toMatch(/own catalogue inventory item/);
+    expect(state.txQueries).toHaveLength(3);
   });
 });
