@@ -107,13 +107,18 @@ printf '[Journal]\nSystemMaxUse=100M\nMaxRetentionSec=14day\n' > /etc/systemd/jo
 systemctl restart systemd-journald
 ok "journald capped (100M / 14 days)"
 
-# ── Firewall: bridge reachable only from the MyOrder server over Tailscale ───
+# ── Firewall ────────────────────────────────────────────────────────────────
+# ufw closes every non-Tailscale path (the bridge also binds only to the
+# Tailscale address). Tailscale's own ts-input chain accepts tailnet traffic
+# before ufw, so the MyOrder-server-only restriction for port 3100 must be a
+# tailnet policy grant: src myorder-server -> dst <this node>:3100, nothing else.
 ufw allow 22/tcp >/dev/null
 ufw allow 41641/udp >/dev/null
 ufw default deny incoming >/dev/null
 ufw allow in on tailscale0 from "$ALLOW_FROM" to any port "$PORT" proto tcp >/dev/null
 ufw --force enable >/dev/null
-ok "ufw: SSH (22) and Tailscale (41641/udp) kept open; port $PORT only from $ALLOW_FROM on tailscale0"
+ok "ufw: SSH (22) and Tailscale (41641/udp) open; other inbound denied"
+echo "NOTE  Restrict port $PORT to $ALLOW_FROM with a tailnet policy grant (Tailscale accepts tailnet traffic before ufw)."
 
 # ── Service ──────────────────────────────────────────────────────────────────
 sed "s#^ExecStart=/usr/bin/node #ExecStart=$NODE_BIN #" "$SRC_DIR/myorder-print-bridge.service" > "$UNIT"
