@@ -226,6 +226,7 @@ export async function confirmInventoryReservationsForOrder(
     const movement = await postInventoryMovement(tx, {
       tenantId: order.tenantId, actor, entityType: "catalog", itemId: reservation.productId, locationId: reservation.locationId,
       movementType: "sale", quantity: String(reservation.quantity), sourceType: "order", sourceId: String(orderId), orderId,
+      orderItemId: reservation.orderItemId,
       reasonCode: "sale", reasonText: "Completed order inventory consumption", idempotencyKey: `sale:${orderId}:${reservation.id}`,
     });
     deductions.push({
