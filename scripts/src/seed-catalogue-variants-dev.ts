@@ -1,9 +1,13 @@
 import { sql } from "drizzle-orm";
 import { db, pool } from "@workspace/db";
 
-if (process.env.MYORDER_ENV !== "dev") throw new Error("DEV fixtures require MYORDER_ENV=dev");
+const fixtureEnvironment = process.env.MYORDER_ENV;
+if (fixtureEnvironment !== "dev" && fixtureEnvironment !== "staging") {
+  throw new Error("Acceptance fixtures require MYORDER_ENV=dev or staging");
+}
+const fixtureSkuPrefix = fixtureEnvironment === "staging" ? "STG" : "DEV";
 const tenantId = Number(process.argv.find(arg => arg.startsWith("--tenant-id="))?.split("=")[1]);
-if (!Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Pass --tenant-id=<authorized DEV tenant id>");
+if (!Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Pass --tenant-id=<authorized tenant id>");
 
 function rows<T>(value: unknown): T[] { return Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | undefined)?.rows ?? []); }
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -37,37 +41,38 @@ async function addOption(tx: Transaction, productId: number, inventoryItemId: nu
 try {
   await db.transaction(async tx => {
     const tenant = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM tenants WHERE id = ${tenantId} FOR UPDATE`))[0];
-    if (!tenant) throw new Error("DEV tenant not found");
+    if (!tenant) throw new Error("Fixture tenant not found");
     const previous = rows<{ sku: string }>(await tx.execute(sql`
       SELECT sku FROM catalog_items WHERE tenant_id = ${tenantId}
-        AND sku IN ('DEV-TS-S','DEV-TS-M','DEV-TS-L','DEV-CB-250','DEV-CB-500','DEV-CB-1000')
+        AND sku IN (${`${fixtureSkuPrefix}-TS-S`}, ${`${fixtureSkuPrefix}-TS-M`}, ${`${fixtureSkuPrefix}-TS-L`},
+          ${`${fixtureSkuPrefix}-CB-250`}, ${`${fixtureSkuPrefix}-CB-500`}, ${`${fixtureSkuPrefix}-CB-1000`})
     `));
     if (previous.length) throw new Error("Fixture SKUs already exist; no data was changed");
     let locations = rows<{ id: number }>(await tx.execute(sql`
       SELECT id FROM inventory_locations WHERE tenant_id = ${tenantId} AND is_active = true ORDER BY display_order, id LIMIT 2
     `));
-    if (locations.length === 0) throw new Error("Create a DEV inventory location before seeding fixtures");
+    if (locations.length === 0) throw new Error("Create an inventory location before seeding fixtures");
     if (locations.length === 1) {
       const second = rows<{ id: number }>(await tx.execute(sql`
         INSERT INTO inventory_locations (tenant_id, type, name, display_order)
-        VALUES (${tenantId}, 'backstock', 'DEV Fixture Backstock', 1000) RETURNING id
+        VALUES (${tenantId}, 'backstock', ${`${fixtureEnvironment.toUpperCase()} Fixture Backstock`}, 1000) RETURNING id
       `))[0];
       locations = [...locations, second];
     }
-    const shirtS = await createCatalogRow(tx, "T-Shirt S", "Apparel", "18.00", "DEV-TS-S", "each");
+    const shirtS = await createCatalogRow(tx, "T-Shirt S", "Apparel", "18.00", `${fixtureSkuPrefix}-TS-S`, "each");
     await tx.execute(sql`UPDATE catalogue_products SET name = 'T-Shirt', inventory_model = 'SEPARATE_VARIANTS',
       location_evaluation = 'PER_LOCATION' WHERE tenant_id = ${tenantId} AND id = ${shirtS.productId}`);
     await tx.execute(sql`UPDATE catalogue_options SET label = 'S' WHERE tenant_id = ${tenantId} AND id = ${shirtS.optionId}`);
-    const shirtM = await addOption(tx, shirtS.productId, null, "T-Shirt M", "Apparel", "18.00", "DEV-TS-M", "each", "M", "1.000000");
-    const shirtL = await addOption(tx, shirtS.productId, null, "T-Shirt L", "Apparel", "18.00", "DEV-TS-L", "each", "L", "1.000000");
-    const coffee250 = await createCatalogRow(tx, "Coffee Beans 250 g", "Pantry", "8.00", "DEV-CB-250", "g");
+    const shirtM = await addOption(tx, shirtS.productId, null, "T-Shirt M", "Apparel", "18.00", `${fixtureSkuPrefix}-TS-M`, "each", "M", "1.000000");
+    const shirtL = await addOption(tx, shirtS.productId, null, "T-Shirt L", "Apparel", "18.00", `${fixtureSkuPrefix}-TS-L`, "each", "L", "1.000000");
+    const coffee250 = await createCatalogRow(tx, "Coffee Beans 250 g", "Pantry", "8.00", `${fixtureSkuPrefix}-CB-250`, "g");
     await tx.execute(sql`UPDATE catalogue_products SET name = 'Coffee Beans', inventory_model = 'SHARED',
       location_evaluation = 'COMBINED_LOCATIONS' WHERE tenant_id = ${tenantId} AND id = ${coffee250.productId}`);
     await tx.execute(sql`UPDATE inventory_items SET base_unit = 'g' WHERE tenant_id = ${tenantId} AND id = ${coffee250.inventoryItemId}`);
     await tx.execute(sql`UPDATE catalogue_options SET label = '250 g', consumption_quantity = 250.000000
       WHERE tenant_id = ${tenantId} AND id = ${coffee250.optionId}`);
-    await addOption(tx, coffee250.productId, coffee250.inventoryItemId, "Coffee Beans 500 g", "Pantry", "15.00", "DEV-CB-500", "g", "500 g", "500.000000");
-    await addOption(tx, coffee250.productId, coffee250.inventoryItemId, "Coffee Beans 1 kg", "Pantry", "28.00", "DEV-CB-1000", "g", "1 kg", "1000.000000");
+    await addOption(tx, coffee250.productId, coffee250.inventoryItemId, "Coffee Beans 500 g", "Pantry", "15.00", `${fixtureSkuPrefix}-CB-500`, "g", "500 g", "500.000000");
+    await addOption(tx, coffee250.productId, coffee250.inventoryItemId, "Coffee Beans 1 kg", "Pantry", "28.00", `${fixtureSkuPrefix}-CB-1000`, "g", "1 kg", "1000.000000");
     for (const fixture of [shirtS, shirtM, shirtL, coffee250]) {
       const initial = fixture === coffee250 ? "3000.000000" : "10.000000";
       await tx.execute(sql`INSERT INTO inventory_balances (tenant_id, product_id, location_id, quantity_on_hand,
@@ -98,7 +103,7 @@ try {
           AND inventory_item_id = ${fixture.inventoryItemId})`);
     }
   });
-  process.stdout.write(`Created T-Shirt and Coffee Beans fixtures for DEV tenant ${tenantId}\n`);
+  process.stdout.write(`Created T-Shirt and Coffee Beans fixtures for ${fixtureEnvironment} tenant ${tenantId}\n`);
 } finally {
   await pool.end();
 }
