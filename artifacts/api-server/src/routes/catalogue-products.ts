@@ -79,6 +79,11 @@ router.get("/catalogue/products", async (req, res): Promise<void> => {
     JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
     WHERE co.tenant_id = ${tenantId} AND co.active = true AND ci.is_available = true
+      AND ci.alavont_in_stock IS DISTINCT FROM false
+      AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+      AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
+      AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
+      AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL
     ORDER BY co.product_id, co.sort_order, co.id
   `));
   res.json({ products: products.map(product => ({ ...product, options: options.filter(option => option.productId === product.id) })) });

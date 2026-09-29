@@ -14,7 +14,7 @@ export interface CreateCatalogItemBody {
   category: string;
   sku?: string;
   price: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;

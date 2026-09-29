@@ -7,7 +7,10 @@ import {
   useGetCurrentUser,
   getGetCatalogItemQueryKey
 } from "@workspace/api-client-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@clerk/react";
+import { useCart } from "@/contexts/CartContext";
+import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ArrowLeft, Edit, Trash, Loader2, ShoppingCart, ChevronLeft, ChevronRight } from "lucide-react";
@@ -17,11 +20,16 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 
+type SellableProducts = { products: SellableProduct[] };
+
 export default function CatalogItemDetail() {
   const params = useParams();
   const id = parseInt(params.id || "0", 10);
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  const { getToken } = useAuth();
+  const { addItem } = useCart();
+  const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: "", price: 0, category: "", description: "" });
@@ -35,6 +43,15 @@ export default function CatalogItemDetail() {
     id,
     { query: { enabled: !!id, queryKey: getGetCatalogItemQueryKey(id) } }
   );
+  const productQuery = useQuery({
+    queryKey: ["catalogueProducts"],
+    queryFn: async (): Promise<SellableProducts> => {
+      const token = await getToken();
+      const response = await fetch("/api/catalogue/products", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error("Could not load product options");
+      return response.json();
+    },
+  });
 
   const updateMutation = useUpdateCatalogItem();
   const deleteMutation = useDeleteCatalogItem();
@@ -68,6 +85,10 @@ export default function CatalogItemDetail() {
   if (isLoading) return <div className="p-8 flex items-center"><Loader2 className="animate-spin mr-2"/> Loading product details...</div>;
   if (isError || !item) return <div className="p-8 text-destructive">Product not found.</div>;
 
+  const product = productQuery.data?.products.find(entry => entry.options.some(option => option.catalogItemId === id));
+  const selectedOption = selectedSellableOption(product, selectedOptionId);
+  const displayPrice = selectedOption ? Number(selectedOption.price) : item.price;
+
   const itemWithMerchantMedia = item as typeof item & { luciferCruzImageUrl?: string | null };
   const mediaGallery = ((item.mediaGallery ?? []) as Array<{ type?: "image" | "video"; src: string; alt?: string | null }>)
     .filter((entry) => entry.src);
@@ -88,10 +109,10 @@ export default function CatalogItemDetail() {
         </Link>
         <div className="flex-1">
           <div className="flex items-center gap-3 mb-1">
-            <h1 className="text-4xl font-bold tracking-tight" data-testid="text-product-name">{item.name}</h1>
-            {!item.isAvailable && <Badge variant="destructive" className="uppercase text-[10px]">Unavailable</Badge>}
+            <h1 className="text-4xl font-bold tracking-tight" data-testid="text-product-name">{product?.name ?? item.name}</h1>
+            {!item.isAvailable && !selectedOption && <Badge variant="destructive" className="uppercase text-[10px]">Unavailable</Badge>}
           </div>
-          <p className="text-muted-foreground font-mono text-sm">SKU: {item.sku || "N/A"}</p>
+          <p className="text-muted-foreground font-mono text-sm">SKU: {selectedOption?.sku ?? item.sku ?? "N/A"}</p>
         </div>
         {canEdit && (
           <div className="flex gap-2">
@@ -201,8 +222,8 @@ export default function CatalogItemDetail() {
               <div>
                 <div className="text-xs font-mono font-medium text-muted-foreground mb-2 uppercase tracking-wider">Pricing</div>
                 <div className="flex items-end gap-3">
-                  <div className="text-5xl font-light tracking-tight" data-testid="text-product-price">${item.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
-                  {item.compareAtPrice && (
+                  <div className="text-5xl font-light tracking-tight" data-testid="text-product-price">${displayPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  {selectedOption?.catalogItemId === id && item.compareAtPrice != null && (
                     <div className="text-xl text-muted-foreground line-through mb-1">
                       ${item.compareAtPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </div>
@@ -217,7 +238,7 @@ export default function CatalogItemDetail() {
                 </div>
                 <div>
                   <div className="text-xs font-mono font-medium text-muted-foreground mb-1 uppercase tracking-wider">Stock</div>
-                  <div className="font-medium text-sm">{item.stockQuantity ?? "Unlimited"}</div>
+                  <div className="font-medium text-sm">{product && product.options.length > 1 ? "Varies by option" : item.stockQuantity ?? "Unlimited"}</div>
                 </div>
               </div>
 
@@ -239,14 +260,28 @@ export default function CatalogItemDetail() {
                 </div>
               )}
 
-              {item.isAvailable && (
+              {showOptionSelector(product) && product && (
+                <label className="block text-sm font-medium" htmlFor="detail-product-option">
+                  Option
+                  <select id="detail-product-option" className="mt-2 w-full rounded-lg border border-border bg-background p-3"
+                    value={selectedOption?.id} onChange={event => setSelectedOptionId(Number(event.target.value))}>
+                    {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+                  </select>
+                </label>
+              )}
+              {(item.isAvailable || selectedOption) && (
                 <div className="pt-6 border-t border-border/50">
-                  <Link href={`/orders/new?item=${id}`}>
-                    <Button className="w-full h-12 text-sm font-bold rounded-xl gap-2" data-testid="button-order-now">
-                      <ShoppingCart size={16} />
-                      Order This Item
-                    </Button>
-                  </Link>
+                  <Button className="w-full h-12 text-sm font-bold rounded-xl gap-2" data-testid="button-order-now"
+                    disabled={!selectedOption || productQuery.isLoading || productQuery.isError}
+                    onClick={() => {
+                      if (!product || !selectedOption) return;
+                      addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
+                      setLocation("/cart");
+                    }}>
+                    <ShoppingCart size={16} />
+                    Add to Cart
+                  </Button>
+                  {productQuery.isError && <p className="mt-2 text-sm text-destructive">Product options could not be loaded.</p>}
                 </div>
               )}
             </CardContent>

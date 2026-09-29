@@ -1508,6 +1508,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         stockQuantity:
           type: integer
         isAvailable:
@@ -1595,6 +1596,7 @@ components:
           nullable: true
         parLevel:
           type: number
+          nullable: true
           minimum: 0
         moq:
           type: number
@@ -1637,6 +1639,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         regularPrice:
           type: number
           nullable: true
@@ -1798,6 +1801,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         regularPrice:
           type: number
           nullable: true
@@ -1944,6 +1948,7 @@ components:
           nullable: true
         parLevel:
           type: number
+          nullable: true
           minimum: 0
         moq:
           type: number

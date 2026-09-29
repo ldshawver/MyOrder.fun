@@ -250,7 +250,12 @@ router.use(async (req, res, next) => {
       JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
       JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
       WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
-        AND co.active = true AND cp.active = true AND ci.is_available = true LIMIT 1
+        AND co.active = true AND cp.active = true AND ci.is_available = true
+        AND ci.alavont_in_stock IS DISTINCT FROM false
+        AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+        AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
+        AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
+        AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL LIMIT 1
     `))[0];
     if (!option) { res.status(404).json({ error: "Option not available" }); return; }
     selectedOptionByCatalog.set(option.catalogItemId, line.optionId);
@@ -1096,7 +1101,12 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
           JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
           WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
-            AND co.active = true AND cp.active = true AND ci.is_available = true LIMIT 1
+            AND co.active = true AND cp.active = true AND ci.is_available = true
+            AND ci.alavont_in_stock IS DISTINCT FROM false
+            AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+            AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
+            AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
+            AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL LIMIT 1
         `))[0];
         const selectedOptionId = (req as OptionCheckoutRequest).selectedOptionByCatalog?.get(line.catalog_item_id);
         if (selectedOptionId !== undefined && option?.optionId !== selectedOptionId) {

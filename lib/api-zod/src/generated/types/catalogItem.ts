@@ -17,7 +17,7 @@ export interface CatalogItem {
   category: string;
   sku?: string;
   price: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   stockQuantity?: number;
   isAvailable: boolean;
   isTaxable?: boolean;
@@ -46,7 +46,7 @@ export interface CatalogItem {
   wooVariationId?: string | null;
   receiptName?: string | null;
   /** @minimum 0 */
-  parLevel?: number;
+  parLevel?: number | null;
   /** @minimum 0 */
   moq?: number;
   /** @minimum 0 */

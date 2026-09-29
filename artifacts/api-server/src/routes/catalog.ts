@@ -275,7 +275,7 @@ function mapItem(
     category: i.alavontCategory ?? i.category,
     sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
-    compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
+    compareAtPrice: i.compareAtPrice != null ? parseFloat(i.compareAtPrice as string) : null,
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
@@ -320,6 +320,9 @@ function mapItem(
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
+    parLevel: i.parLevel != null ? parseFloat(String(i.parLevel)) : null,
+    moq: i.moq != null ? parseFloat(String(i.moq)) : 0,
+    preferredReorderQuantity: i.preferredReorderQuantity != null ? parseFloat(String(i.preferredReorderQuantity)) : 0,
     receiptName: alavontOnly ? null : (i.receiptName ?? null),
     labName: alavontOnly ? null : (i.labName ?? null),
     // Merchant routing fields — suppressed in Alavont-only (storefront) mode
@@ -808,7 +811,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
-  if (parLevel !== undefined) updateData.parLevel = String(parLevel);
+  if (parLevel !== undefined) updateData.parLevel = parLevel === null ? null : String(parLevel);
   if (moq !== undefined) updateData.moq = String(moq);
   if (preferredReorderQuantity !== undefined) updateData.preferredReorderQuantity = String(preferredReorderQuantity);
   // Protect LC/Woo routing fields from null/false-overwrite.

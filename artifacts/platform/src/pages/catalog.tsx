@@ -16,6 +16,7 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
+import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 
 type MenuMode = "alavont" | "lucifer";
 type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
@@ -86,8 +87,7 @@ type ExtendedCatalogItem = CatalogItem & {
   preferredReorderQuantity?: string | number | null;
 };
 
-type GroupedOption = { id: number; catalogItemId: number; label: string; price: string; sku: string | null };
-type GroupedProduct = { id: number; name: string; options: GroupedOption[] };
+type GroupedProduct = SellableProduct;
 
 type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
 
@@ -144,12 +144,14 @@ type StringFormKey = {
 function CatalogItemCard({
   item,
   product,
+  optionsLoading,
   canEdit,
   onEdit,
   menuMode,
 }: {
   item: ExtendedCatalogItem;
   product?: GroupedProduct;
+  optionsLoading: boolean;
   canEdit: boolean;
   onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
@@ -159,7 +161,7 @@ function CatalogItemCard({
   const [addedFeedback, setAddedFeedback] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
   const { addItem, cart } = useCart();
-  const selectedOption = product?.options.find(option => option.id === selectedOptionId) ?? product?.options[0];
+  const selectedOption = selectedSellableOption(product, selectedOptionId);
   const isInCart = cart.some(c => c.id === (selectedOption?.catalogItemId ?? item.id));
   const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
@@ -226,7 +228,7 @@ function CatalogItemCard({
             FEATURED
           </div>
         )}
-        {!item.isAvailable && (
+        {!item.isAvailable && !selectedOption && (
           <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center">
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Unavailable</span>
           </div>
@@ -273,7 +275,7 @@ function CatalogItemCard({
           )}
         </div>
 
-        {product && product.options.length > 1 && (
+        {showOptionSelector(product) && product && (
           <label className="text-xs font-medium">
             Option
             <select className="mt-1 w-full rounded-lg border border-border bg-background p-2" value={selectedOption?.id}
@@ -285,11 +287,10 @@ function CatalogItemCard({
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
-            disabled={!item.isAvailable}
+            disabled={!selectedOption || optionsLoading}
             onClick={() => {
-              const name = selectedOption && product ? `${product.name}${product.options.length > 1 ? ` — ${selectedOption.label}` : ""}` : (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
-              const price = parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price)));
-              addItem({ id: selectedOption?.catalogItemId ?? item.id, optionId: selectedOption?.id, name, price, imageUrl: item.imageUrl ?? null });
+              if (!product || !selectedOption) return;
+              addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
               setAddedFeedback(true);
               setTimeout(() => setAddedFeedback(false), 1800);
             }}
@@ -552,7 +553,7 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     sku: item.sku || "",
     imageUrl: item.imageUrl || "",
     stockQuantity: item.stockQuantity?.toString() || "0",
-    parLevel: item.parLevel?.toString() || "0",
+    parLevel: item.parLevel?.toString() ?? "",
     moq: item.moq?.toString() || "0",
     preferredReorderQuantity: item.preferredReorderQuantity?.toString() || "0",
     isAvailable: item.isAvailable ?? true,
@@ -734,7 +735,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
-          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
+          compareAtPrice: form.compareAtPrice.trim() ? Number(form.compareAtPrice) : null,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -743,7 +744,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           mediaGallery,
           isAvailable: form.isAvailable,
           isTaxable: form.isTaxable,
-          parLevel: parseFloat(form.parLevel || "0"),
+          parLevel: form.parLevel.trim() ? Number(form.parLevel) : null,
           moq: parseFloat(form.moq || "0"),
           preferredReorderQuantity: parseFloat(form.preferredReorderQuantity || "0"),
           alavontName: form.alavontName || undefined,
@@ -913,7 +914,7 @@ export default function Catalog() {
       void fetchNextPage();
     }
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-  const { data: grouped } = useQuery({
+  const { data: grouped, isLoading: optionsLoading } = useQuery({
     queryKey: ["catalogueProducts"],
     queryFn: async (): Promise<{ products: GroupedProduct[] }> => {
       const token = await getToken();
@@ -1111,6 +1112,7 @@ export default function Catalog() {
               key={item.id}
               item={item}
               product={groupByCatalogId.get(item.id)}
+              optionsLoading={optionsLoading}
               canEdit={canEdit}
               onEdit={setEditItem}
               menuMode={menuMode}
