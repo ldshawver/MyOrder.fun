@@ -119,7 +119,8 @@ export function PayPalCheckoutButton({ orderId, createOrder, getToken, onCapture
   }, [authHeaders, cancelAfterBuyerCancellation, capture, startWallet]);
 
   return <div className="space-y-3" aria-busy={busy}>
-    <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet">{walletEligible === null && <p className="text-xs text-muted-foreground">Loading secure PayPal checkout…</p>}</div>
+    <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet" />
+    {walletEligible === null && <p className="text-xs text-muted-foreground">Loading secure PayPal checkout…</p>}
     {walletEligible === false && <p className="text-xs text-muted-foreground">PayPal Wallet is unavailable for this account or session.</p>}
     {message && <p className="text-xs text-muted-foreground" role="status">{message}</p>}
   </div>;
