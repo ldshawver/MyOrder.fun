@@ -161,10 +161,16 @@ export default function AdminCatalogueProducts() {
       </main>}
     </div>
     <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Replenishment recommendations</h2>
-      {recommendations.flatMap(item => item.recommendations.filter(rec => rec.internalTransfers.length || Number(rec.externalPurchaseQuantity) > 0)
-        .map(rec => <div key={`${item.inventoryItemId}-${rec.locationId}`} className="border-b py-2 text-sm">
-          <strong>{item.productName}</strong> · {rec.locationName}: {rec.internalTransfers.map(transfer => `move ${transfer.quantity} ${item.baseUnit} from location #${transfer.fromLocationId}`).join(", ") || "no internal transfer"};
-          {Number(rec.externalPurchaseQuantity) > 0 && ` purchase ${rec.externalPurchaseQuantity} ${item.baseUnit}`}
+      <p className="text-xs text-muted-foreground">Suggestions only. No inventory transfer or purchase has been created.</p>
+      {recommendations.flatMap(item => item.recommendations.filter(rec => rec.internalTransfers.length || rec.externalPurchaseQuantity !== "0.000000")
+        .map(rec => <div key={`${item.inventoryItemId}-${rec.locationId}`} className="border-b py-2 text-sm space-y-1">
+          <strong>{item.productName}</strong> · {rec.locationName} · inventory item #{item.inventoryItemId}
+          {rec.internalTransfers.map(transfer => <div key={transfer.fromLocationId}>
+            Suggested internal transfer: {item.recommendations.find(source => source.locationId === transfer.fromLocationId)?.locationName ?? `location #${transfer.fromLocationId}`} → {rec.locationName} · {transfer.quantity} {item.baseUnit}
+          </div>)}
+          {rec.externalPurchaseQuantity !== "0.000000" && <div>
+            Suggested external purchase: {rec.externalPurchaseQuantity} {item.baseUnit}
+          </div>}
         </div>))}
     </section>
   </div>;

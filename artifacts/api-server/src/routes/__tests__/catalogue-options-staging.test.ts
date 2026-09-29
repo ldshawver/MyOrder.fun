@@ -60,6 +60,7 @@ describe("customer product options", () => {
     state.txResults = [
       [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
+      [{ inventoryItemId: 179 }],
       [{ id: 184 }],
       [{ id: 181, productId: 181, inventoryItemId: 181 }],
       [], [],
@@ -68,8 +69,60 @@ describe("customer product options", () => {
       .send({ label: "Large", sku: "TS-L", price: "24.00", consumptionQuantity: "1.000000" });
     expect(response.status, response.text).toBe(201);
     expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181 });
-    expect(state.txQueries).toHaveLength(6);
+    expect(state.txQueries).toHaveLength(7);
     const source = readFileSync(new URL("../catalogue-products.ts", import.meta.url), "utf8");
     expect(source).toContain("UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label}");
+  });
+
+  it("rejects the operation that exposed an existing SHARED product with three inventory identities", async () => {
+    state.txResults = [
+      [{ id: 1, name: "Existing product", inventoryModel: "SHARED" }],
+      [{ category: "Apparel", baseUnit: "each", inventoryItemId: 1 }],
+      [{ inventoryItemId: 1 }, { inventoryItemId: 185 }, { inventoryItemId: 186 }],
+    ];
+    const response = await supertest(app).post("/api/admin/catalogue/products/1/options")
+      .send({ label: "Large", price: "5.00", consumptionQuantity: "1.000000" });
+    expect(response.status).toBe(409);
+    expect(response.body.error).toMatch(/controlled reconciliation/);
+    expect(state.txQueries).toHaveLength(3); // no catalogue insert
+  });
+
+  it("reuses the trusted inventory item when adding an option to a SHARED product", async () => {
+    state.txResults = [
+      [{ id: 182, name: "Coffee Beans", inventoryModel: "SHARED" }],
+      [{ category: "Coffee", baseUnit: "g", inventoryItemId: 182 }],
+      [{ inventoryItemId: 182 }, { inventoryItemId: 182 }],
+      [{ id: 193 }],
+      [{ id: 190, productId: 190, inventoryItemId: 190 }],
+      [], [], [],
+    ];
+    const response = await supertest(app).post("/api/admin/catalogue/products/182/options")
+      .send({ label: "1 kg", price: "20.00", consumptionQuantity: "1000.000000" });
+    expect(response.status, response.text).toBe(201);
+    expect(response.body.inventoryItemId).toBe(182);
+  });
+
+  it("rejects a model switch to SHARED while separate options have different inventory items", async () => {
+    state.txResults = [
+      [{ id: 1, name: "Existing product", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" }],
+      [{ inventoryItemId: 1 }, { inventoryItemId: 185 }, { inventoryItemId: 186 }],
+    ];
+    const response = await supertest(app).patch("/api/admin/catalogue/products/1")
+      .send({ inventoryModel: "SHARED" });
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
+    expect(state.txQueries).toHaveLength(2); // no update
+  });
+
+  it("rejects a model switch to SEPARATE_VARIANTS while options share an inventory item", async () => {
+    state.txResults = [
+      [{ id: 182, name: "Coffee Beans", inventoryModel: "SHARED", locationEvaluation: "COMBINED_LOCATIONS" }],
+      [{ inventoryItemId: 182 }, { inventoryItemId: 182 }],
+    ];
+    const response = await supertest(app).patch("/api/admin/catalogue/products/182")
+      .send({ inventoryModel: "SEPARATE_VARIANTS" });
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("CONTROLLED_RECONCILIATION_REQUIRED");
+    expect(state.txQueries).toHaveLength(2);
   });
 });

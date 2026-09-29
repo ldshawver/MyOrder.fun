@@ -43,6 +43,19 @@ function rows<T>(result: unknown): T[] {
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
 type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; consumptionQuantity: string; sku: string | null; price: string; baseUnit: string; active: boolean };
 
+function trustedInventoryItem(model: ProductRow["inventoryModel"], options: Array<{ inventoryItemId: number }>): number {
+  if (!options.length) throw new Error("A product needs an active inventory-consuming option");
+  const identities = options.map(option => option.inventoryItemId);
+  const distinct = new Set(identities);
+  if (model === "SHARED" && distinct.size !== 1) {
+    throw new Error("Shared options must use one inventory item; controlled reconciliation is required");
+  }
+  if (model === "SEPARATE_VARIANTS" && distinct.size !== identities.length) {
+    throw new Error("Separate variants must use independent inventory items; controlled reconciliation is required");
+  }
+  return identities[0];
+}
+
 async function productForTenant(executor: typeof db, tenantId: number, productId: number): Promise<ProductRow | undefined> {
   return rows<ProductRow>(await executor.execute(sql`
     SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
@@ -128,15 +141,30 @@ router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Pr
     locationEvaluation: z.enum(["PER_LOCATION", "COMBINED_LOCATIONS"]).optional() }).strict().safeParse(req.body);
   if (!parsedId.success || !parsed.success) { res.status(400).json({ error: "Invalid product update" }); return; }
   const tenantId = req.authorizedTenantId!;
-  const current = await productForTenant(db, tenantId, parsedId.data);
-  if (!current) { res.status(404).json({ error: "Product not found" }); return; }
   try {
-    // The database trigger rejects active model transitions with any recorded activity.
-    await db.execute(sql`UPDATE catalogue_products SET name = ${parsed.data.name ?? current.name},
-      inventory_model = ${parsed.data.inventoryModel ?? current.inventoryModel},
-      location_evaluation = ${parsed.data.locationEvaluation ?? current.locationEvaluation}, updated_at = now()
-      WHERE tenant_id = ${tenantId} AND id = ${current.id}`);
-    res.json({ product: await productForTenant(db, tenantId, current.id) });
+    const updated = await db.transaction(async tx => {
+      const current = rows<ProductRow>(await tx.execute(sql`
+        SELECT id, name, inventory_model AS "inventoryModel", location_evaluation AS "locationEvaluation"
+        FROM catalogue_products WHERE tenant_id = ${tenantId} AND id = ${parsedId.data} FOR UPDATE
+      `))[0];
+      if (!current) return null;
+      if (parsed.data.inventoryModel && parsed.data.inventoryModel !== current.inventoryModel) {
+        const options = rows<{ inventoryItemId: number }>(await tx.execute(sql`
+          SELECT inventory_item_id AS "inventoryItemId" FROM catalogue_options
+          WHERE tenant_id = ${tenantId} AND product_id = ${current.id} AND active = true
+          ORDER BY id
+        `));
+        trustedInventoryItem(parsed.data.inventoryModel, options);
+      }
+      // The database trigger also rejects model transitions with recorded activity.
+      await tx.execute(sql`UPDATE catalogue_products SET name = ${parsed.data.name ?? current.name},
+        inventory_model = ${parsed.data.inventoryModel ?? current.inventoryModel},
+        location_evaluation = ${parsed.data.locationEvaluation ?? current.locationEvaluation}, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${current.id}`);
+      return current.id;
+    });
+    if (!updated) { res.status(404).json({ error: "Product not found" }); return; }
+    res.json({ product: await productForTenant(db, tenantId, updated) });
   } catch (error) { res.status(409).json({ error: (error as Error).message, code: "CONTROLLED_RECONCILIATION_REQUIRED" }); }
 });
 
@@ -155,9 +183,16 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         SELECT ci.category, ii.base_unit AS "baseUnit", co.inventory_item_id AS "inventoryItemId"
         FROM catalogue_options co JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
         JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
-        WHERE co.tenant_id = ${tenantId} AND co.product_id = ${product.id}
+        WHERE co.tenant_id = ${tenantId} AND co.product_id = ${product.id} AND co.active = true
         ORDER BY co.id LIMIT 1
       `))[0];
+      if (!base) throw new Error("A product needs an active inventory-consuming option");
+      const existingOptions = rows<{ inventoryItemId: number }>(await tx.execute(sql`
+        SELECT inventory_item_id AS "inventoryItemId" FROM catalogue_options
+        WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND active = true
+        ORDER BY id
+      `));
+      const sharedInventoryItemId = trustedInventoryItem(product.inventoryModel, existingOptions);
       const name = `${product.name} ${body.label}`;
       const catalog = rows<{ id: number }>(await tx.execute(sql`
         INSERT INTO catalog_items (tenant_id, name, category, price, sku, merchant_brand,
@@ -173,14 +208,10 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
       `))[0];
       let inventoryItemId = auto.inventoryItemId;
       if (product.inventoryModel === "SHARED") {
-        inventoryItemId = body.inventoryItemId ?? base.inventoryItemId;
-        const owned = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM inventory_items WHERE tenant_id = ${tenantId} AND id = ${inventoryItemId}`));
-        if (!owned.length) throw new Error("Inventory item is not in the authorized tenant");
-        const sharedByProduct = rows<{ id: number }>(await tx.execute(sql`
-          SELECT id FROM catalogue_options WHERE tenant_id = ${tenantId}
-            AND product_id = ${product.id} AND inventory_item_id = ${inventoryItemId} LIMIT 1
-        `));
-        if (!sharedByProduct.length) throw new Error("Shared inventory item must already belong to this product");
+        inventoryItemId = sharedInventoryItemId;
+        if (body.inventoryItemId !== undefined && body.inventoryItemId !== inventoryItemId) {
+          throw new Error("Shared inventory item must already belong to this product");
+        }
       } else if (body.inventoryItemId !== undefined && body.inventoryItemId !== auto.inventoryItemId) {
         throw new Error("Separate variants require their own inventory item");
       }

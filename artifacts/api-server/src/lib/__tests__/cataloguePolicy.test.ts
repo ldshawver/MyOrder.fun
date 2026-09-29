@@ -23,4 +23,20 @@ describe("replenishment recommendations", () => {
     expect(plan[0].internalTransfers).toEqual([]);
     expect(plan[0].externalPurchaseQuantity).toBe("6.000000");
   });
+
+  it("matches the accepted Coffee Beans quantities without performing a movement", () => {
+    const plan = recommendReplenishment([
+      { locationId: 1, name: "Backstock", available: "2500.000000", par: "5000", reorderPoint: "3500",
+        preferredReorderQuantity: "2000", moq: "1000", eligible: true },
+      { locationId: 2, name: "Storefront", available: "2000.000000", par: "1000", reorderPoint: "500",
+        preferredReorderQuantity: "1000", moq: "500", eligible: true },
+    ]);
+    expect(plan[0]).toEqual({
+      locationId: 1, locationName: "Backstock", available: "2500.000000",
+      internalTransfers: [{ fromLocationId: 2, quantity: "1000.000000" }],
+      externalPurchaseQuantity: "2000.000000",
+    });
+    expect(plan[1].internalTransfers).toEqual([]);
+    expect(plan[1].externalPurchaseQuantity).toBe("0.000000");
+  });
 });
