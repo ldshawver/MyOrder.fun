@@ -3,7 +3,8 @@ import supertest from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
-const state = vi.hoisted(() => ({ tenantId: 1, calls: 0, products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[] }));
+const state = vi.hoisted(() => ({ tenantId: 1, calls: 0, products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[],
+  txResults: [] as Record<string, unknown>[][], txQueries: [] as unknown[] }));
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => { req.dbUser = { id: 1, role: "customer", tenantId: state.tenantId }; next(); },
@@ -13,6 +14,8 @@ vi.mock("../../lib/auth", () => ({
 }));
 vi.mock("@workspace/db", () => ({ db: {
   execute: vi.fn(async () => (++state.calls % 2 === 1 ? state.products : state.options)),
+  transaction: vi.fn(async (callback: (tx: { execute: (query: unknown) => Promise<Record<string, unknown>[]> }) => Promise<unknown>) =>
+    callback({ execute: async (query: unknown) => { state.txQueries.push(query); return state.txResults.shift() ?? []; } })),
 } }));
 vi.mock("../../lib/cataloguePolicy", () => ({ recommendReplenishment: vi.fn() }));
 vi.mock("../../lib/inventoryAuthority", () => ({ upsertInventoryBalanceThroughAuthority: vi.fn() }));
@@ -27,6 +30,8 @@ beforeEach(() => {
   state.calls = 0;
   state.products = [];
   state.options = [];
+  state.txResults = [];
+  state.txQueries = [];
 });
 
 describe("customer product options", () => {
@@ -45,10 +50,26 @@ describe("customer product options", () => {
   });
 
   it("queries tenant-scoped active, non-held options", () => {
-    const source = readFileSync(new URL("../catalogue-products.ts", import.meta.url), "utf8");
-    const customerQuery = source.split('router.get("/catalogue/products"')[1].split('router.get("/admin/catalogue/products"')[0];
+    const customerQuery = readFileSync(new URL("../../lib/catalogueSellable.ts", import.meta.url), "utf8");
     for (const predicate of ["co.tenant_id = ${tenantId}", "co.active = true", "ci.is_available = true", "alavont_in_stock IS DISTINCT FROM false", "archived", "safeOnlyDuplicate", "complianceHold"]) {
       expect(customerQuery).toContain(predicate);
     }
+  });
+
+  it("uses the admin Add option path to attach a separate variant to its parent", async () => {
+    state.txResults = [
+      [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
+      [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
+      [{ id: 184 }],
+      [{ id: 181, productId: 181, inventoryItemId: 181 }],
+      [], [],
+    ];
+    const response = await supertest(app).post("/api/admin/catalogue/products/179/options")
+      .send({ label: "Large", sku: "TS-L", price: "24.00", consumptionQuantity: "1.000000" });
+    expect(response.status, response.text).toBe(201);
+    expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181 });
+    expect(state.txQueries).toHaveLength(6);
+    const source = readFileSync(new URL("../catalogue-products.ts", import.meta.url), "utf8");
+    expect(source).toContain("UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label}");
   });
 });

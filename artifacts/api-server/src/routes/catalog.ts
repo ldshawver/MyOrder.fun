@@ -16,6 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
+import { loadSellableProducts } from "../lib/catalogueSellable";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -523,6 +524,10 @@ router.get("/catalog", async (req, res): Promise<void> => {
   });
 
   const stockByCatalogId = await getLinkedInventoryStockByCatalogId(tenantId);
+  const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
+  for (const product of await loadSellableProducts(tenantId)) {
+    for (const option of product.options) sellableByCatalogId.set(option.catalogItemId, product);
+  }
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
@@ -533,7 +538,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   );
 
   res.json(ListCatalogItemsResponse.parse({
-    items: paged.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id))),
+    items: paged.map(i => ({ ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) })),
     total,
     page,
     limit,

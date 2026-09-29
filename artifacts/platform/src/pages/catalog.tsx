@@ -162,7 +162,7 @@ function CatalogItemCard({
   const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
   const { addItem, cart } = useCart();
   const selectedOption = selectedSellableOption(product, selectedOptionId);
-  const isInCart = cart.some(c => c.id === (selectedOption?.catalogItemId ?? item.id));
+  const isInCart = !!selectedOption && cart.some(c => c.optionId === selectedOption.id);
   const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
@@ -259,13 +259,27 @@ function CatalogItemCard({
           )}
         </div>
 
+        {showOptionSelector(product) && product && (
+          <label className="text-xs font-semibold" htmlFor={`catalog-option-${product.id}`}>
+            Choose option
+            <select id={`catalog-option-${product.id}`} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm"
+              value={selectedOption?.id ?? ""}
+              onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
+              aria-label={`${product.name} option`}>
+              <option value="">Select an option</option>
+              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+            </select>
+          </label>
+        )}
         <div className="flex items-center justify-between mt-1">
           <div className="flex items-baseline gap-1.5">
             <span
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}
+              {showOptionSelector(product) && !selectedOption
+                ? "Select an option for price"
+                : `$${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}`}
             </span>
           </div>
           {item.stockQuantity !== undefined && item.isAvailable && !isLC && (!product || product.options.length === 1) && (
@@ -275,15 +289,7 @@ function CatalogItemCard({
           )}
         </div>
 
-        {showOptionSelector(product) && product && (
-          <label className="text-xs font-medium">
-            Option
-            <select className="mt-1 w-full rounded-lg border border-border bg-background p-2" value={selectedOption?.id}
-              onChange={event => setSelectedOptionId(Number(event.target.value))} aria-label={`${product.name} option`}>
-              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
-            </select>
-          </label>
-        )}
+        {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
@@ -303,7 +309,7 @@ function CatalogItemCard({
             data-testid={`link-buy-now-${item.id}`}
           >
             <ShoppingCart size={11} />
-            {addedFeedback ? "Added ✓" : isInCart ? "In Cart ✓" : "Add to Cart"}
+            {addedFeedback ? "Added ✓" : isInCart ? "In My Order ✓" : "Add to My Order"}
           </button>
           <Link
             href={`/catalog/${item.id}`}
@@ -914,15 +920,6 @@ export default function Catalog() {
       void fetchNextPage();
     }
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-  const { data: grouped, isLoading: optionsLoading } = useQuery({
-    queryKey: ["catalogueProducts"],
-    queryFn: async (): Promise<{ products: GroupedProduct[] }> => {
-      const token = await getToken();
-      const response = await fetch("/api/catalogue/products", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      if (!response.ok) throw new Error("Could not load product options");
-      return response.json() as Promise<{ products: GroupedProduct[] }>;
-    },
-  });
 
   const isLC = menuMode === "lucifer";
   const categories = ["all", ...(categoriesRes?.categories ?? [])]
@@ -943,7 +940,10 @@ export default function Catalog() {
   // Alavont rows can still carry LC mapping fields for payment conversion,
   // but those mapped fields do not make them Lucifer Cruz storefront items.
   const groupByCatalogId = new Map<number, GroupedProduct>();
-  for (const product of grouped?.products ?? []) for (const option of product.options) groupByCatalogId.set(option.catalogItemId, product);
+  for (const item of allItems) {
+    const product = item.sellableProduct;
+    if (product) for (const option of product.options) groupByCatalogId.set(option.catalogItemId, product);
+  }
   const seenGroups = new Set<number>();
   const displayItems = allItems.filter(item => {
     const product = groupByCatalogId.get(item.id);
@@ -1051,6 +1051,12 @@ export default function Catalog() {
       </div>
 
       {/* Grid */}
+      {catalogQuery.isError && (
+        <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
+          The catalogue and product options could not be loaded.
+          <Button type="button" size="sm" variant="outline" className="ml-3" onClick={() => void catalogQuery.refetch()}>Retry catalogue</Button>
+        </div>
+      )}
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {[...Array(10)].map((_, i) => (
@@ -1112,7 +1118,7 @@ export default function Catalog() {
               key={item.id}
               item={item}
               product={groupByCatalogId.get(item.id)}
-              optionsLoading={optionsLoading}
+              optionsLoading={catalogQuery.isLoading}
               canEdit={canEdit}
               onEdit={setEditItem}
               menuMode={menuMode}

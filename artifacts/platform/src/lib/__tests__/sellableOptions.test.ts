@@ -27,6 +27,12 @@ describe("sellable option selection", () => {
     expect(checkoutOptionLines([{ ...entry, quantity: 1 }])).toEqual([{ optionId: id, quantity: 1 }]);
   });
 
+  it("requires an explicit valid option for a multi-option product", () => {
+    expect(selectedSellableOption(shirt, null)).toBeUndefined();
+    expect(selectedSellableOption(shirt, 999)).toBeUndefined();
+    expect(showOptionSelector(shirt)).toBe(true);
+  });
+
   it("supports shared inventory options with different server prices", () => {
     const beans: SellableProduct = { id: 3, name: "Coffee Beans", options: [
       { id: 111, catalogItemId: 211, label: "250 g", price: "8.00", sku: null },

@@ -3,7 +3,7 @@ export type SellableOption = {
   catalogItemId: number;
   label: string;
   price: string;
-  sku: string | null;
+  sku?: string | null;
 };
 
 export type SellableProduct = {
@@ -13,7 +13,9 @@ export type SellableProduct = {
 };
 
 export function selectedSellableOption(product: SellableProduct | undefined, selectedId: number | null): SellableOption | undefined {
-  return product?.options.find(option => option.id === selectedId) ?? product?.options[0];
+  if (!product) return undefined;
+  if (product.options.length === 1) return product.options[0];
+  return selectedId === null ? undefined : product.options.find(option => option.id === selectedId);
 }
 
 export function showOptionSelector(product: SellableProduct | undefined): boolean {

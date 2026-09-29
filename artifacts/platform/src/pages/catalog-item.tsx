@@ -264,7 +264,8 @@ export default function CatalogItemDetail() {
                 <label className="block text-sm font-medium" htmlFor="detail-product-option">
                   Option
                   <select id="detail-product-option" className="mt-2 w-full rounded-lg border border-border bg-background p-3"
-                    value={selectedOption?.id} onChange={event => setSelectedOptionId(Number(event.target.value))}>
+                    value={selectedOption?.id ?? ""} onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}>
+                    <option value="">Select an option</option>
                     {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
                   </select>
                 </label>

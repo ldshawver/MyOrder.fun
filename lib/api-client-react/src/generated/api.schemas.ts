@@ -140,6 +140,20 @@ export interface TenantSummary {
   topProducts: TenantSummaryTopProductsItem[];
 }
 
+export type CatalogItemSellableProductOptionsItem = {
+  id: number;
+  catalogItemId: number;
+  label: string;
+  price: string;
+  sku?: string | null;
+};
+
+export type CatalogItemSellableProduct = {
+  id: number;
+  name: string;
+  options: CatalogItemSellableProductOptionsItem[];
+};
+
 export type CatalogItemMediaGalleryItemType = typeof CatalogItemMediaGalleryItemType[keyof typeof CatalogItemMediaGalleryItemType];
 
 
@@ -167,6 +181,7 @@ export const CatalogItemLifecycleStatus = {
 } as const;
 
 export interface CatalogItem {
+  sellableProduct?: CatalogItemSellableProduct;
   id: number;
   tenantId: number;
   name: string;

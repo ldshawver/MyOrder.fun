@@ -241,6 +241,17 @@ export const listCatalogItemsResponseItemsItemPreferredReorderQuantityMin = 0;
 
 export const ListCatalogItemsResponse = zod.object({
   "items": zod.array(zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),
@@ -375,6 +386,17 @@ export const getCatalogItemResponsePreferredReorderQuantityMin = 0;
 
 
 export const GetCatalogItemResponse = zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),
@@ -512,6 +534,17 @@ export const updateCatalogItemResponsePreferredReorderQuantityMin = 0;
 
 
 export const UpdateCatalogItemResponse = zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),
@@ -2040,6 +2073,17 @@ export const aiConciergeChatResponseSuggestedItemsItemPreferredReorderQuantityMi
 export const AiConciergeChatResponse = zod.object({
   "reply": zod.string(),
   "suggestedItems": zod.array(zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),
@@ -2117,6 +2161,17 @@ export const aiCatalogSearchResponseItemsItemPreferredReorderQuantityMin = 0;
 
 export const AiCatalogSearchResponse = zod.object({
   "items": zod.array(zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),
@@ -2188,6 +2243,17 @@ export const aiUpsellSuggestionsResponseSuggestionsItemPreferredReorderQuantityM
 
 export const AiUpsellSuggestionsResponse = zod.object({
   "suggestions": zod.array(zod.object({
+  "sellableProduct": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "options": zod.array(zod.object({
+  "id": zod.number(),
+  "catalogItemId": zod.number(),
+  "label": zod.string(),
+  "price": zod.string(),
+  "sku": zod.string().nullish()
+}))
+}).optional(),
   "id": zod.number(),
   "tenantId": zod.number(),
   "name": zod.string(),

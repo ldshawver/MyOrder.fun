@@ -7,6 +7,7 @@ import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { recommendReplenishment, type LocationPolicyInput } from "../lib/cataloguePolicy";
 import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
+import { loadSellableProducts } from "../lib/catalogueSellable";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -64,29 +65,7 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
 }
 
 router.get("/catalogue/products", async (req, res): Promise<void> => {
-  const tenantId = req.authorizedTenantId!;
-  const products = rows<ProductRow>(await db.execute(sql`
-    SELECT id, tenant_id AS "tenantId", name, inventory_model AS "inventoryModel",
-      location_evaluation AS "locationEvaluation", active
-    FROM catalogue_products WHERE tenant_id = ${tenantId} AND active = true ORDER BY id
-  `));
-  const options = rows<OptionRow>(await db.execute(sql`
-    SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
-      co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.price,
-      ii.base_unit AS "baseUnit", co.active
-    FROM catalogue_options co
-    JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
-    JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
-    WHERE co.tenant_id = ${tenantId} AND co.active = true AND ci.is_available = true
-      AND ci.alavont_in_stock IS DISTINCT FROM false
-      AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
-      AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
-      AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
-      AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL
-    ORDER BY co.product_id, co.sort_order, co.id
-  `));
-  res.json({ products: products.map(product => ({ ...product, options: options.filter(option => option.productId === product.id) })) });
+  res.json({ products: await loadSellableProducts(req.authorizedTenantId!) });
 });
 
 router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> => {

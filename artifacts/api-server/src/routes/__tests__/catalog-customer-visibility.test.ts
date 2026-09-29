@@ -3,7 +3,8 @@ import supertest from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const actor = vi.hoisted(() => ({ tenantId: 1, role: "customer" }));
-const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], showOutOfStock: false }));
+const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], showOutOfStock: false,
+  productCalls: 0, products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[] }));
 
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -34,7 +35,7 @@ vi.mock("@workspace/db", () => {
     return candidate?.kind === "eq" && candidate.column === "tenantId" ? rows.catalog.filter(row => row.tenantId === candidate.value) : rows.catalog;
   };
   const db = {
-    execute: vi.fn(async () => []),
+    execute: vi.fn(async () => (++rows.productCalls % 2 === 1 ? rows.products : rows.options)),
     select: vi.fn((_selection?: Record<string, unknown>) => ({
       from: (table: { _name: string }) => {
         if (table._name === "catalog") {
@@ -73,9 +74,29 @@ beforeEach(() => {
   actor.role = "customer";
   rows.showOutOfStock = false;
   rows.catalog = [];
+  rows.productCalls = 0;
+  rows.products = [];
+  rows.options = [];
 });
 
 describe("customer catalogue visibility", () => {
+  it("embeds all sellable sibling options on the actual customer card response", async () => {
+    rows.catalog = [catalogRow(182, { name: "T-Shirt Small", price: "20.00" }),
+      catalogRow(183, { name: "T-Shirt Medium", price: "22.00" }),
+      catalogRow(184, { name: "T-Shirt Large", price: "24.00" })];
+    rows.products = [{ id: 179, tenantId: 1, name: "T-Shirt", active: true }];
+    rows.options = [
+      { id: 179, productId: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: null },
+      { id: 180, productId: 179, catalogItemId: 183, label: "Medium", price: "22.00", sku: null },
+      { id: 181, productId: 179, catalogItemId: 184, label: "Large", price: "24.00", sku: null },
+    ];
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.items).toHaveLength(3);
+    expect(response.body.items[0].sellableProduct).toMatchObject({ id: 179, name: "T-Shirt" });
+    expect(response.body.items[0].sellableProduct.options.map((option: { id: number; label: string }) => [option.id, option.label]))
+      .toEqual([[179, "Small"], [180, "Medium"], [181, "Large"]]);
+  });
   it("returns only the tenant's eligible local catalogue rows without using inventory location or customer identity as a predicate", async () => {
     rows.catalog = [
       catalogRow(1),

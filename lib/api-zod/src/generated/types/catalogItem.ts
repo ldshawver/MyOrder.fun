@@ -8,8 +8,10 @@
 import type { CatalogItemLifecycleStatus } from './catalogItemLifecycleStatus';
 import type { CatalogItemMediaGalleryItem } from './catalogItemMediaGalleryItem';
 import type { CatalogItemMetadata } from './catalogItemMetadata';
+import type { CatalogItemSellableProduct } from './catalogItemSellableProduct';
 
 export interface CatalogItem {
+  sellableProduct?: CatalogItemSellableProduct;
   id: number;
   tenantId: number;
   name: string;
