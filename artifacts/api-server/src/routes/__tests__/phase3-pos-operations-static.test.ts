@@ -37,7 +37,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
 
   describe("/api/admin/product-master/:id/lifecycle", () => {
     it("supports lifecycle fields, rejects unknown fields, scopes updates, and audits changes", () => {
-      expect(catalog).toContain('router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin")');
+      expect(catalog).toContain('router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor")');
       expect(catalog).toContain("active: z.boolean().optional()");
       expect(catalog).toContain("archived: z.boolean().optional()");
       expect(catalog).toContain("complianceHold: z.boolean().optional()");
@@ -47,9 +47,9 @@ describe("Phase 3 POS operations Product Master integration", () => {
     });
 
     it("inactive, archive, compliance hold, and non-sellable rows are kept out of customer catalog and checkout", () => {
-      expect(catalog).toContain("const available = body.data.complianceHold === true || body.data.archived === true ? false");
-      expect(catalog).toContain("isAvailable: available");
-      expect(catalog).toContain("alavontInStock: available");
+      expect(catalog).toContain("const available = change.active ?? existing.isAvailable");
+      expect(catalog).toContain("...(change.active !== undefined ? { isAvailable: available } : {})");
+      expect(catalog).not.toContain("alavontInStock: available");
       expect(catalog).toContain("rows = rows.filter(r => r.isAvailable === true && r.alavontInStock !== false)");
       expect(checkout).toContain("if (ci.isAvailable === false)");
       expect(checkout).toContain('"item_unavailable"');

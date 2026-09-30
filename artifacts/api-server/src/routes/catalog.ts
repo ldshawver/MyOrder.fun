@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, eq, asc, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
+import { db, adminSettingsTable, auditLogsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -564,7 +564,7 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
       active: item.isAvailable !== false,
       unavailable: item.isAvailable === false,
       archived: (item.metadata as Record<string, unknown> | null)?.archived === true,
-      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true || item.alavontInStock === false,
+      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true,
       nonSellable: item.isAvailable === false || item.alavontInStock === false,
     },
     "Regular Price": item.regularPrice != null ? parseFloat(String(item.regularPrice)) : parseFloat(String(item.price ?? "0")),
@@ -587,8 +587,50 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
   res.json({ rows, locations });
 });
 
-// PATCH /api/admin/product-master/:id/lifecycle — archive/reactivate/unavailable/compliance hold.
-router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+type LifecycleChange = { active?: boolean; archived?: boolean; complianceHold?: boolean; reason?: string };
+type LifecycleActor = { id: number; email: string | null; role: string; tenantId: number | null; status: string | null; isActive: boolean | null };
+
+/** Shared, tenant-authorized transition for the HTTP route and audited maintenance. */
+export async function applyCatalogLifecycleTransition(input: {
+  tenantId: number; id: number; actor: LifecycleActor; change: LifecycleChange;
+  ipAddress?: string | null; source?: "http" | "delegated_maintenance";
+}) {
+  const { tenantId, id, actor, change } = input;
+  const role = normalizeRole(actor.role);
+  if (!["global_admin", "admin", "supervisor"].includes(role) || actor.isActive === false || actor.status === "rejected" || actor.status === "deactivated"
+    || (role !== "global_admin" && actor.tenantId !== tenantId)) throw new Error("Unauthorized catalogue lifecycle actor");
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0 || !Number.isSafeInteger(id) || id <= 0) throw new Error("Explicit tenant and catalogue item IDs are required");
+  return db.transaction(async tx => {
+    const [existing] = await tx.select().from(catalogItemsTable)
+      .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).for("update").limit(1);
+    if (!existing) return null;
+    const currentMetadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+      ? existing.metadata as Record<string, unknown> : {};
+    const metadata = { ...currentMetadata };
+    if (change.archived !== undefined) metadata.archived = change.archived;
+    if (change.complianceHold !== undefined) {
+      metadata.complianceHold = change.complianceHold;
+      metadata.complianceReason = change.complianceHold ? change.reason ?? currentMetadata.complianceReason ?? null : null;
+      metadata.complianceMatchedTerms = change.complianceHold ? currentMetadata.complianceMatchedTerms ?? [] : [];
+    }
+    if (change.reason !== undefined && change.complianceHold === undefined) metadata.lifecycleReason = change.reason;
+    const available = change.active ?? existing.isAvailable;
+    if (available === existing.isAvailable && JSON.stringify(metadata) === JSON.stringify(currentMetadata)) return existing;
+    const [item] = await tx.update(catalogItemsTable).set({
+      ...(change.active !== undefined ? { isAvailable: available } : {}), metadata, updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id),
+      metadata: { ...change, previousComplianceHold: currentMetadata.complianceHold === true,
+        source: input.source ?? "http" }, ipAddress: input.ipAddress ?? null,
+    });
+    return item;
+  });
+}
+
+// PATCH /api/admin/product-master/:id/lifecycle — independent lifecycle state changes.
+router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid product id" }); return; }
@@ -598,18 +640,13 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
     complianceHold: z.boolean().optional(),
     reason: z.string().trim().max(500).optional(),
   }).strict().safeParse(req.body);
-  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).limit(1);
-  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
-  const metadata = lifecycleMetadataPatch(existing.metadata, {
-    archived: body.data.archived ?? (existing.metadata as Record<string, unknown> | null)?.archived === true,
-    complianceHold: body.data.complianceHold ?? (existing.metadata as Record<string, unknown> | null)?.complianceHold === true,
-    lifecycleReason: body.data.reason ?? null,
-  });
-  const available = body.data.complianceHold === true || body.data.archived === true ? false : body.data.active ?? existing.isAvailable;
-  const [updated] = await db.update(catalogItemsTable).set({ isAvailable: available, alavontInStock: available, metadata, updatedAt: new Date() }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
-  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id), metadata: body.data, ipAddress: req.ip });
-  res.json({ item: mapItem(updated ?? existing) });
+  if (!body.success || (body.data.active === undefined && body.data.archived === undefined && body.data.complianceHold === undefined)) {
+    res.status(400).json({ error: body.success ? "A lifecycle state is required" : body.error.message }); return;
+  }
+  const updated = await applyCatalogLifecycleTransition({ tenantId, id, actor: req.dbUser!,
+    change: body.data, ipAddress: req.ip, source: "http" });
+  if (!updated) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({ item: mapItem(updated) });
 });
 
 // POST /api/catalog
