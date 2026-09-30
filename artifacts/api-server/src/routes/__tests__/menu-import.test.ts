@@ -183,6 +183,35 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(400);
     expect(res.body.extraColumns).toContain("bad");
   });
+  it("rejects Product/Option/Inventory relationship fields through the actual CSV import endpoint", async () => {
+    const hostileHeaders = ["inventory_item_id", "inventoryItemId", "product_id", "productId",
+      "tenant_id", "tenantId", "inventory_model", "inventoryModel", "option_id", "optionId"];
+    const row = goodCsv.trimEnd().split("\n")[1];
+    // product_id is a documented alias for the legacy catalogue row's Product ID match key.
+    // A foreign tenant's row must still be invisible to that lookup.
+    state.catalog.push({ id: 999999, tenantId: 2, sku: "FOREIGN", name: "Foreign" });
+    for (const header of hostileHeaders) {
+      const before = JSON.stringify({ catalog: state.catalog, inventory: state.inventory,
+        balances: state.balances, audit: state.audit });
+      const file = Buffer.from(`${headers},${header}\n${row},999999\n`);
+      const response = await supertest(buildApp()).post("/api/admin/products/import?confirm=true")
+        .attach("file", file, "hostile-relationships.csv");
+      if (header === "product_id") {
+        expect(response.status, response.text).toBe(200);
+        expect(response.body.dryRun).toBe(true);
+        expect(response.body.errors).toEqual(expect.arrayContaining([
+          expect.objectContaining({ message: "Product ID 999999 was not found in this tenant" }),
+        ]));
+      } else {
+        expect(response.status, `${header}: ${response.text}`).toBe(400);
+        expect(response.body.extraColumns).toContain(header);
+      }
+      expect(JSON.stringify({ catalog: state.catalog, inventory: state.inventory,
+        balances: state.balances, audit: state.audit })).toBe(before);
+      const { db } = await import("@workspace/db");
+      expect(db.transaction).not.toHaveBeenCalled();
+    }
+  });
   it("requires confirmation before applying import", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import").attach("file", Buffer.from(goodCsv), "catalog.csv");
     expect(res.status).toBe(409);
