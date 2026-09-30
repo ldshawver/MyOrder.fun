@@ -56,7 +56,8 @@ describe("document catalogue", () => {
 
   it("the print_routes job_type check admits every document type", () => {
     const sql = readFileSync(resolve(import.meta.dirname, "../../../../../lib/db/drizzle/0064_print_routes_document_types.sql"), "utf8");
-    const allowed = [...sql.matchAll(/'([A-Za-z_]+)'/g)].map((match) => match[1]);
+    const check = sql.slice(sql.indexOf("ADD CONSTRAINT"));
+    const allowed = [...check.matchAll(/'([A-Za-z_]+)'/g)].map((match) => match[1]);
     expect(allowed.sort()).toEqual([...PRINT_DOCUMENT_TYPES, "thank_you_sticker"].sort());
   });
 
