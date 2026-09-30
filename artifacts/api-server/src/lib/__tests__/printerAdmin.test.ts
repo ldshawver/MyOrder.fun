@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const rows = vi.hoisted(() => ({ users: [] as Array<Record<string, unknown>>, bridges: [] as Array<Record<string, unknown>> }));
+const rows = vi.hoisted(() => ({ users: [] as Array<Record<string, unknown>>, bridges: [] as Array<Record<string, unknown>>, printers: [] as Array<Record<string, unknown>>, audits: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@workspace/db", () => {
   const select = vi.fn(() => ({
@@ -12,17 +12,26 @@ vi.mock("@workspace/db", () => {
       where: (predicates: Array<{ column: string; value: unknown }> | { column: string; value: unknown }) => ({
         limit: async () => {
           const list = Array.isArray(predicates) ? predicates : [predicates];
-          const source = table.name === "users" ? rows.users : rows.bridges;
+          const source = table.name === "users" ? rows.users : table.name === "printers" ? rows.printers : rows.bridges;
           return source.filter((row) => list.every(({ column, value }) => row[column] === value));
         },
       }),
     }),
   }));
+  const matches = (row: Record<string, unknown>, predicates: Array<{ column: string; value: unknown }>) => predicates.every(({ column, value }) => row[column] === value);
+  const update = vi.fn(() => ({
+    set: (values: Record<string, unknown>) => ({
+      where: (predicates: Array<{ column: string; value: unknown }>) => ({
+        returning: async () => rows.printers.filter((row) => matches(row, predicates)).map((row) => Object.assign(row, values)),
+      }),
+    }),
+  }));
+  const insert = vi.fn(() => ({ values: async (values: Record<string, unknown>) => { rows.audits.push(values); } }));
   return {
-    db: { select },
+    db: { select, update, insert },
     usersTable: { name: "users", id: "id" },
     printBridgeProfilesTable: { name: "bridges", id: "id", tenantId: "tenantId", isActive: "isActive" },
-    printPrintersTable: {}, printRoutesTable: {}, inventoryLocationsTable: {}, auditLogsTable: {},
+    printPrintersTable: { name: "printers", id: "id", tenantId: "tenantId" }, printRoutesTable: {}, inventoryLocationsTable: {}, auditLogsTable: {},
   };
 });
 vi.mock("drizzle-orm", () => ({
@@ -33,7 +42,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../printRouter", () => ({ resolveBridgeApiKey: (key: string | null) => key || "central" }));
 vi.mock("../print/printRouting", () => ({ validatePrinterForDocument: vi.fn() }));
 
-import { loadPrintAdminActor, printerPaper, verifyBridgeQueue, PrintAdminError } from "../print/printerAdmin";
+import { loadPrintAdminActor, printerPaper, retirePrinter, verifyBridgeQueue, PrintAdminError } from "../print/printerAdmin";
 
 describe("printer admin operator path", () => {
   beforeEach(() => {
@@ -44,7 +53,25 @@ describe("printer admin operator path", () => {
       { id: 4, role: "admin", tenantId: 1, isActive: false, email: "x@example.test" },
     ];
     rows.bridges = [{ id: 2, tenantId: 1, isActive: true, bridgeUrl: "http://box-2.test:3100", apiKey: "pi-key-0123456789abcdef0123456789abcdef" }];
+    rows.printers = [{ id: 3, tenantId: 1, isActive: false, bridgeProfileId: 2, bridgePrinterName: "Beeprt_USB" }];
+    rows.audits = [];
     vi.restoreAllMocks();
+  });
+
+  it("retires an old record: inactive, queue renamed as metadata, audited, idempotent, no bridge contact", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const actor = { id: 1, email: "g@example.test", role: "global_admin" };
+    const retired = await retirePrinter(1, actor, 3, "test");
+    expect(retired).toMatchObject({ id: 3, isActive: false, bridgePrinterName: "retired-3-Beeprt_USB" });
+    expect(rows.audits).toEqual([expect.objectContaining({
+      action: "PRINT_PRINTER_RETIRED", resourceId: "3",
+      metadata: expect.objectContaining({ previousQueue: "Beeprt_USB", retiredQueue: "retired-3-Beeprt_USB" }),
+    })]);
+    await retirePrinter(1, actor, 3, "test");
+    expect(rows.audits).toHaveLength(1);
+    expect(rows.printers[0]!.bridgePrinterName).toBe("retired-3-Beeprt_USB");
+    await expect(retirePrinter(2, actor, 3)).rejects.toThrow(/not found/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("accepts only an active admin of the tenant or a global admin", async () => {

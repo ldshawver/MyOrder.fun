@@ -7,11 +7,15 @@
  *       --bridge-id=2 --queue=Beeprt_USB --name="Box 2 Receipt" \
  *       --paper-width=50mm --role=receipt \
  *       --documents=ORDER_RECEIPT,EXPO,CLOCK_IN,CLOCK_OUT,DEPOSIT \
- *       [--deactivate-printer-id=3] [--execute]
+ *       [--retire-printer-id=3] [--execute]
  *
  * Without --execute it only checks the plan (actor, location, bridge queue
  * allowlist, document types) and changes nothing. It never prints and never
  * displays a bridge key. Re-running reuses an identical active printer.
+ *
+ * --retire-printer-id deactivates an old record for the same queue and renames
+ * its stored queue to retired-<id>-<queue> (audited), so the one-record-per-
+ * queue rule holds and its print history is kept.
  */
 import { and, eq } from "drizzle-orm";
 import { db, printPrintersTable } from "@workspace/db";
@@ -22,7 +26,7 @@ import {
   loadPrintAdminActor,
   printerPaper,
   setDocumentRoute,
-  setPrinterActive,
+  retirePrinter,
   verifyBridgeQueue,
 } from "../lib/print/printerAdmin";
 
@@ -51,7 +55,7 @@ const name = required("name");
 const role = required("role");
 const paper = printerPaper("thermal", required("paper-width"));
 if ("error" in paper) throw new Error(paper.error);
-const deactivateId = arg("deactivate-printer-id") ? id("deactivate-printer-id") : null;
+const retireId = arg("retire-printer-id") ? id("retire-printer-id") : null;
 const documents = required("documents").split(",").map((value) => value.trim()) as PrintDocumentType[];
 for (const documentType of documents) {
   if (!(PRINT_DOCUMENT_TYPES as readonly string[]).includes(documentType)) throw new Error(`Unknown document type ${documentType}`);
@@ -62,8 +66,8 @@ const actor = await loadPrintAdminActor(tenantId, id("actor-id"));
 const bridge = await verifyBridgeQueue(tenantId, bridgeId, queue);
 const tenantPrinter = async (printerId: number) =>
   (await db.select().from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, printerId))).limit(1))[0] ?? null;
-const oldPrinter = deactivateId ? await tenantPrinter(deactivateId) : null;
-if (deactivateId && !oldPrinter) throw new Error(`Printer ${deactivateId} not found in this tenant`);
+const oldPrinter = retireId ? await tenantPrinter(retireId) : null;
+if (retireId && !oldPrinter) throw new Error(`Printer ${retireId} not found in this tenant`);
 
 const summary: Record<string, unknown> = {
   mode: execute ? "execute" : "check",
@@ -72,11 +76,11 @@ const summary: Record<string, unknown> = {
   documents,
 };
 if (!execute) {
-  console.log(JSON.stringify({ ...summary, deactivate: oldPrinter ? { id: oldPrinter.id, isActive: oldPrinter.isActive } : null }));
+  console.log(JSON.stringify({ ...summary, retire: oldPrinter ? { id: oldPrinter.id, isActive: oldPrinter.isActive, queue: oldPrinter.bridgePrinterName } : null }));
   process.exit(0);
 }
 
-if (oldPrinter?.isActive) await setPrinterActive(tenantId, actor, oldPrinter.id, false, VIA);
+if (oldPrinter) await retirePrinter(tenantId, actor, oldPrinter.id, VIA);
 
 const [existing] = await db.select().from(printPrintersTable).where(and(
   eq(printPrintersTable.tenantId, tenantId),
@@ -105,7 +109,7 @@ for (const documentType of PRINT_DOCUMENT_TYPES) {
 const old = oldPrinter ? await tenantPrinter(oldPrinter.id) : null;
 console.log(JSON.stringify({
   ...summary,
-  deactivated: old ? { id: old.id, isActive: old.isActive } : null,
+  retired: old ? { id: old.id, isActive: old.isActive, queue: old.bridgePrinterName } : null,
   printer: { id: printer.id, reused: Boolean(existing), name: printer.name, role: printer.role, printerClass: printer.printerClass, paperWidth: printer.paperWidth, locationId: printer.locationId, routingScope: printer.routingScope, bridgeProfileId: printer.bridgeProfileId, queue: printer.bridgePrinterName, isActive: printer.isActive },
   routes,
   resolved,

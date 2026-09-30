@@ -218,3 +218,28 @@ export async function verifyBridgeQueue(tenantId: number, bridgeProfileId: numbe
   if (!queues.includes(queue)) throw new PrintAdminError(`Queue "${queue}" is not served by this bridge (bridge allows: ${queues.join(", ") || "none"})`);
   return { bridgeUrl: profile.bridgeUrl, queues };
 }
+
+/**
+ * Retires a printer record so its queue can be registered again under the
+ * one-record-per-queue rule. The record stays (inactive) for history; only its
+ * stored queue becomes `retired-<id>-<queue>`, which is metadata and is never
+ * contacted. Print jobs keep pointing at the retired record.
+ */
+export async function retirePrinter(tenantId: number, actor: PrintAdminActor, printerId: number, via?: string): Promise<PrintPrinter> {
+  const [printer] = await db.select().from(printPrintersTable)
+    .where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, printerId))).limit(1);
+  if (!printer) throw new PrintAdminError("Printer not found", 404);
+  const queue = printer.bridgePrinterName ?? "";
+  const prefix = `retired-${printer.id}-`;
+  if (!printer.isActive && queue.startsWith(prefix)) return printer;
+  const retiredQueue = `${prefix}${queue}`.slice(0, 64);
+  if (!BRIDGE_QUEUE_NAME.test(retiredQueue)) throw new PrintAdminError("Printer queue cannot be retired");
+  const [row] = await db.update(printPrintersTable).set({ isActive: false, bridgePrinterName: retiredQueue })
+    .where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, printer.id)))
+    .returning();
+  await audit(tenantId, actor, "PRINT_PRINTER_RETIRED", "print_printer", String(row!.id), {
+    previousQueue: queue, retiredQueue, wasActive: printer.isActive, bridgeProfileId: printer.bridgeProfileId,
+    ...(via ? { via } : {}),
+  });
+  return row!;
+}
