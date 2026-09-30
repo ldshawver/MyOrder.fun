@@ -288,6 +288,13 @@
       "when": 1790600000001,
       "tag": "0063_print_document_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790600000002,
+      "tag": "0064_print_routes_document_types",
+      "breakpoints": true
     }
   ]
 }

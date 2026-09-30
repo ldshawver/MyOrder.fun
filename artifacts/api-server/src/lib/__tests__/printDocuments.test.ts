@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import { inflateSync } from "node:zlib";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   DOCUMENT_TYPES,
   PRINT_DOCUMENT_TYPES,
@@ -50,6 +52,12 @@ describe("document catalogue", () => {
     expect(PRINT_DOCUMENT_TYPES).toEqual(["ORDER_RECEIPT", "CLOCK_IN", "CLOCK_OUT", "INVENTORY_STOCK_LIST", "DEPOSIT", "EXPO", "WORK", "REPORT"]);
     const fullPage = PRINT_DOCUMENT_TYPES.filter((type) => DOCUMENT_TYPES[type].printerClass === "full_page");
     expect(fullPage).toEqual(["INVENTORY_STOCK_LIST", "REPORT"]);
+  });
+
+  it("the print_routes job_type check admits every document type", () => {
+    const sql = readFileSync(resolve(import.meta.dirname, "../../../../../lib/db/drizzle/0064_print_routes_document_types.sql"), "utf8");
+    const allowed = [...sql.matchAll(/'([A-Za-z_]+)'/g)].map((match) => match[1]);
+    expect(allowed.sort()).toEqual([...PRINT_DOCUMENT_TYPES, "thank_you_sticker"].sort());
   });
 
   it("maps existing job types onto document types instead of duplicating them", () => {
