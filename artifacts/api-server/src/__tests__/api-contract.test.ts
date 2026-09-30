@@ -82,6 +82,10 @@ vi.mock("../lib/auth", () => {
   };
 });
 
+vi.mock("../lib/tenantContext", () => ({
+  requireTenantContext: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 vi.mock("../lib/singleTenant", () => ({
   getHouseTenantId: vi.fn().mockResolvedValue(1),
 }));

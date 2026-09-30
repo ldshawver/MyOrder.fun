@@ -24,8 +24,10 @@ vi.mock("../logger", () => ({
   },
 }));
 
-import { normalizeCheckoutCart, buildMerchantPayloadLines, buildReceiptLines } from "../checkoutNormalizer";
+import { normalizeCheckoutCart as normalizeCheckoutCartWithContext, buildMerchantPayloadLines, buildReceiptLines } from "../checkoutNormalizer";
 import { db } from "@workspace/db";
+const normalizeCheckoutCart: typeof normalizeCheckoutCartWithContext = (lines, mode, strict, tenantId = 1, complete) => normalizeCheckoutCartWithContext(lines, mode, strict, tenantId, complete);
+
 import { and, eq } from "drizzle-orm";
 
 function makeDbMock(item: Record<string, unknown> | null) {

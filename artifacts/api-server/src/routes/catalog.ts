@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { and, eq, asc, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
+import { db, adminSettingsTable, auditLogsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -15,10 +15,11 @@ import {
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
+import { loadSellableProducts } from "../lib/catalogueSellable";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
 const optionalBlankText = z.preprocess(
@@ -275,7 +276,7 @@ function mapItem(
     category: i.alavontCategory ?? i.category,
     sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
-    compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
+    compareAtPrice: i.compareAtPrice != null ? parseFloat(i.compareAtPrice as string) : null,
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
     isTaxable: i.isTaxable,
@@ -320,6 +321,9 @@ function mapItem(
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
+    parLevel: i.parLevel != null ? parseFloat(String(i.parLevel)) : null,
+    moq: i.moq != null ? parseFloat(String(i.moq)) : 0,
+    preferredReorderQuantity: i.preferredReorderQuantity != null ? parseFloat(String(i.preferredReorderQuantity)) : 0,
     receiptName: alavontOnly ? null : (i.receiptName ?? null),
     labName: alavontOnly ? null : (i.labName ?? null),
     // Merchant routing fields — suppressed in Alavont-only (storefront) mode
@@ -418,11 +422,12 @@ async function getLinkedInventoryStockByCatalogId(tenantId: number) {
   return stockByCatalogId;
 }
 
-async function getShowOutOfStockSetting(): Promise<boolean> {
+async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
   try {
     const [settings] = await db
       .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
       .from(adminSettingsTable)
+      .where(eq(adminSettingsTable.tenantId, tenantId))
       .limit(1);
     return settings?.showOutOfStock === true;
   } catch {
@@ -449,7 +454,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const isAdminActor = actorRole === "global_admin" || actorRole === "admin";
   const alavontOnly = !isLuciferMode && !isAdminActor;
 
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(catalogItemsTable)
     .where(eq(catalogItemsTable.tenantId, tenantId))
     .orderBy(asc(catalogItemsTable.name));
@@ -478,7 +483,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
       (r.labName ?? "").toLowerCase().includes(s)
     );
   }
-  const showOutOfStock = await getShowOutOfStockSetting();
+  const showOutOfStock = await getShowOutOfStockSetting(tenantId);
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
   } else if (!isAdminActor && !showOutOfStock) {
@@ -519,6 +524,10 @@ router.get("/catalog", async (req, res): Promise<void> => {
   });
 
   const stockByCatalogId = await getLinkedInventoryStockByCatalogId(tenantId);
+  const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
+  for (const product of await loadSellableProducts(tenantId)) {
+    for (const option of product.options) sellableByCatalogId.set(option.catalogItemId, product);
+  }
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
@@ -529,7 +538,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   );
 
   res.json(ListCatalogItemsResponse.parse({
-    items: paged.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id))),
+    items: paged.map(i => ({ ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) })),
     total,
     page,
     limit,
@@ -540,7 +549,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 // GET /api/admin/product-master — Edit Catalog Product Master view.
 // Returns exactly the spreadsheet-backed fields plus current per-location balances.
 router.get("/admin/product-master", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [items, locations, balances] = await Promise.all([
     db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`)).orderBy(asc(catalogItemsTable.name)),
     db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
@@ -555,7 +564,7 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
       active: item.isAvailable !== false,
       unavailable: item.isAvailable === false,
       archived: (item.metadata as Record<string, unknown> | null)?.archived === true,
-      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true || item.alavontInStock === false,
+      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true,
       nonSellable: item.isAvailable === false || item.alavontInStock === false,
     },
     "Regular Price": item.regularPrice != null ? parseFloat(String(item.regularPrice)) : parseFloat(String(item.price ?? "0")),
@@ -578,9 +587,51 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
   res.json({ rows, locations });
 });
 
-// PATCH /api/admin/product-master/:id/lifecycle — archive/reactivate/unavailable/compliance hold.
-router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+type LifecycleChange = { active?: boolean; archived?: boolean; complianceHold?: boolean; reason?: string };
+type LifecycleActor = { id: number; email: string | null; role: string; tenantId: number | null; status: string | null; isActive: boolean | null };
+
+/** Shared, tenant-authorized transition for the HTTP route and audited maintenance. */
+export async function applyCatalogLifecycleTransition(input: {
+  tenantId: number; id: number; actor: LifecycleActor; change: LifecycleChange;
+  ipAddress?: string | null; source?: "http" | "delegated_maintenance";
+}) {
+  const { tenantId, id, actor, change } = input;
+  const role = normalizeRole(actor.role);
+  if (!["global_admin", "admin", "supervisor"].includes(role) || actor.isActive === false || actor.status === "rejected" || actor.status === "deactivated"
+    || (role !== "global_admin" && actor.tenantId !== tenantId)) throw new Error("Unauthorized catalogue lifecycle actor");
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0 || !Number.isSafeInteger(id) || id <= 0) throw new Error("Explicit tenant and catalogue item IDs are required");
+  return db.transaction(async tx => {
+    const [existing] = await tx.select().from(catalogItemsTable)
+      .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).for("update").limit(1);
+    if (!existing) return null;
+    const currentMetadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+      ? existing.metadata as Record<string, unknown> : {};
+    const metadata = { ...currentMetadata };
+    if (change.archived !== undefined) metadata.archived = change.archived;
+    if (change.complianceHold !== undefined) {
+      metadata.complianceHold = change.complianceHold;
+      metadata.complianceReason = change.complianceHold ? change.reason ?? currentMetadata.complianceReason ?? null : null;
+      metadata.complianceMatchedTerms = change.complianceHold ? currentMetadata.complianceMatchedTerms ?? [] : [];
+    }
+    if (change.reason !== undefined && change.complianceHold === undefined) metadata.lifecycleReason = change.reason;
+    const available = change.active ?? existing.isAvailable;
+    if (available === existing.isAvailable && JSON.stringify(metadata) === JSON.stringify(currentMetadata)) return existing;
+    const [item] = await tx.update(catalogItemsTable).set({
+      ...(change.active !== undefined ? { isAvailable: available } : {}), metadata, updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id),
+      metadata: { ...change, previousComplianceHold: currentMetadata.complianceHold === true,
+        source: input.source ?? "http" }, ipAddress: input.ipAddress ?? null,
+    });
+    return item;
+  });
+}
+
+// PATCH /api/admin/product-master/:id/lifecycle — independent lifecycle state changes.
+router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid product id" }); return; }
   const body = z.object({
@@ -589,18 +640,13 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
     complianceHold: z.boolean().optional(),
     reason: z.string().trim().max(500).optional(),
   }).strict().safeParse(req.body);
-  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).limit(1);
-  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
-  const metadata = lifecycleMetadataPatch(existing.metadata, {
-    archived: body.data.archived ?? (existing.metadata as Record<string, unknown> | null)?.archived === true,
-    complianceHold: body.data.complianceHold ?? (existing.metadata as Record<string, unknown> | null)?.complianceHold === true,
-    lifecycleReason: body.data.reason ?? null,
-  });
-  const available = body.data.complianceHold === true || body.data.archived === true ? false : body.data.active ?? existing.isAvailable;
-  const [updated] = await db.update(catalogItemsTable).set({ isAvailable: available, alavontInStock: available, metadata, updatedAt: new Date() }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
-  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id), metadata: body.data, ipAddress: req.ip });
-  res.json({ item: mapItem(updated ?? existing) });
+  if (!body.success || (body.data.active === undefined && body.data.archived === undefined && body.data.complianceHold === undefined)) {
+    res.status(400).json({ error: body.success ? "A lifecycle state is required" : body.error.message }); return;
+  }
+  const updated = await applyCatalogLifecycleTransition({ tenantId, id, actor: req.dbUser!,
+    change: body.data, ipAddress: req.ip, source: "http" });
+  if (!updated) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({ item: mapItem(updated) });
 });
 
 // POST /api/catalog
@@ -616,8 +662,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     res.status(400).json({ error: "Name, category, and a price greater than zero are required" });
     return;
   }
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? (normalizeRole(actor.role) === "global_admin" ? await getHouseTenantId() : null);
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required" }); return; }
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
@@ -651,7 +696,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
   const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -700,7 +745,7 @@ router.patch("/catalog/:id/display", requireRole("global_admin", "admin", "tenan
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, id)).limit(1);
+  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, req.authorizedTenantId!), eq(catalogItemsTable.id, id))).limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -723,7 +768,7 @@ router.patch("/catalog/:id/display", requireRole("global_admin", "admin", "tenan
     displayCategory: body.data.displayCategory,
     metadata: Object.keys(presentationPatch).length ? safeMetadataPatch(existing.metadata, presentationPatch) : existing.metadata,
     updatedAt: new Date(),
-  }).where(eq(catalogItemsTable.id, id)).returning();
+  }).where(and(eq(catalogItemsTable.tenantId, req.authorizedTenantId!), eq(catalogItemsTable.id, id))).returning();
   if (req.dbUser) {
     void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action: "catalog.display_updated", tenantId: existing.tenantId, resourceType: "catalog_item", resourceId: String(id), ipAddress: req.ip });
   }
@@ -738,7 +783,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [row] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id))).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
@@ -772,7 +817,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   const [existing] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);
@@ -808,7 +853,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
-  if (parLevel !== undefined) updateData.parLevel = String(parLevel);
+  if (parLevel !== undefined) updateData.parLevel = parLevel === null ? null : String(parLevel);
   if (moq !== undefined) updateData.moq = String(moq);
   if (preferredReorderQuantity !== undefined) updateData.preferredReorderQuantity = String(preferredReorderQuantity);
   // Protect LC/Woo routing fields from null/false-overwrite.
@@ -851,7 +896,7 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   const [existing] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);
@@ -880,7 +925,7 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
 });
 
 router.post("/admin/product-master/cleanup-safe-duplicates", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const result = await archiveSafeDuplicateRows(tenantId, req.dbUser ? { id: req.dbUser.id, email: req.dbUser.email ?? "", role: req.dbUser.role } : null);
   res.json({ ok: true, ...result });
 });
@@ -891,7 +936,7 @@ router.get(
   "/admin/settings/diagnostics/catalog",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const allRows = await db.select().from(catalogItemsTable)
       .where(eq(catalogItemsTable.tenantId, tenantId))
       .orderBy(asc(catalogItemsTable.id));
@@ -988,7 +1033,7 @@ router.post(
         res.status(400).json({ error: "items array required" });
         return;
       }
-      const normalized = await normalizeCheckoutCart(items);
+      const normalized = await normalizeCheckoutCart(items, undefined, true, req.authorizedTenantId!);
       res.json({ normalized });
     } catch (err) {
       res.status(400).json({ error: (err as Error)?.message ?? "Normalization failed" });
@@ -1010,8 +1055,8 @@ router.post(
         res.status(400).json({ error: "items array required" });
         return;
       }
-      const settings = await getOrCreateSettings();
-      const normalized = await normalizeCheckoutCart(items);
+      const settings = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
+      const normalized = await normalizeCheckoutCart(items, undefined, true, req.authorizedTenantId!);
       const merchantLines = buildMerchantPayloadLines(normalized, settings.merchantImageEnabled);
 
       const alavontNamesInPayload = merchantLines.filter(l =>

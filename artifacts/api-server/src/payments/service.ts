@@ -6,6 +6,8 @@ import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
 import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
 import { logger } from "../lib/logger";
+import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservations";
+import { ensurePaidOrderInventoryReserved, PaymentInventoryError, type PaymentTransaction } from "./inventory";
 
 const CURRENCY = "USD";
 const money = (value: unknown) => Number(value).toFixed(2);
@@ -19,7 +21,7 @@ export class PaymentService {
   constructor(private readonly config: EnabledPaymentConfig, private readonly provider: PaymentProvider) {}
 
   async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string }) {
-    return db.transaction(async tx => {
+    const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
@@ -29,7 +31,20 @@ export class PaymentService {
       if (!order.checkoutConversionSnapshot || !order.legalDisclaimerAccepted || !order.finalConfirmationAt) throw new PaymentServiceError(422, "CHECKOUT_NOT_VERIFIED", "Checkout conversion and confirmation are required");
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
+      if (existing?.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt with a new idempotency key");
+      if (existing?.state === "reconciliation_required" || existing?.state === "creating") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the existing payment attempt before retrying");
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
+      const [unresolved] = await tx.select({ id: paymentAttemptsTable.id }).from(paymentAttemptsTable).where(and(
+        eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId),
+        inArray(paymentAttemptsTable.state, ["creating", "created", "approved", "capturing", "reconciliation_required"]),
+      )).limit(1);
+      if (unresolved) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the existing payment attempt before retrying");
+
+      try { await ensurePaidOrderInventoryReserved(tx, order); }
+      catch (error) {
+        if (error instanceof PaymentInventoryError) throw new PaymentServiceError(409, "INSUFFICIENT_INVENTORY", error.message);
+        throw error;
+      }
 
       // A new browser session must resume an existing durable PayPal order,
       // rather than create a second provider order for the same MyOrder
@@ -47,39 +62,62 @@ export class PaymentService {
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
       let providerOrder;
       try { providerOrder = await this.provider.createOrder({ amount: { value: amount, currency: CURRENCY }, requestId: `create-${attempt.id}`, internalOrderId: input.orderId }); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: error instanceof PayPalProviderError && error.failureClass === "unknown_outcome" ? "reconciliation_required" : "failed", reconciliationState: error instanceof PayPalProviderError && error.failureClass === "unknown_outcome" ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      if (!sameMoney(providerOrder.amount.value, amount) || providerOrder.amount.currency !== CURRENCY) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "amount_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw new PaymentServiceError(502, "PROVIDER_AMOUNT_MISMATCH", "Provider order amount mismatch"); }
+      catch (error) {
+        const unknown = error instanceof PayPalProviderError && error.failureClass === "unknown_outcome";
+        await tx.update(paymentAttemptsTable).set({ state: unknown ? "reconciliation_required" : "failed", reconciliationState: unknown ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        if (!unknown) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { providerError: error };
+      }
+      if (!sameMoney(providerOrder.amount.value, amount) || providerOrder.amount.currency !== CURRENCY) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "amount_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(502, "PROVIDER_AMOUNT_MISMATCH", "Provider order amount mismatch") }; }
       await tx.update(paymentAttemptsTable).set({ providerOrderId: providerOrder.id, state: "created" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { attemptId: attempt.id, providerOrderId: providerOrder.id, approvalUrl: providerOrder.approvalUrl, status: "created", replayed: false };
     });
+    if ("providerError" in outcome) throw outcome.providerError;
+    return outcome;
   }
 
-  async capture(input: { tenantId: number; customerId: number; orderId: number; attemptId: number; idempotencyKey: string; finalize: (order: typeof ordersTable.$inferSelect) => Promise<void> }) {
-    return db.transaction(async tx => {
+  async capture(input: { tenantId: number; customerId: number; orderId: number; attemptId: number; idempotencyKey: string; finalize: (order: typeof ordersTable.$inferSelect, tx: PaymentTransaction) => Promise<void> }) {
+    const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
       if (!attempt?.providerOrderId) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
+      if (attempt.state === "reconciliation_required" || attempt.state === "capturing") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (existingCapture?.state === "completed" && order.paymentStatus === "paid") return { status: "captured", captureId: existingCapture.providerCaptureId, replayed: true };
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
+      if (!["created", "approved"].includes(attempt.state)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       await tx.update(paymentAttemptsTable).set({ state: "capturing" }).where(eq(paymentAttemptsTable.id, attempt.id));
       let capture;
       try { capture = await this.provider.captureOrder(attempt.providerOrderId, `capture-${attempt.id}`); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      if (capture.orderId !== attempt.providerOrderId || capture.status !== "COMPLETED" || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "capture_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw new PaymentServiceError(409, "CAPTURE_MISMATCH", "Capture requires reconciliation"); }
+      catch (error) {
+        const declined = error instanceof PayPalProviderError && error.failureClass === "declined";
+        await tx.update(paymentAttemptsTable).set({ state: declined ? "failed" : "reconciliation_required", reconciliationState: declined ? "not_required" : "pending", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        if (declined) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { providerError: error };
+      }
+      if (capture.orderId !== attempt.providerOrderId || capture.status !== "COMPLETED" || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "capture_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(409, "CAPTURE_MISMATCH", "Capture requires reconciliation") }; }
       await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
-      try { await input.finalize(order); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
-      if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
-      const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
-      await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: creditCents > 0 ? `customer_credit+${tender}` : tender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
-      await tx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
-      return { status: "captured", captureId: capture.captureId, replayed: false };
+      try {
+        await tx.transaction(async finalizeTx => {
+          await input.finalize(order, finalizeTx);
+          const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
+          if (creditCents > 0) await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
+          const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
+          await finalizeTx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: creditCents > 0 ? `customer_credit+${tender}` : tender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
+          await finalizeTx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        });
+        return { status: "captured", captureId: capture.captureId, replayed: false };
+      } catch (error) {
+        await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        return { providerError: error };
+      }
     });
+    if ("providerError" in outcome) throw outcome.providerError;
+    return outcome;
   }
 
   /**
@@ -176,7 +214,7 @@ export class PaymentService {
     return { ...finalized, replayed: intent.replayed || finalized.replayed };
   }
 
-  async reconcile(input: { tenantId: number; orderId: number; finalize: (order: typeof ordersTable.$inferSelect) => Promise<void> }) {
+  async reconcile(input: { tenantId: number; orderId: number; finalize: (order: typeof ordersTable.$inferSelect, tx: PaymentTransaction) => Promise<void> }) {
     return db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
@@ -189,9 +227,8 @@ export class PaymentService {
         if (capture.orderId !== attempt.providerOrderId || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "RECONCILIATION_MISMATCH", "Capture does not match the order");
         await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
         if (order.paymentStatus !== "paid") {
-          try {
-            await input.finalize(order);
-          } catch (error) {
+          try { await input.finalize(order, tx); }
+          catch (error) {
             logger.error({ orderId: order.id, failureClass: "local_finalize_failed", error: error instanceof Error ? error.message : "unknown" }, "PayPal reconciliation local finalization failed");
             throw error;
           }
@@ -201,6 +238,11 @@ export class PaymentService {
         return { localState: "captured", providerState: capture.status, recovered: order.paymentStatus !== "paid" };
       }
       const nextState = authoritative.status === "APPROVED" ? "approved" : authoritative.status === "CREATED" ? "created" : "reconciliation_required";
+      if (authoritative.status === "VOIDED" && !authoritative.capture && order.paymentStatus !== "paid") {
+        await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_voided" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { localState: "failed", providerState: authoritative.status, recovered: false };
+      }
       await tx.update(paymentAttemptsTable).set({ state: nextState, reconciliationState: nextState === "reconciliation_required" ? "manual_review" : "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { localState: nextState, providerState: authoritative.status, recovered: false };
     });

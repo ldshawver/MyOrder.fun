@@ -92,8 +92,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
-    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id,");
+    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+    expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
+    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id,");
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
     expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
     expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");

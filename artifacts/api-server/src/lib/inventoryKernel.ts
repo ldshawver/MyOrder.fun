@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { assertCatalogIdInventoryLookup } from "./inventoryIdentityGuard";
 import { logger } from "./logger";
+import { quantityText, quantityUnits } from "./exactQuantity";
 
 type KernelTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type KernelExecutor = typeof db | KernelTransaction;
@@ -39,30 +40,36 @@ export async function ensureInventoryTransactionLogTable(executor: KernelExecuto
     CREATE TABLE IF NOT EXISTS "inventory_transaction_log" (
       "id" serial PRIMARY KEY,
       "transaction_id" text NOT NULL,
+      "tenant_id" integer,
       "type" text NOT NULL,
       "catalog_item_id" integer REFERENCES "catalog_items"("id"),
       "location_id" integer REFERENCES "inventory_locations"("id"),
-      "quantity_change" numeric(10, 3) NOT NULL DEFAULT 0,
+      "quantity_change" numeric(20, 6) NOT NULL DEFAULT 0,
       "before_state" jsonb NOT NULL,
       "after_state" jsonb NOT NULL,
       "order_id" integer REFERENCES "orders"("id"),
       "created_at" timestamptz NOT NULL DEFAULT now()
     )
   `);
+  await executor.execute(sql`ALTER TABLE "inventory_transaction_log" ADD COLUMN IF NOT EXISTS "tenant_id" integer`);
+  await executor.execute(sql`ALTER TABLE "inventory_transaction_log" ALTER COLUMN "quantity_change" TYPE numeric(20, 6) USING "quantity_change"::numeric(20, 6)`);
+  await executor.execute(sql`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_transaction_log_tenant_required') THEN ALTER TABLE inventory_transaction_log ADD CONSTRAINT inventory_transaction_log_tenant_required CHECK (tenant_id IS NOT NULL) NOT VALID; END IF; END $$`);
   await executor.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS "inventory_transaction_log_transaction_id_idx" ON "inventory_transaction_log" ("transaction_id")`);
   await executor.execute(sql`CREATE INDEX IF NOT EXISTS "inventory_transaction_log_order_idx" ON "inventory_transaction_log" ("order_id")`);
   await executor.execute(sql`CREATE INDEX IF NOT EXISTS "inventory_transaction_log_catalog_location_idx" ON "inventory_transaction_log" ("catalog_item_id", "location_id")`);
 }
 
-async function collectInventorySnapshot(executor: KernelExecutor): Promise<InventorySnapshot> {
+async function collectInventorySnapshot(executor: KernelExecutor, tenantId: number): Promise<InventorySnapshot> {
   const balances = rowsFrom(await executor.execute(sql`
     SELECT product_id AS "productId", location_id AS "locationId", quantity_on_hand AS "quantityOnHand", par_level AS "parLevel"
     FROM inventory_balances
+    WHERE tenant_id = ${tenantId}
     ORDER BY product_id, location_id
   `));
   const reservations = rowsFrom(await executor.execute(sql`
     SELECT id, order_id AS "orderId", catalog_item_id AS "catalogItemId", location_id AS "locationId", quantity, status, idempotency_key AS "idempotencyKey", expires_at AS "expiresAt"
     FROM inventory_reservations
+    WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ${tenantId})
     ORDER BY id
   `));
   return { balances, reservations };
@@ -91,21 +98,21 @@ function transactionIdForContext(context: string): string {
   return `${context}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
 }
 
-function snapshotQuantityTotal(snapshot: InventorySnapshot): number {
-  return snapshot.balances.reduce<number>((sum, row) => sum + Number((row as { quantityOnHand?: unknown }).quantityOnHand ?? 0), 0);
+function snapshotQuantityTotal(snapshot: InventorySnapshot): bigint {
+  return snapshot.balances.reduce<bigint>((sum, row) => sum + quantityUnits(String((row as { quantityOnHand?: unknown }).quantityOnHand ?? 0)), 0n);
 }
 
-async function writeInventoryTransactionLog(executor: KernelExecutor, params: { context: string; beforeState: InventorySnapshot; afterState: InventorySnapshot }): Promise<string> {
+async function writeInventoryTransactionLog(executor: KernelExecutor, params: { tenantId: number; context: string; beforeState: InventorySnapshot; afterState: InventorySnapshot }): Promise<string> {
   const transactionId = transactionIdForContext(params.context);
-  const quantityChange = snapshotQuantityTotal(params.afterState) - snapshotQuantityTotal(params.beforeState);
+  const quantityChange = quantityText(snapshotQuantityTotal(params.afterState) - snapshotQuantityTotal(params.beforeState));
   await executor.execute(sql`
-    INSERT INTO inventory_transaction_log (transaction_id, type, quantity_change, before_state, after_state, created_at)
-    VALUES (${transactionId}, ${transactionTypeFromContext(params.context)}, ${String(quantityChange)}, ${JSON.stringify(params.beforeState)}::jsonb, ${JSON.stringify(params.afterState)}::jsonb, now())
+    INSERT INTO inventory_transaction_log (tenant_id, transaction_id, type, quantity_change, before_state, after_state, created_at)
+    VALUES (${params.tenantId}, ${transactionId}, ${transactionTypeFromContext(params.context)}, ${quantityChange}, ${JSON.stringify(params.beforeState)}::jsonb, ${JSON.stringify(params.afterState)}::jsonb, now())
   `);
   return transactionId;
 }
 
-export async function collectInventoryInvariantReport(executor: KernelExecutor): Promise<{
+export async function collectInventoryInvariantReport(executor: KernelExecutor, tenantId: number): Promise<{
   negativeBalances: NegativeBalanceViolation[];
   reservationOverages: ReservationOverageViolation[];
   reservationIdentityViolations: ReservationIdentityViolation[];
@@ -113,16 +120,17 @@ export async function collectInventoryInvariantReport(executor: KernelExecutor):
   const negativeBalances = rowsFrom<NegativeBalanceViolation>(await executor.execute(sql`
     SELECT product_id AS "productId", location_id AS "locationId", quantity_on_hand AS "quantityOnHand"
     FROM inventory_balances
-    WHERE quantity_on_hand < 0
+    WHERE tenant_id = ${tenantId} AND quantity_on_hand < 0
   `));
 
   const reservationOverages = rowsFrom<ReservationOverageViolation>(await executor.execute(sql`
     SELECT ib.product_id AS "productId", ib.location_id AS "locationId", ib.quantity_on_hand AS "quantityOnHand",
-      COALESCE(SUM(r.quantity) FILTER (WHERE r.status = 'reserved' AND r.expires_at > now()), 0) AS "activeReserved"
+      COALESCE(SUM(r.quantity) FILTER (WHERE r.status = 'reserved' AND (r.expires_at > now() OR EXISTS (SELECT 1 FROM payment_attempts p WHERE p.order_id = r.order_id AND p.tenant_id = ${tenantId} AND p.state IN ('creating','created','approved','capturing','reconciliation_required')))), 0) AS "activeReserved"
     FROM inventory_balances ib
     LEFT JOIN inventory_reservations r ON r.catalog_item_id = ib.product_id AND r.location_id = ib.location_id
+    WHERE ib.tenant_id = ${tenantId}
     GROUP BY ib.product_id, ib.location_id, ib.quantity_on_hand
-    HAVING ib.quantity_on_hand < COALESCE(SUM(r.quantity) FILTER (WHERE r.status = 'reserved' AND r.expires_at > now()), 0)
+    HAVING ib.quantity_on_hand < COALESCE(SUM(r.quantity) FILTER (WHERE r.status = 'reserved' AND (r.expires_at > now() OR EXISTS (SELECT 1 FROM payment_attempts p WHERE p.order_id = r.order_id AND p.tenant_id = ${tenantId} AND p.state IN ('creating','created','approved','capturing','reconciliation_required')))), 0)
   `));
 
   const reservationIdentityViolations = rowsFrom<ReservationIdentityViolation>(await executor.execute(sql`
@@ -135,36 +143,36 @@ export async function collectInventoryInvariantReport(executor: KernelExecutor):
       END AS "reason"
     FROM inventory_reservations r
     LEFT JOIN catalog_items ci ON ci.id = r.catalog_item_id
-    WHERE r.catalog_item_id IS NULL
-      OR r.idempotency_key IS NULL
-      OR btrim(r.idempotency_key) = ''
-      OR ci.id IS NULL
+    WHERE r.order_id IN (SELECT id FROM orders WHERE tenant_id = ${tenantId})
+      AND (r.catalog_item_id IS NULL OR r.idempotency_key IS NULL
+      OR btrim(r.idempotency_key) = '' OR ci.id IS NULL)
   `));
 
   return { negativeBalances, reservationOverages, reservationIdentityViolations };
 }
 
-export async function assertInventoryInvariants(executor: KernelExecutor, trace: { context: string; phase: string }): Promise<void> {
-  const report = await collectInventoryInvariantReport(executor);
+export async function assertInventoryInvariants(executor: KernelExecutor, tenantId: number, trace: { context: string; phase: string }): Promise<void> {
+  const report = await collectInventoryInvariantReport(executor, tenantId);
   const violationCount = report.negativeBalances.length + report.reservationOverages.length + report.reservationIdentityViolations.length;
   if (violationCount === 0) return;
   logger.error({ trace, report }, "INVENTORY INVARIANT VIOLATION — transaction rejected");
   throw new InventoryInvariantViolationError("INVENTORY INVARIANT VIOLATION — transaction rejected", report, trace, classifyInvariantFailure(report));
 }
 
-async function runKernelWork<T>(tx: KernelTransaction, context: string, work: (tx: KernelTransaction) => Promise<T>): Promise<T> {
+async function runKernelWork<T>(tx: KernelTransaction, tenantId: number, context: string, work: (tx: KernelTransaction) => Promise<T>): Promise<T> {
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Explicit inventory tenant context is required");
   logger.debug?.({ context }, "inventory kernel transaction started");
   await ensureInventoryTransactionLogTable(tx);
-  const beforeState = await collectInventorySnapshot(tx);
+  const beforeState = await collectInventorySnapshot(tx, tenantId);
   const result = await work(tx);
-  const afterState = await collectInventorySnapshot(tx);
-  await assertInventoryInvariants(tx, { context, phase: "before_commit" });
-  const transactionId = await writeInventoryTransactionLog(tx, { context, beforeState, afterState });
+  const afterState = await collectInventorySnapshot(tx, tenantId);
+  await assertInventoryInvariants(tx, tenantId, { context, phase: "before_commit" });
+  const transactionId = await writeInventoryTransactionLog(tx, { tenantId, context, beforeState, afterState });
   logger.debug?.({ context, transactionId }, "inventory kernel transaction journaled");
   return result;
 }
 
-export async function replayInventoryTransaction(transactionId: string): Promise<{
+export async function replayInventoryTransaction(tenantId: number, transactionId: string): Promise<{
   transactionId: string;
   transaction: unknown;
   lifecycleTrace: unknown[];
@@ -178,23 +186,23 @@ export async function replayInventoryTransaction(transactionId: string): Promise
   const transaction = rowsFrom<{ beforeState: InventorySnapshot; afterState: InventorySnapshot; orderId?: number | null; catalogItemId?: number | null; locationId?: number | null }>(await db.execute(sql`
     SELECT id, transaction_id AS "transactionId", type, catalog_item_id AS "catalogItemId", location_id AS "locationId", quantity_change AS "quantityChange", before_state AS "beforeState", after_state AS "afterState", order_id AS "orderId", created_at AS "createdAt"
     FROM inventory_transaction_log
-    WHERE transaction_id = ${transactionId}
+    WHERE tenant_id = ${tenantId} AND transaction_id = ${transactionId}
     LIMIT 1
   `))[0];
   if (!transaction) throw new Error(`Inventory transaction ${transactionId} was not found`);
-  const finalState = await collectInventorySnapshot(db);
-  const invariantReport = await collectInventoryInvariantReport(db);
+  const finalState = await collectInventorySnapshot(db, tenantId);
+  const invariantReport = await collectInventoryInvariantReport(db, tenantId);
   const reservationChain = rowsFrom(await db.execute(sql`
     SELECT * FROM inventory_reservations
-    WHERE (${transaction.orderId ?? null}::integer IS NOT NULL AND order_id = ${transaction.orderId ?? null})
-       OR (${transaction.catalogItemId ?? null}::integer IS NOT NULL AND catalog_item_id = ${transaction.catalogItemId ?? null})
+    WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ${tenantId})
+      AND (order_id = ${transaction.orderId ?? null} OR catalog_item_id = ${transaction.catalogItemId ?? null})
     ORDER BY id
   `));
   const deductionChain = rowsFrom(await db.execute(sql`
     SELECT id, order_id AS "orderId", catalog_item_id AS "catalogItemId", inventory_deductions AS "inventoryDeductions"
     FROM order_items
-    WHERE (${transaction.orderId ?? null}::integer IS NOT NULL AND order_id = ${transaction.orderId ?? null})
-       OR (${transaction.catalogItemId ?? null}::integer IS NOT NULL AND catalog_item_id = ${transaction.catalogItemId ?? null})
+    WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ${tenantId})
+      AND (order_id = ${transaction.orderId ?? null} OR catalog_item_id = ${transaction.catalogItemId ?? null})
     ORDER BY id
   `));
   return {
@@ -210,6 +218,7 @@ export async function replayInventoryTransaction(transactionId: string): Promise
 }
 
 export async function executeTransaction<T>(
+  tenantId: number,
   contextOrExecutor: string | KernelExecutor,
   workOrContext: ((tx: KernelTransaction) => Promise<T>) | string,
   maybeWork?: (tx: KernelTransaction) => Promise<T>,
@@ -217,22 +226,23 @@ export async function executeTransaction<T>(
   if (typeof contextOrExecutor === "string") {
     const context = contextOrExecutor;
     const work = workOrContext as (tx: KernelTransaction) => Promise<T>;
-    return db.transaction(tx => runKernelWork(tx, context, work));
+    return db.transaction(tx => runKernelWork(tx, tenantId, context, work));
   }
 
   const executor = contextOrExecutor;
   const context = workOrContext as string;
   const work = maybeWork;
   if (!work) throw new Error("inventoryKernel.executeTransaction requires a work callback");
-  if (executor === db) return db.transaction(tx => runKernelWork(tx, context, work));
+  if (executor === db) return db.transaction(tx => runKernelWork(tx, tenantId, context, work));
   logger.debug?.({ context }, "inventory kernel reused caller transaction");
-  return runKernelWork(executor as KernelTransaction, context, work);
+  return runKernelWork(executor as KernelTransaction, tenantId, context, work);
 }
 
 export function assertKernelCatalogItemId(catalogItemId: number, context: string): void {
   assertCatalogIdInventoryLookup(catalogItemId, `inventoryKernel.${context}`);
 }
 
-export function reservationIdempotencyKey(params: { orderId: number; catalogItemId: number; locationId: number; orderType?: string }): string {
-  return [params.orderId, params.catalogItemId, params.locationId, params.orderType ?? "UNKNOWN"].join(":");
+export function reservationIdempotencyKey(params: { orderId: number; catalogItemId: number; locationId: number; orderType?: string; orderItemId?: number }): string {
+  const legacy = [params.orderId, params.catalogItemId, params.locationId, params.orderType ?? "UNKNOWN"].join(":");
+  return params.orderItemId == null ? legacy : `${legacy}:${params.orderItemId}`;
 }

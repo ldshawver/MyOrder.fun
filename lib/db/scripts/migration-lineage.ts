@@ -72,6 +72,16 @@ export const historicalStaging0047SchemaChecks = [
   "preview_tokens_indexes",
 ] as const;
 
+export const historicalStaging0058 = Object.freeze({
+  index: 35,
+  tag: "0058_paypal_refund_durability",
+  when: 1789095830000,
+  hash: "d34bf3472934aef17930accf44099f628740f820a28aeb0d8827929a392458b1",
+  reconciliationIndex: 45,
+  reconciliationTag: "0071_refund_state_constraint_reconciliation",
+  reconciliationHash: "5988b2eac94914ac9e1f64c4fa0bcb2b75e43d4212a7a12db65e55d2636f1dcb",
+});
+
 export type HistoricalStaging0047SchemaEvidence = Record<
   (typeof historicalStaging0047SchemaChecks)[number],
   boolean
@@ -94,6 +104,7 @@ export interface AppliedLineageResult {
   legacyIndices: Set<number>;
   appliedJournalIndices: Set<number>;
   historicalStaging0047Recognized: boolean;
+  historicalStaging0058Recognized: boolean;
 }
 
 function matchesHistoricalStaging0047(
@@ -155,6 +166,7 @@ export function validateAppliedLineage(
     local,
     applied,
   );
+  let historicalStaging0058Recognized = false;
   for (const [index, row] of applied.entries()) {
     const expected = historicalStaging0047Recognized
       ? index === historicalStaging0047.index
@@ -187,6 +199,23 @@ export function validateAppliedLineage(
       continue;
     }
 
+    const refund = historicalStaging0058;
+    const refundReconciliation = local[refund.reconciliationIndex];
+    if (
+      expected.idx === refund.index &&
+      expected.tag === refund.tag &&
+      expected.when === refund.when &&
+      row.hash === refund.hash &&
+      row.created_at === String(refund.when) &&
+      refundReconciliation?.tag === refund.reconciliationTag &&
+      refundReconciliation.hash === refund.reconciliationHash
+    ) {
+      historicalStaging0058Recognized = true;
+      legacyIndices.add(expected.idx);
+      appliedJournalIndices.add(expected.idx);
+      continue;
+    }
+
     const legacy = legacyDev0038;
     const reconciliation = local[legacy.reconciliationIndex];
     const appliedReconciliation = applied[legacy.reconciliationIndex];
@@ -215,5 +244,6 @@ export function validateAppliedLineage(
     legacyIndices,
     appliedJournalIndices,
     historicalStaging0047Recognized,
+    historicalStaging0058Recognized,
   };
 }

@@ -1492,6 +1492,31 @@ components:
     CatalogItem:
       type: object
       properties:
+        sellableProduct:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            options:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  catalogItemId:
+                    type: integer
+                  label:
+                    type: string
+                  price:
+                    type: string
+                  sku:
+                    type: string
+                    nullable: true
+                required: [id, catalogItemId, label, price]
+          required: [id, name, options]
         id:
           type: integer
         tenantId:
@@ -1508,6 +1533,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         stockQuantity:
           type: integer
         isAvailable:
@@ -1595,6 +1621,7 @@ components:
           nullable: true
         parLevel:
           type: number
+          nullable: true
           minimum: 0
         moq:
           type: number
@@ -1637,6 +1664,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         regularPrice:
           type: number
           nullable: true
@@ -1798,6 +1826,7 @@ components:
           type: number
         compareAtPrice:
           type: number
+          nullable: true
         regularPrice:
           type: number
           nullable: true
@@ -1944,6 +1973,7 @@ components:
           nullable: true
         parLevel:
           type: number
+          nullable: true
           minimum: 0
         moq:
           type: number

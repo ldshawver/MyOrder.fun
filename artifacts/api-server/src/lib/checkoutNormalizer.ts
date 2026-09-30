@@ -156,6 +156,7 @@ export async function normalizeCheckoutCart(
   tenantId?: number,
   requireCompleteSafeFields = false,
 ): Promise<NormalizedCartLine[]> {
+  if (tenantId == null || !Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Explicit tenant context is required");
   const parsed = CartInputSchema.safeParse(rawLines);
   if (!parsed.success) {
     throw new Error(`Invalid cart input: ${parsed.error.message}`);
@@ -167,7 +168,7 @@ export async function normalizeCheckoutCart(
     const [ci] = await db
       .select()
       .from(catalogItemsTable)
-      .where(tenantId ? and(eq(catalogItemsTable.id, line.catalogItemId), eq(catalogItemsTable.tenantId, tenantId)) : eq(catalogItemsTable.id, line.catalogItemId))
+      .where(and(eq(catalogItemsTable.id, line.catalogItemId), eq(catalogItemsTable.tenantId, tenantId)))
       .limit(1);
 
     if (!ci) {

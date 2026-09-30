@@ -16,6 +16,7 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
+import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 
 type MenuMode = "alavont" | "lucifer";
 type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
@@ -86,6 +87,8 @@ type ExtendedCatalogItem = CatalogItem & {
   preferredReorderQuantity?: string | number | null;
 };
 
+type GroupedProduct = SellableProduct;
+
 type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
 
 interface CatalogItemForm {
@@ -140,11 +143,15 @@ type StringFormKey = {
 
 function CatalogItemCard({
   item,
+  product,
+  optionsLoading,
   canEdit,
   onEdit,
   menuMode,
 }: {
   item: ExtendedCatalogItem;
+  product?: GroupedProduct;
+  optionsLoading: boolean;
   canEdit: boolean;
   onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
@@ -152,9 +159,11 @@ function CatalogItemCard({
   const isLC = menuMode === "lucifer";
   const [imgError, setImgError] = useState(false);
   const [addedFeedback, setAddedFeedback] = useState(false);
+  const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
   const { addItem, cart } = useCart();
-  const isInCart = cart.some(c => c.id === item.id);
-  const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
+  const selectedOption = selectedSellableOption(product, selectedOptionId);
+  const isInCart = !!selectedOption && cart.some(c => c.optionId === selectedOption.id);
+  const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
     ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
@@ -219,7 +228,7 @@ function CatalogItemCard({
             FEATURED
           </div>
         )}
-        {!item.isAvailable && (
+        {!item.isAvailable && !selectedOption && (
           <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center">
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Unavailable</span>
           </div>
@@ -250,30 +259,44 @@ function CatalogItemCard({
           )}
         </div>
 
+        {showOptionSelector(product) && product && (
+          <label className="text-xs font-semibold" htmlFor={`catalog-option-${product.id}`}>
+            Choose option
+            <select id={`catalog-option-${product.id}`} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm"
+              value={selectedOption?.id ?? ""}
+              onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
+              aria-label={`${product.name} option`}>
+              <option value="">Select an option</option>
+              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+            </select>
+          </label>
+        )}
         <div className="flex items-center justify-between mt-1">
           <div className="flex items-baseline gap-1.5">
             <span
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price)).toFixed(2)}
+              {showOptionSelector(product) && !selectedOption
+                ? "Select an option for price"
+                : `$${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}`}
             </span>
           </div>
-          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
+          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (!product || product.options.length === 1) && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>
               {item.stockQuantity === 0 ? "OUT" : `${item.stockQuantity} avail`}
             </span>
           )}
         </div>
 
+        {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
-            disabled={!item.isAvailable}
+            disabled={!selectedOption || optionsLoading}
             onClick={() => {
-              const name = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
-              const price = parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price));
-              addItem({ id: item.id, name, price, imageUrl: item.imageUrl ?? null });
+              if (!product || !selectedOption) return;
+              addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
               setAddedFeedback(true);
               setTimeout(() => setAddedFeedback(false), 1800);
             }}
@@ -286,7 +309,7 @@ function CatalogItemCard({
             data-testid={`link-buy-now-${item.id}`}
           >
             <ShoppingCart size={11} />
-            {addedFeedback ? "Added ✓" : isInCart ? "In Cart ✓" : "Add to Cart"}
+            {addedFeedback ? "Added ✓" : isInCart ? "In My Order ✓" : "Add to My Order"}
           </button>
           <Link
             href={`/catalog/${item.id}`}
@@ -536,7 +559,7 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     sku: item.sku || "",
     imageUrl: item.imageUrl || "",
     stockQuantity: item.stockQuantity?.toString() || "0",
-    parLevel: item.parLevel?.toString() || "0",
+    parLevel: item.parLevel?.toString() ?? "",
     moq: item.moq?.toString() || "0",
     preferredReorderQuantity: item.preferredReorderQuantity?.toString() || "0",
     isAvailable: item.isAvailable ?? true,
@@ -718,7 +741,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
-          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
+          compareAtPrice: form.compareAtPrice.trim() ? Number(form.compareAtPrice) : null,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
@@ -727,7 +750,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           mediaGallery,
           isAvailable: form.isAvailable,
           isTaxable: form.isTaxable,
-          parLevel: parseFloat(form.parLevel || "0"),
+          parLevel: form.parLevel.trim() ? Number(form.parLevel) : null,
           moq: parseFloat(form.moq || "0"),
           preferredReorderQuantity: parseFloat(form.preferredReorderQuantity || "0"),
           alavontName: form.alavontName || undefined,
@@ -916,7 +939,19 @@ export default function Catalog() {
   // In LC mode the API returns only WooCommerce-synced Lucifer Cruz products.
   // Alavont rows can still carry LC mapping fields for payment conversion,
   // but those mapped fields do not make them Lucifer Cruz storefront items.
-  const displayItems = allItems;
+  const groupByCatalogId = new Map<number, GroupedProduct>();
+  for (const item of allItems) {
+    const product = item.sellableProduct;
+    if (product) for (const option of product.options) groupByCatalogId.set(option.catalogItemId, product);
+  }
+  const seenGroups = new Set<number>();
+  const displayItems = allItems.filter(item => {
+    const product = groupByCatalogId.get(item.id);
+    if (!product) return true;
+    if (seenGroups.has(product.id)) return false;
+    seenGroups.add(product.id);
+    return true;
+  });
 
   // Determine empty-state reason for better messaging
   const hasItemsInResponse = allItems.length > 0;
@@ -1016,6 +1051,12 @@ export default function Catalog() {
       </div>
 
       {/* Grid */}
+      {catalogQuery.isError && (
+        <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
+          The catalogue and product options could not be loaded.
+          <Button type="button" size="sm" variant="outline" className="ml-3" onClick={() => void catalogQuery.refetch()}>Retry catalogue</Button>
+        </div>
+      )}
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {[...Array(10)].map((_, i) => (
@@ -1076,6 +1117,8 @@ export default function Catalog() {
             <CatalogItemCard
               key={item.id}
               item={item}
+              product={groupByCatalogId.get(item.id)}
+              optionsLoading={catalogQuery.isLoading}
               canEdit={canEdit}
               onEdit={setEditItem}
               menuMode={menuMode}

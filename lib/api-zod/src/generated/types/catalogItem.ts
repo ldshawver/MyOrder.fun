@@ -8,8 +8,10 @@
 import type { CatalogItemLifecycleStatus } from './catalogItemLifecycleStatus';
 import type { CatalogItemMediaGalleryItem } from './catalogItemMediaGalleryItem';
 import type { CatalogItemMetadata } from './catalogItemMetadata';
+import type { CatalogItemSellableProduct } from './catalogItemSellableProduct';
 
 export interface CatalogItem {
+  sellableProduct?: CatalogItemSellableProduct;
   id: number;
   tenantId: number;
   name: string;
@@ -17,7 +19,7 @@ export interface CatalogItem {
   category: string;
   sku?: string;
   price: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   stockQuantity?: number;
   isAvailable: boolean;
   isTaxable?: boolean;
@@ -46,7 +48,7 @@ export interface CatalogItem {
   wooVariationId?: string | null;
   receiptName?: string | null;
   /** @minimum 0 */
-  parLevel?: number;
+  parLevel?: number | null;
   /** @minimum 0 */
   moq?: number;
   /** @minimum 0 */

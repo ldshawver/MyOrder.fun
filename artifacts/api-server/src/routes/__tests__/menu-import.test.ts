@@ -89,6 +89,11 @@ vi.mock("@workspace/db", () => {
       const text = String(q);
       const values = (q as { values?: unknown[] }).values ?? [];
       const wrap = (rows: Record<string, unknown>[]) => state.executeRowsObject ? { rows } : rows;
+      if (text.includes("SELECT EXISTS (SELECT 1 FROM catalog_items")) {
+        const [catalogTenant, productId, locationTenant, locationId] = values;
+        return Promise.resolve(wrap([{ valid: state.catalog.some(row => row.tenantId === catalogTenant && row.id === productId)
+          && state.locations.some(row => row.tenantId === locationTenant && row.id === locationId) }]));
+      }
       if (text.includes("SELECT id, snapshot")) return Promise.resolve(wrap(state.snapshots));
       if (text.includes("INSERT INTO catalog_import_snapshots")) return Promise.resolve(wrap([{ id: 1 }]));
       if (text.includes("INSERT INTO catalog_import_preview_tokens")) {
@@ -178,6 +183,35 @@ describe("safe catalog import/export", () => {
     expect(res.status).toBe(400);
     expect(res.body.extraColumns).toContain("bad");
   });
+  it("rejects Product/Option/Inventory relationship fields through the actual CSV import endpoint", async () => {
+    const hostileHeaders = ["inventory_item_id", "inventoryItemId", "product_id", "productId",
+      "tenant_id", "tenantId", "inventory_model", "inventoryModel", "option_id", "optionId"];
+    const row = goodCsv.trimEnd().split("\n")[1];
+    // product_id is a documented alias for the legacy catalogue row's Product ID match key.
+    // A foreign tenant's row must still be invisible to that lookup.
+    state.catalog.push({ id: 999999, tenantId: 2, sku: "FOREIGN", name: "Foreign" });
+    for (const header of hostileHeaders) {
+      const before = JSON.stringify({ catalog: state.catalog, inventory: state.inventory,
+        balances: state.balances, audit: state.audit });
+      const file = Buffer.from(`${headers},${header}\n${row},999999\n`);
+      const response = await supertest(buildApp()).post("/api/admin/products/import?confirm=true")
+        .attach("file", file, "hostile-relationships.csv");
+      if (header === "product_id") {
+        expect(response.status, response.text).toBe(200);
+        expect(response.body.dryRun).toBe(true);
+        expect(response.body.errors).toEqual(expect.arrayContaining([
+          expect.objectContaining({ message: "Product ID 999999 was not found in this tenant" }),
+        ]));
+      } else {
+        expect(response.status, `${header}: ${response.text}`).toBe(400);
+        expect(response.body.extraColumns).toContain(header);
+      }
+      expect(JSON.stringify({ catalog: state.catalog, inventory: state.inventory,
+        balances: state.balances, audit: state.audit })).toBe(before);
+      const { db } = await import("@workspace/db");
+      expect(db.transaction).not.toHaveBeenCalled();
+    }
+  });
   it("requires confirmation before applying import", async () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import").attach("file", Buffer.from(goodCsv), "catalog.csv");
     expect(res.status).toBe(409);
@@ -256,7 +290,7 @@ describe("safe catalog import/export", () => {
     expect(state.balances).toHaveLength(4);
     expect(state.balances.map(b => b.productId)).toEqual([1, 1, 1, 1]);
     expect(state.inventory).toHaveLength(1);
-    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "0", parLevel: "16" });
+    expect(state.inventory[0]).toMatchObject({ catalogItemId: 1, startingQuantityDefault: "0", parLevel: "16.000000" });
     const { db } = await import("@workspace/db");
     expect(db.transaction).toHaveBeenCalled();
   });
@@ -385,7 +419,7 @@ describe("safe catalog import/export", () => {
     expect(state.catalog).toHaveLength(productCount);
     expect(state.balances).toHaveLength(inventoryRowCount);
     expect(state.catalog[0]).toMatchObject({ id: 1, sku: "SKU-1", price: "10.99" });
-    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "15.00", inventoryAmount: "15.00" });
+    expect(state.catalog[0]).toMatchObject({ customerSafeName: "Safe", customerSafeDescription: "Safe desc", luciferCruzCategory: "Safe cat", stockQuantity: "15.000000", inventoryAmount: "15.000000" });
     expect(state.balances).toHaveLength(inventoryRowCount);
   });
 
@@ -492,7 +526,7 @@ describe("safe catalog import/export", () => {
     const res = await supertest(buildApp()).post("/api/admin/products/import?dryRun=true").attach("file", Buffer.from(csv), "preview.csv");
 
     expect(res.status).toBe(200);
-    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": 5 } });
+    expect(res.body.preview[0]).toMatchObject({ oldProductId: null, matchedProductId: null, sku: "RB-NEW", name: "Red Brick", parValues: { "Box 1": "5.000000" } });
   });
 
   it("parse-headers accepts the provided Alavont/Safe spreadsheet headers and aliases", async () => {

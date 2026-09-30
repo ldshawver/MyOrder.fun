@@ -36,11 +36,11 @@ import {
   writeAuditLog,
   normalizeRole,
 } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 let feedbackSchemaEnsured = false;
 async function ensureFeedbackSchema(): Promise<void> {
   if (feedbackSchemaEnsured) return;
@@ -352,8 +352,7 @@ router.post("/feedback", rateLimitFeedback, async (req, res): Promise<void> => {
     }
   }
 
-  const tenantId =
-    actor.tenantId ?? (await getHouseTenantId().catch(() => null));
+  const tenantId = req.authorizedTenantId!;
   const contextJson = parsed.data.context ?? parsed.data.metadata ?? null;
   const screenshotData =
     typeof parsed.data.screenshotData === "string" &&

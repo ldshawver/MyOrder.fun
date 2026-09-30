@@ -6,6 +6,7 @@
  */
 import { bootstrapMissingInventoryBalancesThroughAuthority } from "./inventoryAuthority";
 import { deductInventoryBalanceThroughAuthority } from "./inventoryAuthority";
+import { quantityText, quantityUnits } from "./exactQuantity";
 import { eq, and, asc, sql, sum, inArray } from "drizzle-orm";
 import {
   db,
@@ -232,8 +233,8 @@ export async function deductCheckoutInventoryByOrderType(
   orderType: InventoryOrderType,
 ): Promise<CheckoutInventoryDeductionResult | null> {
   assertCatalogIdInventoryLookup(productId, "checkout.inventoryDeduction.orderTypeAware");
-  const requestedQuantity = Number(quantity);
-  if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+  const requestedQuantity = quantityUnits(quantity);
+  if (requestedQuantity <= 0n) {
     throw new Error(`Invalid checkout inventory deduction quantity for catalogItemId ${productId}`);
   }
 
@@ -283,30 +284,30 @@ sql`array_position(ARRAY[${sql.join(CHECKOUT_DEDUCTION_LOCATION_ORDER_BY_TYPE[or
   let remaining = requestedQuantity;
   const deductions: CheckoutInventoryLocationDeduction[] = [];
   for (const row of balances) {
-    if (remaining <= 0) break;
-    const availableAtLocation = Number(row.quantityOnHand ?? 0);
-    if (availableAtLocation <= 0) continue;
-    const deductionQuantity = Math.min(remaining, availableAtLocation);
+    if (remaining <= 0n) break;
+    const availableAtLocation = quantityUnits(String(row.quantityOnHand ?? 0));
+    if (availableAtLocation <= 0n) continue;
+    const deductionQuantity = remaining < availableAtLocation ? remaining : availableAtLocation;
     const updated = await deductInventoryBalanceThroughAuthority(executor, {
-      productId,
+      tenantId, productId,
       locationId: row.locationId,
-      quantity: deductionQuantity,
+      quantity: quantityText(deductionQuantity),
       context: "inventoryBalances.deductCheckoutInventoryByOrderType",
     });
     if (!updated) return null;
     deductions.push({
       locationId: row.locationId,
       locationName: row.locationName,
-      quantity: deductionQuantity,
+      quantity: Number(quantityText(deductionQuantity)),
       remainingStock: updated.remainingStock,
     });
     remaining -= deductionQuantity;
   }
 
-  if (remaining > 0) return null;
+  if (remaining > 0n) return null;
   return {
     productId,
-    requestedQuantity,
+    requestedQuantity: Number(quantityText(requestedQuantity)),
     availableBeforeDeduction,
     deductions,
   };

@@ -14,6 +14,7 @@ import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
+import { checkoutOptionLines } from "@/lib/sellableOptions";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
@@ -234,7 +235,7 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: checkoutOptionLines(cart),
           confirmation: {
             acceptedAllSalesFinal: true,
             confirmedAt: new Date().toISOString(),
@@ -271,7 +272,7 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: checkoutOptionLines(cart),
           dropoffAddress: shippingAddress,
           checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
           checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
@@ -314,7 +315,7 @@ export default function NewOrder() {
       };
       const order = await createOrderMutation.mutateAsync({
         data: {
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: checkoutOptionLines(cart) as unknown as Array<{ catalogItemId: number; quantity: number }>,
           shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,

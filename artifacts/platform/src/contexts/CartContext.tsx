@@ -4,6 +4,7 @@ import { useBrand, type Brand } from "@/contexts/BrandContext";
 
 export type CartItem = {
   id: number;
+  optionId?: number;
   name: string;
   price: number;
   quantity: number;
@@ -13,7 +14,7 @@ export type CartItem = {
 interface CartContextValue {
   cart: CartItem[];
   brand: Brand;
-  addItem: (item: { id: number; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
+  addItem: (item: { id: number; optionId?: number; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
   removeItem: (id: number) => void;
   updateQuantity: (id: number, delta: number) => void;
   setQuantity: (id: number, quantity: number) => void;
@@ -95,14 +96,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
       : prev);
   }, [brand, storageKey]);
 
-  const addItem = useCallback((item: { id: number; name: string; price: number; imageUrl?: string | null }, quantity = 1) => {
+  const addItem = useCallback((item: { id: number; optionId?: number; name: string; price: number; imageUrl?: string | null }, quantity = 1) => {
     if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
     mutate(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
         return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + quantity } : i);
       }
-      return [...prev, { id: item.id, name: item.name, price: item.price, quantity, imageUrl: item.imageUrl ?? null }];
+      return [...prev, { id: item.id, optionId: item.optionId, name: item.name, price: item.price, quantity, imageUrl: item.imageUrl ?? null }];
     });
   }, [mutate]);
 

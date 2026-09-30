@@ -55,6 +55,10 @@ suite("canonical inventory ledger acceptance", () => {
     await client.query("DELETE FROM non_catalog_inventory_balances WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("DELETE FROM non_catalog_inventory_items WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("DELETE FROM non_catalog_inventory_sections WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
+    await client.query("DELETE FROM inventory_reorder_policies WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
+    await client.query("DELETE FROM catalogue_options WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
+    await client.query("DELETE FROM catalogue_products WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
+    await client.query("DELETE FROM inventory_items WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("DELETE FROM catalog_items WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("DELETE FROM inventory_locations WHERE tenant_id IN ($1,$2)", [tenant, tenantB]);
     await client.query("DELETE FROM users WHERE clerk_id = ANY($1)", [Object.values(identities)]); await client.query("DELETE FROM tenants WHERE id IN ($1,$2)", [tenant, tenantB]); await client.end();
@@ -63,20 +67,20 @@ suite("canonical inventory ledger acceptance", () => {
   it("receipts preserve actual cost and calculate weighted average/value", async () => {
     const first = await asAdmin().post("/api/admin/inventory/receipts").send({ entityType: "catalog", itemId: catalog, locationId: backstock, quantity: "10", unitCost: "4.00", supplierReference: "SUP-A", reference: "PO-1", idempotencyKey: `${runId}-receipt-1` }); expect(first.status, first.body.error).toBe(201);
     const second = await asAdmin().post("/api/admin/inventory/receipts").send({ entityType: "catalog", itemId: catalog, locationId: backstock, quantity: "10", unitCost: "6.00", supplierReference: "SUP-A", reference: "PO-2", idempotencyKey: `${runId}-receipt-2` }); expect(second.status, second.body.error).toBe(201);
-    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${catalog}/detail`); expect(detail.status).toBe(200); expect(detail.body.item).toMatchObject({ quantityOnHand: "20.000", lastPurchaseCost: "6.000000000000", weightedAverageCost: "5.000000000000", inventoryValue: "100.000000000000" }); expect(detail.body.purchaseHistory).toHaveLength(2); expect(detail.body.purchaseHistory.map((row: { unitCost: string }) => row.unitCost)).toEqual(expect.arrayContaining(["4.000000000000", "6.000000000000"]));
+    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${catalog}/detail`); expect(detail.status).toBe(200); expect(detail.body.item).toMatchObject({ quantityOnHand: "20.000000", lastPurchaseCost: "6.000000000000", weightedAverageCost: "5.000000000000", inventoryValue: "100.000000000000" }); expect(detail.body.purchaseHistory).toHaveLength(2); expect(detail.body.purchaseHistory.map((row: { unitCost: string }) => row.unitCost)).toEqual(expect.arrayContaining(["4.000000000000", "6.000000000000"]));
   });
 
   it("posts one sale at recognized cost and keeps COGS stable after default-cost edits", async () => {
     const sale = await db.transaction(tx => postInventoryMovement(tx, { tenantId: tenant, actor: actor(), entityType: "catalog", itemId: catalog, locationId: backstock, movementType: "sale", quantity: "3", reasonCode: "sale", reasonText: "Acceptance sale", sourceType: "order", sourceId: `${runId}-order-1`, idempotencyKey: `${runId}-sale-1` })); expect(sale).toMatchObject({ quantityDelta: "-3", unitCost: "5.000000000000", extendedCost: "15.000000000000" });
     await client.query("UPDATE catalog_items SET cost_basis=7 WHERE id=$1", [catalog]);
-    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${catalog}/detail`); expect(detail.body.item).toMatchObject({ quantityOnHand: "17.000", currentDefaultCost: "7.00", weightedAverageCost: "5.000000000000", inventoryValue: "85.000000000000" }); expect(detail.body.movementHistory.find((row: { movementType: string }) => row.movementType === "sale")).toMatchObject({ extendedCost: "15.000000000000" });
+    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${catalog}/detail`); expect(detail.body.item).toMatchObject({ quantityOnHand: "17.000000", currentDefaultCost: "7.00", weightedAverageCost: "5.000000000000", inventoryValue: "85.000000000000" }); expect(detail.body.movementHistory.find((row: { movementType: string }) => row.movementType === "sale")).toMatchObject({ extendedCost: "15.000000000000" });
   });
 
   it("enforces receipt idempotency, transfer conservation, and cross-tenant isolation", async () => {
     const key = `${runId}-idem-receipt`; const payload = { entityType: "catalog", itemId: catalog, locationId: backstock, quantity: "1", unitCost: "5", idempotencyKey: key, reference: "IDEM" };
     expect((await asAdmin().post("/api/admin/inventory/receipts").send(payload)).status).toBe(201); const replay = await asAdmin().post("/api/admin/inventory/receipts").send(payload); expect(replay.status).toBe(200); expect(replay.body.movement.idempotent).toBe(true); expect((await asAdmin().post("/api/admin/inventory/receipts").send({ ...payload, quantity: "2" })).status).toBe(409);
     const transfer = await asAdmin().post("/api/admin/inventory/transfers").send({ entityType: "catalog", itemId: catalog, sourceLocationId: backstock, destinationLocationId: storefront, quantity: "5", reasonText: "Move", idempotencyKey: `${runId}-transfer` }); expect(transfer.status, transfer.body.error).toBe(201); expect(transfer.body.transfer.out.id).toBeTruthy();
-    const totals = await client.query("SELECT COALESCE(SUM(quantity_on_hand),0) AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2", [tenant, catalog]); expect(totals.rows[0].quantity).toBe("18.000");
+    const totals = await client.query("SELECT COALESCE(SUM(quantity_on_hand),0) AS quantity FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2", [tenant, catalog]); expect(totals.rows[0].quantity).toBe("18.000000");
     expect((await asAdmin().post("/api/admin/inventory/receipts").send({ ...payload, itemId: catalogB, idempotencyKey: `${runId}-cross-item` })).status).toBe(404);
     const history = await asAdmin().get(`/api/admin/inventory/movements?entityType=catalog&itemId=${catalog}&movementType=receipt&limit=1`); expect(history.status).toBe(200); expect(history.body.movements).toHaveLength(1); expect(history.body.limit).toBe(1); expect((await asAdmin().get(`/api/admin/inventory/movements?entityType=catalog&itemId=${catalog}&limit=101`)).status).toBe(400);
   });
@@ -95,7 +99,7 @@ suite("canonical inventory ledger acceptance", () => {
       asAdmin().post("/api/admin/inventory/receipts").send({ entityType: "catalog", itemId, locationId: backstock, quantity: "10", unitCost: "8", idempotencyKey: `${runId}-concurrent-b` }),
     ]);
     expect(a.status, a.body.error).toBe(201); expect(b.status, b.body.error).toBe(201);
-    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${itemId}/detail`); expect(detail.body.item).toMatchObject({ quantityOnHand: "30.000", weightedAverageCost: "6.000000000000", inventoryValue: "180.000000000000" });
+    const detail = await asAdmin().get(`/api/admin/inventory/catalog/${itemId}/detail`); expect(detail.body.item).toMatchObject({ quantityOnHand: "30.000000", weightedAverageCost: "6.000000000000", inventoryValue: "180.000000000000" });
     const movements = await client.query("SELECT COUNT(*)::int AS count FROM inventory_movements WHERE tenant_id=$1 AND idempotency_key LIKE $2", [tenant, `${runId}-concurrent-%`]); expect(movements.rows[0].count).toBe(3);
   });
 

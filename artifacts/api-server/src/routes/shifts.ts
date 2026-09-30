@@ -1,3 +1,4 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { eq, and, desc, asc, sql, inArray, notInArray } from "drizzle-orm";
 import {
@@ -24,9 +25,9 @@ import {
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
 import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
+import { quantityUnits } from "../lib/exactQuantity";
 import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
 import { z } from "zod";
 
@@ -184,7 +185,7 @@ function logCsrShiftAuth(
 
 const router: IRouter = Router();
 const forbiddenInventoryBalanceMutationMessage = "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction";
-router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug, requireTenantContext);
 const RoutingStrategyBody = z.object({
   routingStrategy: z.enum(["round_robin", "geo", "pickup_delivery", "manual", "default_queue"]),
   reason: z.string().trim().min(1).max(1000),
@@ -197,7 +198,7 @@ router.post("/shifts/approve-multiple-active", requireRole("supervisor", "admin"
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [config] = await db.insert(shiftRoutingConfigTable).values({
     tenantId,
     allowMultipleActiveShifts: true,
@@ -439,7 +440,7 @@ async function getTenantCsrSettings(tenantId: number) {
 
 let shiftSchemaEnsured = false;
 
-async function ensureShiftSchema(): Promise<void> {
+async function ensureShiftSchema(tenantId: number): Promise<void> {
   if (shiftSchemaEnsured) return;
   const statements = [
     sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "box_assignment_id" text`,
@@ -643,7 +644,7 @@ async function ensureShiftSchema(): Promise<void> {
   }
   await ensureInventoryBalanceClassificationSchema();
   // Seed default boxes if the table is empty for this tenant
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = tenantId;
   const existing = await db
     .select({ id: csrBoxesTable.id })
     .from(csrBoxesTable)
@@ -720,7 +721,7 @@ async function getActiveCsrBoxes(tenantId: number) {
 
 router.use(async (_req, res, next) => {
   try {
-    await ensureShiftSchema();
+    await ensureShiftSchema(_req.authorizedTenantId!);
     next();
   } catch {
     res.status(500).json({ error: "Could not prepare shift schema" });
@@ -1434,7 +1435,7 @@ router.post(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
-          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
+          eq(labTechShiftsTable.tenantId, req.authorizedTenantId!),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1595,7 +1596,7 @@ router.get(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
-          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
+          eq(labTechShiftsTable.tenantId, req.authorizedTenantId!),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1623,7 +1624,7 @@ router.get(
   "/shifts/active-techs",
   requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
@@ -1664,7 +1665,7 @@ router.post("/shifts/:id/reassign", requireRole("global_admin", "admin", "superv
   const shiftId = Number(req.params.id);
   const parsed = ShiftReassignmentBody.safeParse(req.body);
   if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift reassignment request" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const result = await db.transaction(async tx => {
     const [source] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId))).for("update").limit(1);
     const [target] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, parsed.data.targetShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
@@ -1685,7 +1686,7 @@ router.post("/shifts/:id/terminate", requireRole("global_admin", "admin", "super
   const shiftId = Number(req.params.id);
   const parsed = ShiftTerminationBody.safeParse(req.body);
   if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift termination request" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
   if (!shift) { res.status(409).json({ error: "Shift is not active in this tenant" }); return; }
   const openOrders = await db.select({ id: ordersTable.id }).from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES])));
@@ -1708,7 +1709,7 @@ router.get(
       .select()
       .from(labTechShiftsTable)
       // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
-      .where(and(eq(labTechShiftsTable.tenantId, req.dbUser?.tenantId ?? await getHouseTenantId()), eq(labTechShiftsTable.id, id)))
+      .where(and(eq(labTechShiftsTable.tenantId, req.authorizedTenantId!), eq(labTechShiftsTable.id, id)))
       .limit(1);
 
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
@@ -1825,7 +1826,7 @@ router.post(
       deductionQuantityPerSale?: number;
     };
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [created] = await db
       .insert(inventoryTemplatesTable)
       .values({
@@ -1900,8 +1901,8 @@ const CSR_INVENTORY_SEED = [
 router.post(
   "/admin/inventory-template/seed",
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  async (req, res): Promise<void> => {
+    const houseTenantId = req.authorizedTenantId!;
 
     // Fetch existing by item name to avoid duplicates
     const existing = await db
@@ -1983,7 +1984,7 @@ router.post(
       res.status(400).json({ error: "label is required" });
       return;
     }
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const slug = String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const [created] = await db
       .insert(csrBoxesTable)
@@ -2012,7 +2013,7 @@ router.patch(
       displayOrder?: number;
     };
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
     if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
 
@@ -2041,7 +2042,7 @@ router.delete(
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
     if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
 
@@ -2079,7 +2080,7 @@ router.post(
     const parsed = z.object({ name: z.string().trim().min(1), type: z.enum(["csr_box", "storefront", "backstock"]), isActive: z.boolean().optional(), displayOrder: z.number().int().optional() }).strict().safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map(issue => issue.path.join(".") || "location").join(", ") + " is invalid" }); return; }
     const { name, type, isActive = true, displayOrder = 0 } = parsed.data;
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [created] = await db.insert(inventoryLocationsTable).values({
       tenantId: houseTenantId,
       name,
@@ -2109,10 +2110,10 @@ router.patch(
     if (isActive !== undefined) update.isActive = isActive;
     if (displayOrder !== undefined) update.displayOrder = displayOrder;
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
-    const tenantId = await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     if (isActive === false) {
       const [stock] = await db.select({ quantity: sql<string>`COALESCE(SUM(${inventoryBalancesTable.quantityOnHand}),0)` }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.locationId, id)));
-      if (Number(stock?.quantity ?? 0) !== 0) { res.status(409).json({ error: "Location must be empty before archive" }); return; }
+      if (quantityUnits(stock?.quantity ?? "0") !== 0n) { res.status(409).json({ error: "Location must be empty before archive" }); return; }
     }
     const [updated] = await db.update(inventoryLocationsTable).set(update).where(and(eq(inventoryLocationsTable.id, id), eq(inventoryLocationsTable.tenantId, tenantId))).returning();
     if (!updated) { res.status(404).json({ error: "Location not found" }); return; }
@@ -2236,7 +2237,7 @@ router.post(
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
 
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
@@ -2333,7 +2334,7 @@ router.get(
       .select()
       .from(labTechShiftsTable)
       // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
-      .where(and(eq(labTechShiftsTable.tenantId, req.dbUser?.tenantId ?? await getHouseTenantId()), eq(labTechShiftsTable.id, shiftId)))
+      .where(and(eq(labTechShiftsTable.tenantId, req.authorizedTenantId!), eq(labTechShiftsTable.id, shiftId)))
       .limit(1);
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
 
@@ -2416,7 +2417,7 @@ router.post(
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (!Number.isInteger(shiftId) || shiftId <= 0) { res.status(400).json({ error: "Invalid shift ID" }); return; }
-    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
 
     const { loadShiftDocumentContext, loadShiftInventoryRows, queueRestockList } = await import("../lib/print/shiftDocuments");
     const { restockQuantity } = await import("../lib/print/documents");
@@ -2465,7 +2466,7 @@ router.get(
   "/shifts/pending-supervisor",
   requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser!.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
@@ -2525,7 +2526,7 @@ async function buildShiftOperationsReceipt(tenantId: number, shiftId: number, ki
 
 // GET /api/shifts/:id/receipts/:kind — six required closeout/operations receipts as JSON payloads.
 router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const shiftId = Number(req.params.id);
   const kind = ShiftReceiptKind.safeParse(req.params.kind);
   if (!Number.isInteger(shiftId) || shiftId <= 0 || !kind.success) { res.status(400).json({ error: "Invalid shift receipt request" }); return; }

@@ -1,13 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
 import { getOrCreateSettings, getDecryptedWooCreds } from "./settings";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
   const actor = req.dbUser!;
@@ -185,7 +185,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
 // Sync handler — credentials are always loaded (decrypted) from the DB
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
-async function syncHandler(_req: import("express").Request, res: import("express").Response): Promise<void> {
+async function syncHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
     try {
       await ensureWooCatalogSchema();
     } catch {
@@ -193,13 +193,13 @@ async function syncHandler(_req: import("express").Request, res: import("express
       return;
     }
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
 
     // Always use the saved (and decrypted) credentials. Request-body
     // overrides are intentionally not accepted to avoid SSRF, and env
     // fallbacks are intentionally not accepted so missing persisted
     // config reliably surfaces as a JSON 412.
-    const saved = await getDecryptedWooCreds();
+    const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";
     const storeUrl = saved.storeUrl || "https://lucifercruz.com";
@@ -285,7 +285,7 @@ async function syncHandler(_req: import("express").Request, res: import("express
         const [existing] = await db
           .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont })
           .from(catalogItemsTable)
-          .where(eq(catalogItemsTable.alavontId, `wc_${wcId}`))
+          .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.alavontId, `wc_${wcId}`)))
           .limit(1);
 
         if (existing) {
@@ -294,7 +294,7 @@ async function syncHandler(_req: import("express").Request, res: import("express
           if (existing.isLocalAlavont) {
             skipped++;
           } else {
-            await db.update(catalogItemsTable).set(values).where(eq(catalogItemsTable.id, existing.id));
+            await db.update(catalogItemsTable).set(values).where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, existing.id)));
             updated++;
           }
         } else {
@@ -328,8 +328,8 @@ router.get(
   "/admin/woocommerce/status",
   requirePermission("settings.view"),
   requireTenantAssignedOrGlobal,
-  async (_req, res): Promise<void> => {
-    const s = await getOrCreateSettings();
+  async (req, res): Promise<void> => {
+    const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
     const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
     const hasSecret = !!(s.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET);
     res.json({
@@ -354,12 +354,12 @@ router.post(
   "/admin/woocommerce/test",
   requirePermission("settings.manage_tenant"),
   requireTenantAssignedOrGlobal,
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     // Test only the SAVED credentials. We deliberately do not honor
     // request-body overrides (admin-gated SSRF) and we deliberately do
     // not fall back to env vars (so missing persisted config surfaces
     // as a clear 412 instead of silently passing).
-    const saved = await getDecryptedWooCreds();
+    const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
     const storeUrl = saved.storeUrl ?? "https://lucifercruz.com";
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";

@@ -5,6 +5,7 @@ import pg from "pg";
 import {
   assertHistoricalStaging0047Schema,
   historicalStaging0047,
+  historicalStaging0058,
   type HistoricalStaging0047SchemaEvidence,
   legacyDev0038,
   validateAppliedLineage,
@@ -258,7 +259,41 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       legacyIndices,
       appliedJournalIndices,
       historicalStaging0047Recognized,
+      historicalStaging0058Recognized,
     } = validateAppliedLineage(local, applied);
+
+    if (appliedJournalIndices.has(historicalStaging0058.index)) {
+      const constraint = await client.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint
+         WHERE conrelid = 'public.payment_refunds'::regclass
+           AND conname = 'payment_refunds_state_check'
+           AND contype = 'c' AND convalidated`,
+      );
+      const canonicalStates = [
+        "requested", "provider_succeeded", "locally_finalized", "completed",
+        "pending", "failed", "reconciliation_required",
+      ];
+      const oldStates = canonicalStates.filter((state) => state !== "completed");
+      const reconciled = appliedJournalIndices.has(historicalStaging0058.reconciliationIndex);
+      const expectedStates = historicalStaging0058Recognized && !reconciled
+        ? oldStates : canonicalStates;
+      const expectedDefinition = `CHECK ((state = ANY (ARRAY[${expectedStates
+        .map((state) => `'${state}'::text`).join(", ")}])))`;
+      if (
+        constraint.rows.length !== 1 ||
+        constraint.rows[0]?.definition !== expectedDefinition
+      ) {
+        fail("payment_refunds_state_check does not match the verified 0058 lineage");
+      }
+      if (historicalStaging0058Recognized) {
+        console.log(
+          `[migration-ledger] HISTORICAL-LINEAGE ${historicalStaging0058.tag} ` +
+          `sha256=${historicalStaging0058.hash} ` +
+          `reconciled=${reconciled} ledger_mutated=false`,
+        );
+      }
+    }
 
     if (legacyIndices.has(legacyDev0038.index)) {
       const reconciled = await client.query<{ healthy: boolean }>(`
@@ -564,7 +599,9 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       const lineage = legacyIndices.has(index)
         ? index === historicalStaging0047.index
           ? ` historical-sha256=${historicalStaging0047.historicalHash}`
-          : ` historical-sha256=${legacyDev0038.hash}`
+          : index === historicalStaging0058.index
+            ? ` historical-sha256=${historicalStaging0058.hash}`
+            : ` historical-sha256=${legacyDev0038.hash}`
         : "";
       console.log(
         `[migration-ledger] ${state} ${migration.tag} sha256=${migration.hash}${lineage}`,

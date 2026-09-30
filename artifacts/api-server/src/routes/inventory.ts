@@ -17,7 +17,7 @@ import {
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
 import { normalizeRole, requirePermission } from "../lib/roles";
 import { z } from "zod";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
 import {
   ensureStandardLocations,
   ensureAllInventoryRowsExistForTenant,
@@ -35,7 +35,7 @@ import { ensureInventoryTransactionLogTable, replayInventoryTransaction } from "
 import { InventoryMovementError, inventoryMovementTypes, normalizedCanonicalDecimal, postInventoryMovement, setCatalogBalanceParProjection, transferInventory } from "../lib/inventoryMovementLedger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 let inventorySchemaEnsured = false;
 
@@ -79,7 +79,7 @@ async function ensureInventorySchema(): Promise<void> {
       "tenant_id" integer NOT NULL,
       "product_id" integer NOT NULL,
       "location_id" integer NOT NULL,
-      "quantity_on_hand" numeric(10, 3) NOT NULL DEFAULT 0,
+      "quantity_on_hand" numeric(20, 6) NOT NULL DEFAULT 0,
       "par_level" numeric(10, 2) NOT NULL DEFAULT 0,
       "updated_at" timestamptz NOT NULL DEFAULT now()
     )`,
@@ -102,14 +102,7 @@ async function ensureInventorySchema(): Promise<void> {
 }
 
 
-async function resolveInventoryTenantId(req: import("express").Request): Promise<number> {
-  const actor = req.dbUser!;
-  if (actor.role === "global_admin") {
-    const requested = req.query.tenantId ? Number(req.query.tenantId) : undefined;
-    if (requested && Number.isInteger(requested) && requested > 0) return requested;
-  }
-  return actor.tenantId ?? await getHouseTenantId();
-}
+function resolveInventoryTenantId(req: import("express").Request): number { return req.authorizedTenantId!; }
 
 const bootstrapInventoryBody = z.object({ acknowledgmentToken: z.string().min(1) }).strict();
 const forbiddenInventoryBalanceMutationMessage = "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction";
@@ -425,9 +418,9 @@ router.get(
 router.get(
   "/admin/inventory/reconcile-report",
   requireRole("global_admin", "admin", "supervisor"),
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     try {
-      const report = await collectInventoryReconcileReport();
+      const report = await collectInventoryReconcileReport(req.authorizedTenantId!);
       res.json({ ...report, mode: "read_only" });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Could not reconcile inventory state" });
@@ -439,9 +432,9 @@ router.get(
 router.post(
   "/admin/inventory/reconcile-repair",
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     try {
-      const report = await reconcileInventoryState();
+      const report = await reconcileInventoryState(req.authorizedTenantId!);
       res.json({ ...report, mode: "repair" });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Could not repair inventory reconciliation state" });
@@ -456,7 +449,7 @@ router.get(
   async (req, res): Promise<void> => {
     try {
       const transactionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      const report = await replayInventoryTransaction(transactionId);
+      const report = await replayInventoryTransaction(req.authorizedTenantId!, transactionId);
       res.json(report);
     } catch (err) {
       res.status(404).json({ error: err instanceof Error ? err.message : "Inventory transaction was not found" });
@@ -644,7 +637,7 @@ router.patch(
     if (stockUnit !== undefined) patch.stockUnit = stockUnit;
     if (Object.keys(patch).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [updated] = await db
       .update(catalogItemsTable)
       .set(patch)
@@ -676,7 +669,7 @@ router.patch(
       res.status(400).json({ error: "pettyCash must be a number" });
       return;
     }
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     await db
       .update(adminSettingsTable)
       .set({ pettyCash: String(pettyCash.toFixed(2)) })

@@ -19,7 +19,7 @@ vi.mock("../logger", () => ({
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  const all = ["from", "orderBy", "limit", "values", "onConflictDoNothing", "returning"];
+  const all = ["from", "where", "orderBy", "limit", "values", "onConflictDoNothing", "returning"];
   for (const m of all) obj[m] = vi.fn(() => obj);
   // The terminal awaited call returns the result; simplest is to make every
   // method return `obj` and add a `.then` so awaiting the chain resolves.
@@ -86,5 +86,11 @@ describe("getHouseTenantId", () => {
     await getHouseTenantId();
     await getHouseTenantId();
     expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+  it("refuses to choose the first tenant when multiple exist", async () => {
+    selectMock.mockReturnValueOnce(chain([{ id: 7 }, { id: 8 }]));
+    const { getHouseTenantId } = await loadModuleFresh();
+    await expect(getHouseTenantId()).rejects.toThrow(/Explicit signup tenant/);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });

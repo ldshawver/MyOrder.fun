@@ -45,6 +45,7 @@ import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -531,6 +532,7 @@ function AuthenticatedApp() {
           )}
 
           {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
+          {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
           {["global_admin", "admin"].includes(appRole) && (
             <>

@@ -181,7 +181,7 @@ vi.mock("@workspace/db", () => {
   const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
-  const tenantsTable = { __t: "tenants", id: "id" };
+  const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
@@ -394,7 +394,7 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
       return true;
     }),
   } as unknown as import("express").Response;
-  const teardown = subscribe({ res: fakeRes, userId, role });
+  const teardown = subscribe({ res: fakeRes, tenantId: 1, userId, role });
   return { received, teardown };
 }
 
@@ -409,7 +409,7 @@ beforeEach(() => {
   dbState.settings = [{
     id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1, enabledProcessors: ["cash", "paypal"],
   }];
-  dbState.tenants = [{ id: 1 }];
+  dbState.tenants = [{ id: 1, name: "Test Tenant" }];
   dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
