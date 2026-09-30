@@ -295,6 +295,13 @@
       "when": 1790600000002,
       "tag": "0067_print_routes_document_types",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790600000003,
+      "tag": "0068_print_jobs_document_job_types",
+      "breakpoints": true
     }
   ]
 }

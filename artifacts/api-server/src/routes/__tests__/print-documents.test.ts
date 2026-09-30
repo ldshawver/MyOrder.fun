@@ -21,6 +21,8 @@ const store = vi.hoisted(() => ({
   nextId: 1,
   user: {} as Record<string, unknown>,
   legacyPrinter: null as Record<string, unknown> | null,
+  /** print_jobs.job_type values production's check constraint admits. */
+  allowedJobTypes: null as Set<string> | null,
 }));
 
 vi.mock("drizzle-orm", () => {
@@ -74,10 +76,17 @@ vi.mock("@workspace/db", () => {
     }),
     insert: (t: Record<string, unknown>) => ({
       values: (v: Row) => {
-        const make = () => { const row = { id: store.nextId++, ...v }; rows(t).push(row); return row; };
+        const make = () => {
+          // Production's print_jobs_job_type_check (job_type is generated from job_output).
+          const jobType = String(v.jobType ?? "order_ticket");
+          if (t.__name === "printJobsTable" && store.allowedJobTypes && !store.allowedJobTypes.has(jobType)) {
+            throw new Error(`new row for relation "print_jobs" violates check constraint "print_jobs_job_type_check" (${jobType})`);
+          }
+          const row = { id: store.nextId++, ...v }; rows(t).push(row); return row;
+        };
         return {
-          returning: () => Promise.resolve([make()]),
-          then: (ok: (v: unknown) => unknown) => Promise.resolve([make()]).then(ok),
+          returning: () => Promise.resolve().then(() => [make()]),
+          then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve().then(() => [make()]).then(ok, bad),
         };
       },
     }),
@@ -149,11 +158,31 @@ const { resolveDocumentPrinter } = await import("../../lib/print/printRouting");
 const { queueDocumentPrint } = await import("../../lib/print/documentJobs");
 const { buildClockSlip } = await import("../../lib/print/documents");
 const { setBridgeKey, bridgeKeyFingerprint } = await import("../../lib/print/bridgeKey");
+/**
+ * The job types production accepts: the IN list of the last journaled
+ * migration that (re)defines print_jobs_job_type_check, in journal order.
+ */
+function productionJobTypes(): Set<string> {
+  const dir = resolve(import.meta.dirname, "../../../../../lib/db/drizzle");
+  const journal = JSON.parse(readFileSync(resolve(dir, "meta/_journal.json"), "utf8")) as { entries: { tag: string }[] };
+  let allowed: string[] | null = null;
+  for (const { tag } of journal.entries) {
+    const sql = readFileSync(resolve(dir, `${tag}.sql`), "utf8");
+    const at = sql.search(/ADD CONSTRAINT "print_jobs_job_type_check"/);
+    if (at < 0) continue;
+    const list = sql.slice(at).match(/IN \(([^)]*)\)/)![1]!;
+    allowed = [...list.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!);
+  }
+  return new Set(allowed ?? []);
+}
+store.allowedJobTypes = productionJobTypes();
+
 const app = express();
 app.use(express.json());
 app.use("/api", printRouter);
 app.use("/api", printingRouter);
 app.use("/api", shiftsRouter);
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(500).json({ error: err.message }); });
 const api = supertest(app);
 
 const asUser = (tenantId: number, role = "admin") => {
@@ -380,6 +409,74 @@ describe("previews and test prints", () => {
     const pdf = await api.post("/api/print/documents/test").send({ documentType: "INVENTORY_STOCK_LIST", printerId: 2, testId: "t-2" });
     expect(pdf.body.ok).toBe(true);
     expect(jobs()[1]).toMatchObject({ printerId: 2, renderFormat: "pdf" });
+  });
+});
+
+describe("test print against production's print_jobs constraints", () => {
+  // Visible text of a thermal job: ESC/POS commands removed.
+  // eslint-disable-next-line no-control-regex -- stripping printer command bytes
+  const visibleLines = (text: string) => text.replace(/\x1b[@-~]|\x1b[!-/]./g, "").replace(/\x1d[!-~]./g, "").replace(/[\x00-\x09\x0b-\x1f]/g, "").split("\n");
+
+  it("production admits every job type the printing code writes, and nothing arbitrary", async () => {
+    const { DOCUMENT_TYPES, PRINT_DOCUMENT_TYPES } = await import("../../lib/print/documentTypes");
+    const written = new Set(["document_test", ...PRINT_DOCUMENT_TYPES.flatMap((type) => [...DOCUMENT_TYPES[type].jobTypes])]);
+    for (const jobType of written) expect(store.allowedJobTypes!.has(jobType), jobType).toBe(true);
+    expect(store.allowedJobTypes!.has("anything_else")).toBe(false);
+  });
+
+  it("Brightek 80mm: an Order receipt test print creates one general job, fits 48 columns and dispatches once", async () => {
+    const res = await api.post("/api/print/documents/test").send({ documentType: "ORDER_RECEIPT", printerId: 1, testId: "brightek-1" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, status: "printed", testId: "brightek-1" });
+    expect(jobs()).toHaveLength(1);
+    const [job] = jobs();
+    expect(job).toMatchObject({ printerId: 1, jobType: "document_test", locationId: null, maxRetries: 1 });
+    const lines = visibleLines(String(job!.renderedText));
+    expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(48);
+    expect(Math.max(...lines.map((line) => line.length))).toBeGreaterThan(32);
+    expect(dispatchJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("Box 2 50mm: an Order receipt test print keeps the Box 2 scope and fits 32 columns", async () => {
+    const res = await api.post("/api/print/documents/test").send({ documentType: "ORDER_RECEIPT", printerId: 3, testId: "box2-1" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, status: "printed" });
+    const [job] = jobs();
+    expect(job).toMatchObject({ printerId: 3, jobType: "document_test", locationId: 4 });
+    expect(Math.max(...visibleLines(String(job!.renderedText)).map((line) => line.length))).toBeLessThanOrEqual(32);
+    expect(dispatchJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("every thermal document type can be test printed on the chosen printer", async () => {
+    for (const documentType of ["CLOCK_IN", "CLOCK_OUT", "DEPOSIT", "EXPO", "WORK"]) {
+      const res = await api.post("/api/print/documents/test").send({ documentType, printerId: 3, testId: `box2-${documentType}` });
+      expect(res.status, documentType).toBe(200);
+    }
+    expect(jobs().map((job) => job.printerId)).toEqual([3, 3, 3, 3, 3]);
+    expect(dispatchJob).toHaveBeenCalledTimes(5);
+  });
+
+  it("validates the document type and enforces tenant and role", async () => {
+    expect((await api.post("/api/print/documents/test").send({ documentType: "NOT_A_DOCUMENT", printerId: 1 })).status).toBe(400);
+    asUser(2);
+    expect((await api.post("/api/print/documents/test").send({ documentType: "ORDER_RECEIPT", printerId: 3 })).status).toBe(404);
+    asUser(1, "staff");
+    expect((await api.post("/api/print/documents/test").send({ documentType: "ORDER_RECEIPT", printerId: 3 })).status).toBe(403);
+    expect(jobs()).toHaveLength(0);
+    expect(dispatchJob).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed dispatch without retrying or re-sending it", async () => {
+    dispatchJob.mockImplementationOnce(async (job: { id: number }) => {
+      const row = store.tables.printJobsTable!.find((r) => r.id === job.id)!;
+      Object.assign(row, { status: "failed", errorMessage: "Bridge unreachable" });
+    });
+    const res = await api.post("/api/print/documents/test").send({ documentType: "ORDER_RECEIPT", printerId: 3, testId: "box2-fail" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: false, status: "failed", error: "Bridge unreachable" });
+    expect(jobs()).toHaveLength(1);
+    expect(jobs()[0]).toMatchObject({ maxRetries: 1 });
+    expect(dispatchJob).toHaveBeenCalledTimes(1);
   });
 });
 
