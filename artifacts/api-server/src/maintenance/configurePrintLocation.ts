@@ -16,6 +16,10 @@
  * --retire-printer-id deactivates an old record for the same queue and renames
  * its stored queue to retired-<id>-<queue> (audited), so the one-record-per-
  * queue rule holds and its print history is kept.
+ *
+ * --scope-bridge-to-location re-registers a general --bridge-id at the
+ * location (same host, key copied in the database, never shown) and retires
+ * the general record; location printers must use a bridge at their location.
  */
 import { and, eq } from "drizzle-orm";
 import { db, printPrintersTable } from "@workspace/db";
@@ -27,6 +31,7 @@ import {
   printerPaper,
   setDocumentRoute,
   retirePrinter,
+  scopeBridgeToLocation,
   verifyBridgeQueue,
 } from "../lib/print/printerAdmin";
 
@@ -49,7 +54,8 @@ const id = (name: string) => {
 const execute = process.argv.includes("--execute");
 const tenantId = id("tenant-id");
 const locationId = id("location-id");
-const bridgeId = id("bridge-id");
+const requestedBridgeId = id("bridge-id");
+const scopeBridge = process.argv.includes("--scope-bridge-to-location");
 const queue = required("queue");
 const name = required("name");
 const role = required("role");
@@ -63,7 +69,7 @@ for (const documentType of documents) {
 }
 
 const actor = await loadPrintAdminActor(tenantId, id("actor-id"));
-const bridge = await verifyBridgeQueue(tenantId, bridgeId, queue);
+const bridge = await verifyBridgeQueue(tenantId, requestedBridgeId, queue);
 const tenantPrinter = async (printerId: number) =>
   (await db.select().from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, printerId))).limit(1))[0] ?? null;
 const oldPrinter = retireId ? await tenantPrinter(retireId) : null;
@@ -71,7 +77,7 @@ if (retireId && !oldPrinter) throw new Error(`Printer ${retireId} not found in t
 
 const summary: Record<string, unknown> = {
   mode: execute ? "execute" : "check",
-  tenantId, locationId, bridgeId, queue, bridgeQueues: bridge.queues,
+  tenantId, locationId, requestedBridgeId, scopeBridge, queue, bridgeQueues: bridge.queues,
   printer: { name, role, printerClass: "thermal", paperWidth: paper.paperWidth },
   documents,
 };
@@ -81,6 +87,10 @@ if (!execute) {
 }
 
 if (oldPrinter) await retirePrinter(tenantId, actor, oldPrinter.id, VIA);
+const scoped = scopeBridge ? await scopeBridgeToLocation(tenantId, actor, requestedBridgeId, locationId, VIA) : null;
+const bridgeId = scoped?.bridgeId ?? requestedBridgeId;
+// The printer's own bridge record must serve the queue too.
+if (bridgeId !== requestedBridgeId) await verifyBridgeQueue(tenantId, bridgeId, queue);
 
 const [existing] = await db.select().from(printPrintersTable).where(and(
   eq(printPrintersTable.tenantId, tenantId),
@@ -109,6 +119,7 @@ for (const documentType of PRINT_DOCUMENT_TYPES) {
 const old = oldPrinter ? await tenantPrinter(oldPrinter.id) : null;
 console.log(JSON.stringify({
   ...summary,
+  bridge: { id: bridgeId, ...(scoped ?? {}) },
   retired: old ? { id: old.id, isActive: old.isActive, queue: old.bridgePrinterName } : null,
   printer: { id: printer.id, reused: Boolean(existing), name: printer.name, role: printer.role, printerClass: printer.printerClass, paperWidth: printer.paperWidth, locationId: printer.locationId, routingScope: printer.routingScope, bridgeProfileId: printer.bridgeProfileId, queue: printer.bridgePrinterName, isActive: printer.isActive },
   routes,

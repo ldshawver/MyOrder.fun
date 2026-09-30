@@ -4,7 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const rows = vi.hoisted(() => ({ users: [] as Array<Record<string, unknown>>, bridges: [] as Array<Record<string, unknown>>, printers: [] as Array<Record<string, unknown>>, audits: [] as Array<Record<string, unknown>> }));
+const rows = vi.hoisted(() => ({ users: [] as Array<Record<string, unknown>>, bridges: [] as Array<Record<string, unknown>>, printers: [] as Array<Record<string, unknown>>, audits: [] as Array<Record<string, unknown>>, locations: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@workspace/db", () => {
   const select = vi.fn(() => ({
@@ -12,26 +12,38 @@ vi.mock("@workspace/db", () => {
       where: (predicates: Array<{ column: string; value: unknown }> | { column: string; value: unknown }) => ({
         limit: async () => {
           const list = Array.isArray(predicates) ? predicates : [predicates];
-          const source = table.name === "users" ? rows.users : table.name === "printers" ? rows.printers : rows.bridges;
+          const source = ({ users: rows.users, printers: rows.printers, locations: rows.locations, bridges: rows.bridges } as Record<string, Array<Record<string, unknown>>>)[table.name]!;
           return source.filter((row) => list.every(({ column, value }) => row[column] === value));
         },
       }),
     }),
   }));
   const matches = (row: Record<string, unknown>, predicates: Array<{ column: string; value: unknown }>) => predicates.every(({ column, value }) => row[column] === value);
-  const update = vi.fn(() => ({
+  const tableRows = (table: { name: string }) => (table.name === "printers" ? rows.printers : rows.bridges);
+  const update = vi.fn((table: { name: string }) => ({
     set: (values: Record<string, unknown>) => ({
-      where: (predicates: Array<{ column: string; value: unknown }>) => ({
-        returning: async () => rows.printers.filter((row) => matches(row, predicates)).map((row) => Object.assign(row, values)),
-      }),
+      where: (predicates: Array<{ column: string; value: unknown }>) => {
+        const changed = tableRows(table).filter((row) => matches(row, predicates)).map((row) => Object.assign(row, values));
+        return Object.assign(Promise.resolve(changed), { returning: async () => changed });
+      },
     }),
   }));
-  const insert = vi.fn(() => ({ values: async (values: Record<string, unknown>) => { rows.audits.push(values); } }));
+  const insert = vi.fn((table: { name: string }) => ({
+    values: (values: Record<string, unknown>) => {
+      if (table.name === "audits") { rows.audits.push(values); return Promise.resolve([]); }
+      const row = { id: 100 + rows.bridges.length, ...values };
+      rows.bridges.push(row);
+      return { returning: async () => [row] };
+    },
+  }));
   return {
     db: { select, update, insert },
     usersTable: { name: "users", id: "id" },
-    printBridgeProfilesTable: { name: "bridges", id: "id", tenantId: "tenantId", isActive: "isActive" },
-    printPrintersTable: { name: "printers", id: "id", tenantId: "tenantId" }, printRoutesTable: {}, inventoryLocationsTable: {}, auditLogsTable: {},
+    printBridgeProfilesTable: { name: "bridges", id: "id", tenantId: "tenantId", isActive: "isActive", locationId: "locationId", bridgeUrl: "bridgeUrl" },
+    printPrintersTable: { name: "printers", id: "id", tenantId: "tenantId", bridgeProfileId: "bridgeProfileId", isActive: "isActive" },
+    printRoutesTable: {},
+    inventoryLocationsTable: { name: "locations", id: "id", tenantId: "tenantId", isActive: "isActive" },
+    auditLogsTable: { name: "audits" },
   };
 });
 vi.mock("drizzle-orm", () => ({
@@ -42,7 +54,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../printRouter", () => ({ resolveBridgeApiKey: (key: string | null) => key || "central" }));
 vi.mock("../print/printRouting", () => ({ validatePrinterForDocument: vi.fn() }));
 
-import { loadPrintAdminActor, printerPaper, retirePrinter, verifyBridgeQueue, PrintAdminError } from "../print/printerAdmin";
+import { loadPrintAdminActor, printerPaper, retirePrinter, scopeBridgeToLocation, verifyBridgeQueue, PrintAdminError } from "../print/printerAdmin";
 
 describe("printer admin operator path", () => {
   beforeEach(() => {
@@ -52,10 +64,32 @@ describe("printer admin operator path", () => {
       { id: 3, role: "staff", tenantId: 1, isActive: true, email: "s@example.test" },
       { id: 4, role: "admin", tenantId: 1, isActive: false, email: "x@example.test" },
     ];
-    rows.bridges = [{ id: 2, tenantId: 1, isActive: true, bridgeUrl: "http://box-2.test:3100", apiKey: "pi-key-0123456789abcdef0123456789abcdef" }];
+    rows.bridges = [{ id: 2, tenantId: 1, isActive: true, locationId: null, routingScope: "general", name: "Raspberry Pi - Box 2", bridgeType: "generic", priority: 10, supportedRoles: "both", notes: null, networkSubnetHint: null, bridgeUrl: "http://box-2.test:3100", apiKey: "pi-key-0123456789abcdef0123456789abcdef" }];
+    rows.locations = [{ id: 4, tenantId: 1, isActive: true, name: "CSR Sales Box 2" }];
     rows.printers = [{ id: 3, tenantId: 1, isActive: false, bridgeProfileId: 2, bridgePrinterName: "Beeprt_USB" }];
     rows.audits = [];
     vi.restoreAllMocks();
+  });
+
+  it("re-registers a general bridge at a location without exposing its key, and retires the general record", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const actor = { id: 1, email: "g@example.test", role: "global_admin" };
+    rows.printers.push({ id: 5, tenantId: 1, bridgeProfileId: 2, isActive: true });
+    await expect(scopeBridgeToLocation(1, actor, 2, 4)).rejects.toThrow(/still has active printer 5/);
+    rows.printers.pop();
+
+    const result = await scopeBridgeToLocation(1, actor, 2, 4, "test");
+    expect(result).toMatchObject({ reused: false, retiredBridgeId: 2, keyFingerprint: expect.stringMatching(/^[0-9a-f]{8}$/) });
+    const created = rows.bridges.find((row) => row.id === result.bridgeId)!;
+    expect(created).toMatchObject({ tenantId: 1, locationId: 4, routingScope: "location", bridgeUrl: "http://box-2.test:3100", apiKey: "pi-key-0123456789abcdef0123456789abcdef", isActive: true });
+    expect(rows.bridges[0]).toMatchObject({ id: 2, isActive: false, name: "Raspberry Pi - Box 2 (retired general)" });
+    expect(rows.audits.map((entry) => entry.action)).toEqual(["PRINT_BRIDGE_CREATED", "PRINT_BRIDGE_RETIRED"]);
+    expect(JSON.stringify(rows.audits)).not.toContain("pi-key-");
+
+    await expect(scopeBridgeToLocation(1, actor, 2, 4)).resolves.toMatchObject({ bridgeId: result.bridgeId, reused: true });
+    expect(rows.bridges.filter((row) => row.locationId === 4)).toHaveLength(1);
+    await expect(scopeBridgeToLocation(1, actor, 2, 9)).rejects.toThrow(/location not found/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("retires an old record: inactive, queue renamed as metadata, audited, idempotent, no bridge contact", async () => {

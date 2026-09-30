@@ -243,3 +243,60 @@ export async function retirePrinter(tenantId: number, actor: PrintAdminActor, pr
   });
   return row!;
 }
+
+/**
+ * A location printer must hang off a bridge registered at that location, and a
+ * bridge's scope is fixed at registration. This re-registers a general bridge
+ * (same host and key) at one location and retires the general record. The key
+ * is copied inside the database and only its fingerprint is audited. Refused
+ * while the general bridge still has active printers.
+ */
+export async function scopeBridgeToLocation(tenantId: number, actor: PrintAdminActor, bridgeId: number, locationId: number, via?: string): Promise<{ bridgeId: number; reused: boolean; retiredBridgeId: number | null; keyFingerprint: string | null }> {
+  const [source] = await db.select().from(printBridgeProfilesTable)
+    .where(and(eq(printBridgeProfilesTable.tenantId, tenantId), eq(printBridgeProfilesTable.id, bridgeId))).limit(1);
+  if (!source) throw new PrintAdminError("Bridge profile not found in this tenant", 404);
+  if (source.isActive && source.locationId === locationId) return { bridgeId: source.id, reused: true, retiredBridgeId: null, keyFingerprint: null };
+  if (!(await activeTenantLocation(tenantId, locationId))) throw new PrintAdminError("Active location not found in this tenant");
+
+  const [existing] = await db.select().from(printBridgeProfilesTable).where(and(
+    eq(printBridgeProfilesTable.tenantId, tenantId),
+    eq(printBridgeProfilesTable.locationId, locationId),
+    eq(printBridgeProfilesTable.bridgeUrl, source.bridgeUrl),
+    eq(printBridgeProfilesTable.isActive, true),
+  )).limit(1);
+  if (existing) return { bridgeId: existing.id, reused: true, retiredBridgeId: null, keyFingerprint: null };
+  if (source.locationId !== null) throw new PrintAdminError("Only a general bridge can be re-registered at a location");
+  const [activePrinter] = await db.select({ id: printPrintersTable.id }).from(printPrintersTable).where(and(
+    eq(printPrintersTable.tenantId, tenantId),
+    eq(printPrintersTable.bridgeProfileId, source.id),
+    eq(printPrintersTable.isActive, true),
+  )).limit(1);
+  if (activePrinter) throw new PrintAdminError(`Bridge ${source.id} still has active printer ${activePrinter.id}`);
+
+  const { bridgeKeyFingerprint } = await import("./bridgeKey");
+  const keyFingerprint = source.apiKey ? bridgeKeyFingerprint(source.apiKey) : null;
+  const [created] = await db.insert(printBridgeProfilesTable).values({
+    tenantId,
+    locationId,
+    routingScope: "location",
+    name: source.name,
+    bridgeType: source.bridgeType,
+    bridgeUrl: source.bridgeUrl,
+    apiKey: source.apiKey,
+    isActive: true,
+    priority: source.priority,
+    networkSubnetHint: source.networkSubnetHint,
+    supportedRoles: source.supportedRoles,
+    notes: source.notes,
+  }).returning();
+  await audit(tenantId, actor, "PRINT_BRIDGE_CREATED", "print_bridge", String(created!.id), {
+    locationId, routingScope: "location", bridgeType: created!.bridgeType, replacesBridgeId: source.id, keyFingerprint,
+    ...(via ? { via } : {}),
+  });
+  await db.update(printBridgeProfilesTable).set({ isActive: false, name: `${source.name} (retired general)`.slice(0, 200) })
+    .where(and(eq(printBridgeProfilesTable.tenantId, tenantId), eq(printBridgeProfilesTable.id, source.id)));
+  await audit(tenantId, actor, "PRINT_BRIDGE_RETIRED", "print_bridge", String(source.id), {
+    replacedByBridgeId: created!.id, locationId, ...(via ? { via } : {}),
+  });
+  return { bridgeId: created!.id, reused: false, retiredBridgeId: source.id, keyFingerprint };
+}
