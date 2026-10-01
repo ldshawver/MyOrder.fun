@@ -295,6 +295,13 @@
       "when": 1790200000002,
       "tag": "0066_refund_state_constraint_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1790600000007,
+      "tag": "0072_order_created_notifications",
+      "breakpoints": true
     }
   ]
 }

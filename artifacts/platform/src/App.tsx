@@ -44,6 +44,7 @@ import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
+import OrderNotifications from "@/pages/admin/order-notifications";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
 import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
 import AdminReceipts from "@/pages/admin/receipts";
@@ -563,6 +564,7 @@ function AuthenticatedApp() {
               <Route path="/admin/mfa" component={MfaSetup} />
               <Route path="/admin/import" component={AdminImport} />
               <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
+              <Route path="/admin/order-notifications">{() => protect(<OrderNotifications />)}</Route>
               <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
               <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />

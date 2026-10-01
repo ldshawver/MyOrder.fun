@@ -42,6 +42,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, w
 import { requirePermission } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
+import { enqueueOrderCreated } from "../lib/orderNotifications";
 import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
@@ -1203,6 +1204,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           ipAddress: req.ip,
         });
       }
+
+      // The event and channel jobs commit with the order. Provider work is
+      // performed only by the independent worker after this transaction.
+      await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
 
       return createdOrder;
     });
