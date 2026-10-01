@@ -185,6 +185,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
+            { href: "/admin/order-notifications", label: "New Order Alerts", icon: Settings, roles: ["global_admin", "admin"] },
           ],
         },
         {
