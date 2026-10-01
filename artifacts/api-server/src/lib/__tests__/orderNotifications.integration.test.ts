@@ -131,7 +131,32 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
     const smsProviders: NotificationProviders = { light: vi.fn(async () => {}), sms: uncertain };
     for (let i = 0; i < 3; i++) await processOneNotificationJob(pool, smsProviders, tenantA);
     expect(uncertain).toHaveBeenCalledTimes(1);
-    expect((await pool.query<{ state: string }>("SELECT state FROM order_notification_jobs WHERE tenant_id=$1 AND order_id=$2 AND notification_type='staff_sms'", [tenantA, order.id])).rows[0]!.state).toBe("uncertain");
+    const smsJob = (await pool.query<{ state: string; masked_destination: string }>(
+      "SELECT state,masked_destination FROM order_notification_jobs WHERE tenant_id=$1 AND order_id=$2 AND notification_type='staff_sms'", [tenantA, order.id])).rows[0]!;
+    expect(smsJob.state).toBe("uncertain");
+    expect(smsJob.masked_destination).toBe("***-***-2222");
+    expect(JSON.stringify(smsJob)).not.toContain(phones.admin);
+  });
+
+  it("keeps a committed order and durable deadline when Tuya ON fails, then retries independently", async () => {
+    await pool.query("DELETE FROM order_notification_jobs WHERE tenant_id=$1", [tenantA]);
+    await pool.query("DELETE FROM order_notification_events WHERE tenant_id=$1", [tenantA]);
+    await pool.query("UPDATE order_light_alerts SET is_on=false,off_at=NULL,on_result='off' WHERE tenant_id=$1", [tenantA]);
+    await pool.query("UPDATE order_notification_settings SET sms_enabled=false,light_enabled=true WHERE tenant_id=$1", [tenantA]);
+    const order = await createOrder();
+    await db.transaction(async tx => enqueueOrderCreated(tx, tenantA, order.id, order.created_at));
+    let attempts = 0;
+    const providers: NotificationProviders = { light: vi.fn(async on => {
+      if (on && ++attempts === 1) throw new NotificationFailure("transient");
+    }), sms: vi.fn(async () => "SM_TEST") };
+    await processOneNotificationJob(pool, providers, tenantA);
+    expect((await pool.query("SELECT id FROM orders WHERE id=$1", [order.id])).rows).toHaveLength(1);
+    expect((await pool.query<{ state: string }>("SELECT state FROM order_notification_jobs WHERE order_id=$1 AND notification_type='tuya_on'", [order.id])).rows[0]!.state).toBe("queued");
+    expect((await pool.query<{ off_at: Date }>("SELECT off_at FROM order_light_alerts WHERE tenant_id=$1", [tenantA])).rows[0]!.off_at).toBeInstanceOf(Date);
+    await pool.query("UPDATE order_notification_jobs SET next_attempt_at=now()-interval '1 second' WHERE order_id=$1 AND notification_type='tuya_on'", [order.id]);
+    for (let i = 0; i < 2; i++) await processOneNotificationJob(pool, providers, tenantA);
+    expect((await pool.query<{ state: string }>("SELECT state FROM order_notification_jobs WHERE order_id=$1 AND notification_type='tuya_on'", [order.id])).rows[0]!.state).toBe("succeeded");
+    expect(attempts).toBe(2);
   });
 
   it("serializes simultaneous orders and keeps the latest durable OFF deadline", async () => {
