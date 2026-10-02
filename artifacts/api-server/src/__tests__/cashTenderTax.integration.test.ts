@@ -1,5 +1,6 @@
 /** Runs only against an explicitly named disposable, migrated PostgreSQL clone. */
 import type { Server } from "node:http";
+import { createHmac } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import supertest from "supertest";
 import { and, eq, sql } from "drizzle-orm";
@@ -7,6 +8,8 @@ import { and, eq, sql } from "drizzle-orm";
 const people = vi.hoisted(() => ({
   customer: { clerkId: "tax_e2e_customer", email: "customer@tax-e2e.test", role: "user" },
   csr: { clerkId: "tax_e2e_csr", email: "csr@tax-e2e.test", role: "csr" },
+  admin: { clerkId: "tax_e2e_admin", email: "admin@tax-e2e.test", role: "admin" },
+  otherAdmin: { clerkId: "tax_e2e_other_admin", email: "other-admin@tax-e2e.test", role: "admin" },
 }));
 vi.mock("@clerk/express", () => ({
   clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -25,8 +28,12 @@ vi.mock("@clerk/express", () => ({
 }));
 
 import app from "../app";
-import { adminSettingsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, ordersTable, paymentAttemptsTable, pool, taxConfigurationsTable, tenantsTable, usersTable } from "@workspace/db";
+import { adminSettingsTable, auditLogsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentWebhookEventsTable, pool, taxConfigurationsTable, tenantSettingsTable, tenantsTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, uberDirectSettingsTable, usersTable } from "@workspace/db";
 import { PaymentService } from "../payments/service";
+import { PayPalProvider } from "../payments/paypal";
+import { encrypt } from "../lib/crypto";
+import { normalizeUberAddress } from "../lib/uberDirect";
+import { dispatchPendingUberDelivery, reconcileUberDelivery } from "../lib/uberFulfillment";
 import { adjustCustomerCredit } from "../payments/customerCredit";
 
 const integrationDescribe = process.env.RUN_TENDER_TAX_INTEGRATION === "1" ? describe : describe.skip;
@@ -37,6 +44,8 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
   let tenantId: number;
   let customerId: number;
   let csrId: number;
+  let otherTenantId: number;
+  let uberOrderId: number;
   const as = (who: keyof typeof people) => ({
     post: (path: string) => request.post(path).set("x-tax-e2e-user", who),
   });
@@ -49,9 +58,13 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const [tenant] = await db.insert(tenantsTable).values({ name: "Tax E2E Tenant", slug: "tax-e2e-tenant", status: "active" }).returning();
     tenantId = tenant.id;
     await db.insert(adminSettingsTable).values({ tenantId: tenant.id, enabledProcessors: ["cash", "paypal"], orderRoutingRule: "round_robin", customerDisclaimerVersion: 1, customerDisclaimerText: "All sales are final. Confirm before checkout." });
+    const [otherTenant] = await db.insert(tenantsTable).values({ name: "Other Tax E2E Tenant", slug: "other-tax-e2e-tenant", status: "active" }).returning();
+    otherTenantId = otherTenant.id;
     const [customer, csr] = await db.insert(usersTable).values([
       { clerkId: people.customer.clerkId, email: people.customer.email, normalizedEmail: people.customer.email, firstName: "Pat", lastName: "E2E", role: "user", tenantId: tenant.id, status: "approved", identityStatus: "verified", provisioningStatus: "active" },
       { clerkId: people.csr.clerkId, email: people.csr.email, normalizedEmail: people.csr.email, firstName: "Casey", lastName: "E2E", role: "csr", tenantId: tenant.id, status: "approved", identityStatus: "verified", provisioningStatus: "active" },
+      { clerkId: people.admin.clerkId, email: people.admin.email, normalizedEmail: people.admin.email, firstName: "Ada", lastName: "E2E", role: "admin", tenantId: tenant.id, status: "approved", identityStatus: "verified", provisioningStatus: "active" },
+      { clerkId: people.otherAdmin.clerkId, email: people.otherAdmin.email, normalizedEmail: people.otherAdmin.email, firstName: "Sam", lastName: "E2E", role: "admin", tenantId: otherTenant.id, status: "approved", identityStatus: "verified", provisioningStatus: "active" },
     ]).returning();
     customerId = customer.id;
     csrId = csr.id;
@@ -72,6 +85,198 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     await pool.end();
   });
 
+  it("provisions missing WooCommerce settings and isolates synthetic credentials across tenants", async () => {
+    const key = "ck_synthetic_woo_complete_key_sentinel";
+    const secret = "cs_synthetic_woo_secret_sentinel";
+    await db.delete(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId));
+    const missingRow = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId));
+    expect(missingRow).toHaveLength(0);
+    const provisioned = await request.get("/api/admin/settings/woocommerce").set("x-tax-e2e-user", "otherAdmin");
+    expect(provisioned.status, provisioned.text).toBe(200);
+    expect(JSON.stringify(provisioned.body)).not.toContain(secret);
+    expect(await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId))).toHaveLength(1);
+    const saved = await request.put("/api/admin/settings/woocommerce").set("x-tax-e2e-user", "otherAdmin")
+      .send({ wcStoreUrl: "https://shop.example", wcConsumerKey: key, wcConsumerSecret: secret, enabled: true });
+    expect(saved.status, saved.text).toBe(200);
+    expect(JSON.stringify(saved.body)).not.toContain(key);
+    expect(JSON.stringify(saved.body)).not.toContain(secret);
+    const [stored] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId));
+    expect(stored.wcConsumerKey).toMatch(/^enc:v1:/);
+    expect(stored.wcConsumerSecret).toMatch(/^enc:v1:/);
+    const crossQuery = await request.put(`/api/admin/settings/woocommerce?tenantId=${otherTenantId}`).set("x-tax-e2e-user", "admin").send({ wcConsumerSecret: "cs_wrong_tenant" });
+    expect(crossQuery.status).toBe(403);
+    const crossBody = await request.put("/api/admin/settings/woocommerce").set("x-tax-e2e-user", "admin").send({ tenantId: otherTenantId, wcConsumerSecret: "cs_wrong_tenant" });
+    expect(crossBody.status).toBe(403);
+    const unknown = await request.put("/api/admin/settings/woocommerce").set("x-tax-e2e-user", "otherAdmin").send({ wcConsumerSecret: "cs_wrong_tenant", extra: true });
+    expect(unknown.status).toBe(400);
+    const [unchanged] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId));
+    expect(unchanged.wcConsumerSecret).toBe(stored.wcConsumerSecret);
+    const removed = await request.put("/api/admin/settings/woocommerce").set("x-tax-e2e-user", "otherAdmin").send({ wcConsumerKey: "", wcConsumerSecret: "" });
+    expect(removed.status, removed.text).toBe(200);
+    const [cleared] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, otherTenantId));
+    expect(cleared.wcConsumerKey).toBeNull();
+    expect(cleared.wcConsumerSecret).toBeNull();
+    const audits = await db.select().from(auditLogsTable).where(eq(auditLogsTable.tenantId, otherTenantId));
+    expect(audits.filter(row => row.action === "settings.woocommerce.credentials_changed")).toHaveLength(2);
+    expect(JSON.stringify(audits)).not.toContain(key);
+    expect(JSON.stringify(audits)).not.toContain(secret);
+  }, 60_000);
+
+  it("hides Uber quote, delivery, and order identities from another tenant", async () => {
+    const quoteId = "test-tenant-a-quote";
+    const address = { street_address: ["500 Test Street"], city: "Testville", state: "CA", zip_code: "94105", country: "US" };
+    await db.insert(uberDeliveryQuotesTable).values({ id: quoteId, tenantId, customerId, providerQuoteId: "dqt_tenant_a", cartFingerprint: "test-fingerprint", pickupAddress: address, dropoffAddress: address, manifestItems: [{ name: "Test Item", quantity: 1 }], feeCents: 500, currency: "usd", expiresAt: new Date(Date.now() + 600_000) });
+    const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", tax: "0.00", total: "105.00", paymentStatus: "paid", deliveryMethod: "uber_direct", deliveryQuoteId: quoteId, shippingAddress: "500 Test Street, Testville, CA 94105" }).returning();
+    uberOrderId = order.id;
+    await db.insert(uberDeliveryFulfillmentsTable).values({ tenantId, orderId: order.id, quoteId, externalOrderReference: `myorder-${tenantId}-${order.id}`, requestState: "delivery_create_pending" });
+    const status = await request.get(`/api/orders/${order.id}/courier`).set("x-tax-e2e-user", "otherAdmin");
+    const orderRead = await request.get(`/api/orders/${order.id}`).set("x-tax-e2e-user", "otherAdmin");
+    const cancel = await request.post(`/api/orders/${order.id}/courier/cancel`).set("x-tax-e2e-user", "otherAdmin").send({});
+    const reconcile = await request.post(`/api/admin/orders/${order.id}/courier/reconcile`).set("x-tax-e2e-user", "otherAdmin").send({});
+    expect([status.status, orderRead.status, cancel.status, reconcile.status]).toEqual([404, 404, 404, 404]);
+    const ownerStatus = await request.get(`/api/orders/${order.id}/courier`).set("x-tax-e2e-user", "customer");
+    expect(ownerStatus.status).toBe(200);
+    expect(JSON.stringify(ownerStatus.body)).not.toContain("dqt_tenant_a");
+    expect(JSON.stringify(ownerStatus.body)).not.toContain(quoteId);
+    const forged = await request.post(`/api/orders/${order.id}/courier/cancel`).set("x-tax-e2e-user", "customer").send({ providerDeliveryId: "del_tenant_b" });
+    expect(forged.status).toBe(400);
+    const [unchanged] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, order.id));
+    expect(unchanged.requestState).toBe("delivery_create_pending");
+  }, 60_000);
+
+  it("authenticates Uber raw-body webhooks, rejects forgery and replay, and advances only forward", async () => {
+    const signingKey = "synthetic-uber-webhook-key";
+    await db.insert(uberDirectSettingsTable).values({ tenantId, enabled: true, environment: "sandbox", webhookSigningKeyCiphertext: encrypt(signingKey) });
+    const externalId = `myorder-${tenantId}-${uberOrderId}`;
+    const sendEvent = async (eventId: string, status: string, key = signingKey) => {
+      const raw = Buffer.from(JSON.stringify({ id: eventId, event_type: "event.delivery_status", status, data: { id: "del_synthetic_tenant_a", external_id: externalId, status } }));
+      const signature = createHmac("sha256", key).update(raw).digest("hex");
+      return request.post("/api/webhooks/uber-direct").set("Content-Type", "application/json").set("x-uber-signature", signature).send(raw.toString("utf8"));
+    };
+    const forged = await sendEvent("evt-uber-forged", "delivered", "wrong-tenant-key");
+    expect(forged.status, forged.text).toBe(401);
+    const pending = await sendEvent("evt-uber-pending", "pending");
+    expect(pending.status, pending.text).toBe(200);
+    const pickup = await sendEvent("evt-uber-pickup", "pickup");
+    expect(pickup.status, pickup.text).toBe(200);
+    const stale = await sendEvent("evt-uber-stale", "pending");
+    expect(stale.status).toBe(200);
+    const replay = await sendEvent("evt-uber-pickup", "pickup");
+    expect(replay.body.replayed).toBe(true);
+    const [beforeDelivery] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
+    expect(beforeDelivery.providerStatus).toBe("pickup");
+    const delivered = await sendEvent("evt-uber-delivered", "delivered");
+    expect(delivered.status).toBe(200);
+    const [afterDelivery] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
+    expect(afterDelivery).toMatchObject({ providerDeliveryId: "del_synthetic_tenant_a", providerStatus: "delivered", requestState: "delivered" });
+    const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, uberOrderId));
+    expect(order.paymentStatus).toBe("paid");
+  }, 60_000);
+
+  it("quotes, accepts, pays, and dispatches Uber exactly once with a server-owned fee", async () => {
+    const [storefront] = await db.insert(inventoryLocationsTable).values({ tenantId, type: "storefront", name: "Synthetic Storefront", displayOrder: 3 }).returning();
+    await db.insert(tenantSettingsTable).values({ tenantId, publicBusinessName: "Synthetic Shop", supportPhone: "+15555550111", businessAddressJson: { line1: "500 Test Street", city: "Testville", region: "CA", postalCode: "94105", country: "US" } }).onConflictDoUpdate({ target: tenantSettingsTable.tenantId, set: { publicBusinessName: "Synthetic Shop", supportPhone: "+15555550111", businessAddressJson: { line1: "500 Test Street", city: "Testville", region: "CA", postalCode: "94105", country: "US" } } });
+    await db.update(usersTable).set({ contactPhone: "+15555550222" }).where(eq(usersTable.id, customerId));
+    await db.update(uberDirectSettingsTable).set({ enabled: true, environment: "sandbox", customerId: "synthetic-uber-customer", clientId: "synthetic-uber-client", clientSecretCiphertext: encrypt("synthetic-uber-client-secret"), pickupLocationId: storefront.id, dispatchEnabled: true }).where(eq(uberDirectSettingsTable.tenantId, tenantId));
+    const providerCalls: Array<{ url: string; body: string }> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = String(init?.body ?? "");
+      providerCalls.push({ url, body });
+      if (url.includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-uber-access-token", expires_in: 3600 }), { status: 200 });
+      if (url.endsWith("/delivery_quotes")) return new Response(JSON.stringify({ id: `dqt_synthetic_${providerCalls.length}`, fee: 500, currency_type: "usd", expires: new Date(Date.now() + 600_000).toISOString() }), { status: 200 });
+      if (url.endsWith("/cancel")) return new Response(JSON.stringify({ id: "del_synthetic_dispatched", status: "canceled" }), { status: 200 });
+      if (url.endsWith("/deliveries")) return new Response(JSON.stringify({ id: "del_synthetic_dispatched", status: "pending" }), { status: 200 });
+      throw new Error("Unexpected provider URL");
+    });
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(converted.status, converted.text).toBe(200);
+      const address = "500 Test Street, Testville, CA 94105";
+      const quote = await as("customer").post("/api/orders/delivery-quote").send({ items, dropoffAddress: address, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation });
+      expect(quote.status, quote.text).toBe(200);
+      expect(quote.body.feeCents).toBe(500);
+      const [storedQuote] = await db.select().from(uberDeliveryQuotesTable).where(eq(uberDeliveryQuotesTable.id, quote.body.quoteId));
+      expect(storedQuote).toBeDefined();
+      expect(storedQuote.dropoffAddress).toEqual(normalizeUberAddress(address));
+      expect(storedQuote.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1, fee: 0.01 } });
+      expect(created.status, created.text).toBe(201);
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 105 });
+      const orderId = Number(created.body.id);
+      const beforePaid = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
+      expect(beforePaid).toHaveLength(1);
+      expect(beforePaid[0].requestState).toBe("payment_pending");
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
+      const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
+      expect(closed.status, closed.text).toBe(200);
+      expect(closed.body).toMatchObject({ tax: 0, total: 105, status: "confirmed", fulfillmentStatus: "submitted" });
+      const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
+      expect(replay.status, replay.text).toBe(200);
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
+      const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
+      expect(fulfillment).toMatchObject({ providerDeliveryId: "del_synthetic_dispatched", requestState: "delivery_created" });
+      expect(JSON.parse(providerCalls.find(call => call.url.endsWith("/deliveries"))!.body)).toMatchObject({ quote_id: expect.stringMatching(/^dqt_synthetic_/), external_id: `myorder-${tenantId}-${orderId}` });
+      const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
+      expect(sales.rows).toHaveLength(1);
+      const duplicateCheckout = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1 } });
+      expect(duplicateCheckout.status).toBeGreaterThanOrEqual(400);
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
+      const staleQuote = await as("customer").post("/api/orders/delivery-quote").send({ items, dropoffAddress: address, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation });
+      expect(staleQuote.status, staleQuote.text).toBe(200);
+      await db.update(uberDeliveryQuotesTable).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(uberDeliveryQuotesTable.id, staleQuote.body.quoteId));
+      const expired = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: staleQuote.body.quoteId, feeCents: 1 } });
+      expect(expired.status).toBe(422);
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
+      const cancel = await as("customer").post(`/api/orders/${orderId}/courier/cancel`).send({});
+      expect(cancel.status, cancel.text).toBe(202);
+      expect(cancel.body).toMatchObject({ state: "canceled", paymentResolutionRequired: true });
+      const cancelReplay = await as("customer").post(`/api/orders/${orderId}/courier/cancel`).send({});
+      expect(cancelReplay.status).toBe(202);
+      expect(providerCalls.filter(call => call.url.endsWith("/cancel"))).toHaveLength(1);
+      const [afterCancel] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(afterCancel).toMatchObject({ paymentStatus: "paid", fulfillmentStatus: "reconciliation_required" });
+    } finally { fetchSpy.mockRestore(); }
+  }, 60_000);
+
+  it("reconciles ambiguous Uber creation without a second dispatch and flags an expired paid quote", async () => {
+    const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
+    const insertPaid = async (localQuoteId: string, providerQuoteId: string, expiresAt: Date) => {
+      await db.insert(uberDeliveryQuotesTable).values({ id: localQuoteId, tenantId, customerId, providerQuoteId, cartFingerprint: "synthetic-recovery", pickupAddress: address, dropoffAddress: address, manifestItems: [{ name: "Test Item", quantity: 1 }], feeCents: 500, currency: "USD", expiresAt });
+      const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", tax: "0.00", total: "105.00", paymentStatus: "paid", deliveryMethod: "uber_direct", deliveryQuoteId: localQuoteId, fulfillmentStatus: "submitted" }).returning();
+      await db.insert(uberDeliveryFulfillmentsTable).values({ tenantId, orderId: order.id, quoteId: localQuoteId, externalOrderReference: `myorder-${tenantId}-${order.id}`, requestState: "delivery_create_pending" });
+      return order.id;
+    };
+    const ambiguousOrderId = await insertPaid("test-ambiguous-quote", "dqt_ambiguous", new Date(Date.now() + 600_000));
+    const expiredOrderId = await insertPaid("test-expired-paid-quote", "dqt_expired", new Date(Date.now() - 1000));
+    let createCalls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-recovery-token", expires_in: 3600 }), { status: 200 });
+      if (url.includes("/deliveries?")) return new Response(JSON.stringify({ data: [{ id: "del_recovered", external_id: `myorder-${tenantId}-${ambiguousOrderId}`, quote_id: "dqt_ambiguous", status: "pending" }], next_href: null }), { status: 200 });
+      if (url.endsWith("/deliveries") && init?.method === "POST") { createCalls += 1; throw new Error("synthetic timeout after send"); }
+      throw new Error("Unexpected provider URL");
+    });
+    try {
+      await dispatchPendingUberDelivery(tenantId, ambiguousOrderId);
+      const [unresolved] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, ambiguousOrderId));
+      expect(unresolved).toMatchObject({ requestState: "reconciliation_required", providerDeliveryId: null });
+      expect(await reconcileUberDelivery(tenantId, ambiguousOrderId)).toBe("delivery_created");
+      await dispatchPendingUberDelivery(tenantId, ambiguousOrderId);
+      expect(createCalls).toBe(1);
+      const [recovered] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, ambiguousOrderId));
+      expect(recovered).toMatchObject({ providerDeliveryId: "del_recovered", requestState: "delivery_created" });
+      await dispatchPendingUberDelivery(tenantId, expiredOrderId);
+      expect(createCalls).toBe(1);
+      const [expired] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, expiredOrderId));
+      const [paid] = await db.select().from(ordersTable).where(eq(ordersTable.id, expiredOrderId));
+      expect(expired.requestState).toBe("requote_required");
+      expect(paid).toMatchObject({ paymentStatus: "paid", fulfillmentStatus: "reconciliation_required" });
+    } finally { fetchSpy.mockRestore(); }
+  }, 60_000);
+
   it("settles a taxable $100 Cash order for exactly $100 once", async () => {
     const items = [{ catalogItemId, quantity: 1 }];
     const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
@@ -85,14 +290,22 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const orderId = Number(created.body.id);
     const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
     expect(order).toMatchObject({ subtotal: "100.00", tax: "0.00", total: "100.00", remainingTenderAmount: "100.00" });
+    const initialSnapshot = await db.execute(sql`SELECT tax_collected, tender, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+    expect(initialSnapshot.rows).toHaveLength(1);
+    expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "0.00", tender: "cash" });
     const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "100.00", idempotencyKey: `tax-e2e-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({ subtotal: 100, tax: 0, total: 100 });
     const ledger = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.orderId, orderId), eq(cashLedgerEntriesTable.tenantId, order.tenantId)));
     expect(ledger).toHaveLength(1);
     expect(ledger[0].amount).toBe("100.00");
     const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "100.00", idempotencyKey: `tax-e2e-${orderId}` });
     expect(replay.status, replay.text).toBe(200);
     expect(await db.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.orderId, orderId))).toHaveLength(1);
+    const finalSnapshot = await db.execute(sql`SELECT tax_collected, tender, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+    expect(finalSnapshot.rows).toEqual(initialSnapshot.rows);
+    const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
+    expect(sales.rows).toHaveLength(1);
   }, 60_000);
 
   it("pays a taxable $100 cart entirely with Customer Credit and adds no tax", async () => {
@@ -126,5 +339,76 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       expect(replay.replayed).toBe(true);
     }
     expect(provider.createOrder).toHaveBeenCalledTimes(2);
+  }, 60_000);
+
+  it("captures PayPal once, rejects cross-tenant and stale finalization, and deduplicates verified webhooks", async () => {
+    const provider = {
+      createOrder: vi.fn(async ({ amount }: { amount: { value: string; currency: string } }) => ({ id: "TEST-PAYPAL-DB-CAPTURE", amount, approvalUrl: "https://example.test/approval" })),
+      captureOrder: vi.fn(async () => ({ captureId: "TEST-PAYPAL-DB-CAPTURE-ID", orderId: "TEST-PAYPAL-DB-CAPTURE", status: "COMPLETED", amount: { value: "108.75", currency: "USD" }, fundingSource: "paypal" })),
+      verifyWebhook: vi.fn(async () => true),
+      getCapture: vi.fn(async () => ({ captureId: "TEST-PAYPAL-DB-CAPTURE-ID", orderId: "TEST-PAYPAL-DB-CAPTURE", status: "COMPLETED", amount: { value: "108.75", currency: "USD" } })),
+    };
+    const service = new PaymentService({ enabled: true, environment: "sandbox" } as never, provider as never);
+    const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", grossSubtotal: "100.00", taxableSubtotal: "100.00", tax: "0.00", total: "100.00", remainingTenderAmount: "100.00", selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3, pendingTender: true }, checkoutConversionSnapshot: { pricingSnapshot: { subtotal: 100, tax: 0, total: 100 } }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date() }).returning();
+    const created = await service.create({ tenantId, customerId, orderId: order.id, idempotencyKey: `capture-${order.id}` });
+    const finalize = vi.fn(async () => undefined);
+    await expect(service.capture({ tenantId: tenantId + 1, customerId, orderId: order.id, attemptId: created.attemptId!, idempotencyKey: "wrong-tenant", finalize })).rejects.toMatchObject({ statusCode: 404 });
+    const first = await service.capture({ tenantId, customerId, orderId: order.id, attemptId: created.attemptId!, idempotencyKey: `capture-${order.id}`, finalize });
+    expect(first).toMatchObject({ status: "captured", replayed: false });
+    const replay = await service.capture({ tenantId, customerId, orderId: order.id, attemptId: created.attemptId!, idempotencyKey: `capture-${order.id}`, finalize });
+    expect(replay).toMatchObject({ status: "captured", replayed: true });
+    expect(provider.captureOrder).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, created.attemptId!))).toHaveLength(1);
+    const [paid] = await db.select().from(ordersTable).where(eq(ordersTable.id, order.id));
+    expect(paid).toMatchObject({ paymentStatus: "paid", tax: "8.75", total: "108.75" });
+    await expect(service.create({ tenantId, customerId, orderId: order.id, idempotencyKey: "stale-create" })).rejects.toMatchObject({ code: "ORDER_ALREADY_PAID" });
+    const event = { id: `TEST-PAYPAL-WEBHOOK-${order.id}`, event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "TEST-PAYPAL-DB-CAPTURE-ID" } };
+    const headers = { transmissionId: "test", transmissionTime: new Date().toISOString(), certificateUrl: "https://example.test/cert", authAlgorithm: "SHA256withRSA", transmissionSignature: "test" };
+    provider.verifyWebhook.mockResolvedValueOnce(false);
+    await expect(service.verifyAndRecordWebhook(headers, event)).rejects.toMatchObject({ code: "INVALID_WEBHOOK_SIGNATURE" });
+    expect(await db.select().from(paymentWebhookEventsTable).where(eq(paymentWebhookEventsTable.providerEventId, event.id))).toHaveLength(0);
+    expect(await service.verifyAndRecordWebhook(headers, event)).toMatchObject({ replayed: false });
+    expect(await service.verifyAndRecordWebhook(headers, event)).toMatchObject({ replayed: true });
+    expect(await db.select().from(paymentWebhookEventsTable).where(eq(paymentWebhookEventsTable.providerEventId, event.id))).toHaveLength(1);
+    expect((await db.select().from(ordersTable).where(eq(ordersTable.id, order.id)))[0].paymentStatus).toBe("paid");
+  }, 60_000);
+
+  it("settles an HTTP PayPal checkout against its immutable tax snapshot and decrements inventory once", async () => {
+    const prior = Object.fromEntries(["PAYMENT_MODE", "PAYPAL_ENVIRONMENT", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID"].map(key => [key, process.env[key]]));
+    Object.assign(process.env, { PAYMENT_MODE: "sandbox", PAYPAL_ENVIRONMENT: "sandbox", PAYPAL_CLIENT_ID: "synthetic-client-id", PAYPAL_CLIENT_SECRET: "synthetic-client-secret", PAYPAL_WEBHOOK_ID: "synthetic-webhook-id" });
+    const createSpy = vi.spyOn(PayPalProvider.prototype, "createOrder").mockImplementation(async ({ amount }) => ({ id: "TEST-HTTP-PAYPAL-ORDER", status: "CREATED", amount, approvalUrl: "https://example.test/approve" }));
+    const captureSpy = vi.spyOn(PayPalProvider.prototype, "captureOrder").mockImplementation(async () => ({ orderId: "TEST-HTTP-PAYPAL-ORDER", captureId: "TEST-HTTP-PAYPAL-CAPTURE", status: "COMPLETED", amount: { value: "108.75", currency: "USD" }, fundingSource: "paypal" }));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "paypal" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(converted.status, converted.text).toBe(200);
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75 });
+      const orderId = Number(created.body.id);
+      const initialSnapshot = await db.execute(sql`SELECT tax_collected, tender FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+      expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "8.75", tender: "paypal" });
+      const payment = await as("customer").post(`/api/payments/paypal/orders/${orderId}`).set("Idempotency-Key", `http-paypal-${orderId}`).send({});
+      expect(payment.status, payment.text).toBe(201);
+      const replayCreate = await as("customer").post(`/api/payments/paypal/orders/${orderId}`).set("Idempotency-Key", `http-paypal-${orderId}`).send({});
+      expect(replayCreate.status, replayCreate.text).toBe(200);
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      const captured = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `http-capture-${orderId}`).send({ attemptId: payment.body.attemptId });
+      expect(captured.status, captured.text).toBe(200);
+      const replayCapture = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `http-capture-${orderId}`).send({ attemptId: payment.body.attemptId });
+      expect(replayCapture.status, replayCapture.text).toBe(200);
+      expect(captureSpy).toHaveBeenCalledTimes(1);
+      const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
+      expect(sales.rows).toHaveLength(1);
+      const finalSnapshot = await db.execute(sql`SELECT tax_collected, tender FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+      expect(finalSnapshot.rows).toEqual(initialSnapshot.rows);
+      const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(order).toMatchObject({ paymentStatus: "paid", tax: "8.75", total: "108.75" });
+    } finally {
+      createSpy.mockRestore(); captureSpy.mockRestore();
+      for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    }
   }, 60_000);
 });

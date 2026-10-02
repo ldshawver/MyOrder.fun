@@ -48,8 +48,6 @@ export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, o
 }
 
 export async function deductPaidOrderInventory(order: typeof ordersTable.$inferSelect, auditContext?: { actorId: number; actorEmail: string | null | undefined; actorRole: string; ipAddress?: string }, executor?: PaymentTransaction): Promise<void> {
-  const method = String(order.selectedPaymentMethod ?? order.paymentMethod ?? "").toLowerCase();
-  if (method === "cash") return;
   if (!executor) await ensureInventoryReservationsTable();
   const auditEntries: Array<{ productId: number; locationUsed: string | null; locationId: number; quantity: number; remainingStock: number; orderType: InventoryOrderType }> = [];
   const deduct = async (tx: PaymentTransaction) => {

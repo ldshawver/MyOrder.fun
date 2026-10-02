@@ -286,7 +286,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         logger.warn(
           {
             userId: user.id,
-            email: user.email,
             dbRoleRaw: user.role,
             dbRoleNormalized: dbRole,
             clerkRoleRaw: meta.role,
@@ -307,7 +306,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
         logger.info(
           {
             userId: user.id,
-            email: user.email,
             updates,
             finalRole: reconciled?.role ?? user.role,
             finalStatus: reconciled?.status ?? user.status,
@@ -323,7 +321,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       logger.info(
         {
           userId: user.id,
-          email: user.email,
           dbRoleRaw: user.role,
           dbRoleNormalized: normalizeRole(user.role),
           status: user.status,

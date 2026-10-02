@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import { fetchWooSafely } from "../../lib/wooSafeHttp";
 
 process.env.SETTINGS_ENC_KEY = "0".repeat(64);
 
@@ -89,7 +90,8 @@ vi.mock("@workspace/db", () => {
     }),
   }));
 
-  const db = { execute: vi.fn(() => Promise.resolve()), select, insert, update };
+  const db = { execute: vi.fn(() => Promise.resolve()), select, insert, update, transaction: vi.fn() };
+  db.transaction.mockImplementation((callback: (tx: typeof db) => Promise<unknown>) => callback(db));
   return { db, adminSettingsTable, tenantsTable, catalogItemsTable };
 });
 
@@ -102,6 +104,11 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock("../../lib/wooSafeHttp", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../lib/wooSafeHttp")>()),
+  fetchWooSafely: vi.fn(),
 }));
 
 // Bypass auth/role middleware
@@ -207,7 +214,7 @@ describe("woocommerce settings save/load/sync", () => {
       .put("/api/admin/settings/woocommerce")
       .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_x", wcConsumerSecret: "cs_x" });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchSpy = vi.mocked(fetchWooSafely).mockResolvedValue(
       new Response(JSON.stringify({ environment: { version: "8.5.0" } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -218,10 +225,7 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.wcVersion).toBe("8.5.0");
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "https://shop.test/wp-json/wc/v3/system_status",
-      expect.objectContaining({ headers: expect.objectContaining({ Authorization: expect.stringMatching(/^Basic /) }) }),
-    );
+    expect(fetchSpy).toHaveBeenCalledWith("https://shop.test", "/wp-json/wc/v3/system_status", "ck_x", "cs_x");
   });
 
   it("test-connection failure path (mocked fetch returns 401)", async () => {
@@ -230,7 +234,7 @@ describe("woocommerce settings save/load/sync", () => {
       .put("/api/admin/settings/woocommerce")
       .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_bad", wcConsumerSecret: "cs_bad" });
 
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.mocked(fetchWooSafely).mockResolvedValue(
       new Response("Unauthorized", { status: 401 }),
     );
 

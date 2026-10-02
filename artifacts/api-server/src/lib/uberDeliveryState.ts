@@ -1,5 +1,5 @@
 const progress = ["pending", "pickup", "pickup_complete", "dropoff", "delivered"] as const;
-const failure = new Set(["canceled", "cancelled", "returned"]);
+const failure = new Set(["canceled", "cancelled", "returned", "failed"]);
 
 /** Uber events can be duplicated or arrive out of order. Never regress a delivery. */
 export function nextUberDeliveryStatus(current: string | null, incoming: string): string | null {

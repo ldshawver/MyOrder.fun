@@ -70,7 +70,7 @@ import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
-import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
+import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -425,6 +425,13 @@ function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[]
 function checkoutFingerprint(lines: NormalizedCartLine[]): string {
   const value = [...lines].map(line => ({ id: line.catalog_item_id, quantity: line.quantity, price: line.unit_price })).sort((a, b) => a.id - b.id);
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function sameUberAddress(left: UberAddress, right: UberAddress): boolean {
+  return left.street_address.length === right.street_address.length &&
+    left.street_address.every((part, index) => part === right.street_address[index]) &&
+    left.city === right.city && left.state === right.state &&
+    left.zip_code === right.zip_code && left.country === right.country;
 }
 
 function normalizeCheckoutTip(raw: unknown): number {
@@ -901,7 +908,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
     return;
   }
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const paypalTaxSettings = processor === "paypal" ? await getCheckoutTaxSettings(houseTenantId) : null;
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: paypalTaxSettings?.taxRate ?? trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const subtotal = financial.taxableSubtotal + financial.nonTaxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
@@ -936,7 +944,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
     const normalizedAddress = normalizeUberAddress(body.data.shippingAddress);
-    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || JSON.stringify(quote.dropoffAddress) !== JSON.stringify(normalizedAddress)) {
+    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)) {
       res.status(422).json({ error: "Your Uber delivery quote is missing, expired, or no longer matches this checkout. Please calculate delivery again." });
       return;
     }
@@ -1085,7 +1093,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         customerCreditApplied: "0.00",
         remainingTenderAmount: String(finalTotal.toFixed(2)),
-        financialFinalizedAt: processor === "paypal" ? null : now,
+        financialFinalizedAt: now,
         shippingAddress: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : (body.data.shippingAddress ?? null),
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
@@ -1113,15 +1121,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         checkoutConversionExpiresAt: conversionExpiresAt,
-        taxSnapshot: { ...taxSnapshot, locationId: targetLocationId, pendingTender: processor === "paypal" },
+        taxSnapshot: { ...taxSnapshot, locationId: targetLocationId, pendingTender: false },
         cashDiscountSnapshot,
       }).returning();
 
       await tx.insert(orderTaxSnapshotsTable).values({
-        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: trustedTotals.taxJurisdiction,
-        locationId: targetLocationId, taxConfigurationId: trustedTotals.taxConfigurationId,
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
+        locationId: targetLocationId, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
-        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        taxRate: String(paypalTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
         taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
         snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
@@ -1780,8 +1788,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     const [updated] = await tx.update(ordersTable).set({
       paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
       amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
-      paymentToken: null, status: "completed", fulfillmentStatus: "completed",
-      completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
+      paymentToken: null,
+      status: order.deliveryMethod === "uber_direct" ? "confirmed" : "completed",
+      fulfillmentStatus: order.deliveryMethod === "uber_direct" ? "submitted" : "completed",
+      completedAt: order.deliveryMethod === "uber_direct" ? null : now,
+      completedByUserId: order.deliveryMethod === "uber_direct" ? null : actor.id,
+      routingStatus: "closed",
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
     if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
     // Consume the reservation only after the authoritative cash payment has
@@ -2047,6 +2059,30 @@ router.get("/orders/:id/courier", async (req, res): Promise<void> => {
     .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
     .limit(1);
   res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null });
+});
+
+router.post("/orders/:id/courier/cancel", async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid cancellation request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod })
+    .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || order.deliveryMethod !== "uber_direct" || (normalizeRole(req.dbUser!.role) === "user" && order.customerId !== req.dbUser!.id)) { res.status(404).json({ error: "Not found" }); return; }
+  try {
+    const state = await requestUberCancellation(tenantId, orderId);
+    res.status(state === "not_cancellable" || state === "conflict" ? 409 : 202).json({ orderId, state, paymentResolutionRequired: state === "canceled" || state === "cancel_reconciliation_required" });
+  } catch { res.status(503).json({ error: "Courier cancellation requires reconciliation" }); }
+});
+
+router.post("/admin/orders/:id/courier/reconcile", requireRole("admin", "global_admin", "supervisor"), async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid reconciliation request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ id: ordersTable.id, deliveryMethod: ordersTable.deliveryMethod }).from(ordersTable)
+    .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || order.deliveryMethod !== "uber_direct") { res.status(404).json({ error: "Not found" }); return; }
+  try { res.json({ orderId, state: await reconcileUberDelivery(tenantId, orderId) }); }
+  catch { res.status(503).json({ error: "Provider reconciliation is unavailable" }); }
 });
 
 // GET /api/orders/:id

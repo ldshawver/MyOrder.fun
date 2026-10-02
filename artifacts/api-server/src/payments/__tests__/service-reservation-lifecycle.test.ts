@@ -4,6 +4,7 @@ import { PayPalProviderError } from "../paypal";
 const state = vi.hoisted(() => ({
   attempts: [] as Array<Record<string, unknown>>,
   captures: [] as Array<Record<string, unknown>>,
+  snapshots: [] as Array<Record<string, unknown>>,
   reserved: vi.fn(),
   released: vi.fn(),
 }));
@@ -25,6 +26,7 @@ vi.mock("@workspace/db", () => {
   const paymentAttemptsTable = { table: "attempts", id: col("id"), tenantId: col("tenantId"), orderId: col("orderId"), idempotencyKey: col("idempotencyKey"), state: col("state") };
   const paymentCapturesTable = { table: "captures", id: col("id"), paymentAttemptId: col("paymentAttemptId") };
   const other = { id: col("id"), tenantId: col("tenantId"), orderId: col("orderId") };
+  const orderTaxSnapshotsTable = { ...other, table: "taxSnapshots" };
   const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
   function matches(row: Record<string, unknown>, condition: unknown): boolean {
     const c = condition as { kind?: string; field?: string; value?: unknown; values?: unknown[]; conditions?: unknown[] };
@@ -36,11 +38,11 @@ vi.mock("@workspace/db", () => {
   const tx = {
     execute: vi.fn(async () => []),
     select: vi.fn(() => ({ from: (table: { table: string }) => ({ where: (condition: unknown) => {
-      const limit = async () => (table.table === "orders" ? [order] : table.table === "captures" ? state.captures : state.attempts).filter(row => matches(row, condition)).slice(0, 1);
+      const limit = async () => (table.table === "orders" ? [order] : table.table === "captures" ? state.captures : table.table === "taxSnapshots" ? state.snapshots : state.attempts).filter(row => matches(row, condition)).slice(0, 1);
       return { limit, orderBy: () => ({ limit }) };
     } }) })),
     insert: vi.fn((table: { table?: string }) => ({ values: (values: Record<string, unknown>) => {
-      const target = table.table === "captures" ? state.captures : state.attempts;
+      const target = table.table === "captures" ? state.captures : table.table === "taxSnapshots" ? state.snapshots : state.attempts;
       const inserted = { id: target.length + 1, ...values };
       return {
         returning: async () => { target.push(inserted); return [inserted]; },
@@ -60,7 +62,7 @@ vi.mock("@workspace/db", () => {
   return { db: { transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
     const before = state.attempts.map(attempt => ({ ...attempt }));
     try { return await work(tx); } catch (error) { state.attempts = before; throw error; }
-  } }, ordersTable, paymentAttemptsTable, orderTaxSnapshotsTable: other, paymentCapturesTable,
+  } }, ordersTable, paymentAttemptsTable, orderTaxSnapshotsTable, paymentCapturesTable,
     paymentRefundsTable: other, paymentWebhookEventsTable: other };
 });
 
@@ -68,7 +70,7 @@ const { PaymentService } = await import("../service");
 const input = { tenantId: 2, customerId: 9, orderId: 4, idempotencyKey: "first" };
 const config = { enabled: true, environment: "sandbox" } as never;
 
-beforeEach(() => { state.attempts = []; state.captures = []; state.reserved.mockReset(); state.released.mockReset(); });
+beforeEach(() => { state.attempts = []; state.captures = []; state.snapshots = []; state.reserved.mockReset(); state.released.mockReset(); });
 
 describe("payment attempt and inventory lifecycle", () => {
   it("commits an unknown provider outcome and keeps inventory held", async () => {

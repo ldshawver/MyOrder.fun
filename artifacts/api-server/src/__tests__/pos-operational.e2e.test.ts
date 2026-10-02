@@ -63,6 +63,10 @@ import {
   ordersTable,
   pool,
   printSettingsTable,
+  printBridgeProfilesTable,
+  printPrintersTable,
+  printRoutesTable,
+  tenantPrintControlsTable,
   tenantsTable,
   usersTable,
 } from "@workspace/db";
@@ -93,12 +97,31 @@ operationalDescribe("POS opening-manager operational flow", () => {
       orderRoutingRule: "round_robin",
       customerDisclaimerText: "All sales are final. Confirm this operational E2E order before checkout.",
       customerDisclaimerVersion: 1,
+      enabledProcessors: ["cash"],
       wcEnabled: false,
     });
     await db.insert(printSettingsTable).values({
       autoPrintOrders: true,
       autoPrintReceipts: false,
       autoPrintLabels: false,
+    });
+    await db.insert(tenantPrintControlsTable).values({
+      tenantId: tenant.id,
+      autoPrintOrders: true,
+      autoPrintReceipts: true,
+      autoPrintLabels: false,
+      version: 1,
+    });
+    const [printBridge] = await db.insert(printBridgeProfilesTable).values({
+      tenantId: tenant.id, name: "POS E2E offline bridge", bridgeUrl: "http://127.0.0.1:1", isActive: true,
+    }).returning();
+    const [receiptPrinter] = await db.insert(printPrintersTable).values({
+      tenantId: tenant.id, name: "POS E2E receipt printer", role: "customer_receipt",
+      bridgeProfileId: printBridge.id, bridgeUrl: "http://127.0.0.1:1", isActive: true,
+    }).returning();
+    await db.insert(printRoutesTable).values({
+      tenantId: tenant.id, jobType: "ORDER_RECEIPT", bridgeProfileId: printBridge.id,
+      printerId: receiptPrinter.id, isActive: true,
     });
 
     await db.insert(usersTable).values([
@@ -396,15 +419,6 @@ operationalDescribe("POS opening-manager operational flow", () => {
     `);
     expect(preSettlementSale.rows).toHaveLength(0);
 
-    const customerReceipt = await db.execute(sql`
-      SELECT rendered_text
-      FROM print_jobs
-      WHERE order_id = ${orderId} AND job_output = 'customer_receipt' AND rendered_text IS NOT NULL
-      ORDER BY id DESC
-      LIMIT 1
-    `);
-    expect(customerReceipt.rows[0]?.rendered_text).toContain("Merchant E2E Item");
-
     const queue = await as("csr").get("/api/shift-queue/orders");
     expect(queue.status, queue.text).toBe(200);
     expect(queue.body.orders).toEqual(expect.arrayContaining([
@@ -424,14 +438,14 @@ operationalDescribe("POS opening-manager operational flow", () => {
     // is missing its shift link. The browser never selects a ledger context.
     await db.update(ordersTable).set({ assignedShiftId: null }).where(sql`${ordersTable.id} = ${orderId}`);
     const [checkedOutBox] = await db.select().from(csrBoxesTable).where(sql`${csrBoxesTable.slug} = 'sales-box-1' AND ${csrBoxesTable.tenantId} = ${tenantId}`).limit(1);
-    await db.update(csrBoxesTable).set({ isActive: false }).where(sql`${csrBoxesTable.id} = ${checkedOutBox.id}`);
+    await db.update(csrBoxesTable).set({ isActive: false }).where(sql`${csrBoxesTable.slug} = ${checkedOutBox.slug} AND ${csrBoxesTable.tenantId} = ${tenantId}`);
     const failedCloseout = await as("csr").post(`/api/orders/${orderId}/closeout`).send({
       paymentMethod: "cash", amountTendered: "25.00", idempotencyKey: `inactive-box-${orderId}`,
     });
     expect(failedCloseout.status, failedCloseout.text).toBe(409);
     expect(await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${orderId}`)).toHaveLength(0);
     expect((await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${orderId}`).limit(1))[0].paymentStatus).toBe("unpaid");
-    await db.update(csrBoxesTable).set({ isActive: true }).where(sql`${csrBoxesTable.id} = ${checkedOutBox.id}`);
+    await db.update(csrBoxesTable).set({ isActive: true }).where(sql`${csrBoxesTable.slug} = ${checkedOutBox.slug} AND ${csrBoxesTable.tenantId} = ${tenantId}`);
 
     const closeout = await as("csr").post(`/api/orders/${orderId}/closeout`).send({
       paymentMethod: "cash",
@@ -440,6 +454,14 @@ operationalDescribe("POS opening-manager operational flow", () => {
     });
     expect(closeout.status, closeout.text).toBe(200);
     expect(closeout.body.paymentStatus).toBe("paid");
+    const customerReceipt = await db.execute(sql`
+      SELECT rendered_text
+      FROM print_jobs
+      WHERE order_id = ${orderId} AND job_output = 'customer_receipt' AND rendered_text IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+    expect(customerReceipt.rows[0]?.rendered_text).toContain("Merchant E2E Item");
     const settledSales = await db.execute(sql`
       SELECT id, idempotency_key FROM inventory_movements
       WHERE order_id = ${orderId} AND movement_type = 'sale'
@@ -463,11 +485,11 @@ operationalDescribe("POS opening-manager operational flow", () => {
       }));
     const shiftClose = await as("csr").post("/api/shifts/clock-out").send({
       endingInventory,
-      cashBankEnd: 121.60,
+      cashBankEnd: 120.00,
     });
     expect(shiftClose.status, shiftClose.text).toBe(200);
     expect(shiftClose.body.shift.status).toBe("supervisor_pending");
-    expect(shiftClose.body.summary).toMatchObject({ orderCount: 1, cashSales: 21.6 });
+    expect(shiftClose.body.summary).toMatchObject({ orderCount: 1, cashSales: 20 });
     expect(shiftClose.body.summary.inventorySummary[0]).toMatchObject({ quantityStart: 10, quantitySold: 1, quantityEndActual: 9 });
     const [closedOrderRow] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${orderId}`).limit(1);
     const [returnedBoxOrder] = await db.insert(ordersTable).values({
@@ -480,16 +502,16 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const shiftReceipt = await db.execute(sql`
       SELECT rendered_text
       FROM print_jobs
-      WHERE job_output = 'shift_end_receipt' AND rendered_text IS NOT NULL
+      WHERE job_output = 'shift_clock_out' AND rendered_text IS NOT NULL
       ORDER BY id DESC
       LIMIT 1
     `);
-    expect(shiftReceipt.rows[0]?.rendered_text).toContain("SHIFT END");
+    expect(shiftReceipt.rows[0]?.rendered_text).toContain("CLOCK OUT");
 
     const finalized = await as("admin").post(`/api/shifts/${shiftId}/supervisor-checkout`).send({ tipPercent: 15 });
     expect(finalized.status, finalized.text).toBe(200);
     expect(finalized.body.shift.status).toBe("finalized");
-    expect(finalized.body.checkout).toMatchObject({ eligibleSalesBase: 21.6, tipPercent: 15 });
+    expect(finalized.body.checkout).toMatchObject({ eligibleSalesBase: 20, tipPercent: 15 });
 
     const persisted = await db.execute(sql`
       SELECT o.status, o.payment_status, s.status AS shift_status,
@@ -505,7 +527,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       status: "completed",
       payment_status: "paid",
       shift_status: "finalized",
-      quantity_on_hand: "9.000",
+      quantity_on_hand: "9.000000",
       cash_ledger_entries: 1,
     });
     const [shiftLedger] = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${orderId}`);
@@ -532,7 +554,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const eligible = await as("supervisor").get("/api/orders/active-csrs");
     expect(eligible.status, eligible.text).toBe(200);
     expect(eligible.body.csrs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ userId: admin.id, shiftId: adminShift.id, label: expect.stringContaining("CSR Sales Box 1") }),
+      expect.objectContaining({ userId: admin.id, shiftId: adminShift.id, label: expect.stringContaining(box.label) }),
       expect.objectContaining({ userId: csr2.id, shiftId: csr2Shift.id }),
     ]));
 

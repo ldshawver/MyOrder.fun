@@ -1,11 +1,11 @@
 import { Router, type IRouter } from "express";
 import { and, eq } from "drizzle-orm";
-import { db, uberDeliveryFulfillmentsTable, uberDeliveryWebhookEventsTable } from "@workspace/db";
+import { db, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryWebhookEventsTable } from "@workspace/db";
 import { verifyUberWebhookSignatureForTenant } from "../lib/uberDirectConfig";
 import { nextUberDeliveryStatus } from "../lib/uberDeliveryState";
 
 const router: IRouter = Router();
-const terminal = new Set(["delivered", "canceled", "returned"]);
+const terminal = new Set(["delivered", "canceled", "returned", "failed"]);
 
 function stringAt(value: unknown, max = 160): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
@@ -25,8 +25,8 @@ router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
   const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : {};
   const eventId = stringAt(event.event_id ?? event.id, 200);
   const eventType = stringAt(event.event_type, 120);
-  const externalReference = stringAt(meta.external_order_id ?? meta.order_id, 160);
-  const providerDeliveryId = stringAt(meta.delivery_id ?? data.delivery_id ?? event.delivery_id, 160);
+  const externalReference = stringAt(data.external_id ?? meta.external_order_id ?? meta.order_id, 160);
+  const providerDeliveryId = stringAt(data.id ?? meta.delivery_id ?? data.delivery_id ?? event.delivery_id, 160);
   const providerStatus = stringAt(data.status ?? event.status, 80)?.toLowerCase() ?? null;
   if (!eventId || !eventType || !providerDeliveryId || eventType !== "event.delivery_status") { res.status(400).json({ error: "Invalid webhook event" }); return; }
   const [fulfillment] = externalReference?.startsWith("myorder-")
@@ -60,6 +60,9 @@ router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
         requestState: terminal.has(nextStatus) ? nextStatus : "delivery_created",
         updatedAt: new Date(),
       }).where(and(eq(uberDeliveryFulfillmentsTable.id, current.id), eq(uberDeliveryFulfillmentsTable.tenantId, current.tenantId)));
+      if (nextStatus && ["canceled", "returned", "failed"].includes(nextStatus)) await tx.update(ordersTable)
+        .set({ fulfillmentStatus: "reconciliation_required", updatedAt: new Date() })
+        .where(and(eq(ordersTable.id, current.orderId), eq(ordersTable.tenantId, current.tenantId)));
     }
     return false;
   });

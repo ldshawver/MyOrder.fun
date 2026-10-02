@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
+import { describe, expect, it, vi } from "vitest";
+import { cancelUberDelivery, createUberDelivery, getUberDelivery, listUberDeliveries, UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
 
 describe("Uber Direct security boundaries", () => {
   it("normalizes a complete plain-text delivery address into provider fields", () => {
@@ -30,5 +30,29 @@ describe("Uber Direct security boundaries", () => {
     const tenantOneSignature = createHmac("sha256", "tenant-one-key").update(raw).digest("hex");
     expect(verifyUberWebhookSignatureForSecret(raw, tenantOneSignature, "tenant-one-key")).toBe(true);
     expect(verifyUberWebhookSignatureForSecret(raw, tenantOneSignature, "tenant-two-key")).toBe(false);
+  });
+
+  it("uses the Direct external_id contract and supports bounded lookup and cancellation", async () => {
+    const config = { tenantId: 917, environment: "sandbox" as const, customerId: "synthetic-customer", clientId: "synthetic-uber-client-917", clientSecret: "synthetic-uber-secret" };
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      if (String(input).includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-token", expires_in: 3600 }), { status: 200 });
+      if (String(input).includes("/cancel")) return new Response(JSON.stringify({ id: "del_synthetic", status: "canceled" }), { status: 200 });
+      if (init?.method === "POST") return new Response(JSON.stringify({ id: "del_synthetic", status: "pending" }), { status: 200 });
+      if (String(input).includes("?limit=")) return new Response(JSON.stringify({ data: [{ id: "del_synthetic", external_id: "myorder-917-42", quote_id: "dqt_synthetic", status: "pending" }], next_href: null, total_count: -1 }), { status: 200 });
+      return new Response(JSON.stringify({ id: "del_synthetic", external_id: "myorder-917-42", status: "pending" }), { status: 200 });
+    });
+    try {
+      const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
+      await createUberDelivery({ quoteId: "dqt_synthetic", externalOrderReference: "myorder-917-42", pickupAddress: address, pickupName: "Test Shop", pickupPhoneNumber: "+15555550111", dropoffAddress: address, dropoffName: "Test Customer", dropoffPhoneNumber: "+15555550222", manifestItems: [{ name: "Test Item", quantity: 1 }] }, config);
+      const createCall = calls.find(call => call.init.method === "POST" && !call.url.includes("/cancel") && !call.url.includes("/oauth/"));
+      expect(JSON.parse(String(createCall?.init.body))).toMatchObject({ external_id: "myorder-917-42", quote_id: "dqt_synthetic" });
+      expect(JSON.parse(String(createCall?.init.body))).not.toHaveProperty("external_order_id");
+      expect((await listUberDeliveries(config)).deliveries).toHaveLength(1);
+      expect((await getUberDelivery("del_synthetic", config)).external_id).toBe("myorder-917-42");
+      expect((await cancelUberDelivery("del_synthetic", config)).status).toBe("canceled");
+      expect(fetchSpy).toHaveBeenCalledTimes(5);
+    } finally { fetchSpy.mockRestore(); }
   });
 });

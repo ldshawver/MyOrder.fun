@@ -73,6 +73,9 @@ export class PaymentService {
       const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, nonTaxableFundingCents: creditCents, taxRate: settings.taxRate });
       const totalCents = baseTotalCents + taxCents;
       const remainingCents = totalCents - creditCents;
+      if (order.financialFinalizedAt && (dollarsToCents(order.tax) !== taxCents || dollarsToCents(order.total) !== totalCents || dollarsToCents(order.remainingTenderAmount) !== remainingCents)) {
+        throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order financial snapshot requires reconciliation");
+      }
       const checkoutSnapshot = order.checkoutConversionSnapshot as Record<string, unknown> | null;
       const pricingSnapshot = checkoutSnapshot?.pricingSnapshot as Record<string, unknown> | undefined;
       const tipSnapshot = checkoutSnapshot?.tip as { amount?: unknown } | undefined;
@@ -87,8 +90,12 @@ export class PaymentService {
       await tx.update(ordersTable).set({ tax: centsToDollars(taxCents), total: centsToDollars(totalCents), remainingTenderAmount: centsToDollars(remainingCents), taxSnapshot, checkoutConversionSnapshot: finalCheckoutSnapshot, financialFinalizedAt: new Date() }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
       const grossSalesCents = dollarsToCents(order.grossSubtotal ?? order.subtotal);
       const snapshotValues = { jurisdiction: settings.taxJurisdiction, locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, taxConfigurationId: settings.taxConfigurationId, grossSales: centsToDollars(grossSalesCents), taxRate: String(settings.taxRate), taxableSubtotal: centsToDollars(taxableBaseCents), nonTaxableSubtotal: centsToDollars(Math.max(0, dollarsToCents(order.subtotal) - taxableBaseCents)), discountAmount: String(order.discountTotal ?? "0.00"), cashDiscountAmount: "0.00", taxCollected: centsToDollars(taxCents), taxCalculated: centsToDollars(taxCents), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", exemptionReason: null, snapshotJson: { customerTaxableTenderBaseCents: taxableBaseCents, customerTaxCollectedCents: taxCents, tenderAllocation, taxConfigurationId: settings.taxConfigurationId } };
-      const updatedSnapshots = await tx.update(orderTaxSnapshotsTable).set(snapshotValues).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).returning({ id: orderTaxSnapshotsTable.id });
-      if (updatedSnapshots.length === 0) await tx.insert(orderTaxSnapshotsTable).values({ tenantId: input.tenantId, orderId: order.id, ...snapshotValues });
+      const [existingSnapshot] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
+      if (existingSnapshot) {
+        if (dollarsToCents(existingSnapshot.taxCollected) !== taxCents || dollarsToCents(existingSnapshot.grossSales) !== grossSalesCents || !["paypal", "paypal_card"].includes((existingSnapshot.tender ?? "").replace("customer_credit+", ""))) {
+          throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order tax snapshot requires reconciliation");
+        }
+      } else await tx.insert(orderTaxSnapshotsTable).values({ tenantId: input.tenantId, orderId: order.id, ...snapshotValues });
       const amount = centsToDollars(remainingCents);
       if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
@@ -142,7 +149,6 @@ export class PaymentService {
           const finalTender = creditCents > 0 ? `customer_credit+${tender}` : tender;
           await finalizeTx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: finalTender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId,
             taxSnapshot: { ...(order.taxSnapshot as Record<string, unknown> ?? {}), tender: finalTender } }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
-          await finalizeTx.update(orderTaxSnapshotsTable).set({ tender: finalTender }).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id)));
           await finalizeTx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
         });
         return { status: "captured", captureId: capture.captureId, replayed: false };

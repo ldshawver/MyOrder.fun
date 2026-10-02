@@ -136,27 +136,18 @@ function pickWooCategory(categories: Array<{ name?: string }> | undefined): stri
   return names.find((name) => LC_MAIN_CATEGORIES.includes(name)) || names[0] || "Uncategorized";
 }
 
-const WOO_REQUEST_TIMEOUT_MS = 10_000;
+import { fetchWooSafely } from "../lib/wooSafeHttp";
 const WOO_MAX_PAGES = 100;
 
 async function fetchWoo(storeUrl: string, path: string, consumerKey: string, consumerSecret: string): Promise<Response> {
-  const base = storeUrl.replace(/\/$/, "");
-  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), WOO_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${base}${path}`, {
-      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-      signal: controller.signal,
-    });
+    const response = await fetchWooSafely(storeUrl, path, consumerKey, consumerSecret);
     if (!response.ok) throw classifyWooStatus(response.status);
     return response;
   } catch (error) {
     if (error instanceof WooCommerceUpstreamError) throw error;
-    if (error instanceof Error && error.name === "AbortError") throw new WooCommerceUpstreamError("timeout");
+    if (error instanceof Error && /timed out/i.test(error.message)) throw new WooCommerceUpstreamError("timeout");
     throw new WooCommerceUpstreamError("unavailable");
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

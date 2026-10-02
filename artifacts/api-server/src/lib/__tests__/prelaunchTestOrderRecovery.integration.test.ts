@@ -78,6 +78,9 @@ suite("pre-launch test-order recovery integration", () => {
     await client.query(`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE tenant_id IN ($1,$2))`, [tenant, foreignTenant]);
     await client.query(`DELETE FROM orders WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
     await client.query(`DELETE FROM inventory_balances WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
+    await client.query(`DELETE FROM catalogue_options WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
+    await client.query(`DELETE FROM catalogue_products WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
+    await client.query(`DELETE FROM inventory_items WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
     await client.query(`DELETE FROM catalog_items WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
     await client.query(`DELETE FROM inventory_locations WHERE tenant_id IN ($1,$2)`, [tenant, foreignTenant]);
     await client.query(`DELETE FROM users WHERE clerk_id LIKE $1`, [`${runId}%`]);
@@ -91,9 +94,9 @@ suite("pre-launch test-order recovery integration", () => {
     await client.query(`INSERT INTO inventory_valuation_states (tenant_id,inventory_entity_type,catalog_item_id,cost_status,known_quantity,inventory_value) VALUES ($1,'catalog',$2,'unknown_baseline',0,NULL) ON CONFLICT (tenant_id,catalog_item_id) WHERE catalog_item_id IS NOT NULL DO UPDATE SET cost_status='unknown_baseline',known_quantity=0,inventory_value=NULL,average_unit_cost=NULL`, [tenant,item]);
     const result = await recovery(order.orderId, key("success"));
     expect(result.finalStatus).toBe("cancelled");
-    expect(result.restoredQuantity).toBe("2");
+    expect(result.restoredQuantity).toBe("2.000000");
     const state = await client.query(`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=$1 AND product_id=$2 AND location_id=$3`, [tenant,item,location]);
-    expect(state.rows[0].quantity_on_hand).toBe("2.000");
+    expect(state.rows[0].quantity_on_hand).toBe("2.000000");
     const movement = await client.query(`SELECT movement_type,unit_cost,extended_cost,source_type FROM inventory_movements WHERE order_id=$1`, [order.orderId]);
     expect(movement.rows).toHaveLength(1); expect(movement.rows[0]).toMatchObject({ movement_type: "correction", unit_cost: null, extended_cost: null, source_type: "prelaunch_test_order_void" });
     expect((await client.query(`SELECT count(*)::int AS count FROM audit_logs WHERE action='order.prelaunch_test_void' AND resource_id=$1`, [String(order.orderId)])).rows[0].count).toBe(1);

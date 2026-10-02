@@ -169,7 +169,6 @@ function logCsrShiftAuth(
       result,
       reason: reason ?? null,
       userId: user?.id ?? null,
-      email: user?.email ?? (sessionClaims.email as string | undefined) ?? null,
       dbRoleRaw: user?.role ?? null,
       dbRoleNormalized: user ? normalizeRole(user.role) : null,
       clerkRoleJwt: (publicMetadata.role as string | undefined) ?? null,
@@ -177,7 +176,6 @@ function logCsrShiftAuth(
       status: user?.status ?? null,
       isActive: user?.isActive ?? null,
       tenantId: user?.tenantId ?? null,
-      clerkUserId: auth?.userId ?? user?.clerkId ?? null,
     },
     `shift_auth:${gate}:${result}`,
   );

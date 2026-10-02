@@ -10,6 +10,7 @@ import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, Uber
 import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
 import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
+import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -292,11 +293,9 @@ async function getTenantScopedSettingsForActor(actor: { tenantId?: number | null
   await ensureAdminSettingsSchema();
   if (isGlobalAdmin({ role: actor.role ?? "user" })) return getOrCreateSettings(actor);
   if (actor.tenantId == null) return null;
+  if (createIfMissing) return getOrCreateSettings(actor);
   const [existing] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, actor.tenantId)).limit(1);
-  if (existing) return existing;
-  if (!createIfMissing) return null;
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId: actor.tenantId }).returning();
-  return created;
+  return existing ?? null;
 }
 
 async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, version: number) {
@@ -312,20 +311,18 @@ async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, 
 async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: string | null }) {
   await ensureAdminSettingsSchema();
   const tenantId = await resolveSettingsTenantId(actor);
-  const [existing] = await db
-    .select()
-    .from(adminSettingsTable)
-    .where(eq(adminSettingsTable.tenantId, tenantId))
-    .limit(1);
-  if (existing) return existing;
-  // The unique tenant index makes first-use provisioning safe under concurrent
-  // requests and covers tenants created before this lifecycle was introduced.
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId })
-    .onConflictDoNothing({ target: adminSettingsTable.tenantId }).returning();
-  if (created) return created;
-  const [concurrent] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
-  if (!concurrent) throw new Error("Tenant settings provisioning failed");
-  return concurrent;
+  // Some supported staging baselines recorded the historical unique-index
+  // migration without retaining that index. Serialize provisioning explicitly;
+  // an ON CONFLICT (tenant_id) clause fails on those baselines.
+  return db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(734201, ${tenantId})`);
+    const rows = await tx.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(2);
+    if (rows.length > 1) throw new Error("Duplicate tenant settings require reconciliation");
+    if (rows[0]) return rows[0];
+    const [created] = await tx.insert(adminSettingsTable).values({ tenantId }).returning();
+    if (!created) throw new Error("Tenant settings provisioning failed");
+    return created;
+  });
 }
 
 /**
@@ -670,8 +667,9 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAss
     const update: Record<string, unknown> = {};
     if (storeUrl !== undefined) {
       const trimmed = String(storeUrl).trim();
-      const url = new URL(trimmed);
-      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) { res.status(400).json({ error: "Store URL must be an HTTPS origin" }); return; }
+      let url: URL;
+      try { url = assertWooHttpsOrigin(trimmed); }
+      catch { res.status(400).json({ error: "Store URL must be a public HTTPS origin" }); return; }
       update["wcStoreUrl"] = url.origin;
     }
     if (consumerKey !== undefined) {
