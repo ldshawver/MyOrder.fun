@@ -318,8 +318,14 @@ async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: st
     .where(eq(adminSettingsTable.tenantId, tenantId))
     .limit(1);
   if (existing) return existing;
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
-  return created;
+  // The unique tenant index makes first-use provisioning safe under concurrent
+  // requests and covers tenants created before this lifecycle was introduced.
+  const [created] = await db.insert(adminSettingsTable).values({ tenantId })
+    .onConflictDoNothing({ target: adminSettingsTable.tenantId }).returning();
+  if (created) return created;
+  const [concurrent] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+  if (!concurrent) throw new Error("Tenant settings provisioning failed");
+  return concurrent;
 }
 
 /**
@@ -620,7 +626,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
  * Returns the WC config in masked form. Secrets are NEVER returned in plaintext —
  * only boolean flags indicating whether they have been saved.
  */
-router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
+router.get("/admin/settings/woocommerce", requireRole("admin"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -639,14 +645,22 @@ router.get("/admin/settings/woocommerce", requirePermission("settings.view"), re
  * Secrets are encrypted at rest using AES-256-GCM keyed off SETTINGS_ENC_KEY.
  * They are never echoed back to the client.
  */
-router.put("/admin/settings/woocommerce", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+const WooCredentialsBody = z.object({
+  wcStoreUrl: z.string().url().max(2048).optional(),
+  wc_store_url: z.string().url().max(2048).optional(),
+  wcConsumerKey: z.string().max(256).optional(),
+  wc_consumer_key: z.string().max(256).optional(),
+  wcConsumerSecret: z.string().max(256).optional(),
+  wc_consumer_secret: z.string().max(256).optional(),
+  enabled: z.boolean().optional(),
+  wcEnabled: z.boolean().optional(),
+}).strict();
+
+router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   try {
-    const body = (req.body ?? {}) as {
-      wcStoreUrl?: string; wc_store_url?: string;
-      wcConsumerKey?: string; wc_consumer_key?: string;
-      wcConsumerSecret?: string; wc_consumer_secret?: string;
-      enabled?: boolean; wcEnabled?: boolean;
-    };
+    const parsed = WooCredentialsBody.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid WooCommerce configuration" }); return; }
+    const body = parsed.data;
 
     const storeUrl = body.wcStoreUrl ?? body.wc_store_url;
     const consumerKey = body.wcConsumerKey ?? body.wc_consumer_key;
@@ -656,7 +670,9 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
     const update: Record<string, unknown> = {};
     if (storeUrl !== undefined) {
       const trimmed = String(storeUrl).trim();
-      update["wcStoreUrl"] = trimmed || "https://lucifercruz.com";
+      const url = new URL(trimmed);
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) { res.status(400).json({ error: "Store URL must be an HTTPS origin" }); return; }
+      update["wcStoreUrl"] = url.origin;
     }
     if (consumerKey !== undefined) {
       const trimmed = String(consumerKey).trim();
@@ -678,11 +694,13 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
     const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
     const [updated] = await db.update(adminSettingsTable)
       .set(update)
-      .where(eq(adminSettingsTable.id, existing.id))
+      .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, req.authorizedTenantId!)))
       .returning();
+    if (!updated) { res.status(409).json({ error: "WooCommerce configuration could not be saved" }); return; }
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.woocommerce.credentials_changed", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { keyAction: consumerKey === undefined ? "unchanged" : consumerKey.trim() ? existing.wcConsumerKey ? "replaced" : "created" : "removed", secretAction: consumerSecret === undefined ? "unchanged" : consumerSecret.trim() ? existing.wcConsumerSecret ? "replaced" : "created" : "removed" }, ipAddress: req.ip });
     res.json(mapSettings(updated));
-  } catch (err) {
-    res.status(500).json({ error: (err as Error)?.message ?? "Failed to save WooCommerce settings" });
+  } catch {
+    res.status(500).json({ error: "Failed to save WooCommerce configuration" });
   }
 });
 

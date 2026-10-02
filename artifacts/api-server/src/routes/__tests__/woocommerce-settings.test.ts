@@ -45,6 +45,10 @@ vi.mock("@workspace/db", () => {
 
   const insert = vi.fn(() => ({
     values: (vals: Record<string, unknown>) => ({
+      onConflictDoNothing: () => {
+        if (!state.row) state.row = { id: nextId++, tenantId: vals.tenantId, wcStoreUrl: "https://lucifercruz.com", wcConsumerKey: null, wcConsumerSecret: null, wcEnabled: true };
+        return { returning: () => Promise.resolve([state.row]) };
+      },
       returning: () => {
         state.row = {
           id: nextId++,
@@ -91,6 +95,7 @@ vi.mock("@workspace/db", () => {
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...values) => ({ values })),
   asc: vi.fn(() => ({})),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
@@ -109,6 +114,7 @@ vi.mock("../../lib/auth", () => ({
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
+  writeAuditLog: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({
@@ -177,6 +183,22 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.status).toBe(412);
     expect(typeof res.body.message).toBe("string");
+  });
+
+  it("rejects unknown configuration fields without persisting or echoing them", async () => {
+    const response = await supertest(makeApp()).put("/api/admin/settings/woocommerce")
+      .send({ wcConsumerKey: "ck_test", wcConsumerSecret: "cs_test", unexpected: 2 });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).not.toContain("cs_test");
+    expect(state.row).toBeNull();
+  });
+
+  it("rejects cross-tenant configuration selection before credential storage", async () => {
+    const response = await supertest(makeApp()).put("/api/admin/settings/woocommerce?tenantId=2")
+      .send({ wcConsumerKey: "ck_test", wcConsumerSecret: "cs_test" });
+    expect(response.status).toBe(403);
+    expect(state.row).toBeNull();
+    expect(JSON.stringify(response.body)).not.toContain("cs_test");
   });
 
   it("test-connection success path (mocked fetch)", async () => {

@@ -147,6 +147,10 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
         receipt_name: null,
         label_name: null,
       })),
+    computeBaseCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
+      const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
+      return { subtotal, taxableSubtotal: subtotal, nonTaxableSubtotal: 0, tax: 0, total: subtotal, taxRate: 0, taxMode: "added", taxJurisdiction: "PENDING_TENDER", taxConfigurationId: -1 };
+    },
     computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
       const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
@@ -421,6 +425,15 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("hides courier status from another customer and another tenant", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.orders.push({ id: 91, tenantId: 1, customerId: 99, deliveryMethod: "uber_direct" });
+    const app = buildApp();
+    expect((await supertest(app).get("/api/orders/91/courier")).status).toBe(404);
+    dbState.orders[0] = { id: 91, tenantId: 2, customerId: 5, deliveryMethod: "uber_direct" };
+    expect((await supertest(app).get("/api/orders/91/courier")).status).toBe(404);
+  });
+
   it("offers enabled Cash but marks PayPal unavailable when the provider is disabled", async () => {
     mockActor = dbState.users[0]!;
     const converted = await supertest(buildApp())

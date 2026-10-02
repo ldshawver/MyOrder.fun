@@ -12,6 +12,7 @@ vi.mock("../inventory", () => ({ ensurePaidOrderInventoryReserved: state.reserve
   PaymentInventoryError: class PaymentInventoryError extends Error {} }));
 vi.mock("../../lib/inventoryReservations", () => ({ releaseInventoryReservationsForOrder: state.released }));
 vi.mock("../customerCredit", () => ({ consumeCustomerCredit: vi.fn(), restoreCustomerCredit: vi.fn() }));
+vi.mock("../../lib/checkoutNormalizer", () => ({ getCheckoutTaxSettings: vi.fn(async () => ({ taxMode: "added", taxRate: 0, taxJurisdiction: "test", taxConfigurationId: 1 })) }));
 vi.mock("drizzle-orm", () => ({
   eq: (field: string, value: unknown) => ({ kind: "eq", field, value }),
   inArray: (field: string, values: unknown[]) => ({ kind: "in", field, values }),
@@ -24,7 +25,7 @@ vi.mock("@workspace/db", () => {
   const paymentAttemptsTable = { table: "attempts", id: col("id"), tenantId: col("tenantId"), orderId: col("orderId"), idempotencyKey: col("idempotencyKey"), state: col("state") };
   const paymentCapturesTable = { table: "captures", id: col("id"), paymentAttemptId: col("paymentAttemptId") };
   const other = { id: col("id"), tenantId: col("tenantId"), orderId: col("orderId") };
-  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: {}, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), remainingTenderAmount: "12.00", total: "12.00" };
+  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
   function matches(row: Record<string, unknown>, condition: unknown): boolean {
     const c = condition as { kind?: string; field?: string; value?: unknown; values?: unknown[]; conditions?: unknown[] };
     if (c.kind === "eq") return row[c.field!] === c.value;
@@ -46,8 +47,10 @@ vi.mock("@workspace/db", () => {
         onConflictDoNothing: async () => { target.push(inserted); return []; },
       };
     } })),
-    update: vi.fn(() => ({ set: (values: Record<string, unknown>) => ({ where: async (condition: unknown) => {
-      for (const attempt of state.attempts) if (matches(attempt, condition)) Object.assign(attempt, values);
+    update: vi.fn((table: { table?: string }) => ({ set: (values: Record<string, unknown>) => ({ where: (condition: unknown) => {
+      const target = table.table === "orders" ? [order] : table.table === "attempts" ? state.attempts : [];
+      for (const row of target) if (matches(row, condition)) Object.assign(row, values);
+      return { returning: async () => [] };
     } }) })),
     transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
       const before = state.attempts.map(attempt => ({ ...attempt }));

@@ -448,8 +448,8 @@ describe("admin/POS/security cleanup regressions", () => {
     const newOrder = platform("pages/new-order.tsx");
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
-    expect(orders).toContain('Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100');
-    expect(newOrder).toContain('$6 + 3% of sale total');
+    expect(orders).toContain('BigInt(dollarsToCents(subtotal)) * 3n');
+    expect(newOrder).toContain('$6 + 3% of merchandise subtotal');
   });
 
 

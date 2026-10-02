@@ -46,6 +46,7 @@ import { enqueueOrderCreated } from "../lib/orderNotifications";
 import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
+  computeBaseCheckoutTotals,
   computeCheckoutTotals,
   getCheckoutTaxSettings,
   CheckoutMappingError,
@@ -62,10 +63,11 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
-import { consumeCustomerCredit } from "../payments/customerCredit";
+import { consumeCustomerCredit, getCustomerCreditBalance, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadPaymentConfig } from "../payments/config";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
+import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
 import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
@@ -235,7 +237,7 @@ function queryRows<T>(value: unknown): T[] {
 // The new storefront sends option IDs. Resolve them under the authorized tenant
 // before the existing conversion and order schemas see a catalogue identity.
 router.use(async (req, res, next) => {
-  if (req.method !== "POST" || !["/orders", "/cart/convert", "/orders/preview-conversion", "/orders/delivery-quote"].includes(req.path)) { next(); return; }
+  if (req.method !== "POST" || !["/orders", "/cart/convert", "/checkout/quote", "/orders/preview-conversion", "/orders/delivery-quote"].includes(req.path)) { next(); return; }
   const incoming = (req.body as { items?: unknown } | undefined)?.items;
   if (!Array.isArray(incoming) || !incoming.some(line => line && typeof line === "object" && "optionId" in line)) { next(); return; }
   const count = z.number().int().positive();
@@ -311,7 +313,7 @@ const PreviewConversionBody = z.object({
 }).strict();
 
 async function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"], tenantId?: number) {
-  const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(tenantId));
+  const totals = computeBaseCheckoutTotals(lines);
   const branding = tenantId ? await getBranding(tenantId) : null;
   const [paymentSettings] = tenantId ? await db.select({ enabledProcessors: adminSettingsTable.enabledProcessors })
     .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1) : [];
@@ -399,6 +401,15 @@ const DeliveryQuoteBody = z.object({
   }).optional(),
 }).strict();
 
+const CheckoutQuoteBody = z.object({
+  items: z.array(DeliveryQuoteCartLineInput).min(1),
+  paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
+  customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
+  tipAmount: z.number().finite().nonnegative().optional(),
+  deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct"]).default("pickup"),
+  deliveryQuoteId: z.string().min(1).optional(),
+}).strict();
+
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
   buildSafeMerchantPayloadLines(lines);
   return lines.map(line => ({
@@ -418,11 +429,13 @@ function checkoutFingerprint(lines: NormalizedCartLine[]): string {
 
 function normalizeCheckoutTip(raw: unknown): number {
   if (raw === undefined || raw === null || raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0 || n > 1000) {
+  let cents: number;
+  try { cents = dollarsToCents(raw as string | number); }
+  catch { throw new Error("Tip amount must use whole cents."); }
+  if (cents > 100000) {
     throw new Error("Tip amount must be between $0 and $1,000.");
   }
-  return Math.round(n * 100) / 100;
+  return cents / 100;
 }
 
 // POST /api/orders/preview-conversion
@@ -522,6 +535,63 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
       return;
     }
     res.status(400).json({ error: (normErr as Error)?.message ?? "Cart validation failed" });
+  }
+});
+
+// POST /api/checkout/quote
+// A display quote only. Order creation re-resolves every price, allocation,
+// delivery quote and tax setting from the database before persistence.
+router.post("/checkout/quote", async (req, res): Promise<void> => {
+  const parsed = CheckoutQuoteBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "INVALID_CHECKOUT_QUOTE", details: parsed.error.issues }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  try {
+    const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true);
+    const totals = computeBaseCheckoutTotals(lines);
+    const [settings] = await db.select({
+      cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
+      cashDiscountType: adminSettingsTable.cashDiscountType,
+      cashDiscountValue: adminSettingsTable.cashDiscountValue,
+      enabledProcessors: adminSettingsTable.enabledProcessors,
+    }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+    const tender = parsed.data.paymentMethod;
+    const processor = tender === "paypal_card" ? "paypal" : tender;
+    if ((processor === "cash" || processor === "paypal") && !settings?.enabledProcessors?.includes(processor)) {
+      res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
+    }
+    if (processor === "paypal" && !loadPaymentConfig().enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
+    const taxSettings = processor === "paypal" ? await getCheckoutTaxSettings(tenantId) : null;
+    const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
+    const preliminary = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, cashDiscount });
+    const merchandiseCents = dollarsToCents(preliminary.taxableSubtotal) + dollarsToCents(preliminary.nonTaxableSubtotal);
+    const creditCents = dollarsToCents(parsed.data.customerCreditAmount ?? (tender === "customer_credit" ? Number(centsToDollars(merchandiseCents)) : 0));
+    const available = await db.transaction(tx => getCustomerCreditBalance(tx, tenantId, actor.id));
+    if (creditCents > merchandiseCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
+    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, nonTaxableFundingCents: creditCents, cashDiscount });
+    let deliveryFeeCents = 0;
+    if (parsed.data.deliveryMethod === "csr_delivery") {
+      deliveryFeeCents = 600 + Number((BigInt(merchandiseCents) * 3n + 50n) / 100n);
+    } else if (parsed.data.deliveryMethod === "uber_direct") {
+      const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
+        eq(uberDeliveryQuotesTable.id, parsed.data.deliveryQuoteId ?? ""),
+        eq(uberDeliveryQuotesTable.tenantId, tenantId),
+        eq(uberDeliveryQuotesTable.customerId, actor.id),
+        eq(uberDeliveryQuotesTable.status, "quoted"),
+        gt(uberDeliveryQuotesTable.expiresAt, new Date()),
+      )).limit(1);
+      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
+      deliveryFeeCents = quote.feeCents;
+    }
+    const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
+    const taxCents = dollarsToCents(financial.taxCollected);
+    const totalCents = merchandiseCents + taxCents + deliveryFeeCents + tipCents;
+    const dueCents = totalCents - creditCents;
+    if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
+    const amount = (cents: number) => Number(centsToDollars(cents));
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(merchandiseCents - creditCents), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings?.taxRate ?? 0, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), [tender]: amount(dueCents) } });
+  } catch (error) {
+    res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
   }
 });
 
@@ -636,7 +706,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       res.status(err.status >= 400 && err.status < 500 ? 422 : 502).json({ error: err.message });
       return;
     }
-    logger.warn({ err }, "Unexpected Uber Courier quote failure");
+    logger.warn({ tenantId, failure: "quote_unavailable" }, "Unexpected Uber Courier quote failure");
     res.status(502).json({ error: "Uber Courier quote failed." });
   }
 });
@@ -811,20 +881,28 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     enabledProcessors: adminSettingsTable.enabledProcessors,
   }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
   const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
-  if (tender !== "cash" && tender !== "paypal" && tender !== "customer_credit") {
+  if (tender !== "cash" && tender !== "paypal" && tender !== "paypal_card" && tender !== "customer_credit") {
     res.status(422).json({ error: "Select an available payment method from checkout" });
     return;
   }
-  if ((tender === "cash" || tender === "paypal") && !financialSettings?.enabledProcessors?.includes(tender)) {
+  const processor = tender === "paypal_card" ? "paypal" : tender;
+  if ((processor === "cash" || processor === "paypal") && !financialSettings?.enabledProcessors?.includes(processor)) {
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
     return;
   }
-  if (tender === "paypal" && !loadPaymentConfig().enabled) {
+  if (processor === "paypal" && !loadPaymentConfig().enabled) {
     res.status(422).json({ error: "PayPal checkout is unavailable until live payment configuration is completed" });
     return;
   }
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
-  const subtotal = financial.taxableSubtotal;
+  const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
+  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? trustedTotals.subtotal : 0));
+  const merchandiseCents = dollarsToCents(trustedTotals.subtotal);
+  if (requestedCreditCents > merchandiseCents) {
+    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+    return;
+  }
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const subtotal = financial.taxableSubtotal + financial.nonTaxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
   const cashDiscountAmount = financial.cashDiscountAmount;
@@ -841,7 +919,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
   // CSR personal delivery fee: $6 flat + 3% of sale total → goes to CSR as gratuity
-  const csrDeliveryFee = isCsrDelivery ? Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100 : 0;
+  const csrDeliveryFee = isCsrDelivery
+    ? Number(centsToDollars(600 + Number((BigInt(dollarsToCents(subtotal)) * 3n + 50n) / 100n)))
+    : 0;
   let trustedUberQuote: typeof uberDeliveryQuotesTable.$inferSelect | null = null;
   if (explicitDeliveryMethod === "uber_direct") {
     if (!clientDeliveryQuote?.quoteId || clientDeliveryQuote.provider !== "uber_direct" || !body.data.shippingAddress) {
@@ -878,7 +958,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(400).json({ error: (err as Error).message });
     return;
   }
-  const finalTotal = Math.round((merchandiseTotal + deliveryFee + tipAmount) * 100) / 100;
+  const merchandiseAfterDiscountCents = dollarsToCents(subtotal);
+  if (requestedCreditCents > merchandiseAfterDiscountCents) {
+    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+    return;
+  }
+  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
+  const finalTotal = Number(centsToDollars(finalTotalCents));
+  if (tender === "customer_credit" && requestedCreditCents !== finalTotalCents) {
+    res.status(422).json({ error: "Customer Credit must cover the full amount when it is the only tender" });
+    return;
+  }
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
@@ -991,11 +1081,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         total: String(finalTotal.toFixed(2)),
         grossSubtotal: String(trustedTotals.subtotal.toFixed(2)),
         discountTotal: String(cashDiscountAmount.toFixed(2)),
-        taxableSubtotal: String(subtotal.toFixed(2)),
+        taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)),
         nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         customerCreditApplied: "0.00",
         remainingTenderAmount: String(finalTotal.toFixed(2)),
-        financialFinalizedAt: now,
+        financialFinalizedAt: processor === "paypal" ? null : now,
         shippingAddress: trustedUberQuote ? formatUberAddress(trustedUberQuote.dropoffAddress as UberAddress) : (body.data.shippingAddress ?? null),
         deliveryMethod: isCsrDelivery
           ? "csr_delivery"
@@ -1023,7 +1113,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         checkoutConversionExpiresAt: conversionExpiresAt,
-        taxSnapshot,
+        taxSnapshot: { ...taxSnapshot, locationId: targetLocationId, pendingTender: processor === "paypal" },
         cashDiscountSnapshot,
       }).returning();
 
@@ -1031,7 +1121,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: trustedTotals.taxJurisdiction,
         locationId: targetLocationId, taxConfigurationId: trustedTotals.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
-        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(subtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
         taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
         snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
@@ -1072,6 +1162,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           ...conversionSnapshotForOrder.pricingSnapshot,
           deliveryFee,
           tipAmount,
+          tax,
+          customerTax: tax,
           totalBeforeTip: merchandiseTotal + deliveryFee,
           total: finalTotal,
         },
@@ -1207,13 +1299,46 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         });
       }
 
+      let currentOrder = createdOrder;
+      if (requestedCreditCents > 0) {
+        const reserved = await reserveCustomerCredit(tx, {
+          tenantId: houseTenantId,
+          customerId: actor.id,
+          actorUserId: actor.id,
+          orderId: createdOrder.id,
+          amountCents: requestedCreditCents,
+          idempotencyKey: `order:${createdOrder.id}:initial-credit`,
+        });
+        if (reserved.appliedCents !== requestedCreditCents) throw new Error("Customer Credit reservation could not be applied");
+        if (tender === "customer_credit" && requestedCreditCents === dollarsToCents(finalTotal)) {
+          await deductPaidOrderInventory(createdOrder, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
+          await consumeCustomerCredit(tx, {
+            tenantId: houseTenantId,
+            customerId: actor.id,
+            actorUserId: actor.id,
+            orderId: createdOrder.id,
+            amountCents: requestedCreditCents,
+            idempotencyKey: `consume:order:${createdOrder.id}:initial-credit`,
+          });
+          const [paidOrder] = await tx.update(ordersTable).set({
+            paymentStatus: "paid",
+            status: "confirmed",
+            paymentMethod: "customer_credit",
+            selectedPaymentMethod: "customer_credit",
+            remainingTenderAmount: "0.00",
+          }).where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId))).returning();
+          currentOrder = paidOrder ?? currentOrder;
+        }
+      }
+
       // The event and channel jobs commit with the order. Provider work is
       // performed only by the independent worker after this transaction.
       await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
 
-      return createdOrder;
+      return currentOrder;
     });
   } catch (err) {
+    if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
       res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
       return;
@@ -1590,6 +1715,8 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
     if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
+    if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
+      && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
@@ -1696,8 +1823,8 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     return;
   }
   emitUpdated(outcome.updated, "cash_closeout_completed");
-  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(error => {
-    logger.warn({ tenantId, orderId: outcome.updated.id, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery");
+  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
+    logger.warn({ tenantId, orderId: outcome.updated.id, failure: "handoff_unavailable" }, "Uber Direct handoff will require recovery");
   });
   res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, idempotent: outcome.idempotent } });
 });
@@ -1903,6 +2030,25 @@ router.get("/orders/recent", requireRole("global_admin", "admin"), async (req, r
   res.json(GetRecentOrdersResponse.parse({ orders: orderObjs, total: orderObjs.length, page: 1, limit }));
 });
 
+// GET /api/orders/:id/courier — only the order owner or tenant staff may read
+// sanitized courier progress. Provider identifiers and address data stay server-side.
+router.get("/orders/:id/courier", async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ id: ordersTable.id, customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod })
+    .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || (normalizeRole(req.dbUser!.role) === "user" && order.customerId !== req.dbUser!.id)) {
+    res.status(404).json({ error: "Not found" }); return;
+  }
+  if (order.deliveryMethod !== "uber_direct") { res.status(404).json({ error: "No courier delivery for this order" }); return; }
+  const [delivery] = await db.select({ requestState: uberDeliveryFulfillmentsTable.requestState, providerStatus: uberDeliveryFulfillmentsTable.providerStatus })
+    .from(uberDeliveryFulfillmentsTable)
+    .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
+    .limit(1);
+  res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null });
+});
+
 // GET /api/orders/:id
 router.get("/orders/:id", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -1946,6 +2092,15 @@ async function actorCanOperateOrder(actor: DbActor, order: typeof ordersTable.$i
     return !!shift && order.assignedCsrUserId === actor.id;
   }
   return ["supervisor", "admin", "global_admin"].includes(role);
+}
+
+async function uberDeliveryReadyForCompletion(tenantId: number, order: typeof ordersTable.$inferSelect): Promise<boolean> {
+  if (order.deliveryMethod !== "uber_direct") return true;
+  const [delivery] = await db.select({ providerStatus: uberDeliveryFulfillmentsTable.providerStatus })
+    .from(uberDeliveryFulfillmentsTable)
+    .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, order.id)))
+    .limit(1);
+  return delivery?.providerStatus === "delivered";
 }
 
 async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
@@ -2020,6 +2175,10 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
   }
   if (status === "completed" && order.paymentStatus !== "paid") {
     res.status(409).json({ error: "Order must be paid or closed out before it can be completed" });
+    return;
+  }
+  if (status === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" });
     return;
   }
   if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
@@ -2321,6 +2480,12 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   }
   if (fulfillmentStatus === "completed" && order.paymentStatus !== "paid") {
     res.status(409).json({ error: "Order must be paid or closed out before it can be completed" }); return;
+  }
+  if (fulfillmentStatus === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" }); return;
+  }
+  if (fulfillmentStatus === "cancelled" && order.paymentStatus === "paid") {
+    res.status(409).json({ error: "Paid orders require the supported refund workflow before cancellation" }); return;
   }
 
   const now = new Date();

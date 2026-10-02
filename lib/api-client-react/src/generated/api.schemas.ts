@@ -639,6 +639,7 @@ export type CreateOrderBodyCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
+  customerCreditAmount?: number;
   tipAmount?: number | null;
   tipPercent?: number | null;
 };

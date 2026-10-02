@@ -751,9 +751,10 @@ export const CreateOrderBody = zod.object({
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
   "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional(),
+  "customerCreditAmount": zod.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
   "tipAmount": zod.number().nullish(),
   "tipPercent": zod.number().nullish()
-}).optional(),
+}).strict().optional(),
   "deliveryQuote": zod.object({
   "provider": zod.enum(['uber_direct']),
   "quoteId": zod.string().min(1),
@@ -777,7 +778,7 @@ export const CreateOrderBody = zod.object({
 }).optional(),
   "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
   "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).nullish()
-})
+}).strict()
 
 
 /**

@@ -4,7 +4,9 @@ import { createUberDelivery, getUberPickupAction, type UberAddress, type UberMan
 import { getUberDirectPickupContact, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
 import { logger } from "./logger";
 
-const RETRYABLE = new Set(["delivery_create_pending", "retry_pending"]);
+// A timed-out create may have succeeded at Uber. Never issue a second create
+// until a provider lookup has reconciled the first attempt.
+const RETRYABLE = new Set(["delivery_create_pending"]);
 
 function safeFailure(error: unknown): string {
   if (error && typeof error === "object" && "code" in error && typeof (error as { code?: unknown }).code === "string") return `provider:${(error as { code: string }).code.slice(0, 80)}`;
@@ -53,6 +55,11 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
       .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
     return;
   }
+  if (quote.expiresAt <= new Date()) {
+    await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "requote_required", lastSanitizedError: "quote_expired_before_dispatch", updatedAt: new Date() })
+      .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
+    return;
+  }
   const claimed = await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "creating", attemptCount: fulfillment.attemptCount + 1, lastAttemptAt: new Date(), updatedAt: new Date() })
     .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, fulfillment.requestState))).returning();
   if (!claimed.length) return;
@@ -63,11 +70,11 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
       dropoffAddress: quote.dropoffAddress as UberAddress, dropoffName: customerName, dropoffPhoneNumber: customer.phone,
       manifestItems: quote.manifestItems as UberManifestItem[], pickupAction: getUberPickupAction(),
     }, config);
-    await db.update(uberDeliveryFulfillmentsTable).set({ providerDeliveryId: delivery.id, providerStatus: delivery.status ?? "created", requestState: "delivery_created", lastSanitizedError: null, updatedAt: new Date() })
-      .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
+    await db.update(uberDeliveryFulfillmentsTable).set({ providerDeliveryId: delivery.id, providerStatus: delivery.status ?? "pending", requestState: "delivery_created", lastSanitizedError: null, updatedAt: new Date() })
+      .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "creating")));
   } catch (error) {
-    await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "retry_pending", lastSanitizedError: safeFailure(error), updatedAt: new Date() })
-      .where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id));
+    await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "reconciliation_required", lastSanitizedError: safeFailure(error), updatedAt: new Date() })
+      .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "creating")));
     logger.warn({ tenantId, orderId, failure: safeFailure(error) }, "Uber Direct delivery queued for recovery");
   }
 }

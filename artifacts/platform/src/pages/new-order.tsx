@@ -79,6 +79,18 @@ type ConversionPreview = {
     }>;
   };
 };
+type CheckoutQuote = {
+  merchandiseSubtotal: number;
+  availableCustomerCredit: number;
+  appliedCustomerCredit: number;
+  remainingMerchandiseAmount: number;
+  taxableDigitalBase: number;
+  customerTax: number;
+  deliveryFee: number;
+  tipAmount: number;
+  finalAmountDue: number;
+  tenderDue: number;
+};
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
 const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment.";
@@ -128,6 +140,11 @@ export default function NewOrder() {
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
+  const [useCustomerCredit, setUseCustomerCredit] = useState(false);
+  const [customerCreditAmount, setCustomerCreditAmount] = useState("");
+  const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
+  const [checkoutQuoteError, setCheckoutQuoteError] = useState<string | null>(null);
+  const [isQuotingCheckout, setIsQuotingCheckout] = useState(false);
   const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
   const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
   const [tipMode, setTipMode] = useState<"none" | "10" | "15" | "20" | "custom">("none");
@@ -183,6 +200,7 @@ export default function NewOrder() {
   useEffect(() => {
     setConversionPreview(null);
     setConversionError(null);
+    setCheckoutQuote(null);
   }, [cart, shippingAddress, notes]);
 
   useEffect(() => {
@@ -292,7 +310,7 @@ export default function NewOrder() {
   };
 
   const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
-    if (cart.length === 0 || !conversionPreview) throw new Error("Checkout is not ready.");
+    if (cart.length === 0 || !conversionPreview || !checkoutQuote) throw new Error("Checkout quote is not ready.");
     if (!conversionPreview.converted.paymentMethods.some(method => method.id === paymentMethodOverride && method.available !== false)) {
       throw new Error("This payment method is unavailable. Review the checkout options again.");
     }
@@ -300,7 +318,7 @@ export default function NewOrder() {
     if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
     setOrderSubmitError(null);
-    const paymentMethod = paymentMethodOverride as "cash" | "paypal" | "paypal_card" | "customer_credit";
+    const paymentMethod = (checkoutQuote.tenderDue === 0 && checkoutQuote.appliedCustomerCredit > 0 ? "customer_credit" : paymentMethodOverride) as "cash" | "paypal" | "paypal_card" | "customer_credit";
 
     try {
       const checkoutConversionToken = conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken;
@@ -310,6 +328,7 @@ export default function NewOrder() {
         confirmedAt: conversionPreview.confirmation.confirmedAt,
         legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
         paymentMethod,
+        customerCreditAmount: checkoutQuote.appliedCustomerCredit,
         tipAmount,
         tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
       };
@@ -341,7 +360,7 @@ export default function NewOrder() {
       toast({ title: "Order failed", description: message, variant: "destructive" });
       throw error;
     }
-  }, [cart, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
+  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
 
   const finishCheckout = useCallback(async (orderId: number) => {
     notifyOrderPlaced(orderId, user?.firstName || undefined);
@@ -367,7 +386,7 @@ export default function NewOrder() {
   };
 
   const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
-  const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
+  const displayedTotal = checkoutQuote?.finalAmountDue ?? (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
   const deliveryReady = deliveryMethod === "pickup"
@@ -375,9 +394,38 @@ export default function NewOrder() {
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
   const paymentBusy = createOrderMutation.isPending;
-  const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
+  const canSubmit = cart.length > 0 && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
   const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
+
+  useEffect(() => {
+    setCheckoutQuote(null);
+    setCheckoutQuoteError(null);
+    if (!conversionPreview || cart.length === 0 || (deliveryMethod === "uber_direct" && !deliveryQuote)) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      setIsQuotingCheckout(true);
+      getToken().then(token => fetch("/api/checkout/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          items: checkoutOptionLines(cart),
+          paymentMethod: selectedPaymentMethod,
+          ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
+          tipAmount,
+          deliveryMethod,
+          ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
+        }),
+      })).then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error ?? "Checkout quote unavailable.");
+        if (!cancelled) setCheckoutQuote(data as CheckoutQuote);
+      }).catch(error => {
+        if (!cancelled) setCheckoutQuoteError(error instanceof Error ? error.message : "Checkout quote unavailable.");
+      }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, getToken]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -483,15 +531,21 @@ export default function NewOrder() {
                 {conversionPreview && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Tax</span>
-                    <span className="font-mono">${conversionPreview.pricingSnapshot.tax.toFixed(2)}</span>
+                    <span className="font-mono">${checkoutQuote?.customerTax.toFixed(2) ?? "—"}</span>
                   </div>
                 )}
-                {deliveryFee > 0 && (
+                {checkoutQuote && checkoutQuote.appliedCustomerCredit > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Customer Credit</span>
+                    <span className="font-mono">-${checkoutQuote.appliedCustomerCredit.toFixed(2)}</span>
+                  </div>
+                )}
+                {(checkoutQuote?.deliveryFee ?? deliveryFee) > 0 && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">
                       {deliveryMethod === "csr_delivery" ? "CSR Delivery Fee" : "Uber Courier"}
                     </span>
-                    <span className="font-mono">${deliveryFee.toFixed(2)}</span>
+                    <span className="font-mono">${(checkoutQuote?.deliveryFee ?? deliveryFee).toFixed(2)}</span>
                   </div>
                 )}
                 {tipAmount > 0 && (
@@ -502,7 +556,7 @@ export default function NewOrder() {
                 )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border/40">
                   <span>Total</span>
-                  <span className="font-mono" data-testid="text-total">${displayedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <span className="font-mono" data-testid="text-total">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating quote…"}</span>
                 </div>
               </div>
             </div>
@@ -542,7 +596,7 @@ export default function NewOrder() {
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
                       <div className="font-semibold text-primary">Personal delivery</div>
                       <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep only within 2 miles.</div>
-                      <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($6 + 3% of sale total)</div>
+                      <div className="font-mono text-primary pt-1">Delivery fee: ${(checkoutQuote?.deliveryFee ?? csrDeliveryFee).toFixed(2)} ($6 + 3% of merchandise subtotal)</div>
                       {!csrDeliveryAllowed && <div className="text-destructive">Personal delivery is blocked beyond 2 miles.</div>}
                       {csrStatus?.pickupNote && (
                         <div className="text-muted-foreground italic mt-1">{csrStatus.pickupNote}</div>
@@ -723,6 +777,30 @@ export default function NewOrder() {
                     </div>
                   </div>
 
+                  <div className="rounded-sm border border-border/60 bg-background p-3 space-y-3">
+                    <div className="flex justify-between text-xs">
+                      <span>Customer Credit available</span>
+                      <span className="font-mono" data-testid="text-customer-credit-available">${(checkoutQuote?.availableCustomerCredit ?? 0).toFixed(2)}</span>
+                    </div>
+                    {selectedPaymentMethod !== "customer_credit" && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={useCustomerCredit} onChange={event => {
+                          setUseCustomerCredit(event.target.checked);
+                          if (event.target.checked && !customerCreditAmount) setCustomerCreditAmount(Math.min(checkoutQuote?.availableCustomerCredit ?? 0, checkoutQuote?.merchandiseSubtotal ?? 0).toFixed(2));
+                        }} data-testid="checkbox-use-customer-credit" />
+                        Apply Customer Credit
+                      </label>
+                    )}
+                    {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && (
+                      <Input type="number" min="0" step="0.01" value={customerCreditAmount} onChange={event => setCustomerCreditAmount(event.target.value)} aria-label="Customer Credit amount" data-testid="input-customer-credit-amount" />
+                    )}
+                    <div className="flex justify-between text-xs"><span>Taxable PayPal merchandise</span><span className="font-mono" data-testid="text-taxable-digital-base">${(checkoutQuote?.taxableDigitalBase ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-xs"><span>Customer tax</span><span className="font-mono" data-testid="text-customer-tax">${(checkoutQuote?.customerTax ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-sm font-semibold"><span>Amount due by selected tender</span><span className="font-mono" data-testid="text-tender-due">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating…"}</span></div>
+                    {isQuotingCheckout && <p className="text-xs text-muted-foreground">Updating checkout quote…</p>}
+                    {checkoutQuoteError && <p className="text-xs text-destructive" data-testid="text-checkout-quote-error">{checkoutQuoteError}</p>}
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {conversionPreview.converted.paymentMethods.filter(method => method.id !== "paypal_card").map(method => {
                       const Icon = method.id === "cash" ? Banknote : method.id === "customer_credit" ? Gift : CheckCircle2;
@@ -759,7 +837,7 @@ export default function NewOrder() {
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
               )}
 
-              {selectedPaymentMethod === "paypal" && selectedMethodAvailable ? (
+              {selectedPaymentMethod === "paypal" && selectedMethodAvailable && (checkoutQuote?.tenderDue ?? 0) > 0 ? (
                 <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
                   <p className="text-sm font-semibold">Pay securely with PayPal</p>
                   <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
@@ -777,7 +855,7 @@ export default function NewOrder() {
                   onClick={() => void handleSubmit()}
                   data-testid="button-submit-order"
                 >
-                  {paymentBusy ? "Preparing order..." : `Place order · $${displayedTotal.toFixed(2)}`}
+                  {paymentBusy ? "Preparing order..." : `Place order · $${(checkoutQuote?.tenderDue ?? displayedTotal).toFixed(2)}`}
                 </Button>
               )}
             </div>
