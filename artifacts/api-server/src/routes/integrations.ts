@@ -19,8 +19,12 @@
  * (e.g. Airtable, RevenueCat) report "connected" on config presence alone.
  */
 import { Router, type IRouter } from "express";
+import { eq } from "drizzle-orm";
+import { adminSettingsTable, db } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 import { getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
+import { safeDecrypt } from "../lib/crypto";
+import { fetchWooSafely } from "../lib/wooSafeHttp";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 
 const router: IRouter = Router();
@@ -64,16 +68,20 @@ function checkGitHub(): IntegrationStatus {
   return hasEnv("GITHUB_TOKEN", "GITHUB_REPO") ? "connected" : "missing_config";
 }
 
-/**
- * WooCommerce: server-side URL + consumer key/secret.
- * Note: VITE_WOOCOMMERCE_URL is a frontend-only build var and is NOT
- * checked here — use WOOCOMMERCE_URL (no VITE_ prefix) for server-side
- * integration work. The frontend var controls only the menu tab link.
- */
-function checkWooCommerce(): IntegrationStatus {
-  return hasEnv("WOOCOMMERCE_URL", "WOOCOMMERCE_KEY", "WOOCOMMERCE_SECRET")
-    ? "connected"
-    : "missing_config";
+/** Use the same tenant credentials and safe transport as the admin test. */
+async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return "missing_config";
+  try {
+    const [row] = await db.select({ enabled: adminSettingsTable.wcEnabled, storeUrl: adminSettingsTable.wcStoreUrl,
+      consumerKey: adminSettingsTable.wcConsumerKey, consumerSecret: adminSettingsTable.wcConsumerSecret })
+      .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+    if (!row || row.enabled === false || !row.consumerKey || !row.consumerSecret) return "missing_config";
+    const consumerKey = safeDecrypt(row.consumerKey);
+    const consumerSecret = safeDecrypt(row.consumerSecret);
+    if (!consumerKey || !consumerSecret) return "error";
+    const response = await fetchWooSafely(row.storeUrl ?? "https://lucifercruz.com", "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
+    return response.ok ? "connected" : "error";
+  } catch { return "error"; }
 }
 
 /**
@@ -113,7 +121,7 @@ router.get(
       paypal: await checkPayPal(req.dbUser!.tenantId!),
       airtable: checkAirtable(),
       github: checkGitHub(),
-      woocommerce: checkWooCommerce(),
+      woocommerce: await checkWooCommerce(req.dbUser!.tenantId!),
       revenuecat: checkRevenueCat(),
       openai: checkOpenAI(),
       uberDirect: await checkUberDirect(req.dbUser!.tenantId!),
