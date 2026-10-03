@@ -22,6 +22,26 @@ describe("WooCommerce SSRF boundary", () => {
     await expect(resolvePublicWooAddress("shop.example", resolver as never)).resolves.toEqual({ address: "8.8.8.8", family: 4 });
   });
 
+  it("returns a pinned address record list when Node requests all DNS answers", async () => {
+    const transport = vi.fn((_url, options: { lookup: (host: string, options: { all: boolean }, callback: (error: Error | null, addresses: unknown) => void) => void }, respond: (res: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
+      const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+      req.end = () => options.lookup("8.8.8.8", { all: true }, (error, addresses) => {
+        expect(error).toBeNull();
+        expect(addresses).toEqual([{ address: "8.8.8.8", family: 4 }]);
+        const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> };
+        res.statusCode = 200;
+        res.headers = { "content-type": "application/json" };
+        respond(res);
+        res.emit("data", Buffer.from("{}"));
+        res.emit("end");
+      });
+      req.destroy = vi.fn();
+      return req;
+    });
+    const response = await fetchWooSafely("https://8.8.8.8", "/wp-json/wc/v3/system_status", "ck_synthetic", "cs_synthetic", transport as unknown as typeof request);
+    expect(response.status).toBe(200);
+  });
+
   it("authenticates a synthetic WooCommerce response over the checked transport", async () => {
     const transport = vi.fn((_url, options: { headers: Record<string, string> }, respond: (res: EventEmitter & { statusCode: number; headers: Record<string, string> }) => void) => {
       expect(options.headers.Authorization).toBe(`Basic ${Buffer.from("ck_synthetic:cs_synthetic").toString("base64")}`);

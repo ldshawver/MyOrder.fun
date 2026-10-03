@@ -68,9 +68,15 @@ export async function fetchWooSafely(storeUrl: string, path: string, consumerKey
     const req = transport(url, {
       method: "GET", timeout: TIMEOUT_MS,
       headers: { Authorization: authorization, Accept: "application/json" },
-      lookup: (hostname, _options, callback) => {
+      lookup: (hostname, options, callback) => {
         resolvePublicWooAddress(hostname).then(
-          result => { callback(null, result.address, result.family); },
+          result => {
+            // Node's autoSelectFamily requests { all: true } and requires an
+            // address record array. Returning a string there makes connect()
+            // fail with ERR_INVALID_IP_ADDRESS despite valid DNS and TLS.
+            if (options.all) callback(null, [result]);
+            else callback(null, result.address, result.family);
+          },
           error => { callback(error as Error, "", 4); },
         );
       },
