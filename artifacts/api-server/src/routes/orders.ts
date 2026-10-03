@@ -118,6 +118,7 @@ class InsufficientInventoryError extends Error {
   }
 }
 class OptionSelectionError extends Error {}
+class CheckoutReplayConflictError extends Error {}
 type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
@@ -839,6 +840,25 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
     return;
   }
+  const submittedConversionToken = (req.body as { checkoutConversionToken?: unknown }).checkoutConversionToken;
+  const checkoutRequestHash = createHash("sha256").update(JSON.stringify(req.body)).digest("hex");
+  const replayIntentMatches = (candidate: typeof ordersTable.$inferSelect): boolean =>
+    (candidate.checkoutConversionSnapshot as { checkoutRequestHash?: string } | null)?.checkoutRequestHash === checkoutRequestHash;
+  const findReplay = async (queryDb: Pick<typeof db, "select">) => {
+    if (typeof submittedConversionToken !== "string" || !submittedConversionToken) return null;
+    const [candidate] = await queryDb.select().from(ordersTable).where(and(
+      eq(ordersTable.tenantId, houseTenantId),
+      eq(ordersTable.customerId, actor.id),
+      sql`${ordersTable.checkoutConversionSnapshot}->>'checkoutConversionToken' = ${submittedConversionToken}`,
+    )).limit(1);
+    return candidate ?? null;
+  };
+  const priorOrder = await findReplay(db);
+  if (priorOrder) {
+    if (!replayIntentMatches(priorOrder)) { res.status(409).json({ error: "Checkout token was already used for a different request" }); return; }
+    res.status(200).json(await buildOrderResponse(priorOrder));
+    return;
+  }
   const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
@@ -1069,9 +1089,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   let order: typeof ordersTable.$inferSelect;
+  let replayed = false;
   try {
 
     order = await db.transaction(async (tx) => {
+      const lockKey = createHash("sha256").update(String(submittedConversionToken)).digest().readInt32BE(0);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${houseTenantId}, ${lockKey})`);
+      const concurrentOrder = await findReplay(tx);
+      if (concurrentOrder) {
+        if (!replayIntentMatches(concurrentOrder)) throw new CheckoutReplayConflictError("Checkout token was already used for a different request");
+        replayed = true;
+        return concurrentOrder;
+      }
       if (trustedUberQuote) {
         const consumed = await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: now })
           .where(and(eq(uberDeliveryQuotesTable.id, trustedUberQuote.id), eq(uberDeliveryQuotesTable.status, "quoted")))
@@ -1161,6 +1190,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }, houseTenantId);
       const checkoutSnapshotWithTip = {
         ...conversionSnapshotForOrder,
+        checkoutRequestHash,
         tip: {
           amount: tipAmount,
           percent: checkoutConfirmation?.tipPercent ?? null,
@@ -1318,6 +1348,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           idempotencyKey: `order:${createdOrder.id}:initial-credit`,
         });
         if (reserved.appliedCents !== requestedCreditCents) throw new Error("Customer Credit reservation could not be applied");
+        const [creditedOrder] = await tx.select().from(ordersTable)
+          .where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId))).limit(1);
+        if (!creditedOrder) throw new Error("Customer Credit order disappeared before response");
+        currentOrder = creditedOrder;
         if (tender === "customer_credit" && requestedCreditCents === dollarsToCents(finalTotal)) {
           await deductPaidOrderInventory(createdOrder, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
           await consumeCustomerCredit(tx, {
@@ -1346,6 +1380,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       return currentOrder;
     });
   } catch (err) {
+    if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
     if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
       res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
@@ -1357,6 +1392,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       return;
     }
     throw err;
+  }
+
+  if (replayed) {
+    res.status(200).json(await buildOrderResponse(order));
+    return;
   }
 
   // Merchant payload audit: log provider-safe line items without sensitive content.

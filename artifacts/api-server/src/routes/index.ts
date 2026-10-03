@@ -42,6 +42,9 @@ const router: IRouter = Router();
 
 router.use(webhooksRouter);
 router.use(uberDirectWebhooksRouter);
+// Provider webhooks must reach their own signature verifier before any
+// unrelated router-wide customer authentication middleware.
+router.use(paypalPaymentsRouter);
 router.use(publicBrandingRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);
@@ -58,7 +61,6 @@ router.use(tenantSettingsRouter);
 router.use(shiftsRouter);
 router.use(shiftQueueRouter);
 router.use(aiRouter);
-router.use(paypalPaymentsRouter);
 router.use(paymentsRouter);
 router.use(printRouter);
 router.use(printingRouter);

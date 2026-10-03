@@ -230,10 +230,12 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       const duplicateCheckout = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1 } });
       expect(duplicateCheckout.status).toBeGreaterThanOrEqual(400);
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
-      const staleQuote = await as("customer").post("/api/orders/delivery-quote").send({ items, dropoffAddress: address, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation });
+      const freshConversion = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(freshConversion.status, freshConversion.text).toBe(200);
+      const staleQuote = await as("customer").post("/api/orders/delivery-quote").send({ items, dropoffAddress: address, checkoutConversionToken: freshConversion.body.checkoutConversionToken, checkoutConversionSnapshot: freshConversion.body, checkoutConfirmation: confirmation });
       expect(staleQuote.status, staleQuote.text).toBe(200);
       await db.update(uberDeliveryQuotesTable).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(uberDeliveryQuotesTable.id, staleQuote.body.quoteId));
-      const expired = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: staleQuote.body.quoteId, feeCents: 1 } });
+      const expired = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: freshConversion.body.checkoutConversionToken, checkoutConversionSnapshot: freshConversion.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: staleQuote.body.quoteId, feeCents: 1 } });
       expect(expired.status).toBe(422);
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
       const cancel = await as("customer").post(`/api/orders/${orderId}/courier/cancel`).send({});
@@ -393,6 +395,45 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(stored).toMatchObject({ subtotal: "100.00", tax: "0.00", total: "100.00", customerCreditApplied: "100.00", remainingTenderAmount: "0.00", paymentStatus: "paid" });
     const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${stored.id} AND movement_type = 'sale'`);
     expect(sales.rows).toHaveLength(1);
+  }, 60_000);
+
+  it("returns the persisted credit and PayPal balance for a split checkout", async () => {
+    await db.transaction(tx => adjustCustomerCredit(tx, { tenantId, customerId, actorUserId: csrId, amountCents: 4000, reason: "Disposable split test fixture", idempotencyKey: "tax-e2e-split-credit-funding" }));
+    const items = [{ catalogItemId, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "paypal", customerCreditAmount: 40 };
+    const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(converted.status, converted.text).toBe(200);
+    const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+    expect(created.status, created.text).toBe(201);
+    const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
+    expect(stored).toMatchObject({ subtotal: "100.00", tax: "5.25", total: "105.25", customerCreditApplied: "40.00", remainingTenderAmount: "65.25", paymentStatus: "unpaid" });
+    expect(created.body).toMatchObject({ subtotal: 100, tax: 5.25, total: 105.25, customerCreditApplied: 40, remainingTenderAmount: 65.25, paymentStatus: "unpaid" });
+  }, 60_000);
+
+  it("routes public PayPal webhooks to signature verification", async () => {
+    const response = await request.post("/api/webhooks/paypal")
+      .set("Content-Type", "application/json")
+      .send({ id: "synthetic-unsigned-event", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "synthetic-capture" } });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("MISSING_WEBHOOK_SIGNATURE");
+  });
+
+  it("serializes duplicate checkout submissions for one verified conversion", async () => {
+    const items = [{ catalogItemId, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+    const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(converted.status, converted.text).toBe(200);
+    const body = { orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" };
+    const [first, second] = await Promise.all([as("customer").post("/api/orders").send(body), as("customer").post("/api/orders").send(body)]);
+    expect([first.status, second.status].sort()).toEqual([200, 201]);
+    expect(first.body.id).toBe(second.body.id);
+    const replay = await as("customer").post("/api/orders").send(body);
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(first.body.id);
+    const changed = await as("customer").post("/api/orders").send({ ...body, checkoutConfirmation: { ...confirmation, paymentMethod: "paypal" } });
+    expect(changed.status).toBe(409);
+    const sameToken = await db.execute(sql`SELECT count(*)::int AS n FROM orders WHERE tenant_id=${tenantId} AND customer_id=${customerId} AND checkout_conversion_snapshot->>'checkoutConversionToken'=${converted.body.checkoutConversionToken}`);
+    expect(sameToken.rows[0]?.n).toBe(1);
   }, 60_000);
 
   it("authoritatively allocates PayPal tax after Customer Credit and replays without a second provider order", async () => {
