@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   numeric,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
@@ -72,7 +73,9 @@ export const adminSettingsTable = pgTable("admin_settings", {
   feedbackArchiveUnreadAfterDays: integer("feedback_archive_unread_after_days"),
   feedbackArchiveUnreadEnabled: boolean("feedback_archive_unread_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, table => ({
+  tenantUnique: uniqueIndex("admin_settings_tenant_id_unique_idx").on(table.tenantId),
+}));
 
 export type AdminSettings = typeof adminSettingsTable.$inferSelect;
 export type InsertAdminSettings = typeof adminSettingsTable.$inferInsert;

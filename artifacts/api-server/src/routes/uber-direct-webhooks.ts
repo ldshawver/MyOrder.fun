@@ -57,7 +57,8 @@ router.post("/webhooks/uber-direct", async (req, res): Promise<void> => {
       if (nextStatus) await tx.update(uberDeliveryFulfillmentsTable).set({
         providerDeliveryId,
         providerStatus: nextStatus,
-        requestState: terminal.has(nextStatus) ? nextStatus : "delivery_created",
+        requestState: terminal.has(nextStatus) ? nextStatus
+          : ["canceling", "cancel_reconciliation_required"].includes(current.requestState) ? current.requestState : "delivery_created",
         updatedAt: new Date(),
       }).where(and(eq(uberDeliveryFulfillmentsTable.id, current.id), eq(uberDeliveryFulfillmentsTable.tenantId, current.tenantId)));
       if (nextStatus && ["canceled", "returned", "failed"].includes(nextStatus)) await tx.update(ordersTable)

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { cancelUberDelivery, createUberDelivery, getUberDelivery, listUberDeliveries, UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
+import { cancelUberDelivery, createUberDelivery, getUberDelivery, listUberDeliveries, UberDirectApiError, UberDirectConfigError, normalizeUberAddress, verifyUberWebhookSignature, verifyUberWebhookSignatureForSecret } from "../uberDirect";
+import { logger } from "../logger";
 
 describe("Uber Direct security boundaries", () => {
   it("normalizes a complete plain-text delivery address into provider fields", () => {
@@ -53,6 +54,41 @@ describe("Uber Direct security boundaries", () => {
       expect((await getUberDelivery("del_synthetic", config)).external_id).toBe("myorder-917-42");
       expect((await cancelUberDelivery("del_synthetic", config)).status).toBe("canceled");
       expect(fetchSpy).toHaveBeenCalledTimes(5);
+    } finally { fetchSpy.mockRestore(); }
+  });
+
+  it("does not log an untrusted provider error code that could contain a secret", async () => {
+    let providerCode = "invalid secret=synthetic-private-value";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-token", expires_in: 3600 }), { status: 200 });
+      return new Response(JSON.stringify({ code: providerCode }), { status: 400 });
+    });
+    const logSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    try {
+      const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
+      await expect(createUberDelivery({ quoteId: "dqt_synthetic", externalOrderReference: "myorder-918-42", pickupAddress: address, pickupName: "Test Shop", pickupPhoneNumber: "+15555550111", dropoffAddress: address, dropoffName: "Test Customer", dropoffPhoneNumber: "+15555550222", manifestItems: [{ name: "Test Item", quantity: 1 }] },
+        { tenantId: 918, environment: "sandbox", customerId: "synthetic-customer", clientId: "synthetic-uber-client-918", clientSecret: "synthetic-uber-secret" }))
+        .rejects.toMatchObject({ name: UberDirectApiError.name, code: null });
+      expect(logSpy).toHaveBeenCalledWith({ status: 400, code: null }, "Uber Direct delivery creation failed");
+      expect(JSON.stringify(logSpy.mock.calls)).not.toContain("synthetic-private-value");
+      providerCode = "synthetic_private_token_123";
+      await expect(createUberDelivery({ quoteId: "dqt_synthetic", externalOrderReference: "myorder-918-43", pickupAddress: address, pickupName: "Test Shop", pickupPhoneNumber: "+15555550111", dropoffAddress: address, dropoffName: "Test Customer", dropoffPhoneNumber: "+15555550222", manifestItems: [{ name: "Test Item", quantity: 1 }] },
+        { tenantId: 918, environment: "sandbox", customerId: "synthetic-customer", clientId: "synthetic-uber-client-918", clientSecret: "synthetic-uber-secret" }))
+        .rejects.toMatchObject({ code: null });
+      expect(JSON.stringify(logSpy.mock.calls)).not.toContain(providerCode);
+    } finally { fetchSpy.mockRestore(); logSpy.mockRestore(); }
+  });
+
+  it("requires the provider create response to match the requested order and quote", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-token", expires_in: 3600 }), { status: 200 });
+      return new Response(JSON.stringify({ id: "del_wrong", external_id: "myorder-other-tenant", quote_id: "dqt_wrong", status: "pending" }), { status: 200 });
+    });
+    try {
+      const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
+      await expect(createUberDelivery({ quoteId: "dqt_expected", externalOrderReference: "myorder-919-42", pickupAddress: address, pickupName: "Test Shop", pickupPhoneNumber: "+15555550111", dropoffAddress: address, dropoffName: "Test Customer", dropoffPhoneNumber: "+15555550222", manifestItems: [{ name: "Test Item", quantity: 1 }] },
+        { tenantId: 919, environment: "sandbox", customerId: "synthetic-customer", clientId: "synthetic-uber-client-919", clientSecret: "synthetic-uber-secret" }))
+        .rejects.toMatchObject({ code: "delivery_identity_mismatch" });
     } finally { fetchSpy.mockRestore(); }
   });
 });

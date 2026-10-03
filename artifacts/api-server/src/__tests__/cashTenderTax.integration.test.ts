@@ -33,7 +33,7 @@ import { PaymentService } from "../payments/service";
 import { PayPalProvider } from "../payments/paypal";
 import { encrypt } from "../lib/crypto";
 import { normalizeUberAddress } from "../lib/uberDirect";
-import { dispatchPendingUberDelivery, reconcileUberDelivery } from "../lib/uberFulfillment";
+import { dispatchPendingUberDelivery, reconcileUberDelivery, requestUberCancellation } from "../lib/uberFulfillment";
 import { adjustCustomerCredit } from "../payments/customerCredit";
 
 const integrationDescribe = process.env.RUN_TENDER_TAX_INTEGRATION === "1" ? describe : describe.skip;
@@ -51,7 +51,8 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
   });
 
   beforeAll(async () => {
-    if (!/^postgresql:\/\/[^@]+@(?:127\.0\.0\.1|localhost):32778\/myorder_tax_production_like$/.test(process.env.DATABASE_URL ?? "")) throw new Error("Disposable tax clone required");
+    if (!/^postgresql:\/\/[^@]+@(?:127\.0\.0\.1|localhost):\d{4,5}\/myorder_tax_production_like$/.test(process.env.DATABASE_URL ?? "")
+      || process.env.TEST_DISPOSABLE_CLONE !== "I_UNDERSTAND_THIS_CLONE_IS_TRUNCATED") throw new Error("Explicit disposable tax clone required");
     const target = await db.execute(sql`SELECT current_database() AS name`);
     if (target.rows[0]?.name !== "myorder_tax_production_like") throw new Error("Disposable tax clone required");
     await db.execute(sql`TRUNCATE TABLE ${tenantsTable} RESTART IDENTITY CASCADE`);
@@ -165,6 +166,11 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(replay.body.replayed).toBe(true);
     const [beforeDelivery] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
     expect(beforeDelivery.providerStatus).toBe("pickup");
+    await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "canceling" }).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
+    const duringCancel = await sendEvent("evt-uber-during-cancel", "pickup_complete");
+    expect(duringCancel.status).toBe(200);
+    const [inFlight] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
+    expect(inFlight).toMatchObject({ providerStatus: "pickup_complete", requestState: "canceling" });
     const delivered = await sendEvent("evt-uber-delivered", "delivered");
     expect(delivered.status).toBe(200);
     const [afterDelivery] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, uberOrderId));
@@ -252,18 +258,39 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const ambiguousOrderId = await insertPaid("test-ambiguous-quote", "dqt_ambiguous", new Date(Date.now() + 600_000));
     const expiredOrderId = await insertPaid("test-expired-paid-quote", "dqt_expired", new Date(Date.now() - 1000));
     let createCalls = 0;
+    let cancelLookupStatus = "pending";
+    let cancelRaceOrderId = 0;
+    let boundedOrderId = 0;
+    let boundedLookupCalls = 0;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes("/oauth/")) return new Response(JSON.stringify({ access_token: "synthetic-recovery-token", expires_in: 3600 }), { status: 200 });
+      if (url.includes("/deliveries?") && boundedOrderId && url.includes("offset=")) {
+        const offset = Number(new URL(url).searchParams.get("offset"));
+        if (offset < 5) {
+          boundedLookupCalls += 1;
+          return new Response(JSON.stringify({ data: offset === 0
+            ? [{ id: "del_bounded", external_id: `myorder-${tenantId}-${boundedOrderId}`, quote_id: "dqt_bounded", status: "pending" }]
+            : [{ id: `del_other_${offset}`, external_id: `other-${offset}`, quote_id: "dqt_other", status: "pending" }], next_href: "next" }), { status: 200 });
+        }
+      }
       if (url.includes("/deliveries?")) return new Response(JSON.stringify({ data: [{ id: "del_recovered", external_id: `myorder-${tenantId}-${ambiguousOrderId}`, quote_id: "dqt_ambiguous", status: "pending" }], next_href: null }), { status: 200 });
+      if (url.endsWith("/deliveries/del_cancel_race")) return new Response(JSON.stringify({ id: "del_cancel_race", external_id: `myorder-${tenantId}-${cancelRaceOrderId}`, status: cancelLookupStatus }), { status: 200 });
+      if (url.endsWith("/deliveries/del_identity_mismatch")) return new Response(JSON.stringify({ id: "del_identity_mismatch", external_id: "myorder-other-tenant-order", quote_id: "dqt_wrong", status: "pending" }), { status: 200 });
+      if (url.endsWith("/deliveries/del_pending_cancel/cancel")) return new Response(JSON.stringify({ id: "del_pending_cancel", status: "pending" }), { status: 200 });
+      if (url.endsWith("/deliveries/del_pending_cancel")) return new Response(JSON.stringify({ id: "del_pending_cancel", external_id: `myorder-${tenantId}-${pendingCancelOrderId}`, status: "canceled" }), { status: 200 });
       if (url.endsWith("/deliveries") && init?.method === "POST") { createCalls += 1; throw new Error("synthetic timeout after send"); }
       throw new Error("Unexpected provider URL");
     });
+    let pendingCancelOrderId = 0;
     try {
       await dispatchPendingUberDelivery(tenantId, ambiguousOrderId);
       const [unresolved] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, ambiguousOrderId));
       expect(unresolved).toMatchObject({ requestState: "reconciliation_required", providerDeliveryId: null });
-      expect(await reconcileUberDelivery(tenantId, ambiguousOrderId)).toBe("delivery_created");
+      expect(await Promise.all([
+        reconcileUberDelivery(tenantId, ambiguousOrderId),
+        reconcileUberDelivery(tenantId, ambiguousOrderId),
+      ])).toEqual(["delivery_created", "delivery_created"]);
       await dispatchPendingUberDelivery(tenantId, ambiguousOrderId);
       expect(createCalls).toBe(1);
       const [recovered] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, ambiguousOrderId));
@@ -274,6 +301,52 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       const [paid] = await db.select().from(ordersTable).where(eq(ordersTable.id, expiredOrderId));
       expect(expired.requestState).toBe("requote_required");
       expect(paid).toMatchObject({ paymentStatus: "paid", fulfillmentStatus: "reconciliation_required" });
+
+      const missingOrderId = await insertPaid("test-provider-missing-quote", "dqt_missing", new Date(Date.now() + 600_000));
+      await dispatchPendingUberDelivery(tenantId, missingOrderId);
+      expect(createCalls).toBe(2);
+      expect(await reconcileUberDelivery(tenantId, missingOrderId)).toBe("manual_reconciliation_required");
+      const [missing] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, missingOrderId));
+      expect(missing).toMatchObject({ requestState: "manual_reconciliation_required", providerDeliveryId: null });
+      await dispatchPendingUberDelivery(tenantId, missingOrderId);
+      expect(createCalls).toBe(2);
+      const [missingPaid] = await db.select().from(ordersTable).where(eq(ordersTable.id, missingOrderId));
+      expect(missingPaid).toMatchObject({ paymentStatus: "paid", fulfillmentStatus: "reconciliation_required" });
+
+      cancelRaceOrderId = await insertPaid("test-cancel-race-quote", "dqt_cancel_race", new Date(Date.now() + 600_000));
+      await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "canceling", providerDeliveryId: "del_cancel_race" })
+        .where(eq(uberDeliveryFulfillmentsTable.orderId, cancelRaceOrderId));
+      expect(await reconcileUberDelivery(tenantId, cancelRaceOrderId)).toBe("canceling");
+      const [stillCanceling] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, cancelRaceOrderId));
+      expect(stillCanceling.requestState).toBe("canceling");
+      cancelLookupStatus = "canceled";
+      expect(await reconcileUberDelivery(tenantId, cancelRaceOrderId)).toBe("canceled");
+      const [canceled] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, cancelRaceOrderId));
+      expect(canceled).toMatchObject({ requestState: "canceled", providerStatus: "canceled" });
+
+      const identityOrderId = await insertPaid("test-identity-quote", "dqt_identity", new Date(Date.now() + 600_000));
+      await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "reconciliation_required", providerDeliveryId: "del_identity_mismatch" })
+        .where(eq(uberDeliveryFulfillmentsTable.orderId, identityOrderId));
+      expect(await reconcileUberDelivery(tenantId, identityOrderId)).toBe("manual_reconciliation_required");
+      const [identity] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, identityOrderId));
+      expect(identity).toMatchObject({ requestState: "manual_reconciliation_required", lastSanitizedError: "provider_identity_mismatch" });
+
+      boundedOrderId = await insertPaid("test-bounded-quote", "dqt_bounded", new Date(Date.now() + 600_000));
+      await dispatchPendingUberDelivery(tenantId, boundedOrderId);
+      expect(await reconcileUberDelivery(tenantId, boundedOrderId)).toBe("manual_reconciliation_required");
+      expect(boundedLookupCalls).toBe(5);
+      const [bounded] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, boundedOrderId));
+      expect(bounded).toMatchObject({ providerDeliveryId: null, requestState: "manual_reconciliation_required", lastSanitizedError: "bounded_lookup_incomplete" });
+      await dispatchPendingUberDelivery(tenantId, boundedOrderId);
+      expect(createCalls).toBe(3);
+
+      pendingCancelOrderId = await insertPaid("test-pending-cancel-quote", "dqt_pending_cancel", new Date(Date.now() + 600_000));
+      await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "delivery_created", providerDeliveryId: "del_pending_cancel", providerStatus: "pending" })
+        .where(eq(uberDeliveryFulfillmentsTable.orderId, pendingCancelOrderId));
+      expect(await requestUberCancellation(tenantId, pendingCancelOrderId)).toBe("cancel_reconciliation_required");
+      const [pendingCancel] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, pendingCancelOrderId));
+      expect(pendingCancel).toMatchObject({ requestState: "cancel_reconciliation_required", lastSanitizedError: "cancel_status_unconfirmed" });
+      expect(await reconcileUberDelivery(tenantId, pendingCancelOrderId)).toBe("canceled");
     } finally { fetchSpy.mockRestore(); }
   }, 60_000);
 
@@ -410,5 +483,24 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       createSpy.mockRestore(); captureSpy.mockRestore();
       for (const [key, value] of Object.entries(prior)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     }
+  }, 60_000);
+
+  it("persists and returns a $108.00 Cash settlement without an eight-cent discrepancy", async () => {
+    await db.update(catalogItemsTable).set({ price: "108.00" }).where(eq(catalogItemsTable.id, catalogItemId));
+    const items = [{ catalogItemId, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+    const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(converted.status, converted.text).toBe(200);
+    const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+    expect(created.status, created.text).toBe(201);
+    expect(created.body).toMatchObject({ subtotal: 108, tax: 0, total: 108 });
+    const orderId = Number(created.body.id);
+    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "108.00", idempotencyKey: `tax-e2e-108-${orderId}` });
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({ subtotal: 108, tax: 0, total: 108, cash: { amountDue: "108.00", amountTendered: "108.00", changeGiven: "0.00" } });
+    const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+    const [ledger] = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, orderId)));
+    expect(stored).toMatchObject({ subtotal: "108.00", tax: "0.00", total: "108.00", remainingTenderAmount: "108.00", paymentStatus: "paid" });
+    expect(ledger).toMatchObject({ amount: "108.00", amountTendered: "108.00", changeGiven: "0.00" });
   }, 60_000);
 });
