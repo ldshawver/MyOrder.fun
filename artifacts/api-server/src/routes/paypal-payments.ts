@@ -3,12 +3,13 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
-import { loadPaymentConfig, requireOnlinePayments } from "../payments/config";
+import { requireOnlinePayments } from "../payments/config";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { PayPalProvider, PayPalProviderError } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
 import type { PayPalTransmissionHeaders } from "../payments/provider";
 import { deductPaidOrderInventory } from "../payments/inventory";
-import { db, ordersTable, paymentAttemptsTable } from "@workspace/db";
+import { db, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
 import { releaseCustomerCredit } from "../payments/customerCredit";
 import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
@@ -28,26 +29,47 @@ function key(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{8,120}$/.test(value)) throw new PaymentServiceError(400, "INVALID_IDEMPOTENCY_KEY", "A valid Idempotency-Key header is required");
   return value;
 }
-function service() { const config = requireOnlinePayments(loadPaymentConfig()); return new PaymentService(config, new PayPalProvider(config)); }
+async function service(tenantId: number) { const config = requireOnlinePayments(await loadTenantPaymentConfig(tenantId)); return new PaymentService(config, new PayPalProvider(config)); }
 function fail(res: Response, error: unknown) {
   const known = error as { statusCode?: number; code?: string };
   res.status(known.statusCode ?? 502).json({ error: known.code ?? "PAYMENT_PROVIDER_ERROR" });
 }
 
-router.get("/payments/config", (_req, res) => {
+/** An untrusted webhook may select a candidate tenant only through an existing
+ * provider identity. The selected tenant's secret still verifies the signature. */
+async function webhookTenant(event: { resource?: Record<string, unknown> }): Promise<{ tenantId: number; environment: string } | null> {
+  const resource = event.resource ?? {};
+  const related = (resource.supplementary_data as { related_ids?: Record<string, unknown> } | undefined)?.related_ids ?? {};
+  const ids = [resource.id, related.order_id, related.capture_id].filter((value): value is string =>
+    typeof value === "string" && /^[A-Za-z0-9_-]{1,150}$/.test(value));
+  const matches = new Map<string, { tenantId: number; environment: string }>();
+  for (const id of ids) {
+    const attempts = await db.select({ tenantId: paymentAttemptsTable.tenantId, environment: paymentAttemptsTable.providerEnvironment }).from(paymentAttemptsTable)
+      .where(and(eq(paymentAttemptsTable.provider, "paypal"), eq(paymentAttemptsTable.providerOrderId, id)));
+    const captures = await db.select({ tenantId: paymentCapturesTable.tenantId, environment: paymentCapturesTable.providerEnvironment }).from(paymentCapturesTable)
+      .where(and(eq(paymentCapturesTable.provider, "paypal"), eq(paymentCapturesTable.providerCaptureId, id)));
+    const refunds = await db.select({ tenantId: paymentRefundsTable.tenantId, environment: paymentCapturesTable.providerEnvironment }).from(paymentRefundsTable)
+      .innerJoin(paymentCapturesTable, eq(paymentRefundsTable.paymentCaptureId, paymentCapturesTable.id))
+      .where(eq(paymentRefundsTable.providerRefundId, id));
+    for (const match of [...attempts, ...captures, ...refunds]) matches.set(`${match.tenantId}:${match.environment}`, match);
+  }
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
+router.get("/payments/config", ...auth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  try { const config = loadPaymentConfig(); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
+  try { const config = await loadTenantPaymentConfig(req.authorizedTenantId!); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
 
 router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
-  try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
+  try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
   catch (error) { fail(res, error); }
 });
 
 router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res) => {
   let body: z.infer<typeof Capture> | undefined; let orderId: number | undefined;
-  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().capture({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
+  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).capture({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
   catch (error) {
     const actor = req.dbUser!;
     // Release only on a definitive decline. Unknown outcomes retain the
@@ -71,23 +93,26 @@ router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res
 });
 
 router.post("/admin/payments/paypal/orders/:orderId/refund", ...auth, requirePermission("orders.refund"), async (req, res) => {
-  try { const body = Refund.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().refund({ tenantId: req.authorizedTenantId!, orderId, actorUserId: actor.id, idempotencyKey: key(req.get("Idempotency-Key")), amount: body.amount, reason: body.reason }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_REFUND", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { status: result.status, replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
+  try { const body = Refund.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).refund({ tenantId: req.authorizedTenantId!, orderId, actorUserId: actor.id, idempotencyKey: key(req.get("Idempotency-Key")), amount: body.amount, reason: body.reason }); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_REFUND", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { status: result.status, replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
   catch (error) { fail(res, error); }
 });
 
 router.get("/admin/payments/paypal/orders/:orderId/reconciliation", ...auth, requirePermission("orders.refund"), async (req, res) => {
-  try { const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await service().reconcile({ tenantId: req.authorizedTenantId!, orderId, finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); if (result.localState === "captured") await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); res.json(result); }
+  try { const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).reconcile({ tenantId: req.authorizedTenantId!, orderId, finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); if (result.localState === "captured") await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); res.json(result); }
   catch (error) { fail(res, error); }
 });
 
 router.post("/webhooks/paypal", limiter, async (req, res) => {
   try {
-    const config = requireOnlinePayments(loadPaymentConfig());
     const raw = Buffer.isBuffer(req.body) ? req.body : null;
     if (!raw || raw.length === 0 || raw.length > 262_144) throw new PaymentServiceError(400, "INVALID_WEBHOOK_BODY", "Invalid webhook body");
     const event = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).passthrough().parse(JSON.parse(raw.toString("utf8")));
     const header = (name: string) => { const value = req.get(name); if (!value || value.length > 2000) throw new PaymentServiceError(400, "MISSING_WEBHOOK_SIGNATURE", "Missing webhook signature metadata"); return value; };
     const headers: PayPalTransmissionHeaders = { transmissionId: header("PayPal-Transmission-Id"), transmissionTime: header("PayPal-Transmission-Time"), transmissionSignature: header("PayPal-Transmission-Sig"), certificateUrl: header("PayPal-Cert-Url"), authAlgorithm: header("PayPal-Auth-Algo") };
+    const identity = await webhookTenant(event);
+    if (!identity) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "Unknown PayPal event identity");
+    const config = requireOnlinePayments(await loadTenantPaymentConfig(identity.tenantId));
+    if (config.environment !== identity.environment) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "PayPal environment mismatch");
     const result = await new PaymentService(config, new PayPalProvider(config)).verifyAndRecordWebhook(headers, event);
     res.status(200).json({ received: true, replayed: result.replayed });
   } catch (error) { fail(res, error); }

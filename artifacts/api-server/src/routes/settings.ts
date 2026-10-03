@@ -4,7 +4,7 @@ import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, uberDirectS
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
-import { loadPaymentConfig } from "../payments/config";
+import { getTenantPayPalStatus, loadTenantPaymentConfig, paypalSettingsBody, saveTenantPayPalSettings } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
 import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
@@ -464,23 +464,12 @@ router.get("/admin/settings", requirePermission("settings.view"), requireTenantA
   res.json(mapSettings(s));
 });
 
-/**
- * Provider-specific status only. Credentials stay in deployment secrets and
- * are never accepted by or returned from the tenant settings API.
- */
-router.get("/admin/settings/paypal-status", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
+/** Tenant-scoped PayPal status; secrets are never returned. */
+router.get("/admin/settings/paypal-status", requireRole("admin", "global_admin"), requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   try {
-    const config = loadPaymentConfig();
-    if (!config.enabled) {
-      res.json({ enabled: false, environment: "disabled", clientIdConfigured: false, clientSecretConfigured: false, webhookIdConfigured: false, wallet: "not_configured", advancedCards: "not_configured", vault: "unknown", connection: "not_tested" });
-      return;
-    }
+    const status = await getTenantPayPalStatus(_req.authorizedTenantId!);
     res.json({
-      enabled: true,
-      environment: config.environment,
-      clientIdConfigured: true,
-      clientSecretConfigured: true,
-      webhookIdConfigured: true,
+      ...status,
       // Eligibility is intentionally discovered by PayPal's browser SDK for
       // the merchant, buyer, currency, and session; never promise a method
       // from a tenant-edited setting.
@@ -494,10 +483,20 @@ router.get("/admin/settings/paypal-status", requirePermission("settings.view"), 
   }
 });
 
-/** Runs a bounded OAuth handshake without returning or storing credentials. */
-router.post("/admin/settings/paypal-status/test", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.put("/admin/settings/paypal-status", requireRole("admin", "global_admin"), requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const parsed = paypalSettingsBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid PayPal configuration" }); return; }
   try {
-    const config = loadPaymentConfig();
+    const status = await saveTenantPayPalSettings(req.authorizedTenantId!, parsed.data);
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.paypal.configuration_changed", resourceType: "payment_provider", resourceId: "paypal", metadata: { fields: Object.keys(parsed.data).filter(field => field !== "clientSecret"), clientSecretUpdated: Boolean(parsed.data.clientSecret), environment: status.environment }, ipAddress: req.ip });
+    res.json({ ...status, wallet: "checkout_eligibility_required", advancedCards: "checkout_eligibility_required", vault: "unknown", connection: "not_tested" });
+  } catch { res.status(409).json({ error: "PayPal configuration is incomplete or conflicts with the selected environment" }); }
+});
+
+/** Runs a bounded OAuth handshake without returning or storing credentials. */
+router.post("/admin/settings/paypal-status/test", requireRole("admin", "global_admin"), requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  try {
+    const config = await loadTenantPaymentConfig(req.authorizedTenantId!);
     if (!config.enabled) {
       res.status(503).json({ connection: "not_configured" });
       return;

@@ -35,6 +35,7 @@ import { encrypt } from "../lib/crypto";
 import { normalizeUberAddress } from "../lib/uberDirect";
 import { dispatchPendingUberDelivery, reconcileUberDelivery, requestUberCancellation } from "../lib/uberFulfillment";
 import { adjustCustomerCredit } from "../payments/customerCredit";
+import { saveTenantPayPalSettings } from "../payments/tenantConfig";
 
 const integrationDescribe = process.env.RUN_TENDER_TAX_INTEGRATION === "1" ? describe : describe.skip;
 integrationDescribe("Cash tender tax via conversion, order, and closeout routes", () => {
@@ -59,6 +60,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const [tenant] = await db.insert(tenantsTable).values({ name: "Tax E2E Tenant", slug: "tax-e2e-tenant", status: "active" }).returning();
     tenantId = tenant.id;
     await db.insert(adminSettingsTable).values({ tenantId: tenant.id, enabledProcessors: ["cash", "paypal"], orderRoutingRule: "round_robin", customerDisclaimerVersion: 1, customerDisclaimerText: "All sales are final. Confirm before checkout." });
+    await saveTenantPayPalSettings(tenant.id, { enabled: true, environment: "sandbox", clientId: "synthetic-paypal-client", clientSecret: "synthetic-paypal-secret", webhookId: "synthetic-paypal-webhook" });
     const [otherTenant] = await db.insert(tenantsTable).values({ name: "Other Tax E2E Tenant", slug: "other-tax-e2e-tenant", status: "active" }).returning();
     otherTenantId = otherTenant.id;
     const [customer, csr] = await db.insert(usersTable).values([
@@ -84,6 +86,26 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
   afterAll(async () => {
     if (server) await new Promise<void>((resolve, reject) => server?.close(error => error ? reject(error) : resolve()));
     await pool.end();
+  });
+
+  it("keeps tenant PayPal secrets masked and refuses cross-environment or unpaired edits", async () => {
+    const masked = await request.get("/api/admin/settings/paypal-status").set("x-tax-e2e-user", "admin");
+    expect(masked.status).toBe(200);
+    expect(masked.body).toMatchObject({ enabled: true, environment: "sandbox", clientIdConfigured: true, clientSecretConfigured: true, webhookIdConfigured: true });
+    expect(JSON.stringify(masked.body)).not.toContain("synthetic-paypal-secret");
+    const unpaired = await request.put("/api/admin/settings/paypal-status").set("x-tax-e2e-user", "admin").send({ clientId: "different-client" });
+    expect(unpaired.status).toBe(409);
+    const crossEnvironment = await request.put("/api/admin/settings/paypal-status").set("x-tax-e2e-user", "admin").send({ environment: "live" });
+    expect(crossEnvironment.status).toBe(409);
+    const retained = await request.put("/api/admin/settings/paypal-status").set("x-tax-e2e-user", "admin").send({ enabled: true });
+    expect(retained.status).toBe(200);
+    const publicConfig = await request.get("/api/payments/config").set("x-tax-e2e-user", "customer");
+    expect(publicConfig.status).toBe(200);
+    expect(publicConfig.body).toMatchObject({ enabled: true, mode: "sandbox", clientId: "synthetic-paypal-client" });
+    expect(JSON.stringify(publicConfig.body)).not.toContain("synthetic-paypal-secret");
+    const otherTenant = await request.get("/api/payments/config").set("x-tax-e2e-user", "otherAdmin");
+    expect(otherTenant.status).toBe(200);
+    expect(otherTenant.body.enabled).toBe(false);
   });
 
   it("provisions missing WooCommerce settings and isolates synthetic credentials across tenants", async () => {
@@ -426,6 +448,54 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("MISSING_WEBHOOK_SIGNATURE");
   });
+
+  it("selects PayPal webhook verification by existing tenant provider identity and deduplicates replay", async () => {
+    const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "1.00", grossSubtotal: "1.00", taxableSubtotal: "1.00", tax: "0.09", total: "1.09", remainingTenderAmount: "1.09", selectedPaymentMethod: "paypal", checkoutConversionSnapshot: {}, legalDisclaimerAccepted: true, finalConfirmationAt: new Date() }).returning();
+    const providerOrderId = `TEST-TENANT-WEBHOOK-${order.id}`;
+    await db.insert(paymentAttemptsTable).values({ tenantId, orderId: order.id, provider: "paypal", providerEnvironment: "sandbox", providerOrderId, idempotencyKey: `tenant-webhook-${order.id}`, requestedAmount: "1.09", requestedCurrency: "USD", state: "created" });
+    const verify = vi.spyOn(PayPalProvider.prototype, "verifyWebhook").mockResolvedValue(true);
+    const event = { id: `TEST-TENANT-WEBHOOK-EVENT-${order.id}`, event_type: "PAYMENT.CAPTURE.PENDING", resource: { id: providerOrderId } };
+    const send = (value: typeof event) => request.post("/api/webhooks/paypal")
+      .set("Content-Type", "application/json")
+      .set("PayPal-Transmission-Id", "synthetic-transmission")
+      .set("PayPal-Transmission-Time", new Date().toISOString())
+      .set("PayPal-Transmission-Sig", "synthetic-signature")
+      .set("PayPal-Cert-Url", "https://example.test/cert")
+      .set("PayPal-Auth-Algo", "SHA256withRSA").send(value);
+    try {
+      const first = await send(event);
+      expect(first.status, first.text).toBe(200);
+      expect(first.body.replayed).toBe(false);
+      const replay = await send(event);
+      expect(replay.status, replay.text).toBe(200);
+      expect(replay.body.replayed).toBe(true);
+      expect(verify).toHaveBeenCalledTimes(2);
+      const unknown = await send({ ...event, id: `${event.id}-UNKNOWN`, resource: { id: "TEST-UNKNOWN-PROVIDER-ORDER" } });
+      expect(unknown.status).toBe(400);
+      const events = await db.select().from(paymentWebhookEventsTable).where(eq(paymentWebhookEventsTable.providerEventId, event.id));
+      expect(events).toHaveLength(1);
+    } finally { verify.mockRestore(); }
+  }, 60_000);
+
+  it("does not regress a captured PayPal attempt on a delayed approval webhook", async () => {
+    const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "1.00", tax: "0.09", total: "1.09" }).returning();
+    const providerOrderId = `TEST-LATE-APPROVAL-${order.id}`;
+    const [attempt] = await db.insert(paymentAttemptsTable).values({ tenantId, orderId: order.id, provider: "paypal", providerEnvironment: "sandbox", providerOrderId, idempotencyKey: `late-approval-${order.id}`, requestedAmount: "1.09", requestedCurrency: "USD", state: "captured" }).returning();
+    const verify = vi.spyOn(PayPalProvider.prototype, "verifyWebhook").mockResolvedValue(true);
+    const getOrder = vi.spyOn(PayPalProvider.prototype, "getOrder").mockResolvedValue({ id: providerOrderId, status: "COMPLETED", amount: { value: "1.09", currency: "USD" } });
+    try {
+      const response = await request.post("/api/webhooks/paypal")
+        .set("PayPal-Transmission-Id", "synthetic-transmission")
+        .set("PayPal-Transmission-Time", new Date().toISOString())
+        .set("PayPal-Transmission-Sig", "synthetic-signature")
+        .set("PayPal-Cert-Url", "https://example.test/cert")
+        .set("PayPal-Auth-Algo", "SHA256withRSA")
+        .send({ id: `TEST-LATE-APPROVAL-EVENT-${order.id}`, event_type: "CHECKOUT.ORDER.APPROVED", resource: { id: providerOrderId } });
+      expect(response.status, response.text).toBe(200);
+      const [after] = await db.select({ state: paymentAttemptsTable.state }).from(paymentAttemptsTable).where(eq(paymentAttemptsTable.id, attempt.id));
+      expect(after.state).toBe("captured");
+    } finally { verify.mockRestore(); getOrder.mockRestore(); }
+  }, 60_000);
 
   it("serializes duplicate checkout submissions for one verified conversion", async () => {
     const items = [{ catalogItemId, quantity: 1 }];

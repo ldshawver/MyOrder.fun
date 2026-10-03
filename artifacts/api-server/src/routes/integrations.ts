@@ -20,7 +20,8 @@
  */
 import { Router, type IRouter } from "express";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
-import { hasUberDirectConfig } from "../lib/uberDirect";
+import { getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 
 const router: IRouter = Router();
 
@@ -43,8 +44,9 @@ function hasEnv(...keys: string[]): boolean {
   });
 }
 
-function checkPayPal(): IntegrationStatus {
-  return hasEnv("PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID") ? "connected" : "missing_config";
+async function checkPayPal(tenantId: number): Promise<IntegrationStatus> {
+  try { return (await loadTenantPaymentConfig(tenantId)).enabled ? "connected" : "missing_config"; }
+  catch { return "error"; }
 }
 
 /**
@@ -90,8 +92,9 @@ function checkOpenAI(): IntegrationStatus {
   return hasEnv("OPENAI_API_KEY") ? "connected" : "missing_config";
 }
 
-function checkUberDirect(): IntegrationStatus {
-  return hasUberDirectConfig() ? "connected" : "missing_config";
+async function checkUberDirect(tenantId: number): Promise<IntegrationStatus> {
+  try { return await getUberDirectRuntimeConfig(tenantId) ? "connected" : "missing_config"; }
+  catch { return "error"; }
 }
 
 // ─── Route ───────────────────────────────────────────────────────────────────
@@ -103,17 +106,17 @@ router.get(
   requireDbUser,
   requireApproved,
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     // Run all checks concurrently; individual check failures are caught
     // internally and return "error" rather than throwing.
     const result: IntegrationResult = {
-      paypal: checkPayPal(),
+      paypal: await checkPayPal(req.dbUser!.tenantId!),
       airtable: checkAirtable(),
       github: checkGitHub(),
       woocommerce: checkWooCommerce(),
       revenuecat: checkRevenueCat(),
       openai: checkOpenAI(),
-      uberDirect: checkUberDirect(),
+      uberDirect: await checkUberDirect(req.dbUser!.tenantId!),
     };
 
     res.json(result);

@@ -65,7 +65,7 @@ import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
 import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
-import { loadPaymentConfig } from "../payments/config";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
@@ -318,7 +318,7 @@ async function buildConversionPreview(lines: NormalizedCartLine[], confirmation:
   const branding = tenantId ? await getBranding(tenantId) : null;
   const [paymentSettings] = tenantId ? await db.select({ enabledProcessors: adminSettingsTable.enabledProcessors })
     .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1) : [];
-  const paymentMethods = checkoutPaymentMethods(paymentSettings?.enabledProcessors ?? ["paypal"], loadPaymentConfig().enabled);
+  const paymentMethods = checkoutPaymentMethods(paymentSettings?.enabledProcessors ?? ["paypal"], tenantId ? (await loadTenantPaymentConfig(tenantId)).enabled : false);
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -568,7 +568,7 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     if ((processor === "cash" || processor === "paypal") && !settings?.enabledProcessors?.includes(processor)) {
       res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
     }
-    if (processor === "paypal" && !loadPaymentConfig().enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
+    if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
     const taxSettings = processor === "paypal" ? await getCheckoutTaxSettings(tenantId) : null;
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
     const preliminary = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, cashDiscount });
@@ -917,7 +917,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
     return;
   }
-  if (processor === "paypal" && !loadPaymentConfig().enabled) {
+  if (processor === "paypal" && !(await loadTenantPaymentConfig(houseTenantId)).enabled) {
     res.status(422).json({ error: "PayPal checkout is unavailable until live payment configuration is completed" });
     return;
   }

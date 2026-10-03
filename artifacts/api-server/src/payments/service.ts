@@ -123,6 +123,7 @@ export class PaymentService {
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
       if (!attempt?.providerOrderId) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      if (attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(409, "PAYMENT_ENVIRONMENT_MISMATCH", "Payment attempt requires its original provider environment");
       if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
       if (attempt.state === "reconciliation_required" || attempt.state === "capturing") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
@@ -327,7 +328,10 @@ export class PaymentService {
       const [attempt] = await db.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.provider, "paypal"), eq(paymentAttemptsTable.providerEnvironment, environment), eq(paymentAttemptsTable.providerOrderId, authoritative.id))).limit(1);
       if (!attempt) { await db.update(paymentWebhookEventsTable).set({ processingState: "reconciliation_required", failureClass: "unmapped_provider_order", providerOrderId: authoritative.id, processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id)); return { replayed: false, processed: false }; }
       if (!sameMoney(authoritative.amount.value, attempt.requestedAmount) || authoritative.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "WEBHOOK_AMOUNT_MISMATCH", "Webhook order requires reconciliation");
-      await db.update(paymentAttemptsTable).set({ state: "approved" }).where(eq(paymentAttemptsTable.id, attempt.id));
+      // A delayed approval must never move a captured or refunded attempt
+      // backwards. Capture can complete before this webhook is delivered.
+      if (attempt.state === "created") await db.update(paymentAttemptsTable).set({ state: "approved" })
+        .where(and(eq(paymentAttemptsTable.id, attempt.id), eq(paymentAttemptsTable.state, "created")));
       await db.update(paymentWebhookEventsTable).set({ tenantId: attempt.tenantId, paymentAttemptId: attempt.id, providerOrderId: authoritative.id, processingState: "processed", processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id));
     } else {
       const authoritative = await this.provider.getCapture(resourceId);
