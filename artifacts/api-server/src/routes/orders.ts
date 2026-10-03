@@ -63,7 +63,7 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
-import { consumeCustomerCredit, getCustomerCreditBalance, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
+import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
 import { loadPaymentConfig } from "../payments/config";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
@@ -2236,7 +2236,16 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
   }
   if (!transition.changed) {
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-      const released = await db.transaction((tx) => releaseInventoryReservationsForOrder(tx, tenantId, id));
+      const released = await db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${id})`);
+        const count = await releaseInventoryReservationsForOrder(tx, tenantId, id);
+        const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+        if (current && Number(current.customerCreditApplied) > 0) {
+          await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
+          await tx.update(ordersTable).set({ customerCreditApplied: "0.00", remainingTenderAmount: current.total }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)));
+        }
+        return count;
+      });
       if (released > 0) {
         await writeAuditLog({
           actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2246,7 +2255,8 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
         });
       }
     }
-    res.json(await buildOrderResponse(order));
+    const [current] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+    res.json(await buildOrderResponse(current ?? order));
     return;
   }
   if (status === "completed" && order.paymentStatus !== "paid") {
@@ -2257,10 +2267,6 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" });
     return;
   }
-  if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-    try { await releaseInventoryReservationsForOrder(db, tenantId, id); }
-    catch { res.status(409).json({ error: "Payment must be resolved before reserved inventory can be released" }); return; }
-  }
   const now = new Date();
   const stamps: Partial<typeof ordersTable.$inferInsert> =
     normalizedTarget === "completed" ? { completedAt: now, completedByUserId: actor.id, fulfillmentStatus: "completed" } :
@@ -2269,18 +2275,32 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     normalizedTarget === "reconciliation_required" ? { fulfillmentStatus: "reconciliation_required" } :
     status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
     { voidedAt: now, voidedByUserId: actor.id };
-  const [updated] = await db.transaction(async tx => {
+  let updated: typeof ordersTable.$inferSelect;
+  try { [updated] = await db.transaction(async tx => {
     // A reservation is a temporary availability hold, never a final stock
     // movement. Cancelling an unpaid order must release it with the status
     // change so a failed payment cannot leave stock unavailable.
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${id})`);
       await releaseInventoryReservationsForOrder(tx, tenantId, id);
+      const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+      if (!current || current.paymentStatus === "paid") throw new Error("Payment must be resolved before cancellation");
+      if (Number(current.customerCreditApplied) > 0) {
+        await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
+        stamps.customerCreditApplied = "0.00";
+        stamps.remainingTenderAmount = current.total;
+      }
     }
     return tx.update(ordersTable)
       .set({ status: normalizedTarget, updatedAt: now, ...stamps })
       .where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)))
       .returning();
-  });
+  }); } catch (error) {
+    if (normalizedTarget === "cancelled" && (error instanceof CustomerCreditError || (error instanceof Error && /Inventory cannot be released|Payment must be resolved/.test(error.message)))) {
+      res.status(409).json({ error: "Payment or Customer Credit must be resolved before cancellation" }); return;
+    }
+    throw error;
+  }
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,

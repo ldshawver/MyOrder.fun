@@ -28,7 +28,7 @@ vi.mock("@clerk/express", () => ({
 }));
 
 import app from "../app";
-import { adminSettingsTable, auditLogsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentWebhookEventsTable, pool, taxConfigurationsTable, tenantSettingsTable, tenantsTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, uberDirectSettingsTable, usersTable } from "@workspace/db";
+import { adminSettingsTable, auditLogsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerCreditAccountsTable, customerCreditLedgerTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentWebhookEventsTable, pool, taxConfigurationsTable, tenantSettingsTable, tenantsTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, uberDirectSettingsTable, usersTable } from "@workspace/db";
 import { PaymentService } from "../payments/service";
 import { PayPalProvider } from "../payments/paypal";
 import { encrypt } from "../lib/crypto";
@@ -408,6 +408,15 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
     expect(stored).toMatchObject({ subtotal: "100.00", tax: "5.25", total: "105.25", customerCreditApplied: "40.00", remainingTenderAmount: "65.25", paymentStatus: "unpaid" });
     expect(created.body).toMatchObject({ subtotal: 100, tax: 5.25, total: 105.25, customerCreditApplied: 40, remainingTenderAmount: 65.25, paymentStatus: "unpaid" });
+    const cancelled = await as("admin").post(`/api/orders/${created.body.id}/cancel`).send({ reason: "Disposable split cancellation" });
+    expect(cancelled.status, cancelled.text).toBe(200);
+    expect(cancelled.body).toMatchObject({ status: "cancelled", customerCreditApplied: 0 });
+    const replay = await as("admin").post(`/api/orders/${created.body.id}/cancel`).send({ reason: "Disposable split cancellation retry" });
+    expect(replay.status, replay.text).toBe(200);
+    const [account] = await db.select().from(customerCreditAccountsTable).where(and(eq(customerCreditAccountsTable.tenantId, tenantId), eq(customerCreditAccountsTable.customerId, customerId)));
+    expect(account.reservedBalance).toBe("0.00");
+    const creditEntries = await db.select().from(customerCreditLedgerTable).where(and(eq(customerCreditLedgerTable.tenantId, tenantId), eq(customerCreditLedgerTable.orderId, Number(created.body.id))));
+    expect(creditEntries.map(entry => entry.entryType).sort()).toEqual(["order_reservation", "reservation_release"]);
   }, 60_000);
 
   it("routes public PayPal webhooks to signature verification", async () => {
