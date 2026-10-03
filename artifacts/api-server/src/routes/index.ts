@@ -36,6 +36,7 @@ import taxConfigurationsRouter from "./tax-configurations";
 import printBridgeDiscoveryRouter from "./print-bridge-discovery";
 import returnsRouter from "./returns";
 import publicBrandingRouter from "./public-branding";
+import publicCatalogRouter from "./public-catalog";
 import uberDirectWebhooksRouter from "./uber-direct-webhooks";
 
 const router: IRouter = Router();
@@ -46,6 +47,7 @@ router.use(uberDirectWebhooksRouter);
 // unrelated router-wide customer authentication middleware.
 router.use(paypalPaymentsRouter);
 router.use(publicBrandingRouter);
+router.use(publicCatalogRouter);
 router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);

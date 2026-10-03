@@ -155,7 +155,10 @@ export default function LuciferLanding() {
             type="button"
             className="lc-enter"
             disabled={!ageConfirmed}
-            onClick={() => navigate(BOUTIQUE_ROUTE)}
+            onClick={() => {
+              try { sessionStorage.setItem("lc_age_confirmed", "1"); } catch { /* Catalog also offers confirmation. */ }
+              navigate(BOUTIQUE_ROUTE);
+            }}
             aria-label="Enter Adult Boutique"
           >
             ENTER ADULT BOUTIQUE <ArrowUpRight size={18} aria-hidden="true" />

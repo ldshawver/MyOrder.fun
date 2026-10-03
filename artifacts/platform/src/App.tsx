@@ -18,6 +18,7 @@ import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPoli
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
 import Home from "@/pages/home";
+import PublicCatalog from "@/pages/public-catalog";
 import WaitlistPage from "@/pages/waitlist";
 import Terms from "@/pages/terms";
 import Privacy from "@/pages/privacy";
@@ -175,6 +176,15 @@ function HomeRedirect() {
       </Show>
     </>
   );
+}
+
+function SignedOutCatalog() {
+  const { branding, publicBrandLoading } = useBrand();
+  if (publicBrandLoading) return <LoadingScreen />;
+  if (branding.customer.displayName.trim().toLowerCase() !== "lucifer cruz" && window.location.hostname !== "myorder.fun") {
+    return <Redirect to="/waitlist" />;
+  }
+  return <PublicCatalog />;
 }
 
 /** Legacy customer URLs have one canonical mutable cart: /cart. */
@@ -597,6 +607,10 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/catalog">
+        <Show when="signed-in"><AuthenticatedApp /></Show>
+        <Show when="signed-out"><SignedOutCatalog /></Show>
+      </Route>
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>
