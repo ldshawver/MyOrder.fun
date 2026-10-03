@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Migration entrypoint for the Docker migrate service.
-# Runs pre-flight diagnostics, then applies drizzle-kit migrations safely.
+# Runs pre-flight diagnostics, then applies verified Drizzle migrations safely.
 set -Eeuo pipefail
 
 echo "════════════════════════════════════════════════════════"
@@ -69,8 +69,8 @@ fi
 
 # ── Run migrations ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Running migrations: drizzle-kit migrate"
-echo "  (Safe — applies pending SQL files from lib/db/drizzle/ in order."
+echo "▶ Running migrations: verified Drizzle runner"
+echo "  (Safe — applies verified pending SQL files from lib/db/drizzle/ in order."
 echo "   Does NOT drop or reset tables. Use push-force only for dev resets.)"
 echo ""
 

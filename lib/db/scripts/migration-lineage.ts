@@ -82,6 +82,19 @@ export const historicalStaging0058 = Object.freeze({
   reconciliationHash: "5988b2eac94914ac9e1f64c4fa0bcb2b75e43d4212a7a12db65e55d2636f1dcb",
 });
 
+// Staging executed these SQL files before print/document migrations were added
+// to the canonical journal. The hashes are the historical SQL bytes, not
+// synthetic ledger entries. Their canonical copies are journal entries 43-45.
+export const historicalStagingInventory = Object.freeze({
+  prefixLength: 37,
+  rows: [
+    { historicalTag: "0064_inventory_tenant_quantity_foundation", canonicalIndex: 43, canonicalTag: "0069_inventory_tenant_quantity_foundation", hash: "d13d616485eec5df2c94c70dadb3d900c00979d363f27005051e05855327e51b", when: 1790200000000, canonicalWhen: 1790600000004 },
+    { historicalTag: "0065_catalogue_products_options_reorder", canonicalIndex: 44, canonicalTag: "0070_catalogue_products_options_reorder", hash: "a9c0bdef477fc724e91ee1f004936580b383f657cb71084eec6f0b42c6634702", when: 1790200000001, canonicalWhen: 1790600000005 },
+    { historicalTag: "0066_refund_state_constraint_reconciliation", canonicalIndex: 45, canonicalTag: "0071_refund_state_constraint_reconciliation", hash: "5988b2eac94914ac9e1f64c4fa0bcb2b75e43d4212a7a12db65e55d2636f1dcb", when: 1790200000002, canonicalWhen: 1790600000006 },
+  ],
+  forwardIndices: [39, 40, 41, 42, 46, 47],
+});
+
 export type HistoricalStaging0047SchemaEvidence = Record<
   (typeof historicalStaging0047SchemaChecks)[number],
   boolean
@@ -105,6 +118,7 @@ export interface AppliedLineageResult {
   appliedJournalIndices: Set<number>;
   historicalStaging0047Recognized: boolean;
   historicalStaging0058Recognized: boolean;
+  historicalStagingInventoryRecognized: boolean;
 }
 
 function matchesHistoricalStaging0047(
@@ -158,6 +172,38 @@ export function validateAppliedLineage(
     throw new Error(
       `[migration-ledger] database has ${applied.length} migrations but the journal has only ${local.length}`,
     );
+  }
+
+  const staging = historicalStagingInventory;
+  const historicalRows = staging.rows;
+  const hasHistoricalInventory = applied.length >= staging.prefixLength + historicalRows.length &&
+    applied.slice(0, 40).every((row, index) => row.id === index + 1) &&
+    historicalRows.every((row, offset) => {
+      const canonical = local[row.canonicalIndex];
+      const historical = applied[staging.prefixLength + offset];
+      return canonical?.idx === row.canonicalIndex && canonical.tag === row.canonicalTag &&
+        canonical.hash === row.hash && canonical.when === row.canonicalWhen &&
+        historical?.hash === row.hash && historical.created_at === String(row.when);
+    });
+  if (hasHistoricalInventory) {
+    const prefix = validateAppliedLineage(local, applied.slice(0, staging.prefixLength));
+    if (!prefix.historicalStaging0047Recognized || !prefix.historicalStaging0058Recognized ||
+        applied.length > staging.prefixLength + historicalRows.length + staging.forwardIndices.length) {
+      throw new Error("[migration-ledger] unexpected staging lineage prefix or suffix");
+    }
+    const appliedJournalIndices = new Set(prefix.appliedJournalIndices);
+    for (const row of historicalRows) appliedJournalIndices.add(row.canonicalIndex);
+    for (let position = staging.prefixLength + historicalRows.length; position < applied.length; position++) {
+      const index = staging.forwardIndices[position - staging.prefixLength - historicalRows.length];
+      const expected = local[index];
+      const actual = applied[position];
+      if (!expected || actual.id <= applied[position - 1].id ||
+          actual.hash !== expected.hash || actual.created_at !== String(expected.when)) {
+        throw new Error(`[migration-ledger] unexpected staging forward row ${position + 1}`);
+      }
+      appliedJournalIndices.add(index);
+    }
+    return { ...prefix, appliedJournalIndices, historicalStagingInventoryRecognized: true };
   }
 
   const legacyIndices = new Set<number>();
@@ -245,5 +291,6 @@ export function validateAppliedLineage(
     appliedJournalIndices,
     historicalStaging0047Recognized,
     historicalStaging0058Recognized,
+    historicalStagingInventoryRecognized: false,
   };
 }
