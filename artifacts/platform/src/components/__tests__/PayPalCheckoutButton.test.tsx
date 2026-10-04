@@ -45,7 +45,7 @@ describe("PayPal Wallet checkout", () => {
     const createPayPalOneTimePaymentSession = vi.fn().mockReturnValue({ start: vi.fn() });
     window.paypal = { createInstance: vi.fn().mockResolvedValue({ findEligibleMethods, createPayPalOneTimePaymentSession }) };
     await renderButton();
-    expect(window.paypal.createInstance).toHaveBeenCalledWith({ clientId: "public-test-client", components: ["paypal-payments"], pageType: "checkout" });
+    expect(window.paypal.createInstance).toHaveBeenCalledWith({ clientId: "public-test-client", components: ["paypal-payments", "venmo-payments", "paypal-guest-payments"], pageType: "checkout" });
     expect(findEligibleMethods).toHaveBeenCalledWith({ currencyCode: "USD" });
     expect(host.querySelector("paypal-button[type=pay]")).not.toBeNull();
     expect(createPayPalOneTimePaymentSession).toHaveBeenCalledTimes(1);
@@ -57,5 +57,30 @@ describe("PayPal Wallet checkout", () => {
     await renderButton();
     expect(host.querySelector("paypal-button")).toBeNull();
     expect(host.textContent).toContain("PayPal Wallet is unavailable");
+  });
+
+  it("passes the server-created PayPal order to v6 and captures only after onApprove", async () => {
+    const onCaptured = vi.fn();
+    const start = vi.fn(async (_options, order: Promise<{ orderId: string }>) => {
+      expect(await order).toEqual({ orderId: "PROVIDER-43" });
+    });
+    let onApprove: ((data: { orderId: string }) => Promise<void>) | undefined;
+    window.paypal = { createInstance: vi.fn(async () => ({
+      findEligibleMethods: async () => ({ isEligible: (method: string) => method === "paypal" }),
+      createPayPalOneTimePaymentSession: (options: { onApprove(data: { orderId: string }): Promise<void> }) => { onApprove = options.onApprove; return { start }; },
+    })) };
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+      url === "/api/payments/config" ? { enabled: true, mode: "sandbox", clientId: "public-client", currency: "USD" }
+        : url.endsWith("/capture") ? { status: "captured" } : { attemptId: 11, providerOrderId: "PROVIDER-43" },
+    ), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; document.head.append(script);
+    await act(async () => { root.render(<PayPalCheckoutButton orderId={43} getToken={async () => "test-token"} onCaptured={onCaptured} />); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => { host.querySelector("paypal-button")?.dispatchEvent(new MouseEvent("click")); await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/capture"))).toBe(false);
+    await act(async () => { await onApprove?.({ orderId: "PROVIDER-43" }); });
+    expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/capture"))).toBe(true);
+    expect(onCaptured).toHaveBeenCalledWith(43);
   });
 });

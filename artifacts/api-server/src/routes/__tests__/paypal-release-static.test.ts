@@ -17,11 +17,11 @@ describe("PayPal release security structure", () => {
   it("uses a raw bounded webhook and signature metadata", () => { expect(route).toContain("Buffer.isBuffer"); expect(route).toContain("PayPal-Transmission-Sig"); expect(route).toContain("PayPal-Cert-Url"); });
   it("does not load PayPal SDK until server configuration enables it", () => { expect(frontend).toContain("!config.enabled"); expect(frontend.indexOf("!config.enabled")).toBeLessThan(frontend.indexOf("document.createElement")); expect(frontend).not.toContain("paypalme"); });
   it("uses the v6 official Wallet element with only the publishable client ID and automatic presentation", () => {
-    expect(frontend).toContain('document.createElement("paypal-button")');
+    expect(frontend).toContain('tag: "paypal-button"');
     expect(frontend).toContain("createPayPalOneTimePaymentSession");
-    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments"], pageType: "checkout" })');
     expect(frontend).toContain('presentationMode: "auto"');
-    expect(frontend).toContain('headers: await authHeaders()');
+    expect(frontend).toContain('...await authHeaders()');
     expect(frontend).not.toContain("browser-token");
     expect(frontend).not.toContain("clientSecret");
     expect(frontend).not.toContain("type=\"text\" name=\"cardNumber\"");

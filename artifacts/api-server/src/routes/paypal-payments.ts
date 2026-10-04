@@ -103,19 +103,40 @@ router.get("/admin/payments/paypal/orders/:orderId/reconciliation", ...auth, req
 });
 
 router.post("/webhooks/paypal", limiter, async (req, res) => {
+  let stage = "raw_body";
   try {
     const raw = Buffer.isBuffer(req.body) ? req.body : null;
-    if (!raw || raw.length === 0 || raw.length > 262_144) throw new PaymentServiceError(400, "INVALID_WEBHOOK_BODY", "Invalid webhook body");
-    const event = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).passthrough().parse(JSON.parse(raw.toString("utf8")));
-    const header = (name: string) => { const value = req.get(name); if (!value || value.length > 2000) throw new PaymentServiceError(400, "MISSING_WEBHOOK_SIGNATURE", "Missing webhook signature metadata"); return value; };
+    if (!raw) throw new PaymentServiceError(400, "WEBHOOK_RAW_BODY_MISSING", "PayPal webhook requires the original request body");
+    if (raw.length === 0 || raw.length > 262_144) throw new PaymentServiceError(400, "INVALID_WEBHOOK_BODY", "Invalid webhook body");
+    stage = "json_body";
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(raw.toString("utf8")); }
+    catch { throw new PaymentServiceError(400, "INVALID_WEBHOOK_JSON", "Invalid webhook JSON"); }
+    const parsedEvent = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).passthrough().safeParse(parsedBody);
+    if (!parsedEvent.success) throw new PaymentServiceError(400, "INVALID_WEBHOOK_EVENT", "Invalid webhook event");
+    const event = parsedEvent.data;
+    stage = "signature_headers";
+    const header = (name: string) => {
+      const value = req.get(name);
+      if (!value) throw new PaymentServiceError(400, "MISSING_WEBHOOK_SIGNATURE", "Missing webhook signature metadata");
+      if (value.length > 2000 || /[\r\n]/.test(value)) throw new PaymentServiceError(400, "MALFORMED_WEBHOOK_SIGNATURE", "Malformed webhook signature metadata");
+      return value;
+    };
     const headers: PayPalTransmissionHeaders = { transmissionId: header("PayPal-Transmission-Id"), transmissionTime: header("PayPal-Transmission-Time"), transmissionSignature: header("PayPal-Transmission-Sig"), certificateUrl: header("PayPal-Cert-Url"), authAlgorithm: header("PayPal-Auth-Algo") };
+    stage = "tenant_identity";
     const identity = await webhookTenant(event);
     if (!identity) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "Unknown PayPal event identity");
+    stage = "tenant_configuration";
     const config = requireOnlinePayments(await loadTenantPaymentConfig(identity.tenantId));
     if (config.environment !== identity.environment) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "PayPal environment mismatch");
+    stage = "verification_and_persistence";
     const result = await new PaymentService(config, new PayPalProvider(config)).verifyAndRecordWebhook(headers, event);
     res.status(200).json({ received: true, replayed: result.replayed });
-  } catch (error) { fail(res, error); }
+  } catch (error) {
+    const known = error as { code?: string; failureClass?: string };
+    logger.warn({ stage, code: known.code ?? "UNCLASSIFIED", providerFailureClass: known.failureClass ?? null }, "PayPal webhook rejected");
+    fail(res, error);
+  }
 });
 
 export default router;
