@@ -183,7 +183,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
 // Sync handler — credentials are always loaded (decrypted) from the DB
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
-async function syncHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
+export async function syncHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
     try {
       await ensureWooCatalogSchema();
     } catch {
