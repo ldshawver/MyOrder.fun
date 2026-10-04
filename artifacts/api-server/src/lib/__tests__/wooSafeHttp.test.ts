@@ -30,7 +30,7 @@ describe("WooCommerce SSRF boundary", () => {
         expect(addresses).toEqual([{ address: "8.8.8.8", family: 4 }]);
         const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> };
         res.statusCode = 200;
-        res.headers = { "content-type": "application/json" };
+        res.headers = { "content-type": "application/json", "x-wp-total": "304", "x-wp-totalpages": "16" };
         respond(res);
         res.emit("data", Buffer.from("{}"));
         res.emit("end");
@@ -40,6 +40,8 @@ describe("WooCommerce SSRF boundary", () => {
     });
     const response = await fetchWooSafely("https://8.8.8.8", "/wp-json/wc/v3/system_status", "ck_synthetic", "cs_synthetic", transport as unknown as typeof request);
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-wp-total")).toBe("304");
+    expect(response.headers.get("x-wp-totalpages")).toBe("16");
   });
 
   it("authenticates a synthetic WooCommerce response over the checked transport", async () => {

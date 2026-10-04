@@ -65,6 +65,7 @@ interface WooProduct {
   description?: string;
   short_description?: string;
   stock_status?: string;
+  catalog_visibility?: string;
   sku?: string;
   date_created?: string | null;
   date_modified?: string | null;
@@ -155,7 +156,8 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
   const base = storeUrl.replace(/\/$/, "");
   const allProducts: WooProduct[] = [];
   let page = 1;
-  const perPage = 100;
+  // A full page from this store exceeds the safe client's 10-second timeout.
+  const perPage = 20;
 
   while (page <= WOO_MAX_PAGES) {
     const res = await fetchWoo(base, `/wp-json/wc/v3/products?per_page=${perPage}&page=${page}&status=publish`, consumerKey, consumerSecret);
@@ -165,8 +167,13 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
     allProducts.push(...products);
 
     // Check total pages from header
-    const totalPages = parseInt(res.headers.get("X-WP-TotalPages") ?? "1", 10);
-    if (!Number.isSafeInteger(totalPages) || totalPages < 1 || page >= totalPages || products.length < perPage) break;
+    const totalPagesHeader = res.headers.get("X-WP-TotalPages");
+    const totalPages = totalPagesHeader === null ? null : Number(totalPagesHeader);
+    if (totalPages !== null && (!Number.isSafeInteger(totalPages) || totalPages < 1 || totalPages > WOO_MAX_PAGES)) {
+      throw new WooCommerceUpstreamError("malformed");
+    }
+    if ((totalPages !== null && page >= totalPages) || products.length < perPage) break;
+    if (page === WOO_MAX_PAGES) throw new WooCommerceUpstreamError("malformed");
     page++;
   }
 
@@ -229,6 +236,7 @@ async function syncHandler(req: import("express").Request, res: import("express"
         const description = product.description ? stripHtml(product.description) : null;
         const shortDesc = product.short_description ? stripHtml(product.short_description) : null;
         const inStock = product.stock_status ? product.stock_status === "instock" : true;
+        const visibleInCatalog = product.catalog_visibility !== "hidden" && product.catalog_visibility !== "search";
         const wcSku = product.sku?.trim() || null;
 
         if (!lcName) { skipped++; continue; }
@@ -274,7 +282,7 @@ async function syncHandler(req: import("express").Request, res: import("express"
 
         // Dedup by alavont_id = "wc_{product_id}"
         const [existing] = await db
-          .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont })
+          .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont, metadata: catalogItemsTable.metadata })
           .from(catalogItemsTable)
           .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.alavontId, `wc_${wcId}`)))
           .limit(1);
@@ -285,11 +293,14 @@ async function syncHandler(req: import("express").Request, res: import("express"
           if (existing.isLocalAlavont) {
             skipped++;
           } else {
-            await db.update(catalogItemsTable).set(values).where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, existing.id)));
+            const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+              ? existing.metadata as Record<string, unknown> : {};
+            await db.update(catalogItemsTable).set({ ...values, metadata: { ...metadata, isVisible: visibleInCatalog } })
+              .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, existing.id)));
             updated++;
           }
         } else {
-          await db.insert(catalogItemsTable).values(values);
+          await db.insert(catalogItemsTable).values({ ...values, metadata: { isVisible: visibleInCatalog } });
           inserted++;
         }
       } catch (err) {

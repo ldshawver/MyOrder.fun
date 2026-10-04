@@ -96,7 +96,14 @@ export async function fetchWooSafely(storeUrl: string, path: string, consumerKey
           reject(new Error("WooCommerce response is too large"));
         } else chunks.push(chunk);
       });
-      res.on("end", () => resolve(new Response(Buffer.concat(chunks), { status, headers: { "content-type": String(res.headers["content-type"] ?? "application/json") } })));
+      res.on("end", () => {
+        const headers = new Headers({ "content-type": String(res.headers["content-type"] ?? "application/json") });
+        for (const name of ["x-wp-total", "x-wp-totalpages"]) {
+          const value = res.headers[name];
+          if (typeof value === "string") headers.set(name, value);
+        }
+        resolve(new Response(Buffer.concat(chunks), { status, headers }));
+      });
       res.on("error", reject);
     });
     req.on("timeout", () => req.destroy(new Error("WooCommerce request timed out")));
