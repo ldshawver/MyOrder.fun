@@ -27,7 +27,7 @@ vi.mock("@workspace/db", () => {
   const paymentCapturesTable = { table: "captures", id: col("id"), paymentAttemptId: col("paymentAttemptId") };
   const other = { id: col("id"), tenantId: col("tenantId"), orderId: col("orderId") };
   const orderTaxSnapshotsTable = { ...other, table: "taxSnapshots" };
-  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
+  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), financialFinalizedAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
   function matches(row: Record<string, unknown>, condition: unknown): boolean {
     const c = condition as { kind?: string; field?: string; value?: unknown; values?: unknown[]; conditions?: unknown[] };
     if (c.kind === "eq") return row[c.field!] === c.value;
@@ -59,7 +59,7 @@ vi.mock("@workspace/db", () => {
       try { return await work(tx); } catch (error) { state.attempts = before; throw error; }
     },
   };
-  return { db: { transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
+  return { testOrder: order, db: { transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
     const before = state.attempts.map(attempt => ({ ...attempt }));
     try { return await work(tx); } catch (error) { state.attempts = before; throw error; }
   } }, ordersTable, paymentAttemptsTable, orderTaxSnapshotsTable, paymentCapturesTable,
@@ -67,10 +67,11 @@ vi.mock("@workspace/db", () => {
 });
 
 const { PaymentService } = await import("../service");
+const { testOrder } = await import("@workspace/db") as unknown as { testOrder: { status: string; remainingTenderAmount: string } };
 const input = { tenantId: 2, customerId: 9, orderId: 4, idempotencyKey: "first" };
 const config = { enabled: true, environment: "sandbox" } as never;
 
-beforeEach(() => { state.attempts = []; state.captures = []; state.snapshots = []; state.reserved.mockReset(); state.released.mockReset(); });
+beforeEach(() => { state.attempts = []; state.captures = []; state.snapshots = []; state.reserved.mockReset(); state.released.mockReset(); testOrder.status = "submitted"; testOrder.remainingTenderAmount = "12.00"; });
 
 describe("payment attempt and inventory lifecycle", () => {
   it("commits an unknown provider outcome and keeps inventory held", async () => {
@@ -98,7 +99,7 @@ describe("payment attempt and inventory lifecycle", () => {
 
   it("keeps inventory held after an unknown capture result", async () => {
     state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
-      state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
     const provider = { captureOrder: vi.fn(async () => { throw new PayPalProviderError("unknown_outcome", "capture timed out"); }) };
     const finalize = vi.fn();
     const service = new PaymentService(config, provider as never);
@@ -110,7 +111,7 @@ describe("payment attempt and inventory lifecycle", () => {
 
   it("releases only on a definitive capture decline", async () => {
     state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
-      state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
     const provider = { captureOrder: vi.fn(async () => { throw new PayPalProviderError("declined", "declined"); }) };
     const service = new PaymentService(config, provider as never);
     await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toThrow("declined");
@@ -120,7 +121,7 @@ describe("payment attempt and inventory lifecycle", () => {
 
   it("keeps a captured provider payment in reconciliation when local finalization fails", async () => {
     state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
-      state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
     const provider = { captureOrder: vi.fn(async () => ({ orderId: "P-1", captureId: "C-1", status: "COMPLETED",
       amount: { value: "12.00", currency: "USD" }, fundingSource: "paypal" })) };
     const finalize = vi.fn(async () => { throw new Error("local inventory write failed"); });
@@ -131,5 +132,25 @@ describe("payment attempt and inventory lifecycle", () => {
     expect(state.released).not.toHaveBeenCalled();
     await expect(service.capture({ ...input, attemptId: 1, finalize })).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_REQUIRED" });
     expect(provider.captureOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses provider capture after the local order is cancelled", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, providerOrderId: "P-1", providerEnvironment: "sandbox",
+      state: "approved", requestedAmount: "12.00", requestedCurrency: "USD" });
+    testOrder.status = "cancelled";
+    const provider = { captureOrder: vi.fn() };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toMatchObject({ code: "INVALID_ORDER_STATE" });
+    expect(provider.captureOrder).not.toHaveBeenCalled();
+  });
+
+  it("refuses provider capture when the finalized order balance differs from the attempt", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, providerOrderId: "P-1", providerEnvironment: "sandbox",
+      state: "approved", requestedAmount: "12.00", requestedCurrency: "USD" });
+    testOrder.remainingTenderAmount = "12.01";
+    const provider = { captureOrder: vi.fn() };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toMatchObject({ code: "FINANCIAL_SNAPSHOT_MISMATCH" });
+    expect(provider.captureOrder).not.toHaveBeenCalled();
   });
 });

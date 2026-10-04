@@ -124,12 +124,16 @@ export class PaymentService {
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
       if (!attempt?.providerOrderId) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
       if (attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(409, "PAYMENT_ENVIRONMENT_MISMATCH", "Payment attempt requires its original provider environment");
+      if (["cancelled", "refunded", "voided", "archived", "completed"].includes(order.status)) throw new PaymentServiceError(409, "INVALID_ORDER_STATE", "Order cannot be captured in its current state");
       if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
       if (attempt.state === "reconciliation_required" || attempt.state === "capturing") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (existingCapture?.state === "completed" && order.paymentStatus === "paid") return { status: "captured", captureId: existingCapture.providerCaptureId, replayed: true };
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
       if (!["created", "approved"].includes(attempt.state)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
+      if (!order.financialFinalizedAt || !sameMoney(String(order.remainingTenderAmount), String(attempt.requestedAmount)) || attempt.requestedCurrency !== CURRENCY) {
+        throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order and payment attempt require reconciliation");
+      }
       await tx.update(paymentAttemptsTable).set({ state: "capturing" }).where(eq(paymentAttemptsTable.id, attempt.id));
       let capture;
       try { capture = await this.provider.captureOrder(attempt.providerOrderId, `capture-${attempt.id}`); }
@@ -294,9 +298,21 @@ export class PaymentService {
     if (!await this.provider.verifyWebhook(headers, event)) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "Invalid webhook signature");
     const allowed = new Set(["CHECKOUT.ORDER.APPROVED", "PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED", "PAYMENT.REFUND.COMPLETED", "PAYMENT.REFUND.PENDING", "PAYMENT.REFUND.FAILED"]);
     const environment = this.config.environment;
-    const inserted = await db.insert(paymentWebhookEventsTable).values({ provider: "paypal", providerEnvironment: environment, providerEventId: event.id, eventType: event.event_type, processingState: allowed.has(event.event_type) ? "verified" : "ignored" }).onConflictDoNothing().returning();
-    if (inserted.length === 0) return { replayed: true, processed: true };
-    if (!allowed.has(event.event_type)) return { replayed: false, processed: false };
+    const recorded = await db.insert(paymentWebhookEventsTable).values({ provider: "paypal", providerEnvironment: environment, providerEventId: event.id, eventType: event.event_type, processingState: allowed.has(event.event_type) ? "verified" : "ignored" }).onConflictDoNothing().returning();
+    if (!allowed.has(event.event_type)) return { replayed: recorded.length === 0, processed: false };
+    try { return await db.transaction(async tx => {
+    // A delivery may race with a replay. Keep the event row, provider lookup,
+    // and every local effect under one lock, and retry only unfinished rows.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(192837465, hashtext(${event.id}))`);
+    const [row] = await tx.select().from(paymentWebhookEventsTable).where(and(
+      eq(paymentWebhookEventsTable.provider, "paypal"), eq(paymentWebhookEventsTable.providerEnvironment, environment),
+      eq(paymentWebhookEventsTable.providerEventId, event.id),
+    )).limit(1);
+    if (!row || row.eventType !== event.event_type) throw new PaymentServiceError(409, "WEBHOOK_IDENTITY_MISMATCH", "Webhook event identity mismatch");
+    if (row.processingState === "processed" || row.processingState === "ignored") return { replayed: true, processed: row.processingState === "processed" };
+    if (!["verified", "reconciliation_required"].includes(row.processingState)) throw new PaymentServiceError(409, "WEBHOOK_RECONCILIATION_REQUIRED", "Webhook event requires review");
+    const inserted = [row];
+    const db = tx;
     // The resource identifier is used only to retrieve authoritative provider
     // state. It is never trusted as the local order mapping.
     const resourceId = typeof event.resource?.id === "string" ? event.resource.id : undefined;
@@ -345,6 +361,13 @@ export class PaymentService {
       if (event.event_type === "PAYMENT.CAPTURE.REFUNDED" && pendingRefunds.length === 1) await db.update(paymentRefundsTable).set({ state: "reconciliation_required", failureClass: "capture_refunded_without_refund_identity" }).where(eq(paymentRefundsTable.id, pendingRefunds[0].id));
       await db.update(paymentWebhookEventsTable).set({ tenantId: attempt.tenantId, paymentAttemptId: attempt.id, providerOrderId: authoritative.orderId, providerCaptureId: authoritative.captureId, processingState: event.event_type === "PAYMENT.CAPTURE.REFUNDED" ? "reconciliation_required" : "processed", failureClass: event.event_type === "PAYMENT.CAPTURE.REFUNDED" ? "capture_refunded_without_refund_identity" : null, processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id));
     }
-    return { replayed: false, processed: true };
+    return { replayed: recorded.length === 0, processed: true };
+    }); } catch (error) {
+      // Preserve a verified event even when authoritative provider lookup or
+      // local processing fails. A later signed delivery may safely retry it.
+      await db.update(paymentWebhookEventsTable).set({ processingState: "reconciliation_required", failureClass: error instanceof PayPalProviderError ? "provider_lookup_failed" : "processing_failed", processedAt: new Date() })
+        .where(and(eq(paymentWebhookEventsTable.provider, "paypal"), eq(paymentWebhookEventsTable.providerEnvironment, environment), eq(paymentWebhookEventsTable.providerEventId, event.id), inArray(paymentWebhookEventsTable.processingState, ["verified", "reconciliation_required"])));
+      throw error;
+    }
   }
 }
