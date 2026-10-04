@@ -114,7 +114,10 @@ router.post("/webhooks/paypal", limiter, async (req, res) => {
     catch { throw new PaymentServiceError(400, "INVALID_WEBHOOK_JSON", "Invalid webhook JSON"); }
     const parsedEvent = z.object({ id: z.string().min(1).max(100), event_type: z.string().min(1).max(100), resource: z.record(z.string(), z.unknown()).optional() }).passthrough().safeParse(parsedBody);
     if (!parsedEvent.success) throw new PaymentServiceError(400, "INVALID_WEBHOOK_EVENT", "Invalid webhook event");
-    const event = parsedEvent.data;
+    // Zod moves declared keys ahead of passthrough keys. PayPal's verification
+    // endpoint needs the event in the original JSON key order, so validate but
+    // pass the object parsed directly from the preserved raw body.
+    const event = parsedBody as typeof parsedEvent.data;
     stage = "signature_headers";
     const header = (name: string) => {
       const value = req.get(name);
