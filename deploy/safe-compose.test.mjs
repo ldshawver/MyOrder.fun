@@ -35,7 +35,7 @@ test("rejects a conflicting resolved project or migration database", () => {
   wrongMigration.services.migrate.environment.DATABASE_URL = "postgres://app@db:5432/alavont";
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: wrongMigration }), /Migration database target/);
   const remoteDatabase = config("staging", "myorder_staging");
-  remoteDatabase.services.api.environment.DATABASE_URL = "postgres://app:secret@production-db:5432/myorder_staging";
+  remoteDatabase.services.api.environment.DATABASE_URL = "postgres://app@production-db:5432/myorder_staging";
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: remoteDatabase }), /database host/);
 });
 test("rejects staging settings in production and live payments in staging", () => {
