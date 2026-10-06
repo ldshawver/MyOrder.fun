@@ -1,10 +1,12 @@
 name: Deploy to VPS
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      production_confirmation:
+        description: Type I_AUTHORIZE_PRODUCTION_DEPLOYMENT to enable the production job
+        required: true
+        type: string
 
 concurrency:
   group: deploy-myorderfun
@@ -51,6 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: test
+    environment: production
+    if: ${{ inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' }}
 
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -236,50 +240,50 @@ jobs:
               echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
 
               cd "${DEPLOY_PATH}"
-
-              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
-              date -u >> .deployed-sha
-
-              chmod +x deploy/*.sh 2>/dev/null || true
-
               cd "${DEPLOY_PATH}/deploy"
 
               echo "Deploy path: ${DEPLOY_PATH}/deploy"
               echo "Compose project: ${COMPOSE_PROJECT_NAME}"
 
-              # Fail closed before building or starting anything.  This
-              # release flow is only valid for the established production
-              # project and its existing data volume; it must never initialize
-              # the unused `alavont_postgres_data` volume.
+              # The guard verifies checkout, resolved Compose environment,
+              # project, database, current container labels and data volume.
+              # Every operation below also pins the project and file.
               test "${DEPLOY_PATH}" = "/opt/alavont"
               test "${COMPOSE_PROJECT_NAME}" = "deploy"
               test -f nginx/nginx.conf
               test ! -d nginx/nginx.conf
+              export PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION
+              node safe-compose.mjs production config --authorize-production
+              cd "${DEPLOY_PATH}"
+              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
+              date -u >> .deployed-sha
+              chmod +x deploy/*.sh 2>/dev/null || true
+              cd "${DEPLOY_PATH}/deploy"
 
-              ACTIVE_DB_ID="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps -aq db)"
+              ACTIVE_DB_ID="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml ps -aq db)"
               test -n "${ACTIVE_DB_ID}"
               test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
               test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}')" = "deploy_postgres_data"
 
-              ACTIVE_NGINX_ID="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps -aq nginx)"
+              ACTIVE_NGINX_ID="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml ps -aq nginx)"
               test -n "${ACTIVE_NGINX_ID}"
               test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
               test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{range $p, $bindings := .HostConfig.PortBindings}}{{if eq $p \"80/tcp\"}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}{{end}}{{end}}{{end}}')" = "127.0.0.1:8081"
 
               echo "Building images without taking the live site down..."
-              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
+              node safe-compose.mjs production build --authorize-production
 
               echo "Starting database..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d db
+              node safe-compose.mjs production up db --authorize-production
 
               for i in $(seq 1 30); do
-                if COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db pg_isready -q; then
+                if docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db pg_isready -q; then
                   echo "Database ready"
                   break
                 fi
 
                 if [ "$i" = "30" ]; then
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs db --tail=80
+                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs db --tail=80
                   exit 1
                 fi
 
@@ -287,16 +291,16 @@ jobs:
               done
 
               echo "Running migrations..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose run --rm migrate
+              node safe-compose.mjs production migrate --authorize-production
 
               EXPECTED_MIGRATIONS="$(node -p "require('./lib/db/drizzle/meta/_journal.json').entries.length")"
-              APPLIED_MIGRATIONS="$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')"
+              APPLIED_MIGRATIONS="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')"
               test "${APPLIED_MIGRATIONS}" = "${EXPECTED_MIGRATIONS}"
 
               echo "Starting app services..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
+              node safe-compose.mjs production up api platform nginx --authorize-production
 
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
+              docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
 
               for i in $(seq 1 45); do
                 HEALTH_JSON="$(curl -fsS http://127.0.0.1:8081/api/healthz || true)"
@@ -307,20 +311,20 @@ jobs:
                 fi
 
                 if [ "$i" = "45" ]; then
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs api --tail=100
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs platform --tail=100
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs nginx --tail=100
+                  docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
+                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs api --tail=100
+                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs platform --tail=100
+                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs nginx --tail=100
                   exit 1
                 fi
 
                 sleep 2
               done
 
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T api node -e 'const u = new URL(process.env.DATABASE_URL); if (u.hostname !== "db") process.exit(1); process.stdout.write(`API database target: ${u.hostname}${u.pathname}\n`);'
-              test "$(COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')" = "${EXPECTED_MIGRATIONS}"
+              docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T api node -e 'const u = new URL(process.env.DATABASE_URL); if (u.hostname !== "db" || u.pathname !== "/alavont") process.exit(1); process.stdout.write(`API database target: ${u.hostname}${u.pathname}\n`);'
+              test "$(docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')" = "${EXPECTED_MIGRATIONS}"
 
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
+              docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
               docker image prune -f
               echo "Deploy complete"
           ENDSSH

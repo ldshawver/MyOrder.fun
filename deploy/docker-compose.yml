@@ -1,3 +1,5 @@
+name: deploy
+
 services:
   # ── PostgreSQL ────────────────────────────────────────────
   db:

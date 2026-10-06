@@ -1,3 +1,5 @@
+name: myorder-staging
+
 services:
   db:
     image: postgres:16-alpine

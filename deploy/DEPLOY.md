@@ -3,19 +3,35 @@
 ## How Deployments Work
 
 ```
-You push to GitHub main
+You manually dispatch the protected production workflow
         ↓
-GitHub Actions SSHes into VPS
+GitHub Actions requires approval from the production environment
         ↓
-git reset --hard origin/main   (fresh code)
+Guard validates the checkout, Compose file, project, database and containers
         ↓
-cd /opt/alavont/deploy
-docker compose build           (rebuild containers)
-docker compose run --rm migrate (schema updates)
-docker compose up -d           (restart services)
+Guarded build, migration and API/platform update
 ```
 
-**All `docker compose` commands run from `/opt/alavont/deploy/`** — that's where `docker-compose.yml` lives.
+Production does not deploy on a push. The workflow requires typing
+`I_AUTHORIZE_PRODUCTION_DEPLOYMENT` and approval by the GitHub `production`
+environment. Compose changes go through `deploy/safe-compose.mjs`, which pins
+the project/file and rejects a checkout, environment, database, or existing
+container mismatch. Staging and production Compose files declare distinct
+project names: `myorder-staging` and `deploy`.
+
+Staging deployments use the guard from the configured staging checkout:
+
+```bash
+cd /home/serveradmin/worktrees/myorder-dev
+node deploy/safe-compose.mjs staging build
+node deploy/safe-compose.mjs staging up db
+node deploy/safe-compose.mjs staging migrate
+node deploy/safe-compose.mjs staging up api platform nginx
+```
+
+The wrapper uses only `deploy/docker-compose.staging.yml` and
+`deploy/.env.staging`, validates the resolved API and migration database, and
+checks that every existing target container belongs to `myorder-staging`.
 
 ---
 
@@ -52,19 +68,15 @@ Fill in every value (see `.env.example` for descriptions):
 
 ### 4. Build and launch
 ```bash
-cd /opt/alavont/deploy
-
-docker compose build
-
-# Start the database first
-docker compose up -d db
-
-# Create all tables (only needed on first deploy)
-docker compose run --rm migrate
-
-# Start everything
-docker compose up -d
+cd /opt/alavont
+export PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION
+export DEPLOY_SHA="$(git rev-parse HEAD)"
+node deploy/safe-compose.mjs production bootstrap --authorize-production
 ```
+
+Bootstrap only runs against an empty project with no matching containers or
+database volume. If the volume exists, use the guarded deployment/recovery
+path; bootstrap refuses to proceed.
 
 ### 5. Promote your first admin
 ```bash
@@ -78,9 +90,12 @@ docker compose exec api node scripts/promote-admin.mjs 1
 
 ---
 
-## GitHub Actions Auto-Deploy Setup
+## GitHub Actions Controlled Production Deploy
 
-Every push to `main` triggers an automatic deploy. Add these GitHub Actions secrets:
+Production deploys are started manually from the Actions tab after code is
+merged. Configure required reviewers on the GitHub `production` environment,
+then enter `I_AUTHORIZE_PRODUCTION_DEPLOYMENT` in the workflow input. Add these
+GitHub Actions secrets:
 
 **GitHub → your repo → Settings → Secrets → Actions**
 
@@ -123,9 +138,9 @@ cat /root/.ssh/github_deploy
 ```
 
 The deploy workflow performs a `BatchMode=yes` SSH preflight before `rsync`; if
-that check fails, update `VPS_HOST`, `VPS_USER`, `VPS_PORT`, or the private key secret (`VPS_SSH_KEY`/`VPS_SECRET_KEY`) and re-run the
-workflow. After the SSH preflight succeeds, any push to `main` will auto-deploy
-to the VPS.
+that check fails, update `VPS_HOST`, `VPS_USER`, `VPS_PORT`, or the private key
+secret (`VPS_SSH_KEY`/`VPS_SECRET_KEY`) and re-run the workflow. SSH access by
+itself does not authorize a production deployment.
 
 ---
 
@@ -136,10 +151,9 @@ cd /opt/alavont
 git fetch --all
 git reset --hard origin/main
 
-cd /opt/alavont/deploy
-docker compose build
-docker compose run --rm migrate
-docker compose up -d
+export PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION
+export DEPLOY_CHANGE_ID="<approved change identifier>"
+bash deploy/redeploy.sh
 ```
 
 ---
@@ -148,14 +162,11 @@ docker compose up -d
 
 | Task | Command |
 |---|---|
-| View API logs | `docker compose logs -f api` |
-| View all logs | `docker compose logs -f` |
-| Restart API | `docker compose restart api` |
-| Stop all | `docker compose down` |
-| Database shell | `docker compose exec db psql -U alavont alavont` |
-| List tables | `docker compose exec db psql -U alavont alavont -c "\dt"` |
-| Run migrations | `docker compose run --rm migrate` |
-| Promote admin | `docker compose exec api node scripts/promote-admin.mjs <id>` |
+| View API logs | `docker compose --project-name deploy --env-file .env --file docker-compose.yml logs -f api` |
+| View all logs | `docker compose --project-name deploy --env-file .env --file docker-compose.yml logs -f` |
+| Database shell | `docker compose --project-name deploy --env-file .env --file docker-compose.yml exec db psql -U alavont alavont` |
+| List tables | `docker compose --project-name deploy --env-file .env --file docker-compose.yml exec db psql -U alavont alavont -c "\dt"` |
+| Promote admin | `docker compose --project-name deploy --env-file .env --file docker-compose.yml exec api node scripts/promote-admin.mjs <id>` |
 
 ---
 

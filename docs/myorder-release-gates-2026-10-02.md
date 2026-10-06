@@ -107,3 +107,86 @@ inventory write lockdown check passed.
 deployment or push occurred. The historical `$108.08` report remains
 unattributed; the current candidate reproduced a correct `$108.00` cash
 settlement on the disposable clone.
+
+## 2026-10-04 Lucifer staging acceptance and production restart incident
+
+The Lucifer feature acceptance is preserved independently from deployment
+safety. Staging ran SHA `48a5f3173a393de2d58db1390897592567fea218` (tree
+`a9ae46a30489451932e32ec6a343f77c4b97b847`). The accepted Lucifer facts are:
+the Woo origin is `https://shop.lucifercruz.com`; authenticated Woo connectivity
+and the supported synchronization passed; 245 Woo products were imported and
+the 186 existing local mapped records were preserved; guest catalog and
+product detail passed with tenant/host isolation, public-field filtering and
+protected APIs; landing, age gate, scanner, desktop/mobile, keyboard,
+reduced-motion, console and CSP/font checks passed. No further Woo sync is
+needed or authorized by the follow-up work package.
+
+Deployment safety failed separately after a staging Compose command restarted
+the production project. Read-only verification found the restored production
+checkout at `/opt/alavont`, SHA `579cce225c0f9e7bee41a4c226d43e5ba5c86606`,
+with production `deploy` images/configuration, healthy production API and
+public proxy, production database `alavont`, and no staging configuration or
+staging secrets in the running production containers. The production Drizzle
+ledger remained at 42 rows, last timestamp 2026-09-28 12:53:20 UTC; no
+migration command ran. The post-incident API and platform containers started
+at 2026-10-04 06:35:19 UTC, with restart count zero after restoration. The
+exact first restart timestamp was not recoverable from retained Docker event
+data; proxy errors bound the incident to approximately 06:29–06:35 UTC.
+
+Sanitized proxy aggregates show 287 requests in the 06:25–06:36 UTC interval,
+including approximately 160 API 401 responses during 06:30–06:35, 503/502
+responses during recovery, and one catalog 500 from the acceptance probe.
+Public page/assets and health requests returned successfully after recovery.
+This confirms client traffic during the restart window; the logs do not
+identify unique customers. The command issued was limited to `compose up -d
+--no-deps api platform`, followed by health and public-catalog GET probes; no
+migrations or write endpoints were invoked. No production database writes
+were attributable to those explicit commands.
+
+A read-only refresh on 2026-10-06 found all four `deploy` containers healthy;
+the API and platform images still use SHA
+`579cce225c0f9e7bee41a4c226d43e5ba5c86606`, the API restart count remains
+zero, and the public health endpoint reports that SHA. The API runtime remains
+`NODE_ENV=production`, targets host `db` / database `alavont`, has no
+`STAGING_*` variables, and is attached only to `deploy_internal`. The migration
+ledger remains at 42 rows, max timestamp `1790600000002`. A Compose `ps`
+read-only attempt could not interpolate the required `DEPLOY_SHA` from the
+operator shell; direct Docker metadata, database query, and health checks
+provided the verified results above. No production write was performed.
+
+Status remains deliberately split:
+
+- **LUCIFER FUNCTIONAL STAGING ACCEPTANCE: PASS**
+- **DEPLOYMENT SAFETY ACCEPTANCE: FAIL — accidental production restart**
+- **OVERALL RELEASE ACCEPTANCE: FAIL** until the deployment guard and
+  remaining MyOrder/provider gates are complete.
+
+## PayPal staging evidence checked 2026-10-06
+
+The staging database has four PayPal sandbox attempts in `captured`, six in
+`created`, one in `failed`, and one recorded `CHECKOUT.ORDER.APPROVED` event
+in `verified`. A sanitized scan of the retained 30-day staging API logs found
+no `PayPal webhook rejected` classifications. Since the route persists an
+event only after successful signature verification, the event ledger cannot
+show failures that occur earlier (for example, missing headers, unknown local
+provider identity, or failed PayPal signature verification). The historical
+HTTP 400s therefore cannot be attributed to a specific stage from retained
+staging evidence. The event handler continues to require PayPal signature
+verification; unknown or unmapped events are not acknowledged as trusted.
+
+The SDK v6 browser tests prove the server-created order is handed to the
+provider session and capture is called only from `onApprove`. Provider and
+payment-service tests cover signed webhook retries, captured-order
+idempotency, reservation lifecycle, and safe recovery. A full live PayPal
+sandbox browser approval/capture/webhook acceptance has not been established
+by this run, and the six `created` staging attempts were left untouched.
+
+## Staging tenant consolidation inventory checked 2026-10-06
+
+Read-only staging counts identify tenant `1` (`house`, active) as the canonical
+staging tenant: 10 users, 28 orders and 431 catalog rows. Two active test
+tenants remain: tenant `2` (`release-gates-musi9vkl`, 3 users, 13 orders, 3
+catalog rows) and tenant `3` (`release-gates-other-musi9vkl`, 1 user, no orders
+or catalog rows). Historical rows were not rewritten. Tenant disable/archive
+is deferred until the pending PayPal provider acceptance is complete; tenant
+2's historical orders must remain attached to their original tenant.
