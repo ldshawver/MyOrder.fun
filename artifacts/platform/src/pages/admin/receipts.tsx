@@ -8,6 +8,7 @@ import AutoPrintControls from "./auto-print-controls";
 import ReceiptDesigner from "./receipt-designer";
 import PrintRouting from "./print-routing";
 import DocumentTestPrint from "./document-test-print";
+import { loadThankYouStickerPreview } from "@/lib/thankYouStickerPreview";
 
 type ReceiptTab = "printers" | "bridges" | "routing" | "layout" | "automatic" | "test" | "reprint";
 const RECEIPT_TABS: Array<{ key: ReceiptTab; label: string }> = [
@@ -53,6 +54,8 @@ export default function AdminReceipts() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [preview, setPreview] = useState<string>("");
   const [previewing, setPreviewing] = useState(false);
+  const [stickerPreview, setStickerPreview] = useState<string | null>(null);
+  const [stickerPreviewing, setStickerPreviewing] = useState(false);
   const [activeTab, setActiveTab] = useState<ReceiptTab>(() => {
     const raw = new URLSearchParams(window.location.search).get("tab") ?? "";
     const requested = (TAB_ALIASES[raw] ?? raw) as ReceiptTab;
@@ -172,6 +175,26 @@ export default function AdminReceipts() {
       setPreviewing(false);
     }
   }
+
+  async function generateStickerPreview() {
+    setStickerPreviewing(true);
+    setError(null);
+    try {
+      const nextUrl = await loadThankYouStickerPreview(await getToken());
+      setStickerPreview(current => {
+        if (current) URL.revokeObjectURL(current);
+        return nextUrl;
+      });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Sticker preview failed");
+    } finally {
+      setStickerPreviewing(false);
+    }
+  }
+
+  useEffect(() => () => {
+    if (stickerPreview) URL.revokeObjectURL(stickerPreview);
+  }, [stickerPreview]);
 
   function update<K extends keyof ReceiptSettings>(
     key: K,
@@ -346,8 +369,17 @@ export default function AdminReceipts() {
                   Thank-you sticker + customer name
                 </option>
               </select>
+              <Button type="button" variant="outline" className="mt-3" onClick={() => void generateStickerPreview()} disabled={stickerPreviewing} data-testid="button-thank-you-sticker-preview">
+                {stickerPreviewing ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+                {stickerPreviewing ? "Rendering sticker…" : "Preview Thank You Sticker"}
+              </Button>
             </div>
           </div>
+
+          {stickerPreview && <figure className="rounded-lg border border-border/40 bg-background/40 p-4 space-y-2" data-testid="thank-you-sticker-preview">
+            <figcaption className="text-xs font-medium">Preview using the sample name “Sample Customer”. No print job is created.</figcaption>
+            <img src={stickerPreview} alt="Thank You sticker preview for Sample Customer" className="mx-auto max-h-80 max-w-full object-contain" />
+          </figure>}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
             <ToggleRow
