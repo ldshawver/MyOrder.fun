@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: deploy-myorderfun
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -48,6 +50,9 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Test guarded production release orchestration
+        run: node --test deploy/safe-compose.test.mjs deploy/production-release.test.mjs
+
   deploy:
     name: Deploy to VPS
     runs-on: ubuntu-latest
@@ -64,6 +69,8 @@ jobs:
       VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       DEPLOY_PATH: /opt/alavont
+      RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360
+      RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf
       # The production database and current application containers belong to
       # the `deploy` project.  Never create a second `alavont` stack: it has a
       # separate, empty database volume and would collide with the live nginx
@@ -76,6 +83,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Confirm deploy commit
         run: |
@@ -197,34 +206,25 @@ jobs:
             "$VPS_USER@$SELECTED_VPS_HOST" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
-      - name: Sync repository to VPS
+      - name: Package the frozen application release
         run: |
           set -euo pipefail
+          test "$(git rev-parse "$RELEASE_SHA^{tree}")" = "$RELEASE_TREE"
+          test "$RELEASE_SHA" = "65a85f2f82daf9f30a07f1a2de13092d5be80360"
+          test "$RELEASE_TREE" = "0411a10aa3326308bc480ff2fd15ecca037419bf"
+          RELEASE_ARCHIVE="$RUNNER_TEMP/myorder-release-$RELEASE_SHA.tar.gz"
+          git archive --format=tar "$RELEASE_SHA" | gzip -n > "$RELEASE_ARCHIVE"
+          RELEASE_ARCHIVE_SHA256="$(sha256sum "$RELEASE_ARCHIVE" | awk '{print $1}')"
+          RELEASE_ARCHIVE_NAME="$RELEASE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar.gz"
+          echo "RELEASE_ARCHIVE_SHA256=$RELEASE_ARCHIVE_SHA256" >> "$GITHUB_ENV"
+          echo "RELEASE_ARCHIVE=$RELEASE_ARCHIVE" >> "$GITHUB_ENV"
+          echo "RELEASE_ARCHIVE_NAME=$RELEASE_ARCHIVE_NAME" >> "$GITHUB_ENV"
 
-          ssh \
-            -i "$SSH_KEY_PATH" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -p "$SELECTED_VPS_PORT" \
-            "$VPS_USER@$SELECTED_VPS_HOST" \
-            "mkdir -p '$DEPLOY_PATH'"
-
-          rsync -az --delete \
-            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $SELECTED_VPS_PORT" \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='**/node_modules' \
-            --exclude='deploy/.env' \
-            --exclude='deploy/nginx/ssl' \
-            ./ "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/"
-
-      - name: Build and deploy on VPS
+      - name: Transfer immutable release and deployment controller
         env:
-          GITHUB_SHA: ${{ github.sha }}
+          TOOLING_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-
           ssh \
             -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
@@ -232,102 +232,23 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
-            "DEPLOY_SHA='${GITHUB_SHA}' DEPLOY_PATH='${DEPLOY_PATH}' COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT_NAME}' bash -s" << 'ENDSSH'
-              set -euo pipefail
+            "set -euo pipefail; test -d '$DEPLOY_PATH' && test ! -L '$DEPLOY_PATH'; mkdir -p '$DEPLOY_PATH/incoming' '$DEPLOY_PATH/releases' '$DEPLOY_PATH/control/$TOOLING_SHA' '$DEPLOY_PATH/shared'; for p in '$DEPLOY_PATH/incoming' '$DEPLOY_PATH/releases' '$DEPLOY_PATH/control' '$DEPLOY_PATH/control/$TOOLING_SHA' '$DEPLOY_PATH/shared'; do test -d \"\$p\" && test ! -L \"\$p\"; done; test ! -e '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' && test ! -L '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME'"
+          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "$SELECTED_VPS_PORT" "$RELEASE_ARCHIVE" "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME"
+          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "$SELECTED_VPS_PORT" deploy/production-release.mjs deploy/production-runtime-overlay.yml "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/control/$TOOLING_SHA/"
 
-              echo "Deploy path: ${DEPLOY_PATH}"
-              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
-              echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
-
-              cd "${DEPLOY_PATH}"
-              cd "${DEPLOY_PATH}/deploy"
-
-              echo "Deploy path: ${DEPLOY_PATH}/deploy"
-              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
-
-              # The guard verifies checkout, resolved Compose environment,
-              # project, database, current container labels and data volume.
-              # Every operation below also pins the project and file.
-              test "${DEPLOY_PATH}" = "/opt/alavont"
-              test "${COMPOSE_PROJECT_NAME}" = "deploy"
-              test -f nginx/nginx.conf
-              test ! -d nginx/nginx.conf
-              export PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION
-              node safe-compose.mjs production config --authorize-production
-              cd "${DEPLOY_PATH}"
-              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
-              date -u >> .deployed-sha
-              chmod +x deploy/*.sh 2>/dev/null || true
-              cd "${DEPLOY_PATH}/deploy"
-
-              ACTIVE_DB_ID="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml ps -aq db)"
-              test -n "${ACTIVE_DB_ID}"
-              test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
-              test "$(docker inspect "${ACTIVE_DB_ID}" --format '{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}')" = "deploy_postgres_data"
-
-              ACTIVE_NGINX_ID="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml ps -aq nginx)"
-              test -n "${ACTIVE_NGINX_ID}"
-              test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{.Config.Labels.com.docker.compose.project}}')" = "deploy"
-              test "$(docker inspect "${ACTIVE_NGINX_ID}" --format '{{range $p, $bindings := .HostConfig.PortBindings}}{{if eq $p \"80/tcp\"}}{{range $bindings}}{{.HostIp}}:{{.HostPort}}{{end}}{{end}}{{end}}')" = "127.0.0.1:8081"
-
-              echo "Building images without taking the live site down..."
-              node safe-compose.mjs production build --authorize-production
-
-              echo "Starting database..."
-              node safe-compose.mjs production up db --authorize-production
-
-              for i in $(seq 1 30); do
-                if docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db pg_isready -q; then
-                  echo "Database ready"
-                  break
-                fi
-
-                if [ "$i" = "30" ]; then
-                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs db --tail=80
-                  exit 1
-                fi
-
-                sleep 2
-              done
-
-              echo "Running migrations..."
-              node safe-compose.mjs production migrate --authorize-production
-
-              EXPECTED_MIGRATIONS="$(node -p "require('./lib/db/drizzle/meta/_journal.json').entries.length")"
-              APPLIED_MIGRATIONS="$(docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')"
-              test "${APPLIED_MIGRATIONS}" = "${EXPECTED_MIGRATIONS}"
-
-              echo "Starting app services..."
-              node safe-compose.mjs production up api platform nginx --authorize-production
-
-              docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
-
-              for i in $(seq 1 45); do
-                HEALTH_JSON="$(curl -fsS http://127.0.0.1:8081/api/healthz || true)"
-                HEALTH_SHA="$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).sha || "")); } catch {}' "${HEALTH_JSON}")"
-                if [ "${HEALTH_SHA}" = "${DEPLOY_SHA}" ]; then
-                  echo "API healthy with expected release SHA"
-                  break
-                fi
-
-                if [ "$i" = "45" ]; then
-                  docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
-                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs api --tail=100
-                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs platform --tail=100
-                  docker compose --project-name deploy --env-file .env --file docker-compose.yml logs nginx --tail=100
-                  exit 1
-                fi
-
-                sleep 2
-              done
-
-              docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T api node -e 'const u = new URL(process.env.DATABASE_URL); if (u.hostname !== "db" || u.pathname !== "/alavont") process.exit(1); process.stdout.write(`API database target: ${u.hostname}${u.pathname}\n`);'
-              test "$(docker compose --project-name deploy --env-file .env --file docker-compose.yml exec -T db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "select count(*) from drizzle.__drizzle_migrations"')" = "${EXPECTED_MIGRATIONS}"
-
-              docker compose --project-name deploy --env-file .env --file docker-compose.yml ps
-              docker image prune -f
-              echo "Deploy complete"
-          ENDSSH
+      - name: Execute guarded production release sequence
+        env:
+          TOOLING_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$SELECTED_VPS_PORT" \
+            "$VPS_USER@$SELECTED_VPS_HOST" \
+            "flock -n '$DEPLOY_PATH/control/.production-deploy.lock' env PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION node '$DEPLOY_PATH/control/$TOOLING_SHA/production-release.mjs' deploy --authorized --release-sha '$RELEASE_SHA' --release-tree '$RELEASE_TREE' --archive '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' --archive-sha '$RELEASE_ARCHIVE_SHA256' --tooling-sha '$TOOLING_SHA'"
 
       - name: Verify public site
         run: |
@@ -336,7 +257,7 @@ jobs:
           for i in $(seq 1 45); do
             HEALTH_JSON="$(curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz || true)"
             HEALTH_SHA="$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).sha || "")); } catch {}' "${HEALTH_JSON}")"
-            if [ "${HEALTH_SHA}" = "${GITHUB_SHA}" ]; then
+            if [ "${HEALTH_SHA}" = "${RELEASE_SHA}" ]; then
               echo "Public health check passed with expected release SHA"
               exit 0
             fi
