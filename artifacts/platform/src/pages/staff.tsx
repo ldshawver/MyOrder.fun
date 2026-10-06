@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
+import { staffFulfillmentAction } from "@/lib/staffFulfillmentAction";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
@@ -1360,7 +1361,7 @@ const FULFILLMENT_STEPS = [
   { status: "preparing", label: "Prepare", icon: Activity, color: "blue" },
   { status: "ready", label: "Ready", icon: DoorOpen, color: "emerald" },
   { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
-];
+] as const;
 
 function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolean } | null {
   if (!order.estimatedReadyAt) return null;
@@ -1372,10 +1373,11 @@ function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolea
   return { label: `${lateMinutes}m late`, stale: false };
 }
 
-function FulfillmentCard({ order, onRefresh, getToken }: {
+function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
   order: ExtendedOrder;
   onRefresh: () => void;
   getToken: () => Promise<string | null>;
+  isAdmin: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const [printingReceipt, setPrintingReceipt] = useState(false);
@@ -1415,32 +1417,26 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     } catch { /* non-critical */ } finally { setHandoffBusy(false); }
   }
 
-  async function setFulfillmentStatus(status: string) {
+  async function setFulfillmentStatus(status: "in_progress" | "preparing" | "ready" | "completed") {
     if (loading !== null) return;
     setLoading(status);
     setActionMessage(null);
     try {
       const token = await getToken();
-      const endpoint = status === "in_progress"
-      ? `/api/orders/${order.id}/claim`
-        : status === "preparing"
-        ? `/api/orders/${order.id}/prepare`
-        : status === "ready"
-        ? `/api/orders/${order.id}/ready`
-        : `/api/orders/${order.id}/complete`;
-      const res = await fetch(endpoint, {
+      const action = staffFulfillmentAction(order.id, status, isAdmin);
+      const res = await fetch(action.endpoint, {
         method: "POST",
         headers: status === "completed"
           ? { Authorization: `Bearer ${token}` }
           : { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        ...(status === "completed" ? {} : { body: JSON.stringify(status === "in_progress" ? {} : { fulfillmentStatus: status }) }),
+        ...(action.body ? { body: JSON.stringify(action.body) } : {}),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null) as { error?: string } | null;
         throw new Error(body?.error ?? `Request failed with HTTP ${res.status}`);
       }
       onRefresh();
-      setActionMessage({ kind: "success", text: status === "in_progress" ? "Order claimed and assigned to your active shift." : "Order updated." });
+      setActionMessage({ kind: "success", text: status === "in_progress" ? (isAdmin ? "Order started." : "Order claimed and assigned to your active shift.") : "Order updated." });
     } catch (err) {
       console.error("Fulfillment action failed", err);
       setActionMessage({ kind: "error", text: err instanceof Error ? err.message : "The order could not be updated." });
@@ -1708,7 +1704,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
                   : isDone && !isActive && !isLast
                   ? <CheckCircle2 size={11} />
                   : <Icon size={11} />}
-                {step.label}
+                {isAdmin && step.status === "in_progress" ? "Start" : step.label}
               </button>
             );
           })}
@@ -2089,6 +2085,7 @@ function CustomerServiceRepQueueContent() {
                 order={order as ExtendedOrder}
                 onRefresh={refresh}
                 getToken={getToken}
+                isAdmin={isAdmin}
               />
             ))}
           </div>
