@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateContainer, validatePlan } from "./safe-compose.mjs";
+import { validateCandidateIdentity, validateContainer, validatePlan } from "./safe-compose.mjs";
 
-const root = "/home/serveradmin/worktrees/myorder-dev";
+const root = "/home/serveradmin/worktrees/myorder-release-gates-20261002";
 function config(environment, database) {
   const project = environment === "staging" ? "myorder-staging" : "deploy";
   const networks = environment === "staging" ? { internal: {} } : { internal: {}, external: {} };
@@ -63,6 +63,11 @@ test("rejects mismatched Compose API environment, wrong tree and wrong project",
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: wrongApiEnvironment }), /API environment/);
   assert.throws(() => validatePlan({ environment: "staging", root: "/tmp", project: "myorder-staging", config: config("staging", "myorder_staging") }), /working tree/);
   assert.throws(() => validatePlan({ environment: "staging", root, project: "deploy", config: config("staging", "myorder_staging") }), /project/);
+});
+test("requires a clean candidate checkout and an exact candidate SHA", () => {
+  assert.equal(validateCandidateIdentity({ root, environment: "staging", status: "", headSha: "abc123", deploySha: "abc123" }), "abc123");
+  assert.throws(() => validateCandidateIdentity({ root, environment: "staging", status: " M deploy/file", headSha: "abc123" }), /clean/);
+  assert.throws(() => validateCandidateIdentity({ root, environment: "staging", status: "", headSha: "abc123", deploySha: "different" }), /HEAD/);
 });
 test("requires explicit production authorization and exact production targets", () => {
   const args = { environment: "production", root: "/opt/alavont", project: "deploy", config: config("production", "alavont") };

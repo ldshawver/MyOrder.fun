@@ -8,7 +8,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
-const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-dev", production: "/opt/alavont" };
+const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-release-gates-20261002", production: "/opt/alavont" };
 const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap"]);
 
 export function validatePlan({ environment, root, project, config, authorization }) {
@@ -48,6 +48,13 @@ export function validatePlan({ environment, root, project, config, authorization
   if (environment === "production" && authorization !== "DEPLOY-PRODUCTION") throw new Error("Production requires explicit DEPLOY-PRODUCTION authorization");
   if (environment === "staging" && (project === "deploy" || database === "alavont")) throw new Error("Staging cannot target production resources");
   return true;
+}
+
+export function validateCandidateIdentity({ root, environment, status, headSha, deploySha }) {
+  if (path.resolve(root) !== ROOTS[environment]) throw new Error("Unexpected deployment working tree");
+  if (status) throw new Error("Deployment checkout must be clean");
+  if (deploySha && deploySha !== headSha) throw new Error("Deploy SHA does not match the clean checkout HEAD");
+  return headSha;
 }
 
 export function validateContainer({ environment, project, service, labels, envValues = {}, mounts = [], portBindings = {}, networks = {}, composeFile, composeWorkingDir, resolved }) {
@@ -94,6 +101,9 @@ function main() {
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
   if (environment === "production" && !authorization) throw new Error("Production requires explicit authorization before Compose can be resolved");
   if (path.resolve(ROOT) !== ROOTS[environment]) throw new Error("Unexpected deployment working tree");
+  const headSha = run("git", ["-C", ROOT, "rev-parse", "HEAD"], { capture: true }).trim();
+  const status = run("git", ["-C", ROOT, "status", "--porcelain=v1"], { capture: true }).trim();
+  process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, deploySha: process.env.DEPLOY_SHA?.trim() });
   const services = rest.filter(arg => arg !== "--authorize-production");
   if (services.some(service => !["db", "api", "platform", "nginx"].includes(service))) throw new Error("Service is not in the deployment allowlist");
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");

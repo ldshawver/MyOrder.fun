@@ -22,7 +22,7 @@ project names: `myorder-staging` and `deploy`.
 Staging deployments use the guard from the configured staging checkout:
 
 ```bash
-cd /home/serveradmin/worktrees/myorder-dev
+cd /home/serveradmin/worktrees/myorder-release-gates-20261002
 node deploy/safe-compose.mjs staging build
 node deploy/safe-compose.mjs staging up db
 node deploy/safe-compose.mjs staging migrate
