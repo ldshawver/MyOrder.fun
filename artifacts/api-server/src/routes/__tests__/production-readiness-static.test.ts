@@ -32,8 +32,13 @@ describe("production readiness workflow coverage", () => {
 
   it("keeps CSR order claim, complete, and receipt/label print controls wired", () => {
     const staff = page("staff.tsx");
-    expect(staff).toContain('/api/orders/${order.id}/claim');
-    expect(staff).toContain('/api/orders/${order.id}/complete');
+    const actions = readFileSync(join(root, "../../platform/src/lib/staffFulfillmentAction.ts"), "utf8");
+    expect(staff).toContain("staffFulfillmentAction");
+    expect(actions).toContain("/api/orders/${orderId}/claim");
+    expect(actions).toContain("/api/orders/${orderId}/complete");
+    expect(actions).toContain('"in_progress", "ready", "completed"');
+    expect(staff).not.toContain('label: "Prepare"');
+    expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
     expect(staff).toContain('/api/print/orders/${order.id}/receipt');
     expect(staff).toContain('/api/print/orders/${order.id}/label');
   });

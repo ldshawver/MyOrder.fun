@@ -74,7 +74,7 @@ import { checkoutPaymentMethods } from "../payments/checkoutMethods";
 import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
-import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation } from "../lib/uberFulfillment";
+import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -786,6 +786,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     fulfillmentStatus: order.fulfillmentStatus ?? null,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
+    serverNow: new Date(),
   };
 }
 
@@ -2154,6 +2155,30 @@ router.get("/orders/:id/courier", async (req, res): Promise<void> => {
     .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
     .limit(1);
   res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null });
+});
+
+router.post("/orders/:id/courier/request", requireRole("admin", "global_admin", "csr"), async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid delivery request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (normalizeRole(actor.role) === "csr") {
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, order.assignedShiftId ?? -1), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
+    if (!shift || !isShiftOrderRoutable(shift) || order.assignedCsrUserId !== actor.id) { res.status(403).json({ error: "Assigned active CSR shift required" }); return; }
+  } else if (order.assignedCsrUserId != null || order.assignedShiftId != null) {
+    res.status(409).json({ error: "Assigned orders require the existing reassignment workflow" }); return;
+  }
+  if (order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) { res.status(409).json({ error: "Courier delivery requires a ready delivery order" }); return; }
+  try {
+    const state = await requestUberDelivery(tenantId, orderId);
+    if (["not_ready", "payment_required", "identity_mismatch", "configuration_required", "requote_required", "manual_reconciliation_required", "reconciliation_required"].includes(state)) { res.status(409).json({ orderId, state }); return; }
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "UBER_DELIVERY_REQUESTED", resourceType: "order", resourceId: String(orderId), metadata: { state }, ipAddress: req.ip });
+    res.status(state === "delivery_created" ? 200 : 202).json({ orderId, state });
+  } catch {
+    res.status(503).json({ error: "Courier request requires reconciliation" });
+  }
 });
 
 router.post("/orders/:id/courier/cancel", async (req, res): Promise<void> => {

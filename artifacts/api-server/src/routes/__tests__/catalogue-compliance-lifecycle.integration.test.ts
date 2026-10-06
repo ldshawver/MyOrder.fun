@@ -86,7 +86,7 @@ async function auditCount(id: number) {
     tenantA = tenants.rows[0].id;
     const tenantB = tenants.rows[1].id as number;
     await client.query(`INSERT INTO users(clerk_id,email,normalized_email,role,tenant_id,status,is_active,identity_status,provisioning_status)
-      VALUES($1,$2,$2,'admin',$3,'approved',true,'verified','active'),
+      VALUES($1,$2,$2,'global_admin',$3,'approved',true,'verified','active'),
       ($4,$5,$5,'supervisor',$3,'approved',true,'verified','active'),
       ($6,$7,$7,'user',$3,'approved',true,'verified','active'),
       ($8,$9,$9,'admin',$10,'approved',true,'verified','active')`,
@@ -107,7 +107,7 @@ async function auditCount(id: number) {
     const before = await row(id);
     const relatedBefore = await relatedState();
     const auditsBefore = await auditCount(id);
-    const response = await as("supervisorA").patch(`/api/admin/product-master/${id}/lifecycle`)
+    const response = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`)
       .send({ complianceHold: false, reason: "Administrative clearance" });
     expect(response.status, response.text).toBe(200);
     const after = await row(id);
@@ -117,7 +117,7 @@ async function auditCount(id: number) {
       complianceMatchedTerms: [], unrelated: "preserve" });
     expect(await relatedState()).toBe(relatedBefore);
     expect(await auditCount(id)).toBe(auditsBefore + 1);
-    const repeated = await as("supervisorA").patch(`/api/admin/product-master/${id}/lifecycle`)
+    const repeated = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`)
       .send({ complianceHold: false, reason: "Administrative clearance" });
     expect(repeated.status).toBe(200);
     expect((await row(id)).updated_at).toEqual(after.updated_at);
@@ -143,13 +143,13 @@ async function auditCount(id: number) {
     const before = await row(id);
     const audits = await auditCount(id);
     const requests = [
-      http.patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false }),
-      as("viewerA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false }),
-      as("adminB").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false }),
-      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, inventoryItemId: 999 }),
-      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, tenant_id: 999 }),
-      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, isAvailable: true }),
-      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, alavontInStock: true }),
+      http.patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("viewerA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("adminB").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", inventoryItemId: 999 }),
+      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", tenant_id: 999 }),
+      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", isAvailable: true }),
+      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", alavontInStock: true }),
     ];
     for (const request of requests) {
       const response = await request;
@@ -164,7 +164,7 @@ async function auditCount(id: number) {
     const before = await row(id);
     const audits = await auditCount(id);
     const malformed = await as("adminA").patch("/api/admin/product-master/not-an-id/lifecycle").send({ complianceHold: false });
-    const nonexistent = await as("adminA").patch("/api/admin/product-master/2147483647/lifecycle").send({ complianceHold: false });
+    const nonexistent = await as("adminA").patch("/api/admin/product-master/2147483647/lifecycle").send({ complianceHold: false, reason: "Review" });
     const invalid = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: "false" });
     const empty = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ reason: "missing state" });
     expect([malformed.status, nonexistent.status, invalid.status, empty.status]).toEqual([400, 404, 400, 400]);
@@ -177,7 +177,7 @@ async function auditCount(id: number) {
     const before = await row(id);
     const audits = await auditCount(id);
     const responses = await Promise.all(Array.from({ length: 5 }, () =>
-      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false })));
+      as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Concurrent review" })));
     expect(responses.map(response => response.status)).toEqual([200, 200, 200, 200, 200]);
     const after = await row(id);
     expect(after.protected_fields).toEqual(before.protected_fields);
@@ -198,7 +198,7 @@ async function auditCount(id: number) {
     END $$`);
     await client.query(`CREATE TRIGGER ${trigger} BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION ${trigger}()`);
     try {
-      const response = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false });
+      const response = await as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Audit rollback test" });
       expect(response.status).toBe(500);
       expect(await row(id)).toEqual(before);
       expect(await auditCount(id)).toBe(audits);

@@ -243,12 +243,28 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       expect(closed.body).toMatchObject({ tax: 0, total: 105, status: "confirmed", fulfillmentStatus: "submitted" });
       const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
       expect(replay.status, replay.text).toBe(200);
-      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
       const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
-      expect(fulfillment).toMatchObject({ providerDeliveryId: "del_synthetic_dispatched", requestState: "delivery_created" });
-      expect(JSON.parse(providerCalls.find(call => call.url.endsWith("/deliveries"))!.body)).toMatchObject({ quote_id: expect.stringMatching(/^dqt_synthetic_/), external_id: `myorder-${tenantId}-${orderId}` });
+      expect(fulfillment).toMatchObject({ providerDeliveryId: null, requestState: "awaiting_staff_request" });
       const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
       expect(sales.rows).toHaveLength(1);
+      const start = await as("csr").post(`/api/orders/${orderId}/fulfillment`).send({ fulfillmentStatus: "in_progress" });
+      expect(start.status, start.text).toBe(200);
+      const ready = await as("csr").post(`/api/orders/${orderId}/ready`).send({});
+      expect(ready.status, ready.text).toBe(200);
+      await db.update(uberDeliveryQuotesTable).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(uberDeliveryQuotesTable.id, quote.body.quoteId));
+      const dispatch = await as("csr").post(`/api/orders/${orderId}/courier/request`).send({});
+      expect(dispatch.status, dispatch.text).toBe(200);
+      expect(dispatch.body.state).toBe("delivery_created");
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
+      expect(providerCalls.filter(call => call.url.endsWith("/delivery_quotes"))).toHaveLength(2);
+      expect(providerCalls.filter(call => call.url.includes("/payments/") || call.url.endsWith("/capture"))).toHaveLength(0);
+      const [afterRequest] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
+      expect(afterRequest).toMatchObject({ providerDeliveryId: "del_synthetic_dispatched", requestState: "delivery_created" });
+      expect(JSON.parse(providerCalls.find(call => call.url.endsWith("/deliveries"))!.body)).toMatchObject({ quote_id: expect.stringMatching(/^dqt_synthetic_/), external_id: `myorder-${tenantId}-${orderId}` });
+      const duplicateDispatch = await as("csr").post(`/api/orders/${orderId}/courier/request`).send({});
+      expect(duplicateDispatch.status).toBe(200);
+      expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
       const duplicateCheckout = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1 } });
       expect(duplicateCheckout.status).toBeGreaterThanOrEqual(400);
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(1);
@@ -273,9 +289,13 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
 
   it("reconciles ambiguous Uber creation without a second dispatch and flags an expired paid quote", async () => {
     const address = normalizeUberAddress("500 Test Street, Testville, CA 94105");
+    let settlementFixture = 0;
     const insertPaid = async (localQuoteId: string, providerQuoteId: string, expiresAt: Date) => {
       await db.insert(uberDeliveryQuotesTable).values({ id: localQuoteId, tenantId, customerId, providerQuoteId, cartFingerprint: "synthetic-recovery", pickupAddress: address, dropoffAddress: address, manifestItems: [{ name: "Test Item", quantity: 1 }], feeCents: 500, currency: "USD", expiresAt });
-      const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", tax: "0.00", total: "105.00", paymentStatus: "paid", deliveryMethod: "uber_direct", deliveryQuoteId: localQuoteId, fulfillmentStatus: "submitted" }).returning();
+      const now = new Date();
+      const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", tax: "0.00", total: "105.00", paymentStatus: "paid", paymentMethod: "paypal", customerCreditApplied: "0.00", deliveryMethod: "uber_direct", deliveryFee: "5.00", deliveryCurrency: "USD", deliveryQuoteId: localQuoteId, fulfillmentStatus: "ready", status: "ready", readyAt: now }).returning();
+      const [attempt] = await db.insert(paymentAttemptsTable).values({ tenantId, orderId: order.id, provider: "paypal", providerEnvironment: "sandbox", providerOrderId: `PP_FIXTURE_${++settlementFixture}`, idempotencyKey: `uber-recovery-${settlementFixture}`, requestedAmount: "105.00", requestedCurrency: "USD", state: "captured", capturedAmount: "105.00", capturedCurrency: "USD" }).returning();
+      await db.insert(paymentCapturesTable).values({ tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: "sandbox", providerCaptureId: `CAP_FIXTURE_${settlementFixture}`, amount: "105.00", currency: "USD", state: "completed", capturedAt: now });
       await db.insert(uberDeliveryFulfillmentsTable).values({ tenantId, orderId: order.id, quoteId: localQuoteId, externalOrderReference: `myorder-${tenantId}-${order.id}`, requestState: "delivery_create_pending" });
       return order.id;
     };

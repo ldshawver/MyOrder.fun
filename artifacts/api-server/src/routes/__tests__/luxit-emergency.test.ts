@@ -15,8 +15,8 @@ vi.mock("../../lib/auth", () => {
   const noop = (_req: unknown, _res: unknown, next: () => void) => next();
   return { requireAuth: noop, loadDbUser: noop, requireDbUser: noop, requireApproved: noop, requireRole: () => noop };
 });
-vi.mock("@workspace/db", () => ({ db: {}, usersTable: {}, tenantsTable: {} }));
-vi.mock("drizzle-orm", () => ({ eq: vi.fn(), and: vi.fn(), or: vi.fn(), ilike: vi.fn(), like: vi.fn(), asc: vi.fn(), desc: vi.fn(), gte: vi.fn(), sql: vi.fn() }));
+vi.mock("@workspace/db", () => ({ db: {}, usersTable: {}, tenantsTable: {}, ordersTable: { status: {}, fulfillmentStatus: {} } }));
+vi.mock("drizzle-orm", () => ({ eq: vi.fn(), and: vi.fn(), or: vi.fn(), inArray: vi.fn(), isNull: vi.fn(), ilike: vi.fn(), like: vi.fn(), asc: vi.fn(), desc: vi.fn(), gte: vi.fn(), sql: vi.fn() }));
 
 import supertest from "supertest";
 import app from "../../app";

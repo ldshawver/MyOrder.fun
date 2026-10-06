@@ -716,7 +716,8 @@ export const ListOrdersResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })),
   "total": zod.number(),
   "page": zod.number(),
@@ -922,7 +923,8 @@ export const GetOrderResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1028,7 +1030,8 @@ export const UpdateOrderStatusResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1145,7 +1148,8 @@ export const AcceptOrderResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1258,7 +1262,8 @@ export const AdjustOrderEtaResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1359,7 +1364,8 @@ export const MarkOrderReadyResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1464,7 +1470,8 @@ export const ReassignOrderResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 
@@ -1594,7 +1601,8 @@ export const ListDelayedOrdersResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })),
   "total": zod.number()
 })
@@ -1700,7 +1708,8 @@ export const GetRecentOrdersResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })),
   "total": zod.number(),
   "page": zod.number(),
@@ -2573,7 +2582,8 @@ export const ConfirmPaymentResponse = zod.object({
   "handoffCompletedAt": zod.coerce.date().nullish(),
   "handoffCompletedByUserId": zod.number().nullish(),
   "createdAt": zod.coerce.date(),
-  "updatedAt": zod.coerce.date()
+  "updatedAt": zod.coerce.date(),
+  "serverNow": zod.coerce.date().optional()
 })
 
 

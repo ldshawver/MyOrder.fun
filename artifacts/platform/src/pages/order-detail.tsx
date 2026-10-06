@@ -27,8 +27,10 @@ import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePush
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
+import { customerTracker } from "@/lib/orderTracker";
 
 type OrderWithTracking = Order & {
+  serverNow?: string;
   trackingUrl?: string | null;
   trackingSubmittedAt?: string | null;
   handoffChecklist?: Record<string, boolean> | null;
@@ -83,12 +85,29 @@ function formatCourierEta(value?: string | null) {
 
 function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   const queryClient = useQueryClient();
-  const [now, setNow] = useState(() => Date.now());
+  const { getToken } = useAuth();
+  const [elapsed, setElapsed] = useState(0);
+  const [courier, setCourier] = useState<{ state: string; courierStatus: string | null } | null>(null);
 
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const start = performance.now();
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(performance.now() - start), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [order.serverNow]);
+
+  useEffect(() => {
+    if (order.deliveryMethod !== "uber_direct") return;
+    let cancelled = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !cancelled) setCourier(await response.json() as { state: string; courierStatus: string | null });
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [getToken, order.id, order.deliveryMethod]);
 
   useOrderEvents((ev) => {
     if (ev.orderId !== order.id) return;
@@ -97,13 +116,12 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
     }
   });
 
-  const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
-  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "completed" || order.status === "delivered";
-  const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
-  const timerExpired = etaForCheck !== null && now >= etaForCheck;
-  const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
+  const serverNow = Date.parse(order.serverNow ?? "");
+  const tracker = customerTracker(order, Number.isFinite(serverNow) ? serverNow + elapsed : NaN);
+  const isReady = tracker.phase === "ready";
+  const isCompleted = tracker.phase === "completed";
 
-  if (isReady || isCompleted || (timerExpired && !isCancelled)) {
+  if (isReady || isCompleted) {
     return (
       <div
         className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
@@ -116,55 +134,31 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
         />
         <CheckCircle2 size={56} className="text-emerald-400" />
         <div className="mt-4 text-2xl font-bold text-emerald-300">
-          {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
+          {isCompleted ? "Order Complete" : tracker.label}
         </div>
         <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
-          {isReady || isCompleted
-            ? stageMessageFor(order)
-            : "Your order should be ready right about now — please head to the counter for pickup."}
+          {isCompleted ? "Your order has been completed." : tracker.label}
         </p>
       </div>
     );
   }
 
-  const eta = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
-  const routedAt = order.routedAt ? new Date(order.routedAt).getTime() : new Date(order.createdAt).getTime();
-  const total = eta ? Math.max(1, eta - routedAt) : 0;
-  const remaining = eta ? eta - now : 0;
-  const overdue = remaining < 0;
-  const absMs = Math.abs(remaining);
-  const mins = Math.floor(absMs / 60000);
-  const secs = Math.floor((absMs % 60000) / 1000);
-  const pct = eta ? Math.max(0, Math.min(100, ((total - Math.max(0, remaining)) / total) * 100)) : 0;
-
-  // Spec: the hourglass itself is time-driven (sand empties as the
-  // promised window elapses). Stage messaging also progresses:
-  // queued → preparing → almost-ready (>85% of window) → finishing-up.
-  const progress = eta ? Math.max(0, Math.min(1, (now - routedAt) / total)) : 0;
-  const almostReady = !overdue && progress >= 0.85;
-  let message: string;
-  if (overdue) {
-    message = "Almost ready — our team is finishing up your order.";
-  } else if (almostReady) {
-    message = "Almost ready — just putting on the finishing touches.";
-  } else if (order.fulfillmentStatus === "preparing" || order.fulfillmentStatus === "accepted") {
-    message = "Our lab team is preparing your order...";
-  } else if (order.status === "submitted" || order.status === "pending" || order.fulfillmentStatus === "submitted") {
-    message = "Your order is in the queue waiting to be picked up...";
-  } else {
-    message = "Our lab team is working on your order...";
-  }
+  const remaining = tracker.remainingMs;
+  const mins = Math.floor((remaining ?? 0) / 60000);
+  const secs = Math.floor(((remaining ?? 0) % 60000) / 1000);
+  const overdue = tracker.phase === "overdue";
+  const courierLabel: Record<string, string> = { pending: "Courier requested", pickup: "Courier on the way to pickup", picked_up: "Order picked up", dropoff: "Courier on the way", delivered: "Delivered", canceled: "Courier canceled" };
 
   return (
     <div
       className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
       data-testid="customer-hourglass-panel"
     >
-      <AnimatedHourglass size={200} message={message} progress={eta ? progress : undefined} />
-      {eta && (
+      <AnimatedHourglass size={200} message={tracker.label} progress={tracker.progress} />
+      {remaining !== null && (
         <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
           <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
-            {overdue ? "almost ready" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+            {overdue ? "Finishing up" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
           </div>
           <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
             {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
@@ -172,14 +166,13 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
           <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
             <div
               className={`h-full transition-all ${overdue ? "bg-amber-400" : "bg-primary"}`}
-              style={{ width: `${overdue ? 100 : pct}%` }}
+              style={{ width: `${tracker.progress * 100}%` }}
             />
           </div>
         </div>
       )}
-      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message">
-        {stageMessageFor(order)}
-        {" "}You'll receive a push notification the moment it's ready.
+      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message" role="status" aria-live="polite">
+        {tracker.label}. We'll notify you when staff marks it ready.
       </p>
       {order.deliveryMethod === "uber_direct" && (
         <div className="mt-5 w-full max-w-md rounded-xl border border-primary/20 bg-background/70 p-4 text-left" data-testid="customer-uber-info">
@@ -200,6 +193,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
               </div>
             </div>
           </div>
+          {courier && <p className="mt-3 text-xs" role="status">{courierLabel[courier.courierStatus ?? ""] ?? ({ awaiting_staff_request: "Awaiting staff delivery request", delivery_create_pending: "Courier request pending", delivery_created: "Courier requested", reconciliation_required: "Courier status under review" }[courier.state] ?? "Delivery status pending")}</p>}
           {(order as OrderWithTracking).trackingUrl && (
             <a
               href={(order as OrderWithTracking).trackingUrl ?? undefined}
@@ -625,7 +619,7 @@ export default function OrderDetail() {
     }
   };
 
-  const isPendingOrProcessing = order?.status === "pending" || order?.status === "processing";
+  const isActiveFulfillment = !!order && !["cancelled", "voided", "refunded", "archived"].includes(order.fulfillmentStatus ?? order.status);
   const isReady = order?.status === "ready";
   const isDelivered = order?.status === "delivered";
 
@@ -695,7 +689,7 @@ export default function OrderDetail() {
       )}
 
       {/* ── Customer waiting view: Hourglass with ETA countdown ────── */}
-      {isCustomer && isPendingOrProcessing && (
+      {isCustomer && isActiveFulfillment && (
         <CustomerHourglassPanel order={order as OrderWithTracking} />
       )}
 

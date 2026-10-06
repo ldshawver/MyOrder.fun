@@ -599,6 +599,7 @@ export async function applyCatalogLifecycleTransition(input: {
   const role = normalizeRole(actor.role);
   if (!["global_admin", "admin", "supervisor"].includes(role) || actor.isActive === false || actor.status === "rejected" || actor.status === "deactivated"
     || (role !== "global_admin" && actor.tenantId !== tenantId)) throw new Error("Unauthorized catalogue lifecycle actor");
+  if (change.complianceHold !== undefined && (!change.reason?.trim() || (change.complianceHold === false && role !== "global_admin"))) throw new Error("Compliance clearance requires Global Admin and an audit reason");
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0 || !Number.isSafeInteger(id) || id <= 0) throw new Error("Explicit tenant and catalogue item IDs are required");
   return db.transaction(async tx => {
     const [existing] = await tx.select().from(catalogItemsTable)
@@ -638,10 +639,13 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
     active: z.boolean().optional(),
     archived: z.boolean().optional(),
     complianceHold: z.boolean().optional(),
-    reason: z.string().trim().max(500).optional(),
+    reason: z.string().trim().min(1).max(500).optional(),
   }).strict().safeParse(req.body);
   if (!body.success || (body.data.active === undefined && body.data.archived === undefined && body.data.complianceHold === undefined)) {
     res.status(400).json({ error: body.success ? "A lifecycle state is required" : body.error.message }); return;
+  }
+  if (body.data.complianceHold !== undefined && (!body.data.reason || (body.data.complianceHold === false && normalizeRole(req.dbUser!.role) !== "global_admin"))) {
+    res.status(403).json({ error: "Compliance action requires a reason; clearance requires Global Admin" }); return;
   }
   const updated = await applyCatalogLifecycleTransition({ tenantId, id, actor: req.dbUser!,
     change: body.data, ipAddress: req.ip, source: "http" });

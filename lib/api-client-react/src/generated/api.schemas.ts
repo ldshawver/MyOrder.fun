@@ -592,6 +592,7 @@ export interface Order {
   handoffCompletedByUserId?: number | null;
   createdAt: string;
   updatedAt: string;
+  serverNow?: string;
 }
 
 export type CreateOrderBodyCheckoutConversionSnapshot = { [key: string]: unknown };
@@ -639,7 +640,6 @@ export type CreateOrderBodyCheckoutConfirmation = {
   /** @minLength 1 */
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
-  customerCreditAmount?: number;
   tipAmount?: number | null;
   tipPercent?: number | null;
 };

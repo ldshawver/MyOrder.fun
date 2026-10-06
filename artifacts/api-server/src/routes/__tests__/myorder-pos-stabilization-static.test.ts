@@ -197,11 +197,14 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 describe("authenticated CSR claim client contract", () => {
   const staff = platform("pages/staff.tsx");
+  const fulfillmentActions = platform("lib/staffFulfillmentAction.ts");
   const detail = platform("pages/order-detail.tsx");
 
   it("sends an identity-free claim once, surfaces errors, and refreshes affected state", () => {
     expect(staff).toContain("if (loading !== null) return;");
-    expect(staff).toContain('body: JSON.stringify(status === "in_progress" ? {}');
+    expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
+    expect(fulfillmentActions).toContain('endpoint: `/api/orders/${orderId}/claim`, body: {}');
+    expect(fulfillmentActions).toContain('STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"]');
     expect(staff).toContain("body?.error ?? `Request failed with HTTP ${res.status}`");
     expect(staff).toContain('data-testid={`claim-message-${order.id}`}');
     for (const key of ["shiftQueueOrders", "generalQueueOrders", "csrAssignedOrders", "queueCounts", "activeAssignment", "getCurrentShift", "getOrder"]) {

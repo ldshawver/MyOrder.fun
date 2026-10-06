@@ -2176,6 +2176,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        serverNow:
+          type: string
+          format: date-time
       required: [id, tenantId, customerId, status, paymentStatus, subtotal, total, customerCreditApplied, remainingTenderAmount, items, createdAt, updatedAt]
 
     HandoffChecklist:

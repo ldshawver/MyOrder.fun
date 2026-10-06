@@ -1,3 +1,8 @@
+export const STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"] as const;
+export function staffVisibleFulfillmentState(state: string | null | undefined): string | null | undefined {
+  return state === "preparing" ? "in_progress" : state;
+}
+
 export function staffFulfillmentAction(orderId: number, status: "in_progress" | "preparing" | "ready" | "completed", isAdmin: boolean): {
   endpoint: string;
   body?: { fulfillmentStatus?: string };

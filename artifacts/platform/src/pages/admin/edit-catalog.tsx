@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { catalogProductDraftIsValid, createCatalogProductPayload, sanitizedCatalogError, validateCatalogProductDraft } from "@/lib/catalogProductForm";
 import { CATALOG_LIFECYCLE_LABEL, type CatalogLifecycleStatus } from "@/lib/catalogLifecycleStatus";
+import { useGetCurrentUser } from "@workspace/api-client-react";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,6 +58,7 @@ type CatalogProduct = {
   preferredReorderQuantity: number | string | null;
   stockQuantity: number | null;
   lifecycleStatus?: CatalogLifecycleStatus;
+  metadata?: { complianceReason?: string | null; complianceHold?: boolean } | null;
 };
 
 const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isTaxable: boolean; isWooManaged: boolean } = {
@@ -355,6 +357,8 @@ function EditDialog({
 
 export default function AdminEditCatalog() {
   const { getToken } = useAuth();
+  const { data: currentUser } = useGetCurrentUser();
+  const isGlobalAdmin = currentUser?.role === "global_admin";
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [showWoo, setShowWoo] = useState(false);
@@ -362,6 +366,9 @@ export default function AdminEditCatalog() {
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [saveConfirmation, setSaveConfirmation] = useState<string | null>(null);
+  const [complianceItem, setComplianceItem] = useState<CatalogProduct | null>(null);
+  const [complianceReason, setComplianceReason] = useState("");
+  const [complianceError, setComplianceError] = useState<string | null>(null);
 
   const fetchCatalog = useCallback(async (): Promise<CatalogProduct[]> => {
     const token = await getToken();
@@ -415,6 +422,17 @@ export default function AdminEditCatalog() {
       return r.json();
     },
     onSuccess: async () => { setDeleteId(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
+  });
+
+  const complianceMutation = useMutation({
+    mutationFn: async ({ item, reason }: { item: CatalogProduct; reason: string }) => {
+      const token = await getToken();
+      const response = await fetch(`/api/admin/product-master/${item.id}/lifecycle`, { method: "PATCH", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ complianceHold: item.lifecycleStatus !== "compliance_hold", reason }) });
+      if (!response.ok) throw new Error(`Compliance action rejected (HTTP ${response.status})`);
+      return response.json();
+    },
+    onSuccess: async () => { setComplianceItem(null); setComplianceReason(""); setComplianceError(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
+    onError: error => setComplianceError(error instanceof Error ? error.message : "Compliance action failed"),
   });
 
   const filtered = items.filter(item => {
@@ -604,6 +622,7 @@ export default function AdminEditCatalog() {
                         >
                           <Edit2 size={13} />
                         </button>
+                        {isGlobalAdmin && <button onClick={() => { setComplianceItem(item); setComplianceReason(""); setComplianceError(null); }} className="p-1.5 rounded-lg hover:bg-orange-500/10 text-orange-300" title={item.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"} aria-label={`${item.lifecycleStatus === "compliance_hold" ? "Review" : "Place"} compliance hold for ${item.name}`}><XCircle size={13} /></button>}
                         {!item.isWooManaged && (
                           <button
                             onClick={() => setDeleteId(item.id)}
@@ -632,6 +651,8 @@ export default function AdminEditCatalog() {
           isSaving={saveMutation.isPending}
         />
       )}
+
+      {complianceItem && <Dialog open onOpenChange={() => setComplianceItem(null)}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>{complianceItem.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"}</DialogTitle></DialogHeader><p className="text-sm">{complianceItem.name}</p><p className="text-xs text-muted-foreground">Current hold: {complianceItem.lifecycleStatus === "compliance_hold" ? "Active" : "None"}. Reason: {complianceItem.metadata?.complianceReason || "—"}</p><label className="text-xs">Audit reason<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} aria-label="Compliance action reason" /></label>{complianceError && <p role="alert" className="text-xs text-red-400">{complianceError}</p>}<Button disabled={!complianceReason.trim() || complianceMutation.isPending} onClick={() => complianceMutation.mutate({ item: complianceItem, reason: complianceReason.trim() })}>{complianceItem.lifecycleStatus === "compliance_hold" ? "Remove hold as Global Admin" : "Place hold"}</Button></DialogContent></Dialog>}
 
       {/* Delete confirm dialog */}
       {deleteId !== null && (

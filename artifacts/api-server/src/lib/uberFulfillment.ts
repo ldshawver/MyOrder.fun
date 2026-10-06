@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db, ordersTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, usersTable } from "@workspace/db";
-import { cancelUberDelivery, createUberDelivery, getUberDelivery, getUberPickupAction, listUberDeliveries, type UberAddress, type UberManifestItem } from "./uberDirect";
+import { cancelUberDelivery, createUberDelivery, createUberDeliveryQuote, getUberDelivery, getUberPickupAction, listUberDeliveries, type UberAddress, type UberManifestItem } from "./uberDirect";
 import { nextUberDeliveryStatus } from "./uberDeliveryState";
 import { getUberDirectPickupContact, getUberDirectRuntimeConfig, isUberDirectDispatchEnabledForTenant } from "./uberDirectConfig";
 import { logger } from "./logger";
+import { isUberDeliveryFullySettled } from "./uberDeliveryEligibility";
 
 // A timed-out create may have succeeded at Uber. Never issue a second create
 // until a provider lookup has reconciled the first attempt.
@@ -18,8 +20,7 @@ function safeFailure(error: unknown): string {
 }
 
 /**
- * Durable handoff after a paid local-delivery order. It deliberately does not
- * call Uber unless dispatch has been explicitly enabled in server-only config.
+ * Payment creates a durable staff-work item. It never dispatches a courier.
  */
 export async function queueUberDeliveryForPaidOrder(tenantId: number, orderId: number): Promise<void> {
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
@@ -34,14 +35,58 @@ export async function queueUberDeliveryForPaidOrder(tenantId: number, orderId: n
     await tx.insert(uberDeliveryFulfillmentsTable).values({
       tenantId, orderId, quoteId: quote.id,
       externalOrderReference: `myorder-${tenantId}-${orderId}`,
-      requestState: "delivery_create_pending",
+      requestState: "awaiting_staff_request",
     }).onConflictDoNothing();
-    await tx.update(uberDeliveryFulfillmentsTable).set({ requestState: "delivery_create_pending", updatedAt: new Date() })
+    await tx.update(uberDeliveryFulfillmentsTable).set({ requestState: "awaiting_staff_request", updatedAt: new Date() })
       .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId), eq(uberDeliveryFulfillmentsTable.requestState, "payment_pending")));
     await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: new Date() })
       .where(and(eq(uberDeliveryQuotesTable.id, quote.id), eq(uberDeliveryQuotesTable.status, "quoted")));
   });
-  if (await isUberDirectDispatchEnabledForTenant(tenantId)) await dispatchPendingUberDelivery(tenantId, orderId);
+}
+
+/** The only normal entry to provider creation. A state claim serializes retries. */
+export async function requestUberDelivery(tenantId: number, orderId: number): Promise<string> {
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
+  if (!order || order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) return "not_ready";
+  if (!await isUberDeliveryFullySettled(order)) return "payment_required";
+  if (!await isUberDirectDispatchEnabledForTenant(tenantId) || !await getUberDirectRuntimeConfig(tenantId) || !await getUberDirectPickupContact(tenantId)) return "configuration_required";
+  const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId))).limit(1);
+  if (!fulfillment || fulfillment.quoteId !== order.deliveryQuoteId || fulfillment.externalOrderReference !== `myorder-${tenantId}-${orderId}`) return "identity_mismatch";
+  if (fulfillment.providerDeliveryId) return fulfillment.requestState;
+  if (!["awaiting_staff_request", "payment_pending"].includes(fulfillment.requestState)) return fulfillment.requestState;
+  const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.tenantId, tenantId), eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.customerId, order.customerId))).limit(1);
+  if (!quote || quote.feeCents !== Math.round(Number(order.deliveryFee) * 100) || quote.currency !== order.deliveryCurrency) return "identity_mismatch";
+  const claimed = await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "staff_requesting", updatedAt: new Date() })
+    .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.requestState, fulfillment.requestState), sql`${uberDeliveryFulfillmentsTable.providerDeliveryId} IS NULL`)).returning({ id: uberDeliveryFulfillmentsTable.id });
+  if (!claimed.length) return "request_in_progress";
+  let nextQuoteId = quote.id;
+  if (quote.expiresAt <= new Date()) {
+    try {
+      const config = await getUberDirectRuntimeConfig(tenantId);
+      if (!config) throw new Error("configuration_required");
+      const refreshed = await createUberDeliveryQuote({ pickupAddress: quote.pickupAddress as UberAddress, dropoffAddress: quote.dropoffAddress as UberAddress, manifestItems: quote.manifestItems as UberManifestItem[], pickupAction: getUberPickupAction() }, config);
+      const expires = refreshed.expires ? new Date(refreshed.expires) : null;
+      if (!refreshed.id || !expires || Number.isNaN(expires.getTime()) || expires <= new Date() || !Number.isSafeInteger(refreshed.fee)
+        || refreshed.fee !== quote.feeCents || String(refreshed.currency_type ?? "").toUpperCase() !== quote.currency) {
+        await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "manual_reconciliation_required", lastSanitizedError: "requote_price_or_currency_mismatch", updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
+        return "manual_reconciliation_required";
+      }
+      nextQuoteId = randomUUID();
+      await db.transaction(async tx => {
+        await tx.insert(uberDeliveryQuotesTable).values({ id: nextQuoteId, tenantId, customerId: order.customerId, providerQuoteId: refreshed.id, cartFingerprint: quote.cartFingerprint, pickupAddress: quote.pickupAddress, dropoffAddress: quote.dropoffAddress, manifestItems: quote.manifestItems, feeCents: refreshed.fee!, currency: quote.currency, providerCreatedAt: refreshed.created ? new Date(refreshed.created) : null, expiresAt: expires, status: "consumed", consumedAt: new Date() });
+        await tx.update(uberDeliveryFulfillmentsTable).set({ quoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
+        await tx.update(ordersTable).set({ deliveryQuoteId: nextQuoteId, updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.deliveryQuoteId, quote.id)));
+      });
+    } catch {
+      await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "requote_required", lastSanitizedError: "requote_unavailable", updatedAt: new Date() }).where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting")));
+      return "requote_required";
+    }
+  }
+  await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "delivery_create_pending", lastSanitizedError: null, updatedAt: new Date() })
+    .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.requestState, "staff_requesting"), eq(uberDeliveryFulfillmentsTable.quoteId, nextQuoteId)));
+  await dispatchPendingUberDelivery(tenantId, orderId);
+  const [current] = await db.select({ requestState: uberDeliveryFulfillmentsTable.requestState }).from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id)).limit(1);
+  return current?.requestState ?? "reconciliation_required";
 }
 
 /** A worker/recovery-safe dispatch attempt. It uses the durable unique external reference. */
@@ -49,12 +94,12 @@ export async function dispatchPendingUberDelivery(tenantId: number, orderId: num
   const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable)
     .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId))).limit(1);
   if (!fulfillment || fulfillment.providerDeliveryId || !RETRYABLE.has(fulfillment.requestState)) return;
-  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.paymentStatus, "paid"))).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId), eq(ordersTable.fulfillmentStatus, "ready"))).limit(1);
   const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(eq(uberDeliveryQuotesTable.id, fulfillment.quoteId), eq(uberDeliveryQuotesTable.tenantId, tenantId))).limit(1);
   const [customer] = order ? await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, phone: usersTable.contactPhone }).from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1) : [];
   const [pickup, config] = await Promise.all([getUberDirectPickupContact(tenantId), getUberDirectRuntimeConfig(tenantId)]);
   const customerName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
-  if (!order || !quote || !pickup || !config || !customerName || !customer?.phone) {
+  if (!order || !order.readyAt || !await isUberDeliveryFullySettled(order) || !quote || !pickup || !config || !customerName || !customer?.phone) {
     await db.update(uberDeliveryFulfillmentsTable).set({ requestState: "configuration_required", lastSanitizedError: "delivery_contact_configuration_required", updatedAt: new Date() })
       .where(and(eq(uberDeliveryFulfillmentsTable.id, fulfillment.id), eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.requestState, fulfillment.requestState)));
     return;

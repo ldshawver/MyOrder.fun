@@ -69,8 +69,9 @@ export async function ensureShiftRoutingConfigSchema(): Promise<void> {
   shiftRoutingConfigSchemaEnsured = true;
 }
 
-async function getRoutingSettings(): Promise<{ rule: RoutingRule; defaultEtaMinutes: number }> {
-  const [s] = await db.select().from(adminSettingsTable).limit(1);
+async function getRoutingSettings(tenantId: number): Promise<{ rule: RoutingRule; defaultEtaMinutes: number }> {
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Tenant is required for order routing");
+  const [s] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
   const rule = (s?.orderRoutingRule as RoutingRule | undefined) ?? "round_robin";
   const defaultEtaMinutes = s?.defaultEtaMinutes ?? 30;
   return { rule, defaultEtaMinutes };
@@ -194,8 +195,8 @@ export async function isActiveCsr(userId: number): Promise<boolean> {
   return all.some(c => c.userId === userId);
 }
 
-export async function decideRouting(tenantId?: number): Promise<RoutingDecision> {
-  const { rule, defaultEtaMinutes } = await getRoutingSettings();
+export async function decideRouting(tenantId: number): Promise<RoutingDecision> {
+  const { rule, defaultEtaMinutes } = await getRoutingSettings(tenantId);
   const eta = new Date(Date.now() + defaultEtaMinutes * 60_000);
   // Routing behavior:
   // 1. Find active CSR shifts.

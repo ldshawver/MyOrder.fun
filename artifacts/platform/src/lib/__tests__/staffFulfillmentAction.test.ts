@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { staffFulfillmentAction } from "../staffFulfillmentAction";
+import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "../staffFulfillmentAction";
 
 describe("staff fulfillment action", () => {
+  it("offers Start, Ready, Complete without a normal Prepare step and displays legacy preparing in progress", () => {
+    expect(STAFF_FULFILLMENT_STATUSES).toEqual(["in_progress", "ready", "completed"]);
+    expect(staffVisibleFulfillmentState("preparing")).toBe("in_progress");
+  });
   it("uses the shift-bound claim for a CSR", () => {
     expect(staffFulfillmentAction(48, "in_progress", false)).toEqual({
       endpoint: "/api/orders/48/claim",
