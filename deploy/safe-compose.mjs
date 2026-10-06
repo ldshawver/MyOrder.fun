@@ -43,7 +43,10 @@ export function validatePlan({ environment, root, project, config, authorization
   const actualNetworkNames = Object.values(config.networks ?? {}).map(network => network.name).sort();
   if (actualNetworkNames.length !== expectedNetworkNames.length || actualNetworkNames.some(name => !expectedNetworkNames.includes(name))) throw new Error("Resolved Compose networks do not match the pinned environment");
   const expectedPort = environment === "staging" ? "127.0.0.1:28081:80" : "127.0.0.1:8081:80";
-  if (!(config.services.nginx.ports ?? []).some(port => String(port).replaceAll("/tcp", "") === expectedPort)) throw new Error("Resolved proxy port does not match the pinned environment");
+  const [expectedHostIp, expectedHostPort, expectedTargetPort] = expectedPort.split(":");
+  if (!(config.services.nginx.ports ?? []).some(port => typeof port === "string"
+    ? port.replaceAll("/tcp", "") === expectedPort
+    : port.host_ip === expectedHostIp && String(port.published) === expectedHostPort && String(port.target) === expectedTargetPort && (port.protocol ?? "tcp") === "tcp")) throw new Error("Resolved proxy port does not match the pinned environment");
   if (config.volumes?.postgres_data?.name !== `${PROJECT[environment]}_postgres_data`) throw new Error("Resolved database volume does not match the pinned environment");
   if (environment === "production" && authorization !== "DEPLOY-PRODUCTION") throw new Error("Production requires explicit DEPLOY-PRODUCTION authorization");
   if (environment === "staging" && (project === "deploy" || database === "alavont")) throw new Error("Staging cannot target production resources");

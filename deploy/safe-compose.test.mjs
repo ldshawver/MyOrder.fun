@@ -54,8 +54,11 @@ test("rejects a staging Compose network, database volume, or proxy port collisio
   wrongVolume.volumes.postgres_data.name = "deploy_postgres_data";
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: wrongVolume }), /database volume/);
   const wrongProxy = config("staging", "myorder_staging");
-  wrongProxy.services.nginx.ports = ["127.0.0.1:8081:80"];
+  wrongProxy.services.nginx.ports = [{ host_ip: "127.0.0.1", published: "8081", target: 80, protocol: "tcp" }];
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: wrongProxy }), /proxy port/);
+  const actualComposeFormat = config("staging", "myorder_staging");
+  actualComposeFormat.services.nginx.ports = [{ host_ip: "127.0.0.1", published: "28081", target: 80, protocol: "tcp" }];
+  assert.equal(validatePlan({ environment: "staging", root, project: "myorder-staging", config: actualComposeFormat }), true);
 });
 test("rejects mismatched Compose API environment, wrong tree and wrong project", () => {
   const wrongApiEnvironment = config("staging", "myorder_staging");
