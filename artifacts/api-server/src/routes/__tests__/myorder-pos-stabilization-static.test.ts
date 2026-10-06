@@ -242,29 +242,30 @@ describe("receipts and deploy workflow", () => {
     expect(routesIndex.indexOf("router.use(aiRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
   });
 
-  it("uses safer deploy flow and OAuth Tailscale tags", () => {
+  it("uses Tailscale-only production SSH with pinned host keys", () => {
     const deploy = src(".github/workflows/deploy.yml");
-    for (const required of ["VPS_KNOWN_HOSTS", "VPS_HOST_FALLBACK", "VPS_HOST_FALLBACK_PORT", "SELECTED_VPS_HOST", "SELECTED_VPS_PORT", "tags: tag:github-actions"]) {
+    for (const required of [
+      "VPS_KNOWN_HOSTS",
+      "VPS_TAILSCALE_HOST: 100.85.15.43",
+      "Verify Tailscale route to production SSH",
+      "tags: tag:github-actions",
+      "StrictHostKeyChecking=yes",
+      "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS",
+      "production_confirmation:",
+      "environment: production",
+      "production-release.mjs",
+      "RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360",
+      "RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf",
+    ]) {
       expect(deploy).toContain(required);
     }
-    expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
-    expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
-    expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
-    expect(deploy).toContain("COMPOSE_PROJECT_NAME: deploy");
-    expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
-    expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
-    expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
-    expect(deploy).toContain("production_confirmation:");
-    expect(deploy).toContain("environment: production");
-    expect(deploy).toContain("node safe-compose.mjs production config --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production build --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production up db --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production migrate --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production up api platform nginx --authorize-production");
-    expect(deploy).toContain("docker compose --project-name deploy --env-file .env --file docker-compose.yml ps");
-    expect(deploy).toContain("deploy_postgres_data");
-    expect(deploy).toContain("http://127.0.0.1:8081/api/healthz");
-    expect(deploy).toContain("Public health check passed with expected release SHA");
+    expect(deploy).toContain("uses: tailscale/github-action@v4");
+    expect(deploy).toContain("oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}");
+    expect(deploy).toContain("oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}");
+    expect(deploy).toContain("nc -z -w 5 \"$VPS_TAILSCALE_HOST\" \"$VPS_PORT\"");
+    expect(deploy).toContain("ssh-keygen -F \"$VPS_SSH_HOST_KEY_ALIAS\"");
+    expect(deploy).not.toMatch(/ssh-keyscan|StrictHostKeyChecking=accept-new/);
+    expect(deploy).not.toMatch(/VPS_HOST_FALLBACK|Primary VPS_HOST failed|Trying fallback/);
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");
