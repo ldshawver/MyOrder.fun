@@ -98,13 +98,13 @@ jobs:
           oauth-secret: ${{ env.TS_OAUTH_SECRET }}
           tags: tag:github-actions
 
-      - name: Document Tailscale SSH policy requirements
-        run: |
-          set -euo pipefail
-          echo "GitHub Actions Tailscale tag: tag:github-actions"
-          echo "Deploy SSH user: ${VPS_USER}"
-          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag, for example tag:server or tag:myorder-vps."
-
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+        oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+        oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+        tags: tag:ci
+    
       - name: Select reachable VPS host and configure known_hosts
         run: |
           set -euo pipefail
