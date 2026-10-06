@@ -472,8 +472,13 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       expect(verify).toHaveBeenCalledTimes(2);
       const unknown = await send({ ...event, id: `${event.id}-UNKNOWN`, resource: { id: "TEST-UNKNOWN-PROVIDER-ORDER" } });
       expect(unknown.status).toBe(400);
+      // Unknown external identities are rejected before verification and are
+      // not persisted as trusted webhook events.
+      expect(verify).toHaveBeenCalledTimes(2);
       const events = await db.select().from(paymentWebhookEventsTable).where(eq(paymentWebhookEventsTable.providerEventId, event.id));
       expect(events).toHaveLength(1);
+      const unknownEvent = await db.select().from(paymentWebhookEventsTable).where(eq(paymentWebhookEventsTable.providerEventId, `${event.id}-UNKNOWN`));
+      expect(unknownEvent).toHaveLength(0);
     } finally { verify.mockRestore(); }
   }, 60_000);
 

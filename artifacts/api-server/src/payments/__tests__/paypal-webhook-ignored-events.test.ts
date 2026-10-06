@@ -8,7 +8,7 @@ describe("PayPal unsupported webhook safety", () => {
     const allowed = source.match(/const allowed = new Set\(\[([^\]]+)\]\)/)?.[1] ?? "";
     expect(allowed).not.toContain("CHECKOUT.ORDER.COMPLETED");
     expect(source).toContain('processingState: allowed.has(event.event_type) ? "verified" : "ignored"');
-    expect(source).toContain('if (!allowed.has(event.event_type)) return { replayed: false, processed: false };');
+    expect(source).toContain('if (!allowed.has(event.event_type)) return { replayed: recorded.length === 0, processed: false };');
     expect(source.indexOf('if (!allowed.has(event.event_type)) return')).toBeLessThan(source.indexOf('if (event.event_type === "CHECKOUT.ORDER.APPROVED")'));
   });
 });
