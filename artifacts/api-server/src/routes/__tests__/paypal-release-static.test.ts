@@ -25,7 +25,11 @@ describe("PayPal release security structure", () => {
   it("uses the v6 official Wallet element with only the publishable client ID and automatic presentation", () => {
     expect(frontend).toContain('tag: "paypal-button"');
     expect(frontend).toContain("createPayPalOneTimePaymentSession");
-    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" })');
+    expect(frontend).toContain("createApplePayOneTimePaymentSession");
+    expect(frontend).toContain("createGooglePayOneTimePaymentSession");
+    expect(frontend).toContain('methods.isEligible("applepay")');
+    expect(frontend).toContain('methods.isEligible("googlepay")');
     expect(frontend).toContain('presentationMode: "auto"');
     expect(frontend).toContain('...await authHeaders()');
     expect(frontend).not.toContain("browser-token");

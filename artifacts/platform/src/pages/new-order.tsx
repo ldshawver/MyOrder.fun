@@ -843,6 +843,7 @@ export default function NewOrder() {
                   <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
                   <PayPalCheckoutButton
                     createOrder={() => createCheckoutOrder("paypal")}
+                    eligibilityAmount={checkoutQuote?.tenderDue}
                     getToken={getToken}
                     disabled={!canSubmit || !selectedMethodAvailable}
                     onCaptured={(orderId) => { void finishCheckout(orderId); }}

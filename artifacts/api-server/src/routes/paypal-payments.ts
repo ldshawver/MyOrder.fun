@@ -58,7 +58,7 @@ async function webhookTenant(event: { resource?: Record<string, unknown> }): Pro
 
 router.get("/payments/config", ...auth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  try { const config = await loadTenantPaymentConfig(req.authorizedTenantId!); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
+  try { const config = await loadTenantPaymentConfig(req.authorizedTenantId!); res.json(config.enabled ? { enabled: true, provider: "paypal", mode: config.mode, clientId: config.clientId, currency: "USD", countryCode: "US" } : { enabled: false, provider: "paypal", mode: "disabled" }); }
   catch { res.status(503).json({ enabled: false, provider: "paypal", mode: "disabled" }); }
 });
 

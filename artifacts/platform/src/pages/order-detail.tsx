@@ -1094,7 +1094,7 @@ export default function OrderDetail() {
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Provider-verified PayPal checkout */}
-                  <PayPalCheckoutButton orderId={order.id} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
 
                 </div>
               )}
