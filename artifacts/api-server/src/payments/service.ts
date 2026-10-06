@@ -1,10 +1,10 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { db, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable } from "@workspace/db";
+import { db, ordersTable, orderTaxSnapshotsTable, inventoryReservationsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable, auditLogsTable, usersTable } from "@workspace/db";
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
-import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
+import { consumeCustomerCredit, releaseCustomerCredit, restoreCustomerCredit } from "./customerCredit";
 import { logger } from "../lib/logger";
 import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservations";
 import { ensurePaidOrderInventoryReserved, PaymentInventoryError, type PaymentTransaction } from "./inventory";
@@ -291,6 +291,37 @@ export class PaymentService {
       }
       await tx.update(paymentAttemptsTable).set({ state: nextState, reconciliationState: nextState === "reconciliation_required" ? "manual_review" : "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { localState: nextState, providerState: authoritative.status, recovered: false };
+    });
+  }
+
+  /** Resolve only an expired, unapproved sandbox checkout. This cannot
+   * release a hold after approval or an ambiguous provider response. */
+  async expireAbandonedCreated(input: { tenantId: number; orderId: number; attemptId: number; actorUserId: number }) {
+    if (this.config.environment !== "sandbox") throw new PaymentServiceError(409, "SANDBOX_ONLY", "Abandoned-order expiry requires sandbox");
+    return db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
+      const [actor] = await tx.select({ id: usersTable.id, tenantId: usersTable.tenantId, email: usersTable.email, role: usersTable.role }).from(usersTable).where(and(eq(usersTable.id, input.actorUserId), eq(usersTable.tenantId, input.tenantId))).limit(1);
+      if (!actor || !["admin", "global_admin"].includes(actor.role)) throw new PaymentServiceError(403, "PAYMENT_FORBIDDEN", "Admin authorization required");
+      const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
+      const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.id, input.attemptId))).limit(1);
+      if (!order || !attempt?.providerOrderId || attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(404, "PAYMENT_NOT_FOUND", "Payment attempt not found");
+      if (attempt.state === "failed" && attempt.failureClass === "provider_created_abandoned" && order.status === "cancelled") return { status: "expired", replayed: true, reservationReleased: 0 };
+      const unfulfilledPickupReady = order.status === "ready" && order.deliveryMethod === "pickup" && !order.acceptedAt && !order.preparedAt && !order.handoffCompletedAt;
+      if (order.paymentStatus !== "unpaid" || attempt.state !== "created" || attempt.capturedAmount || (!["submitted", "confirmed"].includes(order.status) && !unfulfilledPickupReady)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Payment is not an abandoned created checkout");
+      const [capture] = await tx.select().from(paymentCapturesTable).where(and(eq(paymentCapturesTable.tenantId, input.tenantId), eq(paymentCapturesTable.paymentAttemptId, attempt.id))).limit(1);
+      if (capture) throw new PaymentServiceError(409, "CAPTURE_RECONCILIATION_REQUIRED", "Captured payment cannot be expired");
+      const reservations = await tx.select({ id: inventoryReservationsTable.id, expiresAt: inventoryReservationsTable.expiresAt }).from(inventoryReservationsTable).where(and(eq(inventoryReservationsTable.orderId, order.id), eq(inventoryReservationsTable.status, "reserved")));
+      if (!reservations.length || reservations.some(row => row.expiresAt.getTime() > Date.now())) throw new PaymentServiceError(409, "RESERVATION_NOT_EXPIRED", "Inventory reservation is not expired");
+      const authoritative = await this.provider.getOrder(attempt.providerOrderId);
+      if (authoritative.id !== attempt.providerOrderId || authoritative.status !== "CREATED" || authoritative.capture || !sameMoney(authoritative.amount.value, attempt.requestedAmount) || authoritative.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "PROVIDER_ORDER_NOT_ABANDONED", "Provider order requires reconciliation");
+      await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_created_abandoned" }).where(and(eq(paymentAttemptsTable.id, attempt.id), eq(paymentAttemptsTable.tenantId, input.tenantId)));
+      const reservationReleased = await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+      const creditCents = dollarsToCents(order.customerCreditApplied);
+      if (creditCents > 0) await releaseCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, idempotencyKey: `release:abandoned:${attempt.id}`, reason: "Abandoned sandbox PayPal checkout" });
+      const now = new Date();
+      await tx.update(ordersTable).set({ status: "cancelled", fulfillmentStatus: "cancelled", cancelledAt: now, cancelledByUserId: input.actorUserId, customerCreditApplied: creditCents > 0 ? "0.00" : order.customerCreditApplied, remainingTenderAmount: creditCents > 0 ? order.total : order.remainingTenderAmount, updatedAt: now }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, input.tenantId)));
+      await tx.insert(auditLogsTable).values({ tenantId: input.tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "PAYPAL_CREATED_ORDER_ABANDONED", resourceType: "order", resourceId: String(order.id), metadata: { attemptId: attempt.id, reservationReleased, providerState: "CREATED" } });
+      return { status: "expired", replayed: false, reservationReleased };
     });
   }
 

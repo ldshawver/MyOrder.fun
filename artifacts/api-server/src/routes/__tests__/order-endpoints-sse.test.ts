@@ -180,7 +180,7 @@ vi.mock("../../lib/checkoutConversionGate", async () => {
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
-  const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
+  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
   const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
@@ -710,5 +710,40 @@ describe("SSE event emission via the live route handlers", () => {
     const csrs = await supertest(app).get("/api/orders/active-csrs");
     expect(delayed.status).toBe(403);
     expect(csrs.status).toBe(403);
+  });
+});
+
+describe("order completion authorization", () => {
+  it("completes a paid, ready pickup once and treats a duplicate close as idempotent", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09", customerCreditApplied: "0.00", deliveryMethod: "pickup" });
+    mockActor = dbState.users[2]!;
+    const app = buildApp();
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.status).toBe("completed");
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.status).toBe("completed");
+  });
+
+  it("rejects an unpaid ready pickup", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "unpaid", paymentMethod: "cash", total: "1.09", deliveryMethod: "pickup" });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/complete").send({})).status).toBe(409);
+    expect(dbState.orders[0]!.status).toBe("ready");
+  });
+
+  it("does not let another tenant close a paid ready order", async () => {
+    dbState.orders.push({ id: 48, tenantId: 2, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09" });
+    mockActor = dbState.users[2]!; // Tenant 1 admin
+    const response = await supertest(buildApp()).post("/api/orders/48/complete").send({});
+    expect(response.status).toBe(404);
+    expect(dbState.orders[0]!.status).toBe("ready");
+  });
+
+  it("does not let a customer close a paid ready order", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09" });
+    mockActor = dbState.users[0]!; // Customer, not staff
+    const response = await supertest(buildApp()).post("/api/orders/48/complete").send({});
+    expect(response.status).toBe(403);
+    expect(dbState.orders[0]!.status).toBe("ready");
   });
 });

@@ -1,6 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
+import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
 import {
   db,
   ordersTable,
@@ -13,6 +14,8 @@ import {
   inventoryLocationsTable,
   catalogItemsTable,
   cashLedgerEntriesTable,
+  paymentAttemptsTable,
+  paymentCapturesTable,
   auditLogsTable,
   csrBoxesTable,
   generalQueueCashSessionParticipantsTable,
@@ -2179,6 +2182,26 @@ async function uberDeliveryReadyForCompletion(tenantId: number, order: typeof or
   return delivery?.providerStatus === "delivered";
 }
 
+async function paymentReadyForCompletion(tenantId: number, order: typeof ordersTable.$inferSelect): Promise<boolean> {
+  if (order.paymentStatus !== "paid") return false;
+  // remainingTenderAmount is the frozen external-tender quote, not a live
+  // balance. For PayPal, use the completed capture ledger to prove settlement.
+  if (!(order.paymentMethod ?? "").includes("paypal")) return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: "0" });
+  const [settled] = await db.select({ amount: sql<string>`coalesce(sum(${paymentCapturesTable.amount}), 0)` })
+    .from(paymentCapturesTable)
+    .innerJoin(paymentAttemptsTable, and(
+      eq(paymentCapturesTable.paymentAttemptId, paymentAttemptsTable.id),
+      eq(paymentCapturesTable.tenantId, paymentAttemptsTable.tenantId),
+    ))
+    .where(and(
+      eq(paymentAttemptsTable.tenantId, tenantId),
+      eq(paymentAttemptsTable.orderId, order.id),
+      eq(paymentCapturesTable.state, "completed"),
+      eq(paymentCapturesTable.currency, "USD"),
+    ));
+  return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: settled?.amount ?? "0" });
+}
+
 async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
   const actor = req.dbUser!;
   const id = Number(req.params.id);
@@ -2259,8 +2282,8 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.json(await buildOrderResponse(current ?? order));
     return;
   }
-  if (status === "completed" && order.paymentStatus !== "paid") {
-    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" });
+  if (status === "completed" && !await paymentReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Order must be fully paid or closed out before it can be completed" });
     return;
   }
   if (status === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
@@ -2574,8 +2597,8 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     res.json({ id: order.id, fulfillmentStatus: order.fulfillmentStatus, status: order.status, idempotent: true });
     return;
   }
-  if (fulfillmentStatus === "completed" && order.paymentStatus !== "paid") {
-    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" }); return;
+  if (fulfillmentStatus === "completed" && !await paymentReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Order must be fully paid or closed out before it can be completed" }); return;
   }
   if (fulfillmentStatus === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
     res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" }); return;

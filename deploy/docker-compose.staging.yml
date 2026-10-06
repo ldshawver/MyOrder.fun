@@ -154,6 +154,9 @@ services:
 
   nginx:
     image: nginx:alpine
+    labels:
+      org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+      com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
     restart: unless-stopped
     ports:
       - "127.0.0.1:28081:80"

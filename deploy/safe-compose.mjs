@@ -8,7 +8,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
-const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-release-gates-20261002", production: "/opt/alavont" };
+const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006", production: "/opt/alavont" };
 const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap"]);
 
 export function validatePlan({ environment, root, project, config, authorization }) {

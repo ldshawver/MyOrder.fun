@@ -1,6 +1,6 @@
 import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
   adminSettingsTable, auditLogsTable, cashLedgerEntriesTable, csrBoxesTable, db,
@@ -13,6 +13,17 @@ import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
 const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "ready", "pending", "processing"];
+const ACTIVE_FULFILLMENT_STATUSES = ["submitted", "in_progress", "preparing", "ready"];
+// Payment capture retains the legacy order status `confirmed`. Fulfillment is
+// authoritative for staff work, so a paid pickup still has to enter the queue.
+// Keep terminal fulfillment states out even when an old status is stale.
+const activeQueueOrder = and(
+  inArray(ordersTable.status, [...QUEUE_ORDER_STATUSES, "confirmed"]),
+  or(
+    inArray(ordersTable.fulfillmentStatus, ACTIVE_FULFILLMENT_STATUSES),
+    and(isNull(ordersTable.fulfillmentStatus), inArray(ordersTable.status, [...QUEUE_ORDER_STATUSES, "confirmed"])),
+  ),
+);
 const supervisorRoles = new Set(["supervisor", "admin", "global_admin"]);
 
 async function currentGeneralQueueSession(tenantId: number, locationId?: number) {
@@ -111,7 +122,7 @@ router.get("/shift-queue/status", requirePermission("queue.view"), async (req, r
   const config = await latestRoutingConfig(tenantId);
   const activeShift = shifts[0] ?? null;
   const activeDurationSeconds = activeShift ? Math.max(0, Math.floor((Date.now() - new Date(activeShift.clockedInAt).getTime()) / 1000)) : 0;
-  const activeOrders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES)));
+  const activeOrders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder));
   const defaultQueueCount = activeOrders.filter(o => o.routedTo === "default_queue" || (!o.assignedShiftId && !o.assignedCsrUserId)).length;
   const multiple = shifts.length > 1;
   const approved = config?.allowMultipleActiveShifts === true && !!config.routingStrategy;
@@ -146,11 +157,11 @@ router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, r
     const scope = shift && isShiftOrderRoutable(shift)
       ? sql`(${ordersTable.assignedShiftId} = ${shift.id} OR (${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id})))`
       : sql`(${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id}))`;
-    const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES), scope)).orderBy(desc(ordersTable.createdAt));
+    const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder, scope)).orderBy(desc(ordersTable.createdAt));
     res.json({ orders, total: orders.length });
     return;
   }
-  const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), inArray(ordersTable.status, QUEUE_ORDER_STATUSES))).orderBy(desc(ordersTable.createdAt));
+  const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder)).orderBy(desc(ordersTable.createdAt));
   res.json({ orders, total: orders.length });
 });
 
@@ -162,7 +173,7 @@ router.get("/shift-queue/general", requirePermission("queue.view"), async (req, 
     routeSource: ordersTable.routeSource, total: ordersTable.total, createdAt: ordersTable.createdAt,
   }).from(ordersTable).where(and(
     eq(ordersTable.tenantId, tenantId), isNull(ordersTable.assignedShiftId),
-    inArray(ordersTable.status, QUEUE_ORDER_STATUSES),
+    activeQueueOrder,
   )).orderBy(desc(ordersTable.createdAt));
   res.json({ orders, total: orders.length });
 });

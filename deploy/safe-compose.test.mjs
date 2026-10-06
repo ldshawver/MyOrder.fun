@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateCandidateIdentity, validateContainer, validatePlan } from "./safe-compose.mjs";
 
-const root = "/home/serveradmin/worktrees/myorder-release-gates-20261002";
+const root = "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006";
 function config(environment, database) {
   const project = environment === "staging" ? "myorder-staging" : "deploy";
   const networks = environment === "staging" ? { internal: {} } : { internal: {}, external: {} };
