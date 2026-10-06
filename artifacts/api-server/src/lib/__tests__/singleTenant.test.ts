@@ -48,11 +48,13 @@ describe("getHouseTenantId", () => {
 
   it("auto-seeds a default tenant when none exists, then returns its id", async () => {
     selectMock.mockReturnValueOnce(chain([])); // initial lookup: empty
-    insertMock.mockReturnValueOnce(chain([{ id: 1 }])); // seed returns new id
+    const insertResult = chain([{ id: 1 }]); // seed returns new id
+    insertMock.mockReturnValueOnce(insertResult);
 
     const { getHouseTenantId } = await loadModuleFresh();
     await expect(getHouseTenantId()).resolves.toBe(1);
     expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(insertResult.onConflictDoNothing).toHaveBeenCalledWith();
     expect(loggerInfo).toHaveBeenCalledWith(
       expect.objectContaining({ event: "tenant_auto_seed" }),
       expect.any(String),

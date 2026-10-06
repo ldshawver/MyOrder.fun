@@ -25,7 +25,9 @@ export async function getHouseTenantId(): Promise<number> {
   // Preserve a genuine one-tenant deployment, but refuse to choose among tenants.
   const candidates = await db.select({ id: tenantsTable.id }).from(tenantsTable).limit(2);
   if (candidates.length > 1) throw new Error("Explicit signup tenant configuration is required");
-  if (candidates.length === 1) { _cachedId = candidates[0].id; return candidates[0].id; }
+  if (candidates.length === 1) {
+    _cachedId = candidates[0].id; return candidates[0].id;
+  }
   // Empty deployment — seed the default house tenant. Idempotent via slug uniqueness.
   logger.info({ event: "tenant_auto_seed" }, "No tenant row found; seeding default house tenant");
   const [seeded] = await db
@@ -36,7 +38,10 @@ export async function getHouseTenantId(): Promise<number> {
       status: "active",
       plan: "standard",
     })
-    .onConflictDoNothing({ target: tenantsTable.slug })
+    // The uniqueness key is lower(slug), so PostgreSQL cannot infer it from
+    // the raw slug column as an ON CONFLICT target. Ignore the unique conflict
+    // and re-read the canonical house row below.
+    .onConflictDoNothing()
     .returning({ id: tenantsTable.id });
 
   if (seeded) {
