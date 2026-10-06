@@ -351,6 +351,7 @@ export async function reassignOrder(orderId: number, tenantId: number, newUserId
     assignedCsrUserId: newUserId,
     assignedShiftId: shiftId,
     routeSource: "supervisor_override",
+    routedTo: newUserId === null ? "default_queue" : "csr_shift",
     routedAt: now,
     acceptedAt: null,
   };

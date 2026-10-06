@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
+import { canAdminStartDefaultQueueOrder } from "../lib/adminQueueStart";
 import {
   db,
   ordersTable,
@@ -1527,6 +1528,53 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   });
 }
 
+async function startDefaultQueueOrder(req: Request, res: Response, order: typeof ordersTable.$inferSelect): Promise<void> {
+  const actor = req.dbUser!;
+  const tenantId = req.authorizedTenantId!;
+  if (!["admin", "global_admin"].includes(normalizeRole(actor.role))) {
+    res.status(403).json({ error: "Admin permission is required to start a default-queue order" });
+    return;
+  }
+  if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
+  if (!canAdminStartDefaultQueueOrder(order)) {
+    res.status(409).json({ error: "Order is not an unclaimed default-queue order" });
+    return;
+  }
+
+  const now = new Date();
+  const updated = await db.transaction(async tx => {
+    // The ownership predicates protect against a concurrent CSR claim or
+    // supervisor reassignment between the read and this transition.
+    const [row] = await tx.update(ordersTable).set({
+      acceptedAt: now,
+      status: "in_progress",
+      fulfillmentStatus: "in_progress",
+      routeSource: "supervisor_override",
+      routedTo: "default_queue",
+      updatedAt: now,
+    }).where(and(
+      eq(ordersTable.id, order.id),
+      eq(ordersTable.tenantId, tenantId),
+      isNull(ordersTable.assignedCsrUserId),
+      isNull(ordersTable.assignedShiftId),
+      isNull(ordersTable.acceptedAt),
+      inArray(ordersTable.routeSource, ["general_account", "supervisor_override"]),
+      sql`coalesce(${ordersTable.fulfillmentStatus}, 'submitted') = 'submitted'`,
+    )).returning();
+    if (!row) return null;
+    await tx.insert(auditLogsTable).values({
+      tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "ORDER_STARTED_BY_ADMIN", resourceType: "order", resourceId: String(order.id),
+      metadata: { queueContext: "default_queue", priorRouteSource: order.routeSource, priorRoutedTo: order.routedTo },
+      ipAddress: req.ip,
+    });
+    return row;
+  });
+  if (!updated) { res.status(409).json({ error: "Order was claimed or reassigned concurrently" }); return; }
+  emitUpdated(updated, "admin_started_default_queue_order");
+  res.json(await buildOrderResponse(updated));
+}
+
 async function acceptOrder(req: Request, res: Response): Promise<void> {
   const actor = req.dbUser!;
   const orderId = Number(req.params.id);
@@ -1538,6 +1586,10 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (["admin", "global_admin"].includes(normalizeRole(actor.role))) {
+    await startDefaultQueueOrder(req, res, order);
+    return;
+  }
 
   const eligibleShifts = await listActiveCsrs(tenantId);
   const eligibleShift = eligibleShifts.find(candidate => candidate.userId === actor.id);
@@ -2564,6 +2616,10 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   const role = normalizeRole(actor.role);
   const tenantId = req.authorizedTenantId!;
   if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
+  if (fulfillmentStatus === "in_progress" && ["admin", "global_admin"].includes(role)) {
+    await startDefaultQueueOrder(req, res, order);
+    return;
+  }
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(
       eq(labTechShiftsTable.tenantId, tenantId),

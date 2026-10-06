@@ -26,7 +26,8 @@ const dbState: {
   taxSnapshots: Array<Record<string, unknown>>;
   uberQuotes: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [] };
+  auditLogs: Array<Record<string, unknown>>;
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -180,7 +181,7 @@ vi.mock("../../lib/checkoutConversionGate", async () => {
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
-  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
+  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routeSource: "routeSource", routedTo: "routedTo", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
   const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
@@ -193,6 +194,7 @@ vi.mock("@workspace/db", () => {
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
   const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
   const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
+  const auditLogsTable = { __t: "audit_logs" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -208,6 +210,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
     if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
     if (t.__t === "uber_quotes") return dbState.uberQuotes;
+    if (t.__t === "audit_logs") return dbState.auditLogs;
     return [];
   }
 
@@ -273,20 +276,26 @@ vi.mock("@workspace/db", () => {
   });
 
   const insert = vi.fn((t: { __t: string }) => ({
-    values: (vals: Record<string, unknown>) => ({
-      returning: async () => {
-        const now = new Date();
-        const row = {
-          id: tableFor(t).length + 100,
-          createdAt: now, updatedAt: now,
-          notes: "", paymentStatus: "unpaid",
-          ...vals,
-        };
-        if (row.notes === null) row.notes = "";
-        tableFor(t).push(row);
-        return [row];
-      },
-    }),
+    values: (vals: Record<string, unknown>) => {
+      if (t.__t === "audit_logs") {
+        dbState.auditLogs.push({ id: dbState.auditLogs.length + 1, ...vals });
+        return Promise.resolve();
+      }
+      return {
+        returning: async () => {
+          const now = new Date();
+          const row = {
+            id: tableFor(t).length + 100,
+            createdAt: now, updatedAt: now,
+            notes: "", paymentStatus: "unpaid",
+            ...vals,
+          };
+          if (row.notes === null) row.notes = "";
+          tableFor(t).push(row);
+          return [row];
+        },
+      };
+    },
   }));
 
   const update = vi.fn((t: { __t: string }) => {
@@ -313,7 +322,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event" }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -404,6 +413,7 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
 
 beforeEach(() => {
   dbState.orders = [];
+  dbState.auditLogs = [];
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved", tenantId: 1 },
     { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved", isActive: true, tenantId: 1 },
@@ -745,5 +755,71 @@ describe("order completion authorization", () => {
     const response = await supertest(buildApp()).post("/api/orders/48/complete").send({});
     expect(response.status).toBe(403);
     expect(dbState.orders[0]!.status).toBe("ready");
+  });
+});
+
+describe("default-queue Admin start and CSR claim", () => {
+  const unowned = () => ({
+    id: 48, tenantId: 1, customerId: 5, status: "confirmed", fulfillmentStatus: "submitted",
+    paymentStatus: "paid", paymentMethod: "cash", total: "1.09", deliveryMethod: "pickup",
+    routeSource: "supervisor_override", routedTo: "csr_shift", // legacy stale routing label
+    assignedCsrUserId: null, assignedShiftId: null, acceptedAt: null,
+  });
+
+  it("lets a Tenant 1 Admin start an unowned default-queue order without a shift and audits that Admin", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    const response = await supertest(buildApp()).post("/api/orders/48/fulfillment").send({ fulfillmentStatus: "in_progress" });
+    expect(response.status).toBe(200);
+    expect(dbState.orders[0]).toMatchObject({ status: "in_progress", fulfillmentStatus: "in_progress", assignedCsrUserId: null, assignedShiftId: null, routedTo: "default_queue" });
+    expect(dbState.auditLogs).toContainEqual(expect.objectContaining({ action: "ORDER_STARTED_BY_ADMIN", actorId: 9, actorRole: "admin", tenantId: 1, resourceId: "48" }));
+  });
+
+  it("also accepts the prior Admin claim-button request without inventing a CSR shift", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.assignedShiftId).toBeNull();
+  });
+
+  it("requires an eligible active shift for a CSR claim", async () => {
+    dbState.orders.push({ ...unowned(), routeSource: "active_csr", assignedCsrUserId: 7, assignedShiftId: 77 });
+    mockActor = dbState.users[1]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(403);
+    dbState.shifts.push({ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: {} });
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.assignedCsrUserId).toBe(7);
+  });
+
+  it("does not expose another tenant's order or allow a customer to start", async () => {
+    dbState.orders.push({ ...unowned(), tenantId: 2 });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(404);
+    dbState.orders[0]!.tenantId = 1;
+    mockActor = dbState.users[0]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(403);
+    expect(dbState.auditLogs).toHaveLength(0);
+  });
+
+  it("does not take an assigned or specialized order from another worker", async () => {
+    dbState.orders.push({ ...unowned(), assignedCsrUserId: 7, assignedShiftId: 77 });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/fulfillment").send({ fulfillmentStatus: "in_progress" })).status).toBe(409);
+    dbState.orders[0] = { ...unowned(), routeSource: "active_csr" };
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(409);
+    expect(dbState.auditLogs).toHaveLength(0);
+  });
+
+  it("does not let Admin privilege skip fulfillment or payment completion rules", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    const app = buildApp();
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
+    expect((await supertest(app).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
+    dbState.orders[0]!.paymentStatus = "unpaid";
+    expect((await supertest(app).post("/api/orders/48/prepare").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/ready").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
   });
 });
