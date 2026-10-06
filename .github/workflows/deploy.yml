@@ -60,13 +60,15 @@ jobs:
     needs: test
     environment: production
     if: ${{ inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' }}
+    permissions:
+      contents: read
 
     env:
-      VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_HOST_FALLBACK: ${{ secrets.VPS_HOST_FALLBACK || '100.85.15.43' }}
+      VPS_TAILSCALE_HOST: 100.85.15.43
+      # Used only to match the pre-pinned SSH host key; never used as a network destination.
+      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-      VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
       DEPLOY_PATH: /opt/alavont
       RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360
@@ -77,8 +79,6 @@ jobs:
       # loopback port.
       COMPOSE_PROJECT_NAME: deploy
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
     steps:
       - name: Checkout code
@@ -108,89 +108,51 @@ jobs:
           ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
           echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
+      - name: Validate production Tailscale credentials
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "${TS_OAUTH_CLIENT_ID:-}" || { echo "::error::Missing production environment secret TS_OAUTH_CLIENT_ID."; exit 1; }
+          test -n "${TS_OAUTH_SECRET:-}" || { echo "::error::Missing production environment secret TS_OAUTH_SECRET."; exit 1; }
+          test -n "${VPS_KNOWN_HOSTS:-}" || { echo "::error::Missing pinned SSH host keys in production environment secret VPS_KNOWN_HOSTS."; exit 1; }
+          test -n "${VPS_SSH_HOST_KEY_ALIAS:-}" || { echo "::error::Missing known_hosts identity alias in production environment secret VPS_HOST."; exit 1; }
+
       - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:github-actions
 
-      - name: Document Tailscale SSH policy requirements
+      - name: Verify Tailscale route to production SSH
         run: |
           set -euo pipefail
-          echo "GitHub Actions Tailscale tag: tag:github-actions"
-          echo "Deploy SSH user: ${VPS_USER}"
-          echo "If Tailscale SSH denies access, allow src tag:github-actions to SSH as ${VPS_USER} to the VPS node tag, for example tag:server or tag:myorder-vps."
-
-      - name: Select reachable VPS host and configure known_hosts
-        run: |
-          set -euo pipefail
-
-          mkdir -p ~/.ssh
-          touch ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
-            echo "Using VPS_KNOWN_HOSTS secret."
-            printf '%s\n' "${VPS_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
-          fi
-
-          try_host() {
-            local host="$1"
-            local port="$2"
-            local tmp_keys
-            tmp_keys="$(mktemp)"
-
-            if [ -z "${host:-}" ]; then
-              return 1
+          echo "Checking the production SSH endpoint over Tailscale."
+          for attempt in $(seq 1 12); do
+            if nc -z -w 5 "$VPS_TAILSCALE_HOST" "$VPS_PORT"; then
+              echo "Tailscale SSH route is reachable."
+              exit 0
             fi
-
-            echo "Scanning ${host}:${port} for host keys..."
-
-            if ssh-keyscan -T 15 -p "$port" -H "$host" > "$tmp_keys" 2>ssh-keyscan.err && [ -s "$tmp_keys" ]; then
-              cat "$tmp_keys" >> ~/.ssh/known_hosts
-              rm -f "$tmp_keys"
-              echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
-              echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
-              echo "Collected SSH host key(s) for ${host}:${port}."
-              return 0
-            fi
-
-            echo "No keys from ${host}:${port}."
-            cat ssh-keyscan.err || true
-            rm -f "$tmp_keys"
-
-            echo "Trying SSH preflight with StrictHostKeyChecking=accept-new for ${host}:${port}..."
-
-            if ssh \
-              -i "$SSH_KEY_PATH" \
-              -o BatchMode=yes \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=20 \
-              -p "$port" \
-              "$VPS_USER@$host" \
-              'echo "SSH preflight OK:" $(whoami)@$(hostname)' ; then
-                echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
-                echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
-                return 0
-            fi
-
-            return 1
-          }
-
-          if try_host "$VPS_HOST" "$VPS_PORT"; then
-            exit 0
-          fi
-
-          echo "Primary VPS_HOST failed. Trying fallback..."
-
-          if try_host "$VPS_HOST_FALLBACK" "$VPS_HOST_FALLBACK_PORT"; then
-            exit 0
-          fi
-
-          echo "::error::No reachable SSH host found from primary or fallback."
+            echo "Tailscale SSH route not ready: $attempt/12"
+            sleep 5
+          done
+          echo "::error::Production SSH is not reachable at the Tailscale address. Check the tagged CI grant and production Tailscale secrets."
           exit 1
+
+      - name: Pin production SSH host identity and select Tailscale target
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -F "$VPS_SSH_HOST_KEY_ALIAS" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::VPS_KNOWN_HOSTS must contain the pinned production host key for the VPS_HOST identity alias."
+            exit 1
+          fi
+          echo "SELECTED_VPS_HOST=${VPS_TAILSCALE_HOST}" >> "$GITHUB_ENV"
+          echo "SELECTED_VPS_PORT=${VPS_PORT}" >> "$GITHUB_ENV"
 
       - name: Verify SSH access
         run: |
@@ -200,7 +162,7 @@ jobs:
             -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=yes -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
             -o ConnectTimeout=20 \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
@@ -229,12 +191,12 @@ jobs:
             -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=yes -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             "set -euo pipefail; test -d '$DEPLOY_PATH' && test ! -L '$DEPLOY_PATH'; mkdir -p '$DEPLOY_PATH/incoming' '$DEPLOY_PATH/releases' '$DEPLOY_PATH/control/$TOOLING_SHA' '$DEPLOY_PATH/shared'; for p in '$DEPLOY_PATH/incoming' '$DEPLOY_PATH/releases' '$DEPLOY_PATH/control' '$DEPLOY_PATH/control/$TOOLING_SHA' '$DEPLOY_PATH/shared'; do test -d \"\$p\" && test ! -L \"\$p\"; done; test ! -e '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' && test ! -L '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME'"
-          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "$SELECTED_VPS_PORT" "$RELEASE_ARCHIVE" "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME"
-          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "$SELECTED_VPS_PORT" deploy/production-release.mjs deploy/production-runtime-overlay.yml "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/control/$TOOLING_SHA/"
+          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" -P "$SELECTED_VPS_PORT" "$RELEASE_ARCHIVE" "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME"
+          scp -i "$SSH_KEY_PATH" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" -P "$SELECTED_VPS_PORT" deploy/production-release.mjs deploy/production-runtime-overlay.yml "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/control/$TOOLING_SHA/"
 
       - name: Execute guarded production release sequence
         env:
@@ -245,7 +207,7 @@ jobs:
             -i "$SSH_KEY_PATH" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=yes -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             "flock -n '$DEPLOY_PATH/control/.production-deploy.lock' env PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION node '$DEPLOY_PATH/control/$TOOLING_SHA/production-release.mjs' deploy --authorized --release-sha '$RELEASE_SHA' --release-tree '$RELEASE_TREE' --archive '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' --archive-sha '$RELEASE_ARCHIVE_SHA256' --tooling-sha '$TOOLING_SHA'"

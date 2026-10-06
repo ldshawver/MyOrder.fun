@@ -301,6 +301,51 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.match(workflow, /production-release\.mjs/);
 });
 
+test("production SSH uses an ephemeral Tailscale route and pinned SSH host identity only", () => {
+  const workflow = readFileSync(
+    new URL("../.github/workflows/deploy.yml", import.meta.url),
+    "utf8",
+  );
+  const joinTailscale = workflow.indexOf("uses: tailscale/github-action@v4");
+  const routeCheck = workflow.indexOf(
+    "Verify Tailscale route to production SSH",
+  );
+  const sshPreflight = workflow.indexOf("name: Verify SSH access");
+  assert.ok(
+    joinTailscale >= 0 &&
+      routeCheck > joinTailscale &&
+      sshPreflight > routeCheck,
+  );
+  assert.match(
+    workflow,
+    /oauth-client-id: \$\{\{ secrets\.TS_OAUTH_CLIENT_ID \}\}/,
+  );
+  assert.match(workflow, /oauth-secret: \$\{\{ secrets\.TS_OAUTH_SECRET \}\}/);
+  assert.match(workflow, /tags: tag:github-actions/);
+  assert.match(workflow, /VPS_TAILSCALE_HOST: 100\.85\.15\.43/);
+  assert.match(workflow, /nc -z -w 5 "\$VPS_TAILSCALE_HOST" "\$VPS_PORT"/);
+  assert.doesNotMatch(
+    workflow,
+    /VPS_HOST_FALLBACK|SELECTED_VPS_HOST=\$\{VPS_HOST\}/,
+  );
+  assert.doesNotMatch(workflow, /ssh-keyscan|StrictHostKeyChecking=accept-new/);
+  assert.match(workflow, /ssh-keygen -F "\$VPS_SSH_HOST_KEY_ALIAS"/);
+  assert.match(workflow, /StrictHostKeyChecking=yes/);
+  assert.match(workflow, /HostKeyAlias=\$VPS_SSH_HOST_KEY_ALIAS/);
+  assert.match(
+    workflow,
+    /VPS_PRIVATE_KEY: \$\{\{ secrets\.VPS_SSH_KEY \|\| secrets\.VPS_SECRET_KEY \}\}/,
+  );
+  assert.match(
+    workflow,
+    /RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360/,
+  );
+  assert.match(
+    workflow,
+    /RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf/,
+  );
+});
+
 test("migration runner holds one database advisory lock across validation and transactional migration", () => {
   const migrator = readFileSync(
     new URL("../lib/db/scripts/migrate-verified.ts", import.meta.url),
