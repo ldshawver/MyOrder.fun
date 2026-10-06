@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateCandidateIdentity, validateContainer, validatePlan } from "./safe-compose.mjs";
+import { validateActionServices, validateCandidateIdentity, validateContainer, validatePlan } from "./safe-compose.mjs";
 
 const root = "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006";
 function config(environment, database) {
@@ -77,6 +77,12 @@ test("requires explicit production authorization and exact production targets", 
   assert.throws(() => validatePlan(args), /authorization/);
   assert.equal(validatePlan({ ...args, authorization: "DEPLOY-PRODUCTION" }), true);
   assert.throws(() => validatePlan({ ...args, project: "myorder-staging", authorization: "DEPLOY-PRODUCTION" }), /project/);
+});
+test("restricts migration maintenance stop to the API container only", () => {
+  assert.equal(validateActionServices("stop", ["api"]), true);
+  assert.throws(() => validateActionServices("stop", ["db"]), /restricted to the API/);
+  assert.throws(() => validateActionServices("stop", ["api", "platform"]), /restricted to the API/);
+  assert.throws(() => validateActionServices("stop", []), /restricted to the API/);
 });
 test("rejects a container resolved from another Compose project or file", () => {
   const labels = { "com.docker.compose.project": "myorder-staging", "com.docker.compose.service": "api", "com.docker.compose.project.config_files": "/home/serveradmin/worktrees/myorder-dev/deploy/docker-compose.staging.yml", "com.docker.compose.project.working_dir": "/home/serveradmin/worktrees/myorder-dev/deploy" };

@@ -9,7 +9,15 @@ const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
 const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006", production: "/opt/alavont" };
-const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap"]);
+const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap", "stop"]);
+
+export function validateActionServices(action, services) {
+  if (!ACTIONS.has(action)) throw new Error("Unsupported deployment action");
+  if (action === "stop" && (services.length !== 1 || services[0] !== "api")) {
+    throw new Error("stop is restricted to the API service for a controlled migration maintenance window");
+  }
+  return true;
+}
 
 export function validatePlan({ environment, root, project, config, authorization }) {
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
@@ -98,7 +106,7 @@ function run(command, args, { capture = false, ...options } = {}) {
 
 function main() {
   const [environment, action, ...rest] = process.argv.slice(2);
-  if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|bootstrap> [services] [--authorize-production]");
+  if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|bootstrap|stop> [services] [--authorize-production]");
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
   const authorization = rest.includes("--authorize-production") && process.env.PRODUCTION_DEPLOY_CONFIRMATION === "DEPLOY-PRODUCTION" ? "DEPLOY-PRODUCTION" : undefined;
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
@@ -108,6 +116,7 @@ function main() {
   const status = run("git", ["-C", ROOT, "status", "--porcelain=v1"], { capture: true }).trim();
   process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, deploySha: process.env.DEPLOY_SHA?.trim() });
   const services = rest.filter(arg => arg !== "--authorize-production");
+  validateActionServices(action, services);
   if (services.some(service => !["db", "api", "platform", "nginx"].includes(service))) throw new Error("Service is not in the deployment allowlist");
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
   if (action === "migrate" && services.length) throw new Error("migrate does not accept service arguments");
@@ -160,6 +169,7 @@ function main() {
 
   if (action === "config") return;
   if (environment === "production" && !authorization) throw new Error("Production action requires explicit authorization");
+  if (action === "stop") run("docker", [...prefix, "stop", ...services]);
   if (action === "build") run("docker", [...prefix, "build"]);
   if (action === "up") run("docker", [...prefix, "up", "-d", "--no-deps", ...services]);
   if (action === "migrate") run("docker", [...prefix, "run", "--rm", "migrate"]);
