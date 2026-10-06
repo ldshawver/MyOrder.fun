@@ -27,7 +27,8 @@ let lastReassignUpdateSet: Record<string, unknown> | null = null;
 
 vi.mock("@workspace/db", () => {
   const tables = {
-    adminSettingsTable: { __t: "admin_settings" },
+    adminSettingsTable: { __t: "admin_settings", tenantId: "admin_settings.tenantId" },
+    shiftRoutingConfigTable: { __t: "shift_routing_config", tenantId: "shift_routing_config.tenantId", approvedAt: "shift_routing_config.approvedAt", createdAt: "shift_routing_config.createdAt" },
     usersTable: { __t: "users", id: "users.id", role: "users.role" },
     labTechShiftsTable: { __t: "lab_tech_shifts", id: "shifts.id", techId: "shifts.techId", status: "shifts.status", clockedOutAt: "shifts.clockedOutAt", boxAssignmentId: "shifts.boxAssignmentId" },
     ordersTable: {
@@ -45,7 +46,17 @@ vi.mock("@workspace/db", () => {
     p.limit = vi.fn(() => Promise.resolve(rows));
     p.where = vi.fn(() => chain(rows));
     p.from = vi.fn((table: { __t: string }) => {
-      if (table.__t === "admin_settings") return chain([adminSettings]);
+      if (table.__t === "admin_settings") {
+        const c = chain([]);
+        c.where = vi.fn((condition: { column?: string; value?: number }) => chain(condition?.column === "admin_settings.tenantId" && condition.value === 1 ? [adminSettings] : condition?.column === "admin_settings.tenantId" && condition.value === 2 ? [{ orderRoutingRule: "supervisor_manual_assignment", defaultEtaMinutes: 75 }] : []));
+        return c;
+      }
+      if (table.__t === "shift_routing_config") {
+        const c = chain([]);
+        c.orderBy = vi.fn(() => c);
+        c.where = vi.fn(() => c);
+        return c;
+      }
       if (table.__t === "lab_tech_shifts") return chain([]);
       if (table.__t === "orders") return chain([]);
       return chain([]);
@@ -93,7 +104,7 @@ vi.mock("@workspace/db", () => {
 });
 
 vi.mock("drizzle-orm", () => ({
-  eq: vi.fn(() => ({})),
+  eq: vi.fn((column, value) => ({ column, value })),
   and: vi.fn((...a) => a),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
@@ -119,7 +130,7 @@ beforeEach(() => {
 describe("decideRouting", () => {
   it("falls back to General Account (assignedCsrUserId=null, route_source=general_account)", async () => {
     activeCsrUsers = [];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBeNull();
     expect(r.assignedShiftId).toBeNull();
     expect(r.routeSource).toBe("general_account");
@@ -135,7 +146,7 @@ describe("decideRouting", () => {
     activeCsrUsers = [
       { userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: false, parLevelsConfirmed: false, printerAssigned: false } },
     ];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBe(42);
     expect(r.assignedShiftId).toBe(7);
     expect(r.routeSource).toBe("active_csr");
@@ -144,14 +155,25 @@ describe("decideRouting", () => {
   it("uses defaultEtaMinutes from admin_settings (override of the 30-min default)", async () => {
     adminSettings.defaultEtaMinutes = 90;
     activeCsrUsers = [];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.promisedMinutes).toBe(90);
     expect(r.estimatedReadyAt.getTime()).toBeGreaterThan(Date.now() + 85 * 60_000);
   });
 
+  it("uses only the authoritative order tenant's ETA and routing settings", async () => {
+    adminSettings.defaultEtaMinutes = 15;
+    adminSettings.orderRoutingRule = "round_robin";
+    const tenantA = await decideRouting(1);
+    const tenantB = await decideRouting(2);
+    expect(tenantA.promisedMinutes).toBe(15);
+    expect(tenantA.rule).toBe("round_robin");
+    expect(tenantB.promisedMinutes).toBe(75);
+    expect(tenantB.rule).toBe("supervisor_manual_assignment");
+  });
+
   it("routes to the only active CSR with active_csr source + their shiftId", async () => {
     activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBe(42);
     expect(r.assignedShiftId).toBe(7);
     expect(r.routeSource).toBe("active_csr");
@@ -163,7 +185,7 @@ describe("decideRouting", () => {
       { userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
       { userId: 43, shiftId: 8, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } },
     ];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBeNull();
     expect(r.routeSource).toBe("general_account");
     expect(r.rule).toBe("supervisor_manual_assignment");
@@ -172,7 +194,7 @@ describe("decideRouting", () => {
   it("supervisor_manual_assignment with exactly one active CSR still routes to that CSR", async () => {
     adminSettings.orderRoutingRule = "supervisor_manual_assignment";
     activeCsrUsers = [{ userId: 42, shiftId: 7, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBe(42);
     expect(r.assignedShiftId).toBe(7);
     expect(r.routeSource).toBe("active_csr");
@@ -190,7 +212,7 @@ describe("decideRouting", () => {
       { userId: 11, last: new Date(now - 600_000) },
       { userId: 12, last: new Date(now - 300_000) },
     ];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBe(11);
     expect(r.assignedShiftId).toBe(101);
     expect(r.routeSource).toBe("active_csr");
@@ -207,7 +229,7 @@ describe("decideRouting", () => {
       { userId: 20, last: new Date(now - 120_000) },
       { userId: 21, last: new Date(now - 999_000) },
     ];
-    const r = await decideRouting();
+    const r = await decideRouting(1);
     expect(r.assignedCsrUserId).toBe(21);
   });
 });
@@ -215,32 +237,29 @@ describe("decideRouting", () => {
 describe("reassignOrder", () => {
   it("rejects targets that are not currently active CSRs", async () => {
     activeCsrUsers = [{ userId: 7, shiftId: 70, role: "customer_service_rep", status: "active", clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: { inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } }];
-    await expect(reassignOrder(1, 999)).rejects.toThrow(/active CSR/);
+    await expect(reassignOrder(1, 1, 999)).rejects.toThrow(/active CSR/);
   });
 
   it("accepts null (sends order back to General Account queue)", async () => {
     activeCsrUsers = [];
-    await expect(reassignOrder(1, null)).resolves.toBeDefined();
+    existingOrderState = { f: "in_progress", s: "in_progress" };
+    await expect(reassignOrder(1, 1, null)).resolves.toBeDefined();
   });
 
-  it("preserves terminal status/fulfillment when reassigning a completed order", async () => {
+  it("rejects reassignment of a completed order", async () => {
     activeCsrUsers = [];
     existingOrderState = { f: "completed", s: "completed" };
     lastReassignUpdateSet = null;
-    await reassignOrder(1, null);
-    expect(lastReassignUpdateSet).not.toBeNull();
-    expect(lastReassignUpdateSet).not.toHaveProperty("status");
-    expect(lastReassignUpdateSet).not.toHaveProperty("fulfillmentStatus");
-    expect(lastReassignUpdateSet?.routeSource).toBe("supervisor_override");
+    await expect(reassignOrder(1, 1, null)).rejects.toThrow(/Terminal orders/);
   });
 
-  it("resets to submitted/pending when reassigning an in-flight order", async () => {
+  it("resets to submitted when reassigning an in-flight order", async () => {
     activeCsrUsers = [];
     existingOrderState = { f: "accepted", s: "processing" };
     lastReassignUpdateSet = null;
-    await reassignOrder(1, null);
+    await reassignOrder(1, 1, null);
     expect(lastReassignUpdateSet?.fulfillmentStatus).toBe("submitted");
-    expect(lastReassignUpdateSet?.status).toBe("pending");
+    expect(lastReassignUpdateSet?.status).toBe("submitted");
   });
 });
 

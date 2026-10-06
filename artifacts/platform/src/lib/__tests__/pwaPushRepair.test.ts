@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { repairPushNotifications } from "../pwaPushRepair";
 
@@ -9,7 +10,7 @@ describe("repairPushNotifications", () => {
 
   it("subscribes and posts to backend when permission is granted but subscription is missing", async () => {
     const subscribe = vi.fn(async () => ({ toJSON: () => ({ endpoint: "https://push.example/sub", keys: { p256dh: "p", auth: "a" } }) }));
-    const registration = { update: vi.fn(), pushManager: { getSubscription: vi.fn(async () => null), subscribe } };
+    const registration = { update: vi.fn(async () => undefined), pushManager: { getSubscription: vi.fn(async () => null), subscribe } };
     Object.defineProperty(window, "Notification", { configurable: true, value: { permission: "granted", requestPermission: vi.fn() } });
     Object.defineProperty(window, "PushManager", { configurable: true, value: function PushManager() {} });
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { getRegistrations: vi.fn(async () => []), register: vi.fn(async () => registration), ready: Promise.resolve(registration) } });

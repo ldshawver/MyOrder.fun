@@ -6,9 +6,18 @@ import {
   integer,
   boolean,
   jsonb,
+  unique,
+  uniqueIndex,
+  index,
+  foreignKey,
+  check,
+  numeric,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { ordersTable } from "./orders";
 import { usersTable } from "./users";
+import { tenantsTable } from "./tenants";
+import { inventoryLocationsTable, labTechShiftsTable } from "./shifts";
 
 // ── Bridge Profiles ────────────────────────────────────────────────────────────
 // Represents a physical print bridge server (Mac Studio or Raspberry Pi).
@@ -16,6 +25,9 @@ import { usersTable } from "./users";
 // which bridge to target based on operator network location and priority.
 export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  locationId: integer("location_id"),
+  routingScope: text("routing_scope").notNull().default("general"),
   name: text("name").notNull(),
   // mac_studio | raspberry_pi | generic
   bridgeType: text("bridge_output").notNull().default("generic"),
@@ -29,9 +41,23 @@ export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
   // receipt | label | both
   supportedRoles: text("supported_roles").notNull().default("both"),
   notes: text("notes"),
+  bridgeId: text("bridge_id"),
+  environment: text("environment").notNull().default("production"),
+  allowedJobType: text("allowed_job_type"),
+  credentialHash: text("credential_hash"),
+  bridgeVersion: text("bridge_version"),
+  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+  lastPrinterAvailability: text("last_printer_availability"),
+  lastPrinterReason: text("last_printer_reason"),
+  lastPrinterCheckedAt: timestamp("last_printer_checked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("print_bridge_profiles_tenant_id_unique").on(table.tenantId, table.id),
+  tenantLocationIdUnique: unique("print_bridge_profiles_tenant_location_id_unique").on(table.tenantId, table.locationId, table.id),
+  tenantLocationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  scopeCheck: check("print_bridge_profiles_scope_check", sql`(${table.routingScope} = 'general' AND ${table.locationId} IS NULL) OR (${table.routingScope} = 'location' AND ${table.locationId} IS NOT NULL)`),
+}));
 
 // ── Printers ──────────────────────────────────────────────────────────────────
 // connectionType:
@@ -41,6 +67,9 @@ export const printBridgeProfilesTable = pgTable("print_bridge_profiles", {
 //   "bridge"          — generic HTTP bridge (legacy)
 export const printPrintersTable = pgTable("print_printers", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  locationId: integer("location_id"),
+  routingScope: text("routing_scope").notNull().default("general"),
   name: text("name").notNull(),
   role: text("role").notNull().default("kitchen"),
   // connection type controls dispatch strategy
@@ -59,67 +88,134 @@ export const printPrintersTable = pgTable("print_printers", {
   copies: integer("copies").notNull().default(1),
   paperWidth: text("paper_width").notNull().default("80mm"),
   supportsCut: boolean("supports_cut").notNull().default(true),
+  // thermal (50mm/80mm roll) or full_page (US Letter). See migration 0063.
+  printerClass: text("printer_class").notNull().default("thermal"),
   supportsCashDrawer: boolean("supports_cash_drawer").notNull().default(false),
+  expectedDeviceUriHash: text("expected_device_uri_hash"),
+  receiptCapable: boolean("receipt_capable").notNull().default(true),
+  labelCapable: boolean("label_capable").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("print_printers_tenant_id_unique").on(table.tenantId, table.id),
+  tenantLocationIdUnique: unique("print_printers_tenant_location_id_unique").on(table.tenantId, table.locationId, table.id),
+  tenantLocationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  tenantBridgeFk: foreignKey({ columns: [table.tenantId, table.bridgeProfileId], foreignColumns: [printBridgeProfilesTable.tenantId, printBridgeProfilesTable.id] }),
+  tenantBridgeLocationFk: foreignKey({ columns: [table.tenantId, table.locationId, table.bridgeProfileId], foreignColumns: [printBridgeProfilesTable.tenantId, printBridgeProfilesTable.locationId, printBridgeProfilesTable.id] }),
+  scopeCheck: check("print_printers_scope_check", sql`(${table.routingScope} = 'general' AND ${table.locationId} IS NULL) OR (${table.routingScope} = 'location' AND ${table.locationId} IS NOT NULL)`),
+  queueUnique: uniqueIndex("print_printers_tenant_bridge_queue_unique").on(table.tenantId, table.bridgeProfileId, table.bridgePrinterName),
+  routeIndex: index("print_printers_tenant_location_role_idx").on(table.tenantId, table.locationId, table.role),
+}));
 
 // ── Operator Print Profiles ────────────────────────────────────────────────────
 // Maps a lab tech (or admin) to their specific printers.
 // When an order comes in, the active operator's profile is resolved first.
 export const operatorPrintProfilesTable = pgTable("operator_print_profiles", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  locationId: integer("location_id"),
+  shiftId: integer("shift_id"),
   // Ethernet direct printer for receipts
   receiptPrinterId: integer("receipt_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
   // Mac bridge printer for labels
   labelPrinterId: integer("label_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
+  expoPrinterId: integer("expo_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
+  printExpoTickets: boolean("print_expo_tickets").notNull().default(false),
   // Pi bridge used as receipt fallback when Ethernet is unreachable
   fallbackReceiptPrinterId: integer("fallback_receipt_printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
   isDefault: boolean("is_default").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantUserFk: foreignKey({ columns: [table.tenantId, table.userId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  tenantLocationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  tenantShiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  tenantReceiptFk: foreignKey({ columns: [table.tenantId, table.receiptPrinterId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+  tenantLabelFk: foreignKey({ columns: [table.tenantId, table.labelPrinterId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+  tenantExpoFk: foreignKey({ columns: [table.tenantId, table.expoPrinterId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+  noFallbackCheck: check("operator_print_profiles_no_fallback_check", sql`${table.fallbackReceiptPrinterId} IS NULL`),
+}));
 
 // ── Print Assets ───────────────────────────────────────────────────────────────
 // Uploaded PNG/image files used as label template backgrounds.
 export const printAssetsTable = pgTable("print_assets", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   filename: text("filename").notNull(),
   originalName: text("original_name").notNull(),
   mimeType: text("mime_output").notNull().default("image/png"),
   sizeBytes: integer("size_bytes").notNull().default(0),
   // Path relative to a configured asset directory on the server
   storagePath: text("storage_path").notNull(),
+  contentSha256: text("content_sha256").notNull(),
+  widthPx: integer("width_px").notNull(),
+  heightPx: integer("height_px").notNull(),
+  createdByUserId: integer("created_by_user_id").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  tenantIdUnique: unique("print_assets_tenant_id_unique").on(table.tenantId, table.id),
+  creatorFk: foreignKey({ columns: [table.tenantId, table.createdByUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  hashUnique: uniqueIndex("print_assets_tenant_hash_unique").on(table.tenantId, table.contentSha256),
+}));
 
 // ── Print Templates ────────────────────────────────────────────────────────────
 // Label / receipt templates. templateJson defines field placements.
 // For labels: backgroundAssetId points to a PNG, fields render as text overlay.
 export const printTemplatesTable = pgTable("print_templates", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   name: text("name").notNull(),
   jobType: text("job_output").notNull().default("label"), // label | receipt | order_ticket
   backgroundAssetId: integer("background_asset_id").references(() => printAssetsTable.id, { onDelete: "set null" }),
   // JSON array of field definitions: [{key, x, y, fontSize, fontWeight, align, maxWidth}]
   templateJson: jsonb("template_json").notNull().default([]),
+  version: integer("version").notNull().default(1),
+  schemaVersion: integer("schema_version").notNull().default(1),
+  createdByUserId: integer("created_by_user_id"),
   paperWidth: text("paper_width").notNull().default("58mm"),
   paperHeight: text("paper_height").notNull().default("auto"),
   isActive: boolean("is_active").notNull().default(true),
   isDefault: boolean("is_default").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("print_templates_tenant_id_unique").on(table.tenantId, table.id),
+  assetFk: foreignKey({ columns: [table.tenantId, table.backgroundAssetId], foreignColumns: [printAssetsTable.tenantId, printAssetsTable.id] }),
+  creatorFk: foreignKey({ columns: [table.tenantId, table.createdByUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
+
+export const printTemplateVersionsTable = pgTable("print_template_versions", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  templateId: integer("template_id").notNull(),
+  version: integer("version").notNull(),
+  schemaVersion: integer("schema_version").notNull().default(1),
+  templateJson: jsonb("template_json").notNull(),
+  backgroundAssetId: integer("background_asset_id"),
+  paperWidth: text("paper_width").notNull(),
+  paperHeight: text("paper_height").notNull(),
+  createdByUserId: integer("created_by_user_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  versionUnique: unique("print_template_versions_tenant_template_version_unique").on(table.tenantId, table.templateId, table.version),
+  templateFk: foreignKey({ columns: [table.tenantId, table.templateId], foreignColumns: [printTemplatesTable.tenantId, printTemplatesTable.id] }),
+  assetFk: foreignKey({ columns: [table.tenantId, table.backgroundAssetId], foreignColumns: [printAssetsTable.tenantId, printAssetsTable.id] }),
+  creatorFk: foreignKey({ columns: [table.tenantId, table.createdByUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
 
 // ── Print Jobs ─────────────────────────────────────────────────────────────────
 export const printJobsTable = pgTable("print_jobs", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  locationId: integer("location_id"),
+  shiftId: integer("shift_id"),
   orderId: integer("order_id").references(() => ordersTable.id, { onDelete: "set null" }),
   printerId: integer("printer_id").references(() => printPrintersTable.id, { onDelete: "set null" }),
   // which operator was active when the job was created
   operatorUserId: integer("operator_user_id").references(() => usersTable.id, { onDelete: "set null" }),
-  jobType: text("job_output").notNull().default("order_ticket"), // order_ticket | receipt | label
+  jobType: text("job_output").notNull().default("order_ticket"), // order_ticket | receipt | label | thank_you_sticker
   status: text("status").notNull().default("queued"),          // queued | sending | printed | retrying | failed
   idempotencyKey: text("idempotency_key").notNull().unique(),
   renderFormat: text("render_format").notNull().default("text"), // text | png
@@ -127,6 +223,22 @@ export const printJobsTable = pgTable("print_jobs", {
   renderedText: text("rendered_text"),
   // For PNG labels: base64 or file path
   renderedImagePath: text("rendered_image_path"),
+  templateId: integer("template_id"),
+  templateVersion: integer("template_version"),
+  artworkChecksum: text("artwork_checksum"),
+  bridgeProfileId: integer("bridge_profile_id"),
+  approvalState: text("approval_state").notNull().default("not_required"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  submittingAt: timestamp("submitting_at", { withTimezone: true }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  cupsJobId: integer("cups_job_id"),
+  cupsRequestId: text("cups_request_id"),
+  finalCupsState: text("final_cups_state"),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failureReason: text("failure_reason"),
+  copyCount: integer("copy_count").notNull().default(1),
+  media: text("media"), resolution: text("resolution"), bridgeVersion: text("bridge_version"),
+  submissionAttempts: integer("submission_attempts").notNull().default(0),
   // Which method succeeded (ethernet_direct | mac_bridge | pi_bridge | queued)
   printedVia: text("printed_via"),
   errorMessage: text("error_message"),
@@ -136,11 +248,21 @@ export const printJobsTable = pgTable("print_jobs", {
   printedAt: timestamp("printed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("print_jobs_tenant_id_unique").on(table.tenantId, table.id),
+  orderFk: foreignKey({ columns: [table.tenantId, table.orderId], foreignColumns: [ordersTable.tenantId, ordersTable.id] }),
+  printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+  operatorFk: foreignKey({ columns: [table.tenantId, table.operatorUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+  locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  templateFk: foreignKey({ columns: [table.tenantId, table.templateId], foreignColumns: [printTemplatesTable.tenantId, printTemplatesTable.id] }),
+  routeIndex: index("print_jobs_tenant_location_status_idx").on(table.tenantId, table.locationId, table.status),
+}));
 
 // ── Print Job Attempts ────────────────────────────────────────────────────────
 export const printJobAttemptsTable = pgTable("print_job_attempts", {
   id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   printJobId: integer("print_job_id").notNull().references(() => printJobsTable.id, { onDelete: "cascade" }),
   attemptNumber: integer("attempt_number").notNull(),
   // which route was tried
@@ -151,9 +273,123 @@ export const printJobAttemptsTable = pgTable("print_job_attempts", {
   errorMessage: text("error_message"),
   durationMs: integer("duration_ms"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  jobFk: foreignKey({ columns: [table.tenantId, table.printJobId], foreignColumns: [printJobsTable.tenantId, printJobsTable.id] }),
+  jobIndex: index("print_job_attempts_tenant_job_idx").on(table.tenantId, table.printJobId),
+}));
+
+export const printRoutesTable = pgTable("print_routes", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  // NULL = tenant-wide default route for this document type.
+  locationId: integer("location_id"),
+  jobType: text("job_type").notNull(),
+  bridgeProfileId: integer("bridge_profile_id").notNull(),
+  printerId: integer("printer_id").notNull(),
+  isActive: boolean("is_active").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, table => ({
+  routeUnique: unique("print_routes_scope_job_uq").on(table.tenantId, table.locationId, table.jobType),
+  defaultRouteUnique: uniqueIndex("print_routes_tenant_default_job_uq").on(table.tenantId, table.jobType).where(sql`${table.locationId} IS NULL`),
+  locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  bridgeFk: foreignKey({ columns: [table.tenantId, table.bridgeProfileId], foreignColumns: [printBridgeProfilesTable.tenantId, printBridgeProfilesTable.id] }),
+  printerFk: foreignKey({ columns: [table.tenantId, table.printerId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.id] }),
+}));
+
+export const shiftPrintAssignmentsTable = pgTable("shift_print_assignments", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  shiftId: integer("shift_id").notNull(),
+  locationId: integer("location_id").notNull(),
+  receiptPrinterId: integer("receipt_printer_id"),
+  expoPrinterId: integer("expo_printer_id"),
+  printExpoTickets: boolean("print_expo_tickets").notNull().default(false),
+  assignedByUserId: integer("assigned_by_user_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  shiftUnique: unique("shift_print_assignments_tenant_shift_unique").on(table.tenantId, table.shiftId),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  receiptFk: foreignKey({ columns: [table.tenantId, table.locationId, table.receiptPrinterId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.locationId, printPrintersTable.id] }),
+  expoFk: foreignKey({ columns: [table.tenantId, table.locationId, table.expoPrinterId], foreignColumns: [printPrintersTable.tenantId, printPrintersTable.locationId, printPrintersTable.id] }),
+  actorFk: foreignKey({ columns: [table.tenantId, table.assignedByUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
+
+export const orderTaxSnapshotsTable = pgTable("order_tax_snapshots", {
+  id: serial("id").primaryKey(),
+  tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  orderId: integer("order_id").notNull(),
+  jurisdiction: text("jurisdiction"),
+  locationId: integer("location_id"),
+  taxConfigurationId: integer("tax_configuration_id"),
+  taxRate: numeric("tax_rate", { precision: 9, scale: 8 }).notNull(),
+  grossSales: numeric("gross_sales", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }).notNull(),
+  nonTaxableSubtotal: numeric("non_taxable_subtotal", { precision: 12, scale: 2 }).notNull().default("0"),
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  cashDiscountAmount: numeric("cash_discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxCollected: numeric("tax_collected", { precision: 12, scale: 2 }).notNull(),
+  taxCalculated: numeric("tax_calculated", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxRefunded: numeric("tax_refunded", { precision: 12, scale: 2 }).notNull().default("0"),
+  roundingPolicy: text("rounding_policy").notNull().default("round_half_away_from_zero_per_order"),
+  tender: text("tender"),
+  exemptionReason: text("exemption_reason"),
+  snapshotJson: jsonb("snapshot_json").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orderUnique: unique("order_tax_snapshots_tenant_order_unique").on(table.tenantId, table.orderId),
+  orderFk: foreignKey({ columns: [table.tenantId, table.orderId], foreignColumns: [ordersTable.tenantId, ordersTable.id] }),
+}));
+
+export const shiftCloseoutPackagesTable = pgTable("shift_closeout_packages", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  shiftId: integer("shift_id").notNull(), locationId: integer("location_id"), supervisorUserId: integer("supervisor_user_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(), snapshotJson: jsonb("snapshot_json").notNull(),
+  sourceMaxUpdatedAt: timestamp("source_max_updated_at", { withTimezone: true }).notNull(), closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  shiftUnique: unique("shift_closeout_packages_tenant_shift_unique").on(table.tenantId, table.shiftId),
+  keyUnique: unique("shift_closeout_packages_tenant_key_unique").on(table.tenantId, table.idempotencyKey),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  locationFk: foreignKey({ columns: [table.tenantId, table.locationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
+  supervisorFk: foreignKey({ columns: [table.tenantId, table.supervisorUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
+
+export const commissionSnapshotsTable = pgTable("commission_snapshots", {
+  id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
+  closeoutPackageId: integer("closeout_package_id").notNull().references(() => shiftCloseoutPackagesTable.id), shiftId: integer("shift_id").notNull(), csrUserId: integer("csr_user_id").notNull(),
+  qualifyingSales: numeric("qualifying_sales", { precision: 12, scale: 2 }).notNull(), commissionBasis: numeric("commission_basis", { precision: 12, scale: 2 }).notNull(),
+  commissionRate: numeric("commission_rate", { precision: 9, scale: 6 }).notNull(), adjustments: numeric("adjustments", { precision: 12, scale: 2 }).notNull().default("0"),
+  commissionAmount: numeric("commission_amount", { precision: 12, scale: 2 }).notNull(), ruleSnapshot: jsonb("rule_snapshot").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  packageUserUnique: unique("commission_snapshots_tenant_package_user_unique").on(table.tenantId, table.closeoutPackageId, table.csrUserId),
+  shiftFk: foreignKey({ columns: [table.tenantId, table.shiftId], foreignColumns: [labTechShiftsTable.tenantId, labTechShiftsTable.id] }),
+  csrFk: foreignKey({ columns: [table.tenantId, table.csrUserId], foreignColumns: [usersTable.tenantId, usersTable.id] }),
+}));
 
 // ── Print Settings ─────────────────────────────────────────────────────────────
+/**
+ * Per-tenant automatic-print switches. This is the authoritative source for
+ * automatic order/receipt/label printing; the auto_print_* columns on the
+ * global print_settings row are legacy and no longer read. A tenant with no
+ * row has all automatic printing OFF. `version` supports optimistic
+ * concurrency so a stale screen cannot overwrite a newer change.
+ */
+export const tenantPrintControlsTable = pgTable("tenant_print_controls", {
+  tenantId: integer("tenant_id").primaryKey().references(() => tenantsTable.id, { onDelete: "cascade" }),
+  autoPrintOrders: boolean("auto_print_orders").notNull().default(false),
+  autoPrintReceipts: boolean("auto_print_receipts").notNull().default(false),
+  autoPrintLabels: boolean("auto_print_labels").notNull().default(false),
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedByUserId: integer("updated_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+}, (table) => ({
+  versionPositive: check("tenant_print_controls_version_positive", sql`${table.version} > 0`),
+}));
+
+export type TenantPrintControls = typeof tenantPrintControlsTable.$inferSelect;
+
 export const printSettingsTable = pgTable("print_settings", {
   id: serial("id").primaryKey(),
   autoPrintOrders: boolean("auto_print_orders").notNull().default(true),

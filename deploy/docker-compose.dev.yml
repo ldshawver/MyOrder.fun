@@ -6,7 +6,7 @@ services:
       TZ: America/Los_Angeles
       POSTGRES_DB: ${POSTGRES_DB:-myorder_dev}
       POSTGRES_USER: ${POSTGRES_USER:-devadmin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,7 +23,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.migrate
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://devadmin:dev_password_change_me@db:5432/myorder_dev}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: "false"
       NODE_ENV: development
     depends_on:
@@ -43,20 +43,27 @@ services:
     environment:
       PORT: "8080"
       NODE_ENV: development
-      DATABASE_URL: ${DATABASE_URL:-postgresql://devadmin:dev_password_change_me@db:5432/myorder_dev}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: "false"
       DEPLOY_SHA: ${DEPLOY_SHA:-dev}
-      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
-      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-${VITE_CLERK_PUBLISHABLE_KEY:-}}
-      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-http://127.0.0.1:18081/api/__clerk}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY is required}
+      CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://dev.myorder.fun/api/__clerk}
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET:-}
-      SESSION_SECRET: ${SESSION_SECRET:-dev_session_secret_change_me}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      STRIPE_SECRET_KEY: ""
-      STRIPE_PUBLISHABLE_KEY: ""
-      TWILIO_ACCOUNT_SID: ""
-      TWILIO_AUTH_TOKEN: ""
-      TWILIO_PHONE_NUMBER: ""
+      PAYMENT_PROVIDER: paypal
+      PAYMENT_MODE: disabled
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      ORDER_NOTIFICATION_WORKER_ENABLED: ${ORDER_NOTIFICATION_WORKER_ENABLED:-0}
+      TUYA_TENANT_ID: ${TUYA_TENANT_ID:-}
+      TUYA_CLIENT_ID: ${TUYA_CLIENT_ID:-}
+      TUYA_CLIENT_SECRET: ${TUYA_CLIENT_SECRET:-}
+      TUYA_API_BASE_URL: ${TUYA_API_BASE_URL:-}
+      TUYA_DEVICE_ID: ${TUYA_DEVICE_ID:-}
+      TUYA_SWITCH_CODE: ${TUYA_SWITCH_CODE:-switch_1}
       UBER_CLIENT_ID: ""
       UBER_CUSTOMER_ID: ""
       UBER_CLIENT_SECRET: ""
@@ -64,22 +71,37 @@ services:
       UBER_PICKUP_ACTION: ""
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       CUPS_SERVER: ""
-      PRINT_BRIDGE_URL: ""
-      PRINT_BRIDGE_API_KEY: ""
+      PRINT_BRIDGE_URL: ${PRINT_BRIDGE_URL:-}
+      PRINT_BRIDGE_API_KEY: ${PRINT_BRIDGE_API_KEY:-}
+      PRINT_BRIDGE_HEALTH_TIMEOUT_MS: ${PRINT_BRIDGE_HEALTH_TIMEOUT_MS:-2000}
       PRINT_SERVER_HOST: ""
-      RECEIPT_PRINT_ENABLED: "false"
+      RECEIPT_PRINT_ENABLED: ${RECEIPT_PRINT_ENABLED:-false}
+      RECEIPT_PRINTER_NAME: ${RECEIPT_PRINTER_NAME:-receipt}
       LABEL_PRINT_ENABLED: "false"
       SMS_ENABLED: "false"
       EMAIL_ENABLED: "false"
       PUSH_ENABLED: "false"
       LIVE_PAYMENTS_ENABLED: "false"
-      PAYMENT_MODE: test
     volumes:
       - uploads:/app/uploads
       - app_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - internal
 
@@ -88,9 +110,10 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.platform
       args:
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-${CLERK_PUBLISHABLE_KEY:-pk_test_dev_placeholder_not_live}}
-        VITE_WOOCOMMERCE_URL: ""
-        VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-http://127.0.0.1:18081/api/__clerk}
+        ENABLE_CLERK_DEV_FAPI: "true"
+      secrets:
+        - clerk_publishable_key
+        - clerk_proxy_url
     restart: unless-stopped
     networks:
       - internal
@@ -104,8 +127,10 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      - api
-      - platform
+      api:
+        condition: service_healthy
+      platform:
+        condition: service_started
     networks:
       - internal
 
@@ -118,3 +143,9 @@ volumes:
 networks:
   internal:
     driver: bridge
+
+secrets:
+  clerk_publishable_key:
+    environment: CLERK_PUBLISHABLE_KEY
+  clerk_proxy_url:
+    environment: VITE_CLERK_PROXY_URL

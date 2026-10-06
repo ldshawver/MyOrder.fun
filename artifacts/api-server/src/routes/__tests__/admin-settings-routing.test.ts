@@ -27,19 +27,16 @@ vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
 vi.mock("../../lib/crypto", () => ({ encrypt: (v: string) => v, safeDecrypt: (v: string | null) => v }));
 vi.mock("@workspace/db", () => {
   const adminSettingsTable = { id: { name: "id" }, tenantId: { name: "tenantId" } } as unknown;
+  const db = {
+    execute: vi.fn(() => Promise.resolve()),
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => [settingsRows[activeTenantId]] }), limit: async () => [settingsRows[activeTenantId]] }) }),
+    update: () => ({ set: (vals: Record<string, unknown>) => ({ where: () => ({ returning: async () => { Object.assign(settingsRows[activeTenantId], vals); return [settingsRows[activeTenantId]]; } }) }) }),
+    insert: () => ({ values: (vals: Record<string, unknown>) => ({ returning: async () => { const tenantId = Number(vals.tenantId); settingsRows[tenantId] = { id: tenantId, tenantId, ...vals }; return [settingsRows[tenantId]]; } }) }),
+    transaction: vi.fn(),
+  };
+  db.transaction.mockImplementation((callback: (tx: typeof db) => Promise<unknown>) => callback(db));
   return {
-    db: {
-      execute: vi.fn(() => Promise.resolve()),
-      select: () => ({ from: () => ({ where: () => ({ limit: async () => [settingsRows[activeTenantId]] }), limit: async () => [settingsRows[activeTenantId]] }) }),
-      update: () => ({
-        set: (vals: Record<string, unknown>) => ({
-          where: () => ({
-            returning: async () => { Object.assign(settingsRows[activeTenantId], vals); return [settingsRows[activeTenantId]]; },
-          }),
-        }),
-      }),
-      insert: () => ({ values: (vals: Record<string, unknown>) => ({ returning: async () => { const tenantId = Number(vals.tenantId); settingsRows[tenantId] = { id: tenantId, tenantId, ...vals }; return [settingsRows[tenantId]]; } }) }),
-    },
+    db,
     adminSettingsTable,
   };
 });

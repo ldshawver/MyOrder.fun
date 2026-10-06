@@ -31,10 +31,25 @@ function getBasePath(): string {
   return basePath;
 }
 
+function useSharedInterFont(): PluginOption {
+  return {
+    name: "use-shared-inter-font",
+    enforce: "pre",
+    transform(code, id) {
+      if (!id.includes("@measured/puck") || !id.endsWith(".css")) return null;
+      return code.replace(
+        /^\s*@import\s+["']https:\/\/rsms\.me\/inter\/inter\.css["'];?\s*/m,
+        "",
+      );
+    },
+  };
+}
+
 async function getPlugins(): Promise<PluginOption[]> {
   const plugins: PluginOption[] = [
     react(),
     tailwindcss(),
+    useSharedInterFont(),
     runtimeErrorOverlay(),
   ];
 
@@ -76,7 +91,6 @@ export default defineConfig(async () => {
         "@clerk/react",
         "@clerk/shared",
       ],
-      preserveSymlinks: true,
     },
     optimizeDeps: {
       include: [

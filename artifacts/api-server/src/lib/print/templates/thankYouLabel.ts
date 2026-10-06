@@ -20,6 +20,8 @@
  */
 
 import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 
 // ── Canvas / print dimensions ─────────────────────────────────────────────────
 export const LABEL_W = 406;   // 2" at 203 DPI
@@ -53,11 +55,11 @@ export const MIN_FONT_SIZE = 13;
 // At runtime, import.meta.dirname resolves to the dist/ directory.
 // build.mjs copies src/lib/print/assets/ → dist/assets/ so this path is stable
 // in both development (after build) and production.
-const BASE_PNG = path.join(
-  import.meta.dirname,
-  "assets",
-  "Thank-You-Sticker-Personalized.png"
-);
+const moduleDir = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
+const BASE_PNG = [
+  path.join(moduleDir, "assets", "Thank-You-Sticker-Personalized.png"),
+  path.join(moduleDir, "..", "assets", "Thank-You-Sticker-Personalized.png"),
+].find(candidate => fs.existsSync(candidate)) ?? path.join(moduleDir, "assets", "Thank-You-Sticker-Personalized.png");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -71,8 +73,28 @@ export function pickFontSize(name: string): number {
 
 /** Sanitize customer name — remove control chars, truncate to 20. */
 export function sanitizeName(raw: string): string {
-  const cleaned = raw.trim().replace(/[^\w\s''.-]/g, "");
-  return cleaned.slice(0, 20) || "Friend";
+  const cleaned = raw.normalize("NFC").trim().replace(/[^\p{L}\p{M}'’.-]/gu, "");
+  return Array.from(cleaned).slice(0, 30).join("") || "Customer";
+}
+
+const INVALID_NAME = /^(?:walk[ -]?in|unknown|guest|none|null|n\/?a|test|customer)$/iu;
+
+function validNameCandidate(value: string | null | undefined): string | null {
+  const candidate = value?.normalize("NFC").trim() ?? "";
+  if (!candidate || candidate.includes("@") || INVALID_NAME.test(candidate)) return null;
+  if (/^[+\d\s().-]+$/.test(candidate)) return null;
+  const firstToken = candidate.split(/\s+/u)[0] ?? "";
+  const cleaned = sanitizeName(firstToken);
+  return cleaned === "Customer" ? null : cleaned;
+}
+
+export function resolveLabelFirstName(input: {
+  canonicalFirstName?: string | null;
+  validatedFullName?: string | null;
+}): string {
+  return validNameCandidate(input.canonicalFirstName)
+    ?? validNameCandidate(input.validatedFullName)
+    ?? "Customer";
 }
 
 /** Escape XML special characters for safe SVG embedding. */
@@ -123,12 +145,13 @@ export async function generateThankYouLabel(customerFirstName: string): Promise<
 
   // Resize the sticker to the canvas size first (native size is 200×200)
   const stickerBuf = await sharp(BASE_PNG)
+    .ensureAlpha()
     .resize(LABEL_W, LABEL_H, { fit: "fill" })
     .toBuffer();
 
   // 1. White background  →  2. Name text  →  3. Sticker on top
   // The sticker's transparent interior reveals the name text below.
-  return sharp({
+  const composed = await sharp({
     create: {
       width:      LABEL_W,
       height:     LABEL_H,
@@ -140,7 +163,17 @@ export async function generateThankYouLabel(customerFirstName: string): Promise<
       { input: svgBuf,    top: 0, left: 0 },   // name text over white
       { input: stickerBuf, top: 0, left: 0 },  // sticker on top (scaled)
     ])
-    .png()
+    .flatten({ background: "#ffffff" })
+    .grayscale()
+    .threshold(160)
+    .toColourspace("srgb")
+    .removeAlpha()
+    .png({ palette: false })
+    .toBuffer();
+
+  return sharp(composed)
+    .resize(LABEL_W, LABEL_H, { fit: "contain", background: "#ffffff" })
+    .png({ palette: false })
     .toBuffer();
 }
 
@@ -149,5 +182,5 @@ export async function generateThankYouLabel(customerFirstName: string): Promise<
  * Useful for test prints and previewing the base design.
  */
 export async function generateThankYouLabelTest(): Promise<Buffer> {
-  return generateThankYouLabel("Friend");
+  return generateThankYouLabel("Customer");
 }

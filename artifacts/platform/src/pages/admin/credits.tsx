@@ -72,7 +72,7 @@ export default function AdminCredits() {
     <div className="space-y-6 max-w-6xl mx-auto">
       <div className="border-b border-border/50 pb-5">
         <h1 className="text-3xl font-bold tracking-tight">Credit Management</h1>
-        <p className="text-sm text-muted-foreground mt-1">Grant or debit customer store credit before checkout.</p>
+        <p className="text-sm text-muted-foreground mt-1">Issue or adjust Customer Credit with an immutable audit reason. Balances cannot be edited directly.</p>
       </div>
 
       <Card className="rounded-sm border-border/50">

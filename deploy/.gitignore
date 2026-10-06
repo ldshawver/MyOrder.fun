@@ -1,3 +1,4 @@
 # Never commit secrets or SSL certs
 .env
+.env.staging
 nginx/ssl/

@@ -60,12 +60,12 @@ export default function Orders() {
           </p>
         </div>
         <Link
-          href="/orders/new"
+          href="/catalog"
           className="shrink-0 inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-3 rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
           data-testid="link-new-order"
         >
           <Plus size={16} />
-          New Order
+          Catalogue
         </Link>
       </div>
 
@@ -86,10 +86,10 @@ export default function Orders() {
           <p className="text-sm text-muted-foreground max-w-xs mb-6">
             {isCustomer
               ? "Orders placed from your signed-in account will appear here."
-              : "Place your first order to get started with Alavont Therapeutics."}
+              : "Place your first order to get started."}
           </p>
           <Link
-            href="/orders/new"
+            href="/catalog"
             className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-5 py-2.5 rounded-xl hover:opacity-90 transition-all"
           >
             <Plus size={15} />

@@ -1,17 +1,14 @@
-import { Router, type IRouter } from "express";
-import { eq, desc, inArray } from "drizzle-orm";
+import { Router, type IRouter, type Request } from "express";
+import { eq, desc, inArray, and, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   renderBlocks,
-  renderBodyOnly,
-  buildCustomerReceiptBlocks,
   buildInventoryStartBlocks,
   buildInventoryEndBlocks,
   buildLabelBlocks,
   getLogo,
   charWidth,
 } from "../lib/print/index";
-import { printReceiptEscPos } from "../lib/escposPrinter";
 import {
   printPrintersTable,
   printBridgeProfilesTable,
@@ -20,12 +17,22 @@ import {
   printSettingsTable,
   operatorPrintProfilesTable,
   printTemplatesTable,
+  printAssetsTable,
   usersTable,
   ordersTable,
-  orderItemsTable,
-  adminSettingsTable,
+  auditLogsTable,
+  printTemplateVersionsTable,
+  inventoryLocationsTable,
+  shiftPrintAssignmentsTable,
+  printRoutesTable,
 } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import {
+  requireAuth,
+  loadDbUser,
+  requireDbUser,
+  requireRole,
+  requireApproved,
+} from "../lib/auth";
 import {
   dispatchJob,
   dispatchReceiptJob,
@@ -38,21 +45,241 @@ import {
   probePrinter,
   resolveReceiptPrinters,
   resolveLabelPrinter,
+  resolveBridgeApiKey,
 } from "../lib/printRouter";
+import { receiptTemplateLayoutSchema } from "../lib/printTemplateSchema";
+import {
+  getPrintControls,
+  pauseAllPrintControls,
+  updatePrintControls,
+  type PrintControls,
+} from "../lib/printControls";
+import {
+  loadLegacyReceiptPresentation,
+  renderOrderReceipt,
+  renderReceiptPreview,
+  resolveTenantReceiptTemplate,
+  type ReceiptTemplateRecord,
+} from "../lib/print/receiptPipeline";
+import { SAMPLE_RECEIPT_DATA } from "../lib/print/receiptData";
+import { THERMAL_WIDTHS } from "../lib/print/documentTypes";
+import { BRIDGE_QUEUE_NAME, PrintAdminError, VALID_ROLES, createRegisteredPrinter, printerPaper } from "../lib/print/printerAdmin";
+import { queueDocumentPrint } from "../lib/print/documentJobs";
+import { BRIDGE_KEY_PATTERN } from "../lib/print/bridgeKey";
+import { shiftLocationId } from "../lib/print/shiftDocuments";
+import multer from "multer";
+import sharp from "sharp";
+import crypto from "node:crypto";
+import { z } from "zod";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { resolve, join } from "node:path";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
 
 const adminOnly = requireRole("global_admin", "admin");
+const requestTenantId = (req: Request): number => {
+  const tenantId = req.dbUser?.tenantId;
+  if (!tenantId) throw new Error("Approved tenant membership is required");
+  return tenantId;
+};
+const assetUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+});
+const assetRoot = resolve(
+  process.env.PRINT_ASSET_DIR ?? "/var/lib/myorder/print-assets",
+);
+const rasterFormats = new Map([
+  ["png", ["image/png", "png"]],
+  ["jpeg", ["image/jpeg", "jpg"]],
+  ["webp", ["image/webp", "webp"]],
+] as const);
+
+const inactiveMacReceiptSetupBody = z.object({}).strict();
+const INACTIVE_MAC_RECEIPT = {
+  bridgeName: "Mac Studio receipt bridge",
+  bridgeType: "mac_studio",
+  bridgeUrl: "http://100.104.253.117:3100",
+  printerName: "Caysn POS80 1.0",
+  queue: "Brightek_POS80",
+  deviceUri: "usb://Brightek/POS80?serial=MHTP80E",
+} as const;
+
+router.get("/print/assets", adminOnly, async (req, res): Promise<void> => {
+  const assets = await db
+    .select()
+    .from(printAssetsTable)
+    .where(
+      and(
+        eq(printAssetsTable.tenantId, requestTenantId(req)),
+        eq(printAssetsTable.isActive, true),
+      ),
+    )
+    .orderBy(desc(printAssetsTable.createdAt));
+  res.json({ assets });
+});
+
+router.post(
+  "/print/assets",
+  adminOnly,
+  assetUpload.single("file"),
+  async (req, res): Promise<void> => {
+    const tenantId = requestTenantId(req);
+    if (!req.file) {
+      res.status(400).json({ error: "A raster image file is required" });
+      return;
+    }
+    let metadata: sharp.Metadata;
+    try {
+      metadata = await sharp(req.file.buffer, { failOn: "error" }).metadata();
+    } catch {
+      res
+        .status(400)
+        .json({ error: "File content is not a valid supported raster image" });
+      return;
+    }
+    const format = metadata.format
+      ? rasterFormats.get(metadata.format as "png" | "jpeg" | "webp")
+      : undefined;
+    if (
+      !format ||
+      !metadata.width ||
+      !metadata.height ||
+      metadata.width > 4096 ||
+      metadata.height > 4096
+    ) {
+      res
+        .status(400)
+        .json({
+          error: "Only PNG, JPEG, or WebP images up to 4096×4096 are allowed",
+        });
+      return;
+    }
+    if (req.file.mimetype !== format[0]) {
+      res
+        .status(400)
+        .json({ error: "Declared MIME type does not match file content" });
+      return;
+    }
+    const digest = crypto
+      .createHash("sha256")
+      .update(req.file.buffer)
+      .digest("hex");
+    const relativePath = join(String(tenantId), `${digest}.${format[1]}`);
+    const tenantDir = join(assetRoot, String(tenantId));
+    await mkdir(tenantDir, { recursive: true, mode: 0o750 });
+    await writeFile(join(assetRoot, relativePath), req.file.buffer, {
+      mode: 0o640,
+      flag: "wx",
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const [asset] = await db
+      .insert(printAssetsTable)
+      .values({
+        tenantId,
+        filename: `${digest}.${format[1]}`,
+        originalName: req.file.originalname.slice(0, 255),
+        mimeType: format[0],
+        sizeBytes: req.file.size,
+        storagePath: relativePath,
+        contentSha256: digest,
+        widthPx: metadata.width,
+        heightPx: metadata.height,
+        createdByUserId: req.dbUser!.id,
+        isActive: true,
+      })
+      .onConflictDoUpdate({
+        target: [printAssetsTable.tenantId, printAssetsTable.contentSha256],
+        set: { isActive: true },
+      })
+      .returning();
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_ASSET_UPLOADED",
+        resourceType: "print_asset",
+        resourceId: String(asset.id),
+        metadata: {
+          mimeType: asset.mimeType,
+          sizeBytes: asset.sizeBytes,
+          widthPx: asset.widthPx,
+          heightPx: asset.heightPx,
+          sha256: digest,
+        },
+      });
+    res.status(201).json({ asset });
+  },
+);
+
+router.delete(
+  "/print/assets/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const tenantId = requestTenantId(req);
+    const id = Number(req.params.id);
+    const [asset] = await db
+      .update(printAssetsTable)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(printAssetsTable.tenantId, tenantId),
+          eq(printAssetsTable.id, id),
+        ),
+      )
+      .returning();
+    if (!asset) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+    const references = await db
+      .select({ id: printTemplatesTable.id })
+      .from(printTemplatesTable)
+      .where(
+        and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.backgroundAssetId, id),
+          eq(printTemplatesTable.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!references.length)
+      await unlink(join(assetRoot, asset.storagePath)).catch(() => undefined);
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_ASSET_DEACTIVATED",
+        resourceType: "print_asset",
+        resourceId: String(id),
+        metadata: { retainedForTemplateReference: references.length > 0 },
+      });
+    res.json({ ok: true });
+  },
+);
 
 // ── GET /api/print/routing ─────────────────────────────────────────────────
 // Returns active operator + their printers + health status. Admin monitor page.
-router.get("/print/routing", adminOnly, async (_req, res): Promise<void> => {
-  const operator = await selectActiveOperator();
+router.get("/print/routing", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
+  const operator = await selectActiveOperator(tenantId);
   const profile = operator?.profile ?? null;
 
-  const { primary: receiptPrinter, fallback: piFallback } = await resolveReceiptPrinters(profile);
-  const labelPrinter = await resolveLabelPrinter(profile);
+  const { primary: receiptPrinter, fallback: piFallback } =
+    await resolveReceiptPrinters(profile, {
+      tenantId,
+      locationId: operator?.locationId,
+      shiftId: operator?.shiftId,
+    });
+  const labelPrinter = await resolveLabelPrinter(profile, tenantId);
 
   // Probe all three in parallel
   const [receiptOnline, piOnline, labelOnline] = await Promise.all([
@@ -75,9 +302,7 @@ router.get("/print/routing", adminOnly, async (_req, res): Promise<void> => {
     receiptPrinter: receiptPrinter
       ? { ...receiptPrinter, online: receiptOnline }
       : null,
-    piFallback: piFallback
-      ? { ...piFallback, online: piOnline }
-      : null,
+    piFallback: piFallback ? { ...piFallback, online: piOnline } : null,
     labelPrinter: labelPrinter
       ? { ...labelPrinter, online: labelOnline }
       : null,
@@ -85,159 +310,711 @@ router.get("/print/routing", adminOnly, async (_req, res): Promise<void> => {
 });
 
 // ── GET /api/print/health ─────────────────────────────────────────────────
-router.get("/print/health", adminOnly, async (_req, res): Promise<void> => {
-  const printers = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.isActive, true));
+router.get("/print/health", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
+  const printers = await db
+    .select()
+    .from(printPrintersTable)
+    .where(
+      and(
+        eq(printPrintersTable.tenantId, tenantId),
+        eq(printPrintersTable.isActive, true),
+      ),
+    );
 
-  const results = await Promise.all(printers.map(async (p) => {
-    const online = await probePrinter(p);
-    return { id: p.id, name: p.name, role: p.role, connectionType: p.connectionType, online };
-  }));
+  const results = await Promise.all(
+    printers.map(async (p) => {
+      const online = await probePrinter(p);
+      return {
+        id: p.id,
+        name: p.name,
+        role: p.role,
+        connectionType: p.connectionType,
+        online,
+      };
+    }),
+  );
 
   res.json({ printers: results });
 });
 
 // ── GET /api/print/printers ───────────────────────────────────────────────
-router.get("/print/printers", adminOnly, async (_req, res): Promise<void> => {
-  const rows = await db.select().from(printPrintersTable).orderBy(printPrintersTable.name);
+router.get("/print/printers", adminOnly, async (req, res): Promise<void> => {
+  const rows = await db
+    .select({
+      id: printPrintersTable.id,
+      locationId: printPrintersTable.locationId,
+      routingScope: printPrintersTable.routingScope,
+      name: printPrintersTable.name,
+      role: printPrintersTable.role,
+      connectionType: printPrintersTable.connectionType,
+      bridgeProfileId: printPrintersTable.bridgeProfileId,
+      bridgePrinterName: printPrintersTable.bridgePrinterName,
+      isActive: printPrintersTable.isActive,
+      paperWidth: printPrintersTable.paperWidth,
+      printerClass: printPrintersTable.printerClass,
+      copies: printPrintersTable.copies,
+    })
+    .from(printPrintersTable)
+    .where(eq(printPrintersTable.tenantId, requestTenantId(req)))
+    .orderBy(printPrintersTable.name);
   res.json({ printers: rows });
 });
 
-const VALID_ROLES = ["kitchen", "receipt", "expo", "label", "bar"];
-const VALID_CONN_TYPES = ["ethernet_direct", "mac_bridge", "pi_bridge", "bridge"];
+// Restores the one audited Mac receipt destination without making it routable.
+// The physical identity is server-owned so a browser cannot select a tenant,
+// role, permission, route, bridge type, queue, or device URI.
+router.post(
+  "/print/setup/inactive-mac-receipt",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    if (
+      process.env.NODE_ENV !== "staging" ||
+      req.get("X-MyOrder-Environment") !== "staging"
+    ) {
+      res.status(403).json({ error: "STAGING_ONLY" });
+      return;
+    }
+    const parsed = inactiveMacReceiptSetupBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Request body must be empty" });
+      return;
+    }
+    const idempotencyKey = req.get("Idempotency-Key")?.trim() ?? "";
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) {
+      res
+        .status(400)
+        .json({ error: "A valid Idempotency-Key header is required" });
+      return;
+    }
 
+    const tenantId = requestTenantId(req);
+    const result = await db
+      .transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 8040)`);
+
+        const bridges = await tx
+          .select()
+          .from(printBridgeProfilesTable)
+          .where(
+            and(
+              eq(printBridgeProfilesTable.tenantId, tenantId),
+              eq(
+                printBridgeProfilesTable.name,
+                INACTIVE_MAC_RECEIPT.bridgeName,
+              ),
+            ),
+          )
+          .limit(2);
+        if (bridges.length > 1) throw new Error("AMBIGUOUS_MAC_RECEIPT_BRIDGE");
+
+        let bridge = bridges[0];
+        let changed = false;
+        if (!bridge) {
+          [bridge] = await tx
+            .insert(printBridgeProfilesTable)
+            .values({
+              tenantId,
+              locationId: null,
+              routingScope: "general",
+              name: INACTIVE_MAC_RECEIPT.bridgeName,
+              bridgeType: INACTIVE_MAC_RECEIPT.bridgeType,
+              bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+              apiKey: "",
+              isActive: false,
+              priority: 10,
+              supportedRoles: "receipt",
+              environment: "staging",
+              allowedJobType: "completed_order_receipt",
+            })
+            .returning();
+          changed = true;
+        } else {
+          const bridgeNeedsRestore =
+            bridge.locationId !== null ||
+            bridge.routingScope !== "general" ||
+            bridge.bridgeType !== INACTIVE_MAC_RECEIPT.bridgeType ||
+            bridge.bridgeUrl !== INACTIVE_MAC_RECEIPT.bridgeUrl ||
+            bridge.isActive ||
+            bridge.supportedRoles !== "receipt" ||
+            bridge.environment !== "staging" ||
+            bridge.allowedJobType !== "completed_order_receipt";
+          if (bridgeNeedsRestore) {
+            [bridge] = await tx
+              .update(printBridgeProfilesTable)
+              .set({
+                locationId: null,
+                routingScope: "general",
+                bridgeType: INACTIVE_MAC_RECEIPT.bridgeType,
+                bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+                isActive: false,
+                supportedRoles: "receipt",
+                environment: "staging",
+                allowedJobType: "completed_order_receipt",
+              })
+              .where(
+                and(
+                  eq(printBridgeProfilesTable.tenantId, tenantId),
+                  eq(printBridgeProfilesTable.id, bridge.id),
+                ),
+              )
+              .returning();
+            changed = true;
+          }
+        }
+
+        const printers = await tx
+          .select()
+          .from(printPrintersTable)
+          .where(
+            and(
+              eq(printPrintersTable.tenantId, tenantId),
+              eq(
+                printPrintersTable.bridgePrinterName,
+                INACTIVE_MAC_RECEIPT.queue,
+              ),
+            ),
+          )
+          .limit(2);
+        if (
+          printers.length > 1 ||
+          (printers[0] && printers[0].bridgeProfileId !== bridge.id)
+        ) {
+          throw new Error("AMBIGUOUS_MAC_RECEIPT_PRINTER");
+        }
+
+        const expectedDeviceUriHash = crypto
+          .createHash("sha256")
+          .update(INACTIVE_MAC_RECEIPT.deviceUri)
+          .digest("hex");
+        let printer = printers[0];
+        if (printer) {
+          const [printRoute, operatorRoute, shiftRoute] = await Promise.all([
+            tx
+              .select({ id: printRoutesTable.id })
+              .from(printRoutesTable)
+              .where(
+                and(
+                  eq(printRoutesTable.tenantId, tenantId),
+                  eq(printRoutesTable.printerId, printer.id),
+                ),
+              )
+              .limit(1),
+            tx
+              .select({ id: operatorPrintProfilesTable.id })
+              .from(operatorPrintProfilesTable)
+              .where(
+                and(
+                  eq(operatorPrintProfilesTable.tenantId, tenantId),
+                  or(
+                    eq(operatorPrintProfilesTable.receiptPrinterId, printer.id),
+                    eq(operatorPrintProfilesTable.labelPrinterId, printer.id),
+                    eq(operatorPrintProfilesTable.expoPrinterId, printer.id),
+                    eq(
+                      operatorPrintProfilesTable.fallbackReceiptPrinterId,
+                      printer.id,
+                    ),
+                  ),
+                ),
+              )
+              .limit(1),
+            tx
+              .select({ id: shiftPrintAssignmentsTable.id })
+              .from(shiftPrintAssignmentsTable)
+              .where(
+                and(
+                  eq(shiftPrintAssignmentsTable.tenantId, tenantId),
+                  or(
+                    eq(shiftPrintAssignmentsTable.receiptPrinterId, printer.id),
+                    eq(shiftPrintAssignmentsTable.expoPrinterId, printer.id),
+                  ),
+                ),
+              )
+              .limit(1),
+          ]);
+          if (printRoute.length || operatorRoute.length || shiftRoute.length) {
+            throw new Error("MAC_RECEIPT_PRINTER_HAS_ROUTE");
+          }
+          const printerNeedsRestore =
+            printer.name !== INACTIVE_MAC_RECEIPT.printerName ||
+            printer.locationId !== null ||
+            printer.routingScope !== "general" ||
+            printer.role !== "receipt" ||
+            printer.connectionType !== "mac_bridge" ||
+            printer.isActive ||
+            printer.receiptCapable !== true ||
+            printer.labelCapable !== false ||
+            printer.expectedDeviceUriHash !== expectedDeviceUriHash;
+          if (printerNeedsRestore) {
+            [printer] = await tx
+              .update(printPrintersTable)
+              .set({
+                name: INACTIVE_MAC_RECEIPT.printerName,
+                locationId: null,
+                routingScope: "general",
+                role: "receipt",
+                connectionType: "mac_bridge",
+                bridgeProfileId: bridge.id,
+                bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+                bridgePrinterName: INACTIVE_MAC_RECEIPT.queue,
+                isActive: false,
+                paperWidth: "80mm",
+                expectedDeviceUriHash,
+                receiptCapable: true,
+                labelCapable: false,
+              })
+              .where(
+                and(
+                  eq(printPrintersTable.tenantId, tenantId),
+                  eq(printPrintersTable.id, printer.id),
+                ),
+              )
+              .returning();
+            changed = true;
+          }
+        } else {
+          [printer] = await tx
+            .insert(printPrintersTable)
+            .values({
+              tenantId,
+              locationId: null,
+              routingScope: "general",
+              name: INACTIVE_MAC_RECEIPT.printerName,
+              role: "receipt",
+              connectionType: "mac_bridge",
+              bridgeProfileId: bridge.id,
+              bridgeUrl: INACTIVE_MAC_RECEIPT.bridgeUrl,
+              bridgePrinterName: INACTIVE_MAC_RECEIPT.queue,
+              apiKey: null,
+              isActive: false,
+              paperWidth: "80mm",
+              expectedDeviceUriHash,
+              receiptCapable: true,
+              labelCapable: false,
+            })
+            .returning();
+          changed = true;
+        }
+
+        if (changed) {
+          await tx.insert(auditLogsTable).values({
+            tenantId,
+            actorId: req.dbUser!.id,
+            actorEmail: req.dbUser!.email ?? "",
+            actorRole: req.dbUser!.role,
+            action: "INACTIVE_MAC_RECEIPT_SETUP_RESTORED",
+            resourceType: "print_printer",
+            resourceId: String(printer.id),
+            metadata: {
+              bridgeId: bridge.id,
+              queue: INACTIVE_MAC_RECEIPT.queue,
+              active: false,
+              receiptCapable: true,
+              routeCount: 0,
+              idempotencyKeySha256: crypto
+                .createHash("sha256")
+                .update(idempotencyKey)
+                .digest("hex"),
+            },
+          });
+        }
+
+        return { bridge, printer, replayed: !changed };
+      })
+      .catch((error: unknown) => {
+        const code = error instanceof Error ? error.message : "";
+        if (
+          code === "AMBIGUOUS_MAC_RECEIPT_BRIDGE" ||
+          code === "AMBIGUOUS_MAC_RECEIPT_PRINTER" ||
+          code === "MAC_RECEIPT_PRINTER_HAS_ROUTE"
+        )
+          return { conflict: code } as const;
+        throw error;
+      });
+
+    if ("conflict" in result) {
+      res.status(409).json({ error: result.conflict });
+      return;
+    }
+    res.status(result.replayed ? 200 : 201).json({
+      bridgeId: result.bridge.id,
+      printerId: result.printer.id,
+      bridgeActive: false,
+      printerActive: false,
+      queue: INACTIVE_MAC_RECEIPT.queue,
+      receiptCapable: true,
+      routeCount: 0,
+      replayed: result.replayed,
+    });
+  },
+);
+
+
+const isHttpBridgeUrl = (value: unknown): boolean => {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+// Empty means "use the central PRINT_BRIDGE_API_KEY"; otherwise a strong,
+// header-safe secret unique to that bridge.
+const BRIDGE_KEY = BRIDGE_KEY_PATTERN;
+const BRIDGE_KEY_ERROR = "apiKey must be empty or 32-256 URL-safe characters";
+const isValidBridgeKey = (value: unknown): boolean =>
+  value === undefined || value === null || value === "" ||
+  (typeof value === "string" && BRIDGE_KEY.test(value));
 // ── POST /api/print/printers ──────────────────────────────────────────────
 router.post("/print/printers", adminOnly, async (req, res): Promise<void> => {
-  const b = req.body ?? {};
-  if (!b.name) { res.status(400).json({ error: "name is required" }); return; }
-  if (b.role && !VALID_ROLES.includes(b.role)) {
-    res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(", ")}` }); return;
+  try {
+    const printer = await createRegisteredPrinter(requestTenantId(req), req.dbUser!, req.body ?? {});
+    res.status(201).json({ printer: { ...printer, apiKey: undefined } });
+  } catch (err) {
+    if (!(err instanceof PrintAdminError)) throw err;
+    res.status(err.status).json({ error: err.message });
   }
-  if (b.connectionType && !VALID_CONN_TYPES.includes(b.connectionType)) {
-    res.status(400).json({ error: `connectionType must be one of: ${VALID_CONN_TYPES.join(", ")}` }); return;
-  }
-  const connType: string = b.connectionType ?? "bridge";
-  const needsBridge = ["mac_bridge", "pi_bridge", "bridge"].includes(connType);
-  if (needsBridge && !b.bridgeUrl) {
-    res.status(400).json({ error: "bridgeUrl is required for this connectionType" }); return;
-  }
-  if (connType === "ethernet_direct" && !b.directIp) {
-    res.status(400).json({ error: "directIp is required for ethernet_direct printers" }); return;
-  }
-
-  const [printer] = await db.insert(printPrintersTable).values({
-    name: String(b.name),
-    role: String(b.role ?? "kitchen"),
-    connectionType: connType,
-    directIp: b.directIp ? String(b.directIp) : null,
-    directPort: b.directPort ? Number(b.directPort) : 9100,
-    bridgeUrl: b.bridgeUrl ? String(b.bridgeUrl) : "",
-    bridgePrinterName: b.bridgePrinterName ? String(b.bridgePrinterName) : null,
-    apiKey: b.apiKey ? String(b.apiKey) : null,
-    timeoutMs: b.timeoutMs ? Number(b.timeoutMs) : 8000,
-    copies: b.copies ? Math.min(5, Math.max(1, Number(b.copies))) : 1,
-    paperWidth: b.paperWidth ? String(b.paperWidth) : "80mm",
-    isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
-  }).returning();
-  res.status(201).json({ printer });
 });
 
 // ── PATCH /api/print/printers/:id ─────────────────────────────────────────
-router.patch("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const b = req.body ?? {};
-  const updates: Record<string, unknown> = {};
-  if (b.name !== undefined) updates.name = String(b.name);
-  if (b.role !== undefined) updates.role = String(b.role);
-  if (b.connectionType !== undefined) updates.connectionType = String(b.connectionType);
-  if (b.bridgeProfileId !== undefined) updates.bridgeProfileId = b.bridgeProfileId ? Number(b.bridgeProfileId) : null;
-  if (b.directIp !== undefined) updates.directIp = b.directIp ? String(b.directIp) : null;
-  if (b.directPort !== undefined) updates.directPort = Number(b.directPort);
-  if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
-  if (b.bridgePrinterName !== undefined) updates.bridgePrinterName = String(b.bridgePrinterName);
-  if (b.apiKey !== undefined) updates.apiKey = String(b.apiKey);
-  if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
-  if (b.copies !== undefined) updates.copies = Math.min(5, Math.max(1, Number(b.copies)));
-  if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
-  if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
-  const [row] = await db.update(printPrintersTable)
-    .set(updates as Partial<typeof printPrintersTable.$inferInsert>)
-    .where(eq(printPrintersTable.id, id)).returning();
-  if (!row) { res.status(404).json({ error: "Printer not found" }); return; }
-  res.json({ printer: row });
-});
+router.patch(
+  "/print/printers/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    if (protectedPrinter?.role === "thank_you_sticker") {
+      res.status(409).json({ error: "Use the staging sticker route workflow for this protected printer" });
+      return;
+    }
+    const b = req.body ?? {};
+    const updates: Record<string, unknown> = {};
+    if (b.name !== undefined) updates.name = String(b.name);
+    if (b.role !== undefined) {
+      if (typeof b.role !== "string" || !VALID_ROLES.includes(b.role)) { res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(", ")}` }); return; }
+      updates.role = b.role;
+    }
+    if (b.connectionType !== undefined)
+      updates.connectionType = String(b.connectionType);
+    if (
+      b.tenantId !== undefined ||
+      b.locationId !== undefined ||
+      b.routingScope !== undefined ||
+      b.bridgeUrl !== undefined ||
+      b.apiKey !== undefined
+    ) {
+      res
+        .status(400)
+        .json({
+          error:
+            "Ownership, scope, bridge URL, and credentials cannot be changed through this endpoint",
+        });
+      return;
+    }
+    if (b.bridgeProfileId !== undefined) {
+      const [bridge] = await db
+        .select()
+        .from(printBridgeProfilesTable)
+        .where(
+          and(
+            eq(printBridgeProfilesTable.tenantId, tenantId),
+            eq(printBridgeProfilesTable.id, Number(b.bridgeProfileId)),
+          ),
+        )
+        .limit(1);
+      if (!bridge) {
+        res
+          .status(400)
+          .json({ error: "Bridge profile not found in this tenant" });
+        return;
+      }
+      updates.bridgeProfileId = bridge.id;
+      updates.bridgeUrl = bridge.bridgeUrl;
+    }
+    if (b.directIp !== undefined)
+      updates.directIp = b.directIp ? String(b.directIp) : null;
+    if (b.directPort !== undefined) updates.directPort = Number(b.directPort);
+    if (b.bridgePrinterName !== undefined) {
+      const queue = String(b.bridgePrinterName).trim();
+      if (!BRIDGE_QUEUE_NAME.test(queue)) { res.status(400).json({ error: "bridgePrinterName is invalid" }); return; }
+      updates.bridgePrinterName = queue;
+    }
+    if (b.timeoutMs !== undefined) updates.timeoutMs = Number(b.timeoutMs);
+    if (b.copies !== undefined)
+      updates.copies = Math.min(5, Math.max(1, Number(b.copies)));
+    if (b.printerClass !== undefined || b.paperWidth !== undefined) {
+      const [current] = await db.select({ printerClass: printPrintersTable.printerClass, paperWidth: printPrintersTable.paperWidth })
+        .from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+      const nextClass = b.printerClass ?? current?.printerClass ?? "thermal";
+      const nextWidth = b.paperWidth !== undefined ? b.paperWidth : nextClass === current?.printerClass ? current?.paperWidth : undefined;
+      const paper = printerPaper(nextClass, nextClass === "full_page" && b.paperWidth === undefined ? undefined : nextWidth);
+      if ("error" in paper) { res.status(400).json({ error: paper.error }); return; }
+      updates.printerClass = paper.printerClass;
+      updates.paperWidth = paper.paperWidth;
+    }
+    if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
+    const [row] = await db
+      .update(printPrintersTable)
+      .set(updates as Partial<typeof printPrintersTable.$inferInsert>)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+        ),
+      )
+      .returning();
+    if (!row) {
+      res.status(404).json({ error: "Printer not found" });
+      return;
+    }
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_PRINTER_UPDATED",
+        resourceType: "print_printer",
+        resourceId: String(row.id),
+        metadata: { fields: Object.keys(updates) },
+      });
+    res.json({ printer: row });
+  },
+);
 
 // ── DELETE /api/print/printers/:id ────────────────────────────────────────
-router.delete("/print/printers/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  await db.delete(printPrintersTable).where(eq(printPrintersTable.id, id));
-  res.json({ ok: true });
-});
+router.delete(
+  "/print/printers/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const [protectedPrinter] = await db.select({ role: printPrintersTable.role }).from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.id, id))).limit(1);
+    if (protectedPrinter?.role === "thank_you_sticker") {
+      res.status(409).json({ error: "Protected staging sticker printers cannot be deleted through the generic endpoint" });
+      return;
+    }
+    await db
+      .delete(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+        ),
+      );
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_PRINTER_DELETED",
+        resourceType: "print_printer",
+        resourceId: String(id),
+        metadata: {},
+      });
+    res.json({ ok: true });
+  },
+);
 
 // ── POST /api/print/printers/:id/test ────────────────────────────────────
 // Synchronous — awaits dispatch and returns the real pass/fail result.
-router.post("/print/printers/:id/test", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const [printer] = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.id, id)).limit(1);
-  if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
+router.post(
+  "/print/printers/:id/test",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    if (!Number.isInteger(id)) {
+      res.status(400).json({ error: "Valid printer id is required" });
+      return;
+    }
+    const body = req.body ?? {};
+    if (Object.keys(body).some((key) => key !== "testId")) {
+      res
+        .status(400)
+        .json({
+          error:
+            "Only a testId may be supplied; content and routing are server-controlled",
+        });
+      return;
+    }
+    const [printer] = await db
+      .select()
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+          eq(printPrintersTable.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!printer) {
+      res.status(404).json({ error: "Printer not found" });
+      return;
+    }
+    if (printer.role !== "receipt") {
+      res
+        .status(400)
+        .json({
+          error: "UI controlled test requires an active receipt printer",
+        });
+      return;
+    }
+    if (printer.routingScope !== "general" || printer.locationId !== null) {
+      res
+        .status(409)
+        .json({
+          error:
+            "Location printers must be exercised through an authoritative active shift assignment",
+        });
+      return;
+    }
+    if (!printer.bridgeProfileId) {
+      res.status(409).json({ error: "Registered bridge profile is required" });
+      return;
+    }
+    const [bridge] = await db
+      .select()
+      .from(printBridgeProfilesTable)
+      .where(
+        and(
+          eq(printBridgeProfilesTable.tenantId, tenantId),
+          eq(printBridgeProfilesTable.id, printer.bridgeProfileId),
+          eq(printBridgeProfilesTable.isActive, true),
+          eq(printBridgeProfilesTable.routingScope, "general"),
+        ),
+      )
+      .limit(1);
+    if (!bridge || bridge.locationId !== null) {
+      res
+        .status(409)
+        .json({ error: "Active tenant-scoped general bridge not found" });
+      return;
+    }
 
-  const bridgePrinterName = printer.bridgePrinterName ?? printer.name;
-  const testText = [
-    "================================",
-    "         TEST PRINT             ",
-    "================================",
-    `Printer : ${printer.name}`,
-    `Queue   : ${bridgePrinterName}`,
-    `Type    : ${printer.connectionType}`,
-    `Role    : ${printer.role}`,
-    `Bridge  : ${printer.bridgeUrl || "(none)"}`,
-    `Time    : ${new Date().toLocaleString()}`,
-    "================================",
-    "", "",
-  ].join("\n");
+    const bridgePrinterName = printer.bridgePrinterName ?? printer.name;
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(bridgePrinterName)) {
+      res
+        .status(409)
+        .json({
+          error:
+            "Registered explicit queue is invalid; refusing default queue fallback",
+        });
+      return;
+    }
+    const requestedTestId =
+      typeof body.testId === "string" ? body.testId.trim() : "";
+    const testId = /^[A-Za-z0-9_.-]{1,64}$/.test(requestedTestId)
+      ? requestedTestId
+      : `ui-${Date.now()}`;
+    const timestamp = new Date().toISOString();
+    const testText = [
+      "================================",
+      "      MYORDER DEV UI TEST       ",
+      "     NOT A CUSTOMER ORDER       ",
+      "================================",
+      `Test ID : ${testId}`,
+      `Time    : ${timestamp}`,
+      "Role    : receipt",
+      "================================",
+      "",
+      "",
+    ].join("\n");
 
-  // Use a unique idempotency key so repeated test presses each create a new job
-  const iKey = `test:${printer.id}:${Date.now()}`;
-  const [job] = await db.insert(printJobsTable).values({
-    orderId: null,
-    printerId: printer.id,
-    jobType: "order_ticket",
-    status: "queued",
-    idempotencyKey: iKey,
-    renderFormat: "text",
-    payloadJson: { test: true, printerName: bridgePrinterName },
-    renderedText: testText,
-  }).returning();
+    // Use a unique idempotency key so repeated test presses each create a new job
+    const iKey = `ui-test:${tenantId}:${printer.id}:${testId}`;
+    const [job] = await db
+      .insert(printJobsTable)
+      .values({
+        tenantId,
+        locationId: null,
+        shiftId: null,
+        orderId: null,
+        printerId: printer.id,
+        jobType: "receipt",
+        status: "queued",
+        idempotencyKey: iKey,
+        renderFormat: "text",
+        payloadJson: {
+          controlledUiTest: true,
+          testId,
+          timestamp,
+          printerRole: "receipt",
+        },
+        renderedText: testText,
+        maxRetries: 1,
+      })
+      .returning();
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_UI_TEST_SUBMITTED",
+        resourceType: "print_job",
+        resourceId: String(job.id),
+        metadata: { printerId: printer.id, bridgeProfileId: bridge.id, testId },
+      });
 
-  // Await the full dispatch so we can report the actual result
-  await dispatchJob(job, printer).catch(() => {});
+    // Await the full dispatch so we can report the actual result
+    await dispatchJob(job, printer).catch(() => {});
 
-  // Re-fetch the job to get final status + error
-  const [finalJob] = await db.select().from(printJobsTable)
-    .where(eq(printJobsTable.id, job.id)).limit(1);
-  const ok = finalJob?.status === "printed";
+    // Re-fetch the job to get final status + error
+    const [finalJob] = await db
+      .select()
+      .from(printJobsTable)
+      .where(eq(printJobsTable.id, job.id))
+      .limit(1);
+    const ok = finalJob?.status === "printed";
 
-  res.json({
-    ok,
-    jobId: job.id,
-    status: finalJob?.status ?? "unknown",
-    error: ok ? undefined : (finalJob?.errorMessage ?? "Print job did not complete"),
-  });
-});
+    res.json({
+      ok,
+      jobId: job.id,
+      status: finalJob?.status ?? "unknown",
+      testId,
+      error: ok
+        ? undefined
+        : (finalJob?.errorMessage ?? "Print job did not complete"),
+    });
+  },
+);
 
 // ── POST /api/print/printers/:id/probe ───────────────────────────────────
-router.post("/print/printers/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const [printer] = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.id, id)).limit(1);
-  if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
-  const online = await probePrinter(printer);
-  res.json({ id, online });
-});
+router.post(
+  "/print/printers/:id/probe",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const [printer] = await db
+      .select()
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, id),
+        ),
+      )
+      .limit(1);
+    if (!printer) {
+      res.status(404).json({ error: "Printer not found" });
+      return;
+    }
+    const online = await probePrinter(printer);
+    res.json({ id, online });
+  },
+);
 
 // ── Operator Profiles ─────────────────────────────────────────────────────
-router.get("/print/profiles", adminOnly, async (_req, res): Promise<void> => {
+router.get("/print/profiles", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const rows = await db
     .select({
       id: operatorPrintProfilesTable.id,
@@ -248,298 +1025,885 @@ router.get("/print/profiles", adminOnly, async (_req, res): Promise<void> => {
       role: usersTable.role,
       receiptPrinterId: operatorPrintProfilesTable.receiptPrinterId,
       labelPrinterId: operatorPrintProfilesTable.labelPrinterId,
-      fallbackReceiptPrinterId: operatorPrintProfilesTable.fallbackReceiptPrinterId,
+      fallbackReceiptPrinterId:
+        operatorPrintProfilesTable.fallbackReceiptPrinterId,
       isDefault: operatorPrintProfilesTable.isDefault,
     })
     .from(operatorPrintProfilesTable)
     .innerJoin(usersTable, eq(operatorPrintProfilesTable.userId, usersTable.id))
+    .where(eq(operatorPrintProfilesTable.tenantId, tenantId))
     .orderBy(usersTable.email);
   res.json({ profiles: rows });
 });
 
 router.post("/print/profiles", adminOnly, async (req, res): Promise<void> => {
   const b = req.body ?? {};
-  if (!b.userId) { res.status(400).json({ error: "userId is required" }); return; }
-  const existing = await db.select().from(operatorPrintProfilesTable)
-    .where(eq(operatorPrintProfilesTable.userId, Number(b.userId))).limit(1);
+  const tenantId = requestTenantId(req);
+  if (!b.userId) {
+    res.status(400).json({ error: "userId is required" });
+    return;
+  }
+  if (b.fallbackReceiptPrinterId) {
+    res.status(400).json({ error: "Cross-printer fallback is prohibited" });
+    return;
+  }
+  const [targetUser] = await db
+    .select()
+    .from(usersTable)
+    .where(
+      and(
+        eq(usersTable.tenantId, tenantId),
+        eq(usersTable.id, Number(b.userId)),
+        eq(usersTable.isActive, true),
+      ),
+    )
+    .limit(1);
+  if (!targetUser) {
+    res.status(400).json({ error: "Active user not found in this tenant" });
+    return;
+  }
+  const printerIds = [b.receiptPrinterId, b.labelPrinterId, b.expoPrinterId]
+    .filter(Boolean)
+    .map(Number);
+  if (printerIds.length) {
+    const printers = await db
+      .select()
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          inArray(printPrintersTable.id, printerIds),
+          eq(printPrintersTable.isActive, true),
+        ),
+      );
+    if (printers.length !== new Set(printerIds).size) {
+      res
+        .status(400)
+        .json({
+          error:
+            "Every selected printer must be active and owned by this tenant",
+        });
+      return;
+    }
+  }
+  const existing = await db
+    .select()
+    .from(operatorPrintProfilesTable)
+    .where(
+      and(
+        eq(operatorPrintProfilesTable.tenantId, tenantId),
+        eq(operatorPrintProfilesTable.userId, Number(b.userId)),
+        sql`${operatorPrintProfilesTable.locationId} IS NULL`,
+        sql`${operatorPrintProfilesTable.shiftId} IS NULL`,
+      ),
+    )
+    .limit(1);
   if (existing.length) {
-    const [updated] = await db.update(operatorPrintProfilesTable)
+    const [updated] = await db
+      .update(operatorPrintProfilesTable)
       .set({
-        receiptPrinterId: b.receiptPrinterId ? Number(b.receiptPrinterId) : null,
+        receiptPrinterId: b.receiptPrinterId
+          ? Number(b.receiptPrinterId)
+          : null,
         labelPrinterId: b.labelPrinterId ? Number(b.labelPrinterId) : null,
-        fallbackReceiptPrinterId: b.fallbackReceiptPrinterId ? Number(b.fallbackReceiptPrinterId) : null,
+        fallbackReceiptPrinterId: null,
+        expoPrinterId: b.expoPrinterId ? Number(b.expoPrinterId) : null,
+        printExpoTickets: Boolean(b.printExpoTickets),
         isDefault: Boolean(b.isDefault),
       })
-      .where(eq(operatorPrintProfilesTable.userId, Number(b.userId)))
+      .where(
+        and(
+          eq(operatorPrintProfilesTable.tenantId, tenantId),
+          eq(operatorPrintProfilesTable.id, existing[0].id),
+        ),
+      )
       .returning();
     res.json({ profile: updated });
     return;
   }
-  const [profile] = await db.insert(operatorPrintProfilesTable).values({
-    userId: Number(b.userId),
-    receiptPrinterId: b.receiptPrinterId ? Number(b.receiptPrinterId) : null,
-    labelPrinterId: b.labelPrinterId ? Number(b.labelPrinterId) : null,
-    fallbackReceiptPrinterId: b.fallbackReceiptPrinterId ? Number(b.fallbackReceiptPrinterId) : null,
-    isDefault: Boolean(b.isDefault),
-  }).returning();
+  const [profile] = await db
+    .insert(operatorPrintProfilesTable)
+    .values({
+      tenantId,
+      userId: Number(b.userId),
+      receiptPrinterId: b.receiptPrinterId ? Number(b.receiptPrinterId) : null,
+      labelPrinterId: b.labelPrinterId ? Number(b.labelPrinterId) : null,
+      fallbackReceiptPrinterId: null,
+      expoPrinterId: b.expoPrinterId ? Number(b.expoPrinterId) : null,
+      printExpoTickets: Boolean(b.printExpoTickets),
+      isDefault: Boolean(b.isDefault),
+    })
+    .returning();
   res.status(201).json({ profile });
 });
 
-router.delete("/print/profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  await db.delete(operatorPrintProfilesTable).where(eq(operatorPrintProfilesTable.id, id));
-  res.json({ ok: true });
-});
+router.delete(
+  "/print/profiles/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    await db
+      .delete(operatorPrintProfilesTable)
+      .where(
+        and(
+          eq(operatorPrintProfilesTable.tenantId, requestTenantId(req)),
+          eq(operatorPrintProfilesTable.id, id),
+        ),
+      );
+    res.json({ ok: true });
+  },
+);
 
 // ── Templates ─────────────────────────────────────────────────────────────
-router.get("/print/templates", adminOnly, async (_req, res): Promise<void> => {
-  const rows = await db.select().from(printTemplatesTable).orderBy(printTemplatesTable.name);
+router.get("/print/templates", adminOnly, async (req, res): Promise<void> => {
+  const rows = await db
+    .select()
+    .from(printTemplatesTable)
+    .where(eq(printTemplatesTable.tenantId, requestTenantId(req)))
+    .orderBy(printTemplatesTable.name);
   res.json({ templates: rows });
 });
 
 router.post("/print/templates", adminOnly, async (req, res): Promise<void> => {
   const b = req.body ?? {};
-  if (!b.name) { res.status(400).json({ error: "name is required" }); return; }
-  const [t] = await db.insert(printTemplatesTable).values({
-    name: String(b.name),
-    jobType: String(b.jobType ?? "label"),
-    backgroundAssetId: b.backgroundAssetId ? Number(b.backgroundAssetId) : null,
-    templateJson: b.templateJson ?? [],
-    paperWidth: String(b.paperWidth ?? "58mm"),
-    paperHeight: String(b.paperHeight ?? "auto"),
-    isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
-    isDefault: Boolean(b.isDefault),
-  }).returning();
+  const tenantId = requestTenantId(req);
+  if (!b.name) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  const parsed = receiptTemplateLayoutSchema.safeParse(b.templateJson ?? []);
+  if (!parsed.success) {
+    res
+      .status(400)
+      .json({
+        error: "Invalid declarative template layout",
+        details: parsed.error.issues,
+      });
+    return;
+  }
+  const parsedLayout = parsed.data;
+  const jobType = String(b.jobType ?? "label");
+  if (jobType === "receipt" && b.paperWidth !== undefined && !(THERMAL_WIDTHS as readonly unknown[]).includes(b.paperWidth)) {
+    res.status(400).json({ error: "Receipt templates use a 50mm or 80mm roll" });
+    return;
+  }
+  if (b.backgroundAssetId) {
+    const [asset] = await db
+      .select()
+      .from(printAssetsTable)
+      .where(
+        and(
+          eq(printAssetsTable.tenantId, tenantId),
+          eq(printAssetsTable.id, Number(b.backgroundAssetId)),
+          eq(printAssetsTable.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!asset) {
+      res
+        .status(400)
+        .json({ error: "Active template asset not found in this tenant" });
+      return;
+    }
+  }
+  // One default receipt template per tenant.
+  if (jobType === "receipt" && b.isDefault) {
+    await db.update(printTemplatesTable).set({ isDefault: false })
+      .where(and(eq(printTemplatesTable.tenantId, tenantId), eq(printTemplatesTable.jobType, "receipt")));
+  }
+  const [t] = await db
+    .insert(printTemplatesTable)
+    .values({
+      tenantId,
+      name: String(b.name),
+      jobType,
+      backgroundAssetId: b.backgroundAssetId
+        ? Number(b.backgroundAssetId)
+        : null,
+      templateJson: parsedLayout,
+      createdByUserId: req.dbUser!.id,
+      paperWidth: String(b.paperWidth ?? "58mm"),
+      paperHeight: String(b.paperHeight ?? "auto"),
+      isActive: b.isActive !== undefined ? Boolean(b.isActive) : true,
+      isDefault: Boolean(b.isDefault),
+    })
+    .returning();
+  await db
+    .insert(printTemplateVersionsTable)
+    .values({
+      tenantId,
+      templateId: t.id,
+      version: 1,
+      schemaVersion: 1,
+      templateJson: parsedLayout,
+      backgroundAssetId: t.backgroundAssetId,
+      paperWidth: t.paperWidth,
+      paperHeight: t.paperHeight,
+      createdByUserId: req.dbUser!.id,
+    });
+  await db
+    .insert(auditLogsTable)
+    .values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "PRINT_TEMPLATE_CREATED",
+      resourceType: "print_template",
+      resourceId: String(t.id),
+      metadata: { version: 1, jobType: t.jobType },
+    });
   res.status(201).json({ template: t });
 });
 
-router.patch("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const b = req.body ?? {};
-  const updates: Record<string, unknown> = {};
-  if (b.name !== undefined) updates.name = String(b.name);
-  if (b.jobType !== undefined) updates.jobType = String(b.jobType);
-  if (b.backgroundAssetId !== undefined) updates.backgroundAssetId = b.backgroundAssetId ? Number(b.backgroundAssetId) : null;
-  if (b.templateJson !== undefined) updates.templateJson = b.templateJson;
-  if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
-  if (b.paperHeight !== undefined) updates.paperHeight = String(b.paperHeight);
-  if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
-  if (b.isDefault !== undefined) updates.isDefault = Boolean(b.isDefault);
-  const [t] = await db.update(printTemplatesTable)
-    .set(updates as Partial<typeof printTemplatesTable.$inferInsert>)
-    .where(eq(printTemplatesTable.id, id)).returning();
-  if (!t) { res.status(404).json({ error: "Template not found" }); return; }
-  res.json({ template: t });
-});
+router.patch(
+  "/print/templates/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const b = req.body ?? {};
+    const [existing] = await db
+      .select()
+      .from(printTemplatesTable)
+      .where(
+        and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.id, id),
+        ),
+      )
+      .limit(1);
+    if (!existing) {
+      res.status(404).json({ error: "Template not found" });
+      return;
+    }
+    // A save made from an older version must not overwrite a newer one.
+    if (b.expectedVersion !== undefined && b.expectedVersion !== existing.version) {
+      res.status(409).json({ error: "This template changed since you opened it; reload before saving", version: existing.version });
+      return;
+    }
+    if (existing.jobType === "receipt" && b.paperWidth !== undefined && !(THERMAL_WIDTHS as readonly unknown[]).includes(b.paperWidth)) {
+      res.status(400).json({ error: "Receipt templates use a 50mm or 80mm roll" });
+      return;
+    }
+    const updates: Record<string, unknown> = {};
+    if (b.name !== undefined) updates.name = String(b.name);
+    if (b.jobType !== undefined) updates.jobType = String(b.jobType);
+    if (b.backgroundAssetId !== undefined) {
+      if (b.backgroundAssetId) {
+        const [asset] = await db
+          .select()
+          .from(printAssetsTable)
+          .where(
+            and(
+              eq(printAssetsTable.tenantId, tenantId),
+              eq(printAssetsTable.id, Number(b.backgroundAssetId)),
+              eq(printAssetsTable.isActive, true),
+            ),
+          )
+          .limit(1);
+        if (!asset) {
+          res
+            .status(400)
+            .json({ error: "Active template asset not found in this tenant" });
+          return;
+        }
+      }
+      updates.backgroundAssetId = b.backgroundAssetId
+        ? Number(b.backgroundAssetId)
+        : null;
+    }
+    if (b.templateJson !== undefined) {
+      const parsed = receiptTemplateLayoutSchema.safeParse(b.templateJson);
+      if (!parsed.success) {
+        res
+          .status(400)
+          .json({
+            error: "Invalid declarative template layout",
+            details: parsed.error.issues,
+          });
+        return;
+      }
+      updates.templateJson = parsed.data;
+    }
+    if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
+    if (b.paperHeight !== undefined)
+      updates.paperHeight = String(b.paperHeight);
+    if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
+    if (b.isDefault !== undefined) updates.isDefault = Boolean(b.isDefault);
+    if (updates.isDefault === true && (updates.jobType ?? existing.jobType) === "receipt") {
+      await db.update(printTemplatesTable).set({ isDefault: false })
+        .where(and(eq(printTemplatesTable.tenantId, tenantId), eq(printTemplatesTable.jobType, "receipt")));
+    }
+    updates.version = existing.version + 1;
+    const [t] = await db
+      .update(printTemplatesTable)
+      .set(updates as Partial<typeof printTemplatesTable.$inferInsert>)
+      .where(
+        and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.id, id),
+        ),
+      )
+      .returning();
+    if (!t) {
+      res.status(404).json({ error: "Template not found" });
+      return;
+    }
+    await db
+      .insert(printTemplateVersionsTable)
+      .values({
+        tenantId,
+        templateId: t.id,
+        version: t.version,
+        schemaVersion: t.schemaVersion,
+        templateJson: t.templateJson,
+        backgroundAssetId: t.backgroundAssetId,
+        paperWidth: t.paperWidth,
+        paperHeight: t.paperHeight,
+        createdByUserId: req.dbUser!.id,
+      });
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_TEMPLATE_UPDATED",
+        resourceType: "print_template",
+        resourceId: String(t.id),
+        metadata: { version: t.version, fields: Object.keys(updates) },
+      });
+    res.json({ template: t });
+  },
+);
 
-router.delete("/print/templates/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  await db.delete(printTemplatesTable).where(eq(printTemplatesTable.id, id));
-  res.json({ ok: true });
-});
+router.delete(
+  "/print/templates/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    await db
+      .update(printTemplatesTable)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.id, id),
+        ),
+      );
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_TEMPLATE_DEACTIVATED",
+        resourceType: "print_template",
+        resourceId: String(id),
+        metadata: {},
+      });
+    res.json({ ok: true });
+  },
+);
 
 // ── Jobs ──────────────────────────────────────────────────────────────────
 router.get("/print/jobs", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const status = req.query.status as string | undefined;
-  let q = db.select().from(printJobsTable).orderBy(desc(printJobsTable.createdAt)).limit(200).$dynamic();
-  if (status && status !== "all") {
-    q = q.where(inArray(printJobsTable.status, status.split(",")));
-  }
+  let q = db
+    .select()
+    .from(printJobsTable)
+    .orderBy(desc(printJobsTable.createdAt))
+    .limit(200)
+    .$dynamic();
+  q = q.where(
+    status && status !== "all"
+      ? and(
+          eq(printJobsTable.tenantId, tenantId),
+          inArray(printJobsTable.status, status.split(",")),
+        )
+      : eq(printJobsTable.tenantId, tenantId),
+  );
   const jobs = await q;
   res.json({ jobs });
 });
 
 router.get("/print/jobs/:id", adminOnly, async (req, res): Promise<void> => {
   const id = parseInt(String(req.params.id), 10);
-  const [job] = await db.select().from(printJobsTable)
-    .where(eq(printJobsTable.id, id)).limit(1);
-  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
-  const attempts = await db.select().from(printJobAttemptsTable)
-    .where(eq(printJobAttemptsTable.printJobId, id))
+  const tenantId = requestTenantId(req);
+  const [job] = await db
+    .select()
+    .from(printJobsTable)
+    .where(
+      and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, id)),
+    )
+    .limit(1);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  const attempts = await db
+    .select()
+    .from(printJobAttemptsTable)
+    .where(
+      and(
+        eq(printJobAttemptsTable.tenantId, tenantId),
+        eq(printJobAttemptsTable.printJobId, id),
+      ),
+    )
     .orderBy(printJobAttemptsTable.attemptNumber);
   res.json({ job, attempts });
 });
 
-router.post("/print/jobs/:id/retry", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const [job] = await db.select().from(printJobsTable)
-    .where(eq(printJobsTable.id, id)).limit(1);
-  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
-  if (!job.printerId) { res.status(400).json({ error: "Job has no printer" }); return; }
+router.post(
+  "/print/jobs/:id/retry",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const [job] = await db
+      .select()
+      .from(printJobsTable)
+      .where(
+        and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, id)),
+      )
+      .limit(1);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    if (job.jobType === "thank_you_sticker") {
+      res.status(409).json({ error: "Thank You sticker retries are prohibited; a separately authorized linked replacement job is required" });
+      return;
+    }
+    if (!job.printerId) {
+      res.status(400).json({ error: "Job has no printer" });
+      return;
+    }
 
-  const [printer] = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.id, job.printerId)).limit(1);
-  if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
+    const [printer] = await db
+      .select()
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, job.printerId),
+        ),
+      )
+      .limit(1);
+    if (!printer) {
+      res.status(404).json({ error: "Printer not found" });
+      return;
+    }
 
-  await db.update(printJobsTable)
-    .set({ status: "queued", retryCount: 0, errorMessage: null })
-    .where(eq(printJobsTable.id, id));
+    await db
+      .update(printJobsTable)
+      .set({ status: "queued", retryCount: 0, errorMessage: null })
+      .where(
+        and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, id)),
+      );
 
-  const fresh = { ...job, status: "queued", retryCount: 0, errorMessage: null };
-  dispatchJob(fresh, printer).catch(() => {});
-  res.json({ ok: true });
-});
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_JOB_REPRINT_REQUESTED",
+        resourceType: "print_job",
+        resourceId: String(id),
+        metadata: { printerId: printer.id, originalOrderId: job.orderId },
+      });
 
-router.post("/print/jobs/:id/reprint", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const [job] = await db.select().from(printJobsTable)
-    .where(eq(printJobsTable.id, id)).limit(1);
-  if (!job) { res.status(404).json({ error: "Job not found" }); return; }
-  if (!job.printerId) {
-    res.status(400).json({ error: "Cannot reprint: no printer assigned to this job" }); return;
-  }
+    const fresh = {
+      ...job,
+      status: "queued",
+      retryCount: 0,
+      errorMessage: null,
+    };
+    dispatchJob(fresh, printer).catch(() => {});
+    res.json({ ok: true });
+  },
+);
 
-  const [printer] = await db.select().from(printPrintersTable)
-    .where(eq(printPrintersTable.id, job.printerId)).limit(1);
-  if (!printer) { res.status(404).json({ error: "Printer not found" }); return; }
+router.post(
+  "/print/jobs/:id/reprint",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const [job] = await db
+      .select()
+      .from(printJobsTable)
+      .where(
+        and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, id)),
+      )
+      .limit(1);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    if (job.jobType === "thank_you_sticker") {
+      res.status(409).json({ error: "Thank You sticker reprints require a separately authorized linked replacement job" });
+      return;
+    }
+    if (!job.printerId) {
+      res
+        .status(400)
+        .json({ error: "Cannot reprint: no printer assigned to this job" });
+      return;
+    }
 
-  // Use orderId if present; test jobs have orderId=null so fall back to job id
-  const keyOrderId = job.orderId ?? job.id * -1;
-  const newKey = makeIdempotencyKey(keyOrderId, job.printerId, `${job.jobType}:reprint:${Date.now()}`);
-  const [newJob] = await db.insert(printJobsTable).values({
-    orderId: job.orderId,
-    printerId: job.printerId,
-    jobType: job.jobType,
-    status: "queued",
-    idempotencyKey: newKey,
-    renderFormat: job.renderFormat,
-    payloadJson: job.payloadJson as object,
-    renderedText: job.renderedText,
-    operatorUserId: job.operatorUserId ?? null,
-  }).returning();
+    const [printer] = await db
+      .select()
+      .from(printPrintersTable)
+      .where(
+        and(
+          eq(printPrintersTable.tenantId, tenantId),
+          eq(printPrintersTable.id, job.printerId),
+          eq(printPrintersTable.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!printer) {
+      res.status(404).json({ error: "Printer not found" });
+      return;
+    }
 
-  dispatchJob(newJob, printer).catch(() => {});
-  res.json({ ok: true, jobId: newJob.id });
-});
+    // Use orderId if present; test jobs have orderId=null so fall back to job id
+    const keyOrderId = job.orderId ?? job.id * -1;
+    const newKey = makeIdempotencyKey(
+      keyOrderId,
+      job.printerId,
+      `${job.jobType}:reprint:${Date.now()}`,
+    );
+    const [newJob] = await db
+      .insert(printJobsTable)
+      .values({
+        tenantId,
+        locationId: job.locationId,
+        shiftId: job.shiftId,
+        orderId: job.orderId,
+        printerId: job.printerId,
+        jobType: job.jobType,
+        status: "queued",
+        idempotencyKey: newKey,
+        renderFormat: job.renderFormat,
+        payloadJson: job.payloadJson as object,
+        renderedText: job.renderedText,
+        operatorUserId: job.operatorUserId ?? null,
+      })
+      .returning();
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_JOB_REPRINT_CREATED",
+        resourceType: "print_job",
+        resourceId: String(newJob.id),
+        metadata: {
+          originalJobId: job.id,
+          orderId: job.orderId,
+          printerId: printer.id,
+        },
+      });
+
+    dispatchJob(newJob, printer).catch(() => {});
+    res.json({ ok: true, jobId: newJob.id });
+  },
+);
 
 // ── Settings ──────────────────────────────────────────────────────────────
-router.get("/print/settings", adminOnly, async (_req, res): Promise<void> => {
-  const settings = await getSettings();
-  res.json({ settings });
+// Legacy global presentation settings. Automatic printing is NOT controlled
+// here any more: it is per tenant (/print/controls). The auto-print values in
+// responses mirror the caller's tenant controls, and auto-print fields sent
+// here are ignored so a stale screen can never re-enable printing.
+const AUTO_PRINT_FIELDS = ["autoPrintOrders", "autoPrintReceipts", "autoPrintLabels"] as const;
+
+router.get("/print/settings", adminOnly, async (req, res): Promise<void> => {
+  const [settings, controls] = await Promise.all([getSettings(), getPrintControls(requestTenantId(req))]);
+  res.json({ settings: { ...settings, ...pickAutoPrint(controls) } });
 });
 
+function pickAutoPrint(controls: PrintControls) {
+  return {
+    autoPrintOrders: controls.autoPrintOrders,
+    autoPrintReceipts: controls.autoPrintReceipts,
+    autoPrintLabels: controls.autoPrintLabels,
+  };
+}
+
 router.patch("/print/settings", adminOnly, async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const b = req.body ?? {};
   const updates: Record<string, unknown> = {};
-  if (b.autoPrintOrders !== undefined) updates.autoPrintOrders = Boolean(b.autoPrintOrders);
-  if (b.autoPrintReceipts !== undefined) updates.autoPrintReceipts = Boolean(b.autoPrintReceipts);
-  if (b.autoPrintLabels !== undefined) updates.autoPrintLabels = Boolean(b.autoPrintLabels);
-  if (b.retryBackoffBaseMs !== undefined) updates.retryBackoffBaseMs = Number(b.retryBackoffBaseMs);
-  if (b.staleJobMinutes !== undefined) updates.staleJobMinutes = Number(b.staleJobMinutes);
-  if (b.alertOnLabelFailure !== undefined) updates.alertOnLabelFailure = Boolean(b.alertOnLabelFailure);
+  const ignoredFields = AUTO_PRINT_FIELDS.filter((field) => b[field] !== undefined);
+  if (b.retryBackoffBaseMs !== undefined)
+    updates.retryBackoffBaseMs = Number(b.retryBackoffBaseMs);
+  if (b.staleJobMinutes !== undefined)
+    updates.staleJobMinutes = Number(b.staleJobMinutes);
+  if (b.alertOnLabelFailure !== undefined)
+    updates.alertOnLabelFailure = Boolean(b.alertOnLabelFailure);
   if (b.includeLogo !== undefined) updates.includeLogo = Boolean(b.includeLogo);
-  if (b.includeOperatorName !== undefined) updates.includeOperatorName = Boolean(b.includeOperatorName);
-  if (b.showDiscreetNotice !== undefined) updates.showDiscreetNotice = Boolean(b.showDiscreetNotice);
+  if (b.includeOperatorName !== undefined)
+    updates.includeOperatorName = Boolean(b.includeOperatorName);
+  if (b.showDiscreetNotice !== undefined)
+    updates.showDiscreetNotice = Boolean(b.showDiscreetNotice);
   if (b.paperWidth !== undefined) updates.paperWidth = String(b.paperWidth);
-  if (b.brandName !== undefined) updates.brandName = b.brandName ? String(b.brandName) : null;
-  if (b.footerMessage !== undefined) updates.footerMessage = b.footerMessage ? String(b.footerMessage) : null;
-  if (b.receiptTemplateStyle !== undefined) updates.receiptTemplateStyle = String(b.receiptTemplateStyle || "clean");
-  if (b.labelTemplateStyle !== undefined) updates.labelTemplateStyle = String(b.labelTemplateStyle || "thank_you_personalized");
+  if (b.brandName !== undefined)
+    updates.brandName = b.brandName ? String(b.brandName) : null;
+  if (b.footerMessage !== undefined)
+    updates.footerMessage = b.footerMessage ? String(b.footerMessage) : null;
+  if (b.receiptTemplateStyle !== undefined)
+    updates.receiptTemplateStyle = String(b.receiptTemplateStyle || "clean");
+  if (b.labelTemplateStyle !== undefined)
+    updates.labelTemplateStyle = String(
+      b.labelTemplateStyle || "thank_you_personalized",
+    );
   const settings = await getSettings();
-  const [updated] = await db.update(printSettingsTable)
-    .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
-    .where(eq(printSettingsTable.id, settings.id)).returning();
-  res.json({ settings: updated });
+  const [updated] = Object.keys(updates).length
+    ? await db
+        .update(printSettingsTable)
+        .set(updates as Partial<typeof printSettingsTable.$inferInsert>)
+        .where(eq(printSettingsTable.id, settings.id))
+        .returning()
+    : [settings];
+  const controls = await getPrintControls(tenantId);
+  res.json({ settings: { ...updated, ...pickAutoPrint(controls) }, ignoredFields });
+});
+
+// ── Automatic-print controls (per tenant) ──────────────────────────────────
+const printControlsPatchSchema = z.object({
+  expectedVersion: z.number().int().min(0),
+  autoPrintOrders: z.boolean().optional(),
+  autoPrintReceipts: z.boolean().optional(),
+  autoPrintLabels: z.boolean().optional(),
+}).strict().refine(
+  (body) => AUTO_PRINT_FIELDS.some((field) => body[field] !== undefined),
+  { message: "Change at least one automatic-print flag" },
+);
+
+const controlsActor = (req: Request) => ({
+  id: req.dbUser!.id,
+  email: req.dbUser!.email ?? null,
+  role: req.dbUser!.role,
+});
+
+router.get("/print/controls", adminOnly, async (req, res): Promise<void> => {
+  res.json({ controls: await getPrintControls(requestTenantId(req)) });
+});
+
+router.patch("/print/controls", adminOnly, async (req, res): Promise<void> => {
+  const parsed = printControlsPatchSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid automatic-print change", issues: parsed.error.issues.slice(0, 10) });
+    return;
+  }
+  const { expectedVersion, ...changes } = parsed.data;
+  const result = await updatePrintControls({
+    tenantId: requestTenantId(req),
+    actor: controlsActor(req),
+    expectedVersion,
+    changes,
+  });
+  if (result.status === "conflict") {
+    res.status(409).json({
+      error: "Automatic-print settings changed since you loaded them; nothing was changed. Reload and try again.",
+      controls: result.controls,
+    });
+    return;
+  }
+  res.json({ controls: result.controls });
+});
+
+router.post("/print/controls/pause-all", adminOnly, async (req, res): Promise<void> => {
+  if (Object.keys(req.body ?? {}).length) {
+    res.status(400).json({ error: "Pause all takes no parameters" });
+    return;
+  }
+  const controls = await pauseAllPrintControls({ tenantId: requestTenantId(req), actor: controlsActor(req) });
+  res.json({ controls });
 });
 
 // ── Print Previews ─────────────────────────────────────────────────────────
 // Returns rendered plain-text for browser preview and test-dispatch review.
 
-router.post("/print/preview/receipt", adminOnly, async (req, res): Promise<void> => {
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth(s.paperWidth as string ?? "80mm");
-  const dualBrandName = s.brandName as string | undefined;
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-  const receiptTemplateStyle = (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ?? "clean";
-  const body = req.body ?? {};
-  const blocks = buildCustomerReceiptBlocks({
-    orderId: body.orderId ?? 0,
-    orderNumber: body.orderNumber ?? "PREVIEW",
-    createdAt: body.createdAt ?? new Date(),
-    customerName: body.customerName ?? "Preview Customer",
-    fulfillmentType: body.fulfillmentType ?? "Pickup",
-    operatorName: body.operatorName,
-    paymentStatus: body.paymentStatus ?? "paid",
-    paymentMethod: body.paymentMethod ?? "Cash",
-    notes: body.notes,
-    items: body.items ?? [
-      { name: "Blue Dream 3.5g",    quantity: 1, unitPrice: 45.00, totalPrice: 45.00 },
-      { name: "House Special",      quantity: 2, unitPrice: 30.00, totalPrice: 60.00, notes: "Extra discreet packaging" },
-    ],
-    subtotal: body.subtotal ?? 105.00,
-    tax: body.tax ?? 0,
-    total: body.total ?? 105.00,
-    logoLines,
-    dualBrandName,
-    footerMessage: s.footerMessage as string | undefined,
-    showDiscreetNotice: Boolean(s.showDiscreetNotice),
-    showOperatorName: s.includeOperatorName !== false,
-    receiptTemplateStyle,
-  });
-  res.type("text/plain").send(renderBlocks(blocks, width));
-});
+// Preview renders fixed synthetic sample data through the same pipeline as
+// real receipts. It never reads a real order and never prints.
+const PREVIEW_BODY_KEYS = new Set(["templateId", "templateJson", "paperWidth"]);
+router.post(
+  "/print/preview/receipt",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const tenantId = requestTenantId(req);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (Object.keys(body).some((key) => !PREVIEW_BODY_KEYS.has(key))) {
+      res.status(400).json({
+        error: "Preview uses fixed sample data; only templateId, templateJson or paperWidth may be supplied",
+      });
+      return;
+    }
+    let template: ReceiptTemplateRecord | null;
+    if (body.templateJson !== undefined) {
+      const parsed = receiptTemplateLayoutSchema.safeParse(body.templateJson);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid receipt template", issues: parsed.error.issues.slice(0, 20) });
+        return;
+      }
+      const paperWidth = body.paperWidth === "58mm" ? "58mm" : "80mm";
+      template = { id: 0, version: 0, paperWidth, layout: parsed.data };
+    } else if (body.templateId !== undefined) {
+      const id = Number(body.templateId);
+      if (!Number.isInteger(id) || id <= 0) {
+        res.status(400).json({ error: "templateId must be a positive integer" });
+        return;
+      }
+      const [row] = await db
+        .select({
+          id: printTemplatesTable.id,
+          version: printTemplatesTable.version,
+          paperWidth: printTemplatesTable.paperWidth,
+          layout: printTemplatesTable.templateJson,
+        })
+        .from(printTemplatesTable)
+        .where(and(
+          eq(printTemplatesTable.tenantId, tenantId),
+          eq(printTemplatesTable.id, id),
+          eq(printTemplatesTable.jobType, "receipt"),
+        ))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: "Receipt template not found" });
+        return;
+      }
+      template = row;
+    } else {
+      template = await resolveTenantReceiptTemplate(tenantId);
+    }
+    const preview = renderReceiptPreview(
+      SAMPLE_RECEIPT_DATA,
+      template,
+      await loadLegacyReceiptPresentation(tenantId),
+    );
+    res.set("X-Receipt-Source", preview.source);
+    if (preview.fallbackReason) res.set("X-Receipt-Fallback-Reason", preview.fallbackReason);
+    if (preview.skipped.length) {
+      res.set("X-Receipt-Skipped", preview.skipped.map((block) => `${block.field}:${block.reason}`).join(","));
+    }
+    res.type("text/plain").send(preview.text);
+  },
+);
 
-router.post("/print/preview/inventory-start", adminOnly, async (req, res): Promise<void> => {
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth(s.paperWidth as string ?? "80mm");
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-  const body = req.body ?? {};
-  const blocks = buildInventoryStartBlocks({
-    shiftId: body.shiftId ?? "PREVIEW",
-    operatorName: body.operatorName ?? "Preview Operator",
-    clockedInAt: body.clockedInAt ?? new Date(),
-    tenantName: body.tenantName,
-    items: body.items ?? [
-      { rowType: "section", sectionName: "Sample Section", itemName: "Sample Section", unitType: "#", quantityStart: 0 },
-      { rowType: "item", itemName: "Sample Item", unitType: "#", quantityStart: 10 },
-    ],
-    logoLines,
-    footerMessage: s.footerMessage as string | undefined,
-  });
-  res.type("text/plain").send(renderBlocks(blocks, width));
-});
+router.post(
+  "/print/preview/inventory-start",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const settings = await getSettings();
+    const s = settings as Record<string, unknown>;
+    const width = charWidth((s.paperWidth as string) ?? "80mm");
+    const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+    const body = req.body ?? {};
+    const blocks = buildInventoryStartBlocks({
+      shiftId: body.shiftId ?? "PREVIEW",
+      operatorName: body.operatorName ?? "Preview Operator",
+      clockedInAt: body.clockedInAt ?? new Date(),
+      tenantName: body.tenantName,
+      items: body.items ?? [
+        {
+          rowType: "section",
+          sectionName: "Sample Section",
+          itemName: "Sample Section",
+          unitType: "#",
+          quantityStart: 0,
+        },
+        {
+          rowType: "item",
+          itemName: "Sample Item",
+          unitType: "#",
+          quantityStart: 10,
+        },
+      ],
+      logoLines,
+      footerMessage: s.footerMessage as string | undefined,
+    });
+    res.type("text/plain").send(renderBlocks(blocks, width));
+  },
+);
 
-router.post("/print/preview/inventory-end", adminOnly, async (req, res): Promise<void> => {
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth(s.paperWidth as string ?? "80mm");
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-  const body = req.body ?? {};
-  const blocks = buildInventoryEndBlocks({
-    shiftId: body.shiftId ?? "PREVIEW",
-    operatorName: body.operatorName ?? "Preview Operator",
-    clockedInAt: body.clockedInAt ?? new Date(Date.now() - 3600000),
-    clockedOutAt: body.clockedOutAt ?? new Date(),
-    tenantName: body.tenantName,
-    items: body.items ?? [
-      { rowType: "section", sectionName: "Sample Section", itemName: "Sample Section", unitType: "#", quantityStart: 0, quantitySold: 0, quantityEnd: 0 },
-      { rowType: "item", itemName: "Sample Item", unitType: "#", quantityStart: 10, quantitySold: 3, quantityEnd: 7 },
-    ],
-    totalSales: body.totalSales,
-    pettyCash: body.pettyCash,
-    notes: body.notes,
-    logoLines,
-    footerMessage: (settings as Record<string, unknown>).footerMessage as string | undefined,
-  });
-  res.type("text/plain").send(renderBlocks(blocks, width));
-});
+router.post(
+  "/print/preview/inventory-end",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const settings = await getSettings();
+    const s = settings as Record<string, unknown>;
+    const width = charWidth((s.paperWidth as string) ?? "80mm");
+    const logoLines = s.includeLogo !== false ? getLogo(width) : [];
+    const body = req.body ?? {};
+    const blocks = buildInventoryEndBlocks({
+      shiftId: body.shiftId ?? "PREVIEW",
+      operatorName: body.operatorName ?? "Preview Operator",
+      clockedInAt: body.clockedInAt ?? new Date(Date.now() - 3600000),
+      clockedOutAt: body.clockedOutAt ?? new Date(),
+      tenantName: body.tenantName,
+      items: body.items ?? [
+        {
+          rowType: "section",
+          sectionName: "Sample Section",
+          itemName: "Sample Section",
+          unitType: "#",
+          quantityStart: 0,
+          quantitySold: 0,
+          quantityEnd: 0,
+        },
+        {
+          rowType: "item",
+          itemName: "Sample Item",
+          unitType: "#",
+          quantityStart: 10,
+          quantitySold: 3,
+          quantityEnd: 7,
+        },
+      ],
+      totalSales: body.totalSales,
+      pettyCash: body.pettyCash,
+      notes: body.notes,
+      logoLines,
+      footerMessage: (settings as Record<string, unknown>).footerMessage as
+        | string
+        | undefined,
+    });
+    res.type("text/plain").send(renderBlocks(blocks, width));
+  },
+);
 
-router.post("/print/preview/label", adminOnly, async (req, res): Promise<void> => {
-  const settings = await getSettings();
-  const width = charWidth((settings as Record<string, unknown>).paperWidth as string ?? "80mm");
-  const body = req.body ?? {};
-  const blocks = buildLabelBlocks({
-    title: body.title ?? "PRODUCT LABEL",
-    line1: body.line1 ?? "Sample Product",
-    line2: body.line2,
-    line3: body.line3,
-    barcode: body.barcode,
-    footer: body.footer,
-  });
-  res.type("text/plain").send(renderBlocks(blocks, width));
-});
+router.post(
+  "/print/preview/label",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const settings = await getSettings();
+    const width = charWidth(
+      ((settings as Record<string, unknown>).paperWidth as string) ?? "80mm",
+    );
+    const body = req.body ?? {};
+    const blocks = buildLabelBlocks({
+      title: body.title ?? "PRODUCT LABEL",
+      line1: body.line1 ?? "Sample Product",
+      line2: body.line2,
+      line3: body.line3,
+      barcode: body.barcode,
+      footer: body.footer,
+    });
+    res.type("text/plain").send(renderBlocks(blocks, width));
+  },
+);
 
 // ── Thank You Label (PNG image) ────────────────────────────────────────────
 // GET  /api/print/preview/thank-you-label?name=<firstName>
@@ -548,97 +1912,137 @@ router.post("/print/preview/label", adminOnly, async (req, res): Promise<void> =
 //   Body: { firstName, copies? }
 //   Generates label, dispatches to the label printer, returns job info.
 
-router.get("/print/preview/thank-you-label", adminOnly, async (req, res): Promise<void> => {
-  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
-  const firstName = String(req.query.name ?? "Friend");
-  try {
-    const buf = await generateThankYouLabel(firstName);
-    res.type("image/png").send(buf);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
-  }
-});
+router.get(
+  "/print/preview/thank-you-label",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const { generateThankYouLabel, resolveLabelFirstName } =
+      await import("../lib/print/templates/thankYouLabel.js");
+    const firstName = resolveLabelFirstName({
+      canonicalFirstName: String(req.query.name ?? ""),
+    });
+    try {
+      const buf = await generateThankYouLabel(firstName);
+      res.type("image/png").send(buf);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  },
+);
 
-router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void> => {
-  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
-  const b = req.body ?? {};
-  const firstName = String(b.firstName ?? "Friend").trim().slice(0, 20) || "Friend";
-  const copies    = Math.min(5, Math.max(1, parseInt(String(b.copies ?? 1), 10)));
+router.post(
+  "/print/label/thank-you",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const tenantId = requestTenantId(req);
+    const { generateThankYouLabel, resolveLabelFirstName } =
+      await import("../lib/print/templates/thankYouLabel.js");
+    const b = req.body ?? {};
+    const firstName = resolveLabelFirstName({
+      canonicalFirstName: String(b.firstName ?? ""),
+    });
+    const copies = Math.min(
+      5,
+      Math.max(1, parseInt(String(b.copies ?? 1), 10)),
+    );
 
-  // Resolve label printer
-  const operator   = await selectActiveOperator();
-  const labelPrinter = await resolveLabelPrinter(operator?.profile ?? null);
-  if (!labelPrinter) {
-    res.status(503).json({ error: "No label printer configured" });
-    return;
-  }
+    const operator = await selectActiveOperator(tenantId);
+    const { resolveThankYouStickerRouting } =
+      await import("../lib/printRoutingResolver.js");
+    const routing = await resolveThankYouStickerRouting({
+      id: 0,
+      tenantId,
+      locationId: operator?.locationId ?? null,
+    });
+    const labelPrinter = routing.eligible ? routing.selectedPrinter : null;
+    if (!labelPrinter) {
+      res.status(503).json({ error: routing.blockedReason ?? "No Thank You printer configured" });
+      return;
+    }
 
-  // Generate PNG
-  let pngBuf: Buffer;
-  try {
-    pngBuf = await generateThankYouLabel(firstName);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Image generation failed: ${msg}` });
-    return;
-  }
+    // Generate PNG
+    let pngBuf: Buffer;
+    try {
+      pngBuf = await generateThankYouLabel(firstName);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Image generation failed: ${msg}` });
+      return;
+    }
 
-  const iKey = `thank-you-label:${firstName}:${Date.now()}`;
-  const [job] = await db.insert(printJobsTable).values({
-    orderId: null,
-    printerId: labelPrinter.id,
-    jobType: "label",
-    status: "queued",
-    idempotencyKey: iKey,
-    renderFormat: "png",
-    payloadJson: {
-      labelType: "thank-you",
-      customerFirstName: firstName,
-      imageData: pngBuf.toString("base64"),
-    },
-    renderedText: `Thank You label — ${firstName}`,
-  }).returning();
-
-  // Dispatch and await result
-  await dispatchJob(job, labelPrinter).catch(() => {});
-
-  const [finalJob] = await db.select().from(printJobsTable)
-    .where(eq(printJobsTable.id, job.id)).limit(1);
-
-  if (copies > 1) {
-    // Additional copies: fire-and-forget
-    for (let i = 1; i < copies; i++) {
-      const extraKey = `thank-you-label:${firstName}:${Date.now()}:copy${i}`;
-      const [extraJob] = await db.insert(printJobsTable).values({
+    const iKey = `thank-you-label:${firstName}:${Date.now()}`;
+    const [job] = await db
+      .insert(printJobsTable)
+      .values({
+        tenantId,
+        locationId: operator?.locationId ?? null,
+        shiftId: operator?.shiftId ?? null,
         orderId: null,
         printerId: labelPrinter.id,
         jobType: "label",
         status: "queued",
-        idempotencyKey: extraKey,
+        idempotencyKey: iKey,
         renderFormat: "png",
         payloadJson: {
           labelType: "thank-you",
           customerFirstName: firstName,
           imageData: pngBuf.toString("base64"),
         },
-        renderedText: `Thank You label — ${firstName} (copy ${i + 1})`,
-      }).returning();
-      dispatchJob(extraJob, labelPrinter).catch(() => {});
-    }
-  }
+        renderedText: `Thank You label — ${firstName}`,
+      })
+      .returning();
 
-  res.json({
-    ok: finalJob?.status === "printed",
-    jobId: job.id,
-    status: finalJob?.status ?? "unknown",
-    firstName,
-    printerName: labelPrinter.name,
-    error: finalJob?.status === "printed"
-      ? undefined
-      : (finalJob?.errorMessage ?? "Job did not complete"),
-  });
-});
+    // Dispatch and await result
+    await dispatchJob(job, labelPrinter).catch(() => {});
+
+    const [finalJob] = await db
+      .select()
+      .from(printJobsTable)
+      .where(eq(printJobsTable.id, job.id))
+      .limit(1);
+
+    if (copies > 1) {
+      // Additional copies: fire-and-forget
+      for (let i = 1; i < copies; i++) {
+        const extraKey = `thank-you-label:${firstName}:${Date.now()}:copy${i}`;
+        const [extraJob] = await db
+          .insert(printJobsTable)
+          .values({
+            tenantId,
+            locationId: operator?.locationId ?? null,
+            shiftId: operator?.shiftId ?? null,
+            orderId: null,
+            printerId: labelPrinter.id,
+            jobType: "label",
+            status: "queued",
+            idempotencyKey: extraKey,
+            renderFormat: "png",
+            payloadJson: {
+              labelType: "thank-you",
+              customerFirstName: firstName,
+              imageData: pngBuf.toString("base64"),
+            },
+            renderedText: `Thank You label — ${firstName} (copy ${i + 1})`,
+          })
+          .returning();
+        dispatchJob(extraJob, labelPrinter).catch(() => {});
+      }
+    }
+
+    res.json({
+      ok: finalJob?.status === "printed",
+      jobId: job.id,
+      status: finalJob?.status ?? "unknown",
+      firstName,
+      printerName: labelPrinter.name,
+      error:
+        finalJob?.status === "printed"
+          ? undefined
+          : (finalJob?.errorMessage ?? "Job did not complete"),
+    });
+  },
+);
 
 // ── Per-order print triggers (any approved user) ──────────────────────────
 // Called from the staff CSR queue when a rep manually hits "Print Receipt"
@@ -647,89 +2051,90 @@ router.post("/print/label/thank-you", adminOnly, async (req, res): Promise<void>
 
 /** POST /api/print/orders/:id/receipt — reprint/trigger receipt for an order */
 router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const orderId = parseInt(String(req.params.id), 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
-  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-
-  const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, orderId));
-
-  const [customer] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
-    .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
-  const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "";
-
-  const operator = await selectActiveOperator();
-  const { primary: receiptPrinter } = await resolveReceiptPrinters(operator?.profile ?? null);
-  if (!receiptPrinter) {
-    res.status(503).json({ error: "No receipt printer configured or available" });
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid order id" });
     return;
   }
 
-  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
-  try {
-    const [adminSettings] = await db.select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
-      .from(adminSettingsTable).limit(1);
-    if (adminSettings?.receiptLineNameMode) {
-      receiptLineNameMode = adminSettings.receiptLineNameMode as typeof receiptLineNameMode;
-    }
-  } catch { /* non-critical */ }
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId)))
+    .limit(1);
+  if (!order) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
 
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth(s.paperWidth as string ?? "80mm");
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-  const operatorName = operator
-    ? (`${operator.firstName ?? ""} ${operator.lastName ?? ""}`).trim() || operator.email || undefined
-    : undefined;
-
-  const printOrder = {
-    id: order.id,
-    customerName,
-    notes: order.notes ?? undefined,
-    receiptLineNameMode,
-    items: items.map(i => ({
-      quantity: i.quantity,
-      name: i.catalogItemName,
-      alavontName: i.alavontName ?? i.catalogItemName,
-      luciferCruzName: i.luciferCruzName ?? i.catalogItemName,
-      unitPrice: parseFloat(i.unitPrice as string),
-      totalPrice: parseFloat(i.totalPrice as string),
-    })),
-    subtotal: parseFloat(order.subtotal as string),
-    tax: parseFloat((order.tax as string) ?? "0"),
-    total: parseFloat(order.total as string),
-    paymentStatus: order.paymentStatus,
-    createdAt: order.createdAt,
-    logoLines,
-    dualBrandName: s.brandName as string | undefined,
-    footerMessage: s.footerMessage as string | undefined,
-    showDiscreetNotice: Boolean(s.showDiscreetNotice),
-    showOperatorName: s.includeOperatorName !== false,
-    operatorName,
-    receiptTemplateStyle: (s.receiptTemplateStyle as "clean" | "classic" | "compact" | undefined) ?? "clean",
+  const operator = await selectActiveOperator(tenantId);
+  const [assignment] = order.assignedShiftId
+    ? await db
+        .select()
+        .from(shiftPrintAssignmentsTable)
+        .where(
+          and(
+            eq(shiftPrintAssignmentsTable.tenantId, tenantId),
+            eq(shiftPrintAssignmentsTable.shiftId, order.assignedShiftId),
+          ),
+        )
+        .limit(1)
+    : [];
+  const routeContext = {
+    tenantId,
+    locationId: assignment?.locationId ?? null,
+    shiftId: order.assignedShiftId ?? null,
   };
-
-  const { renderCustomerReceipt } = await import("../lib/receiptRenderer.js");
-  const renderedText = renderCustomerReceipt(printOrder);
-
-  // Always create a fresh job for reprints (unique key per timestamp)
-  const iKey = makeIdempotencyKey(orderId, receiptPrinter.id, `receipt:reprint:${Date.now()}`);
-  const [job] = await db.insert(printJobsTable).values({
+  // Same routing and receipt pipeline as automatic receipts; a fresh job per reprint.
+  const result = await queueDocumentPrint({
+    tenantId,
+    locationId: routeContext.locationId ?? (routeContext.shiftId ? await shiftLocationId(tenantId, routeContext.shiftId) : null),
+    shiftId: routeContext.shiftId,
     orderId,
-    printerId: receiptPrinter.id,
-    jobType: "receipt",
-    status: "queued",
-    idempotencyKey: iKey,
-    renderFormat: "text",
-    payloadJson: printOrder as object,
-    renderedText,
     operatorUserId: operator?.userId ?? null,
-  }).returning();
+    documentType: "ORDER_RECEIPT",
+    jobType: "receipt",
+    idempotencyKey: `order_receipt_reprint:${tenantId}:${orderId}:${req.dbUser!.id}:${Date.now()}`,
+    render: {
+      kind: "thermal-text",
+      text: async (_printer, columns) => {
+        const rendered = await renderOrderReceipt(tenantId, orderId, columns);
+        if (!rendered) throw new Error("Order not found");
+        return rendered.receipt;
+      },
+    },
+    metadata: { orderId, reprint: true },
+    legacyFallback: async () => (await resolveReceiptPrinters(operator?.profile ?? null, routeContext)).primary,
+    recordNoRoute: false,
+  });
+  if (result.status !== "queued") {
+    res.status(503).json({ error: result.status === "no-route" ? result.reason : "Duplicate reprint request" });
+    return;
+  }
+  const { job, printer: receiptPrinter } = result;
+  await db
+    .insert(auditLogsTable)
+    .values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "ORDER_RECEIPT_REPRINTED",
+      resourceType: "print_job",
+      resourceId: String(job.id),
+      metadata: { orderId, printerId: receiptPrinter.id, routeSource: result.source },
+    });
 
   await dispatchReceiptJob(job, receiptPrinter).catch(() => {});
 
-  const [finalJob] = await db.select().from(printJobsTable).where(eq(printJobsTable.id, job.id)).limit(1);
+  const [finalJob] = await db
+    .select()
+    .from(printJobsTable)
+    .where(
+      and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, job.id)),
+    )
+    .limit(1);
   const ok = finalJob?.status === "printed";
 
   res.json({
@@ -737,58 +2142,113 @@ router.post("/print/orders/:id/receipt", async (req, res): Promise<void> => {
     jobId: job.id,
     status: finalJob?.status ?? "unknown",
     printerName: receiptPrinter.name,
-    error: ok ? undefined : (finalJob?.errorMessage ?? "Receipt print did not complete"),
+    error: ok
+      ? undefined
+      : (finalJob?.errorMessage ?? "Receipt print did not complete"),
   });
 });
 
 /** POST /api/print/orders/:id/label — print delivery label with customer name */
 router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
+  const tenantId = requestTenantId(req);
   const orderId = parseInt(String(req.params.id), 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
-  if (!order) { res.status(404).json({ error: "Order not found" }); return; }
-
-  const [customer] = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
-    .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
-  const customerName = customer ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() : "Customer";
-  const firstName = customer?.firstName?.trim() || customerName;
-
-  const operator = await selectActiveOperator();
-  const labelPrinter = await resolveLabelPrinter(operator?.profile ?? null);
-  if (!labelPrinter) {
-    res.status(503).json({ error: "No label printer configured" });
+  if (isNaN(orderId)) {
+    res.status(400).json({ error: "Invalid order id" });
     return;
   }
 
-  const { generateThankYouLabel } = await import("../lib/print/templates/thankYouLabel.js");
+  const [order] = await db
+    .select()
+    .from(ordersTable)
+    .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId)))
+    .limit(1);
+  if (!order) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+
+  const [customer] = await db
+    .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
+    .from(usersTable)
+    .where(eq(usersTable.id, order.customerId))
+    .limit(1);
+  const customerName = customer
+    ? `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim()
+    : "Customer";
+  const { generateThankYouLabel, resolveLabelFirstName } =
+    await import("../lib/print/templates/thankYouLabel.js");
+  const firstName = resolveLabelFirstName({
+    canonicalFirstName: customer?.firstName,
+    validatedFullName: customerName,
+  });
+
+  const operator = await selectActiveOperator(tenantId);
+  const { resolveThankYouStickerRouting } =
+    await import("../lib/printRoutingResolver.js");
+  const routing = await resolveThankYouStickerRouting({
+    id: orderId,
+    tenantId,
+    locationId: operator?.locationId ?? null,
+  });
+  const labelPrinter = routing.eligible ? routing.selectedPrinter : null;
+  if (!labelPrinter) {
+    res.status(503).json({ error: routing.blockedReason ?? "No Thank You printer configured" });
+    return;
+  }
+
   const png = await generateThankYouLabel(firstName);
   const renderedText = `Thank you label for ${firstName} — Order #${orderId}`;
 
-  const iKey = makeIdempotencyKey(orderId, labelPrinter.id, `label:reprint:${Date.now()}`);
-  const [job] = await db.insert(printJobsTable).values({
+  const iKey = makeIdempotencyKey(
     orderId,
-    printerId: labelPrinter.id,
-    jobType: "label",
-    status: "queued",
-    idempotencyKey: iKey,
-    renderFormat: "png",
-    payloadJson: {
+    labelPrinter.id,
+    `label:reprint:${Date.now()}`,
+  );
+  const [job] = await db
+    .insert(printJobsTable)
+    .values({
+      tenantId,
+      locationId: operator?.locationId ?? null,
+      shiftId: operator?.shiftId ?? null,
       orderId,
-      customerName,
-      firstName,
-      shippingAddress: order.shippingAddress ?? null,
-      labelType: "thank-you",
-      template: "thank_you_personalized",
-      imageData: png.toString("base64"),
-    },
-    renderedText,
-    operatorUserId: operator?.userId ?? null,
-  }).returning();
+      printerId: labelPrinter.id,
+      jobType: "label",
+      status: "queued",
+      idempotencyKey: iKey,
+      renderFormat: "png",
+      payloadJson: {
+        orderId,
+        customerName,
+        firstName,
+        shippingAddress: order.shippingAddress ?? null,
+        labelType: "thank-you",
+        template: "thank_you_personalized",
+        imageData: png.toString("base64"),
+      },
+      renderedText,
+      operatorUserId: operator?.userId ?? null,
+    })
+    .returning();
+  await db
+    .insert(auditLogsTable)
+    .values({
+      tenantId,
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email ?? "",
+      actorRole: req.dbUser!.role,
+      action: "ORDER_LABEL_REPRINTED",
+      resourceType: "print_job",
+      resourceId: String(job.id),
+      metadata: { orderId, printerId: labelPrinter.id },
+    });
 
   await dispatchLabelJob(job, labelPrinter).catch(() => {});
 
-  const [finalJob] = await db.select().from(printJobsTable).where(eq(printJobsTable.id, job.id)).limit(1);
+  const [finalJob] = await db
+    .select()
+    .from(printJobsTable)
+    .where(eq(printJobsTable.id, job.id))
+    .limit(1);
   const ok = finalJob?.status === "printed";
 
   res.json({
@@ -797,7 +2257,9 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
     status: finalJob?.status ?? "unknown",
     printerName: labelPrinter.name,
     customerName,
-    error: ok ? undefined : (finalJob?.errorMessage ?? "Label print did not complete"),
+    error: ok
+      ? undefined
+      : (finalJob?.errorMessage ?? "Label print did not complete"),
   });
 });
 
@@ -806,320 +2268,657 @@ router.post("/print/orders/:id/label", async (req, res): Promise<void> => {
 // the bridge's own printer list — without going through a print job.
 
 /** GET /api/print/bridge/health?printerId=<id>  — or defaults to first active bridge printer */
-router.get("/print/bridge/health", adminOnly, async (req, res): Promise<void> => {
-  const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
-  const printerRows = pid
-    ? await db.select().from(printPrintersTable).where(eq(printPrintersTable.id, pid)).limit(1)
-    : await db.select().from(printPrintersTable).where(eq(printPrintersTable.isActive, true)).limit(1);
-  const printer: typeof printPrintersTable.$inferSelect | null = printerRows[0] ?? null;
+router.get(
+  "/print/bridge/health",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const pid = req.query.printerId
+      ? parseInt(String(req.query.printerId), 10)
+      : null;
+    const tenantId = requestTenantId(req);
+    if (!pid) {
+      res
+        .status(400)
+        .json({ error: "An explicitly registered printerId is required" });
+      return;
+    }
+    const printerRows = pid
+      ? await db
+          .select()
+          .from(printPrintersTable)
+          .where(
+            and(
+              eq(printPrintersTable.tenantId, tenantId),
+              eq(printPrintersTable.id, pid),
+              eq(printPrintersTable.isActive, true),
+            ),
+          )
+          .limit(1)
+      : [];
+    const printer: typeof printPrintersTable.$inferSelect | null =
+      printerRows[0] ?? null;
 
-  if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
+    if (!printer) {
+      res.status(404).json({ error: "No printer found" });
+      return;
+    }
 
-  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
-  const bridgeUrl = printer.bridgeUrl;
-  const TIMEOUT_MS = 5000;
+    const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+    const bridgeUrl = printer.bridgeUrl;
+    const TIMEOUT_MS = 5000;
 
-  if (!bridgeUrl) { res.json({ ok: false, error: "Bridge URL not set on this printer" }); return; }
-  if (!apiKey)    { res.json({ ok: false, error: "API key not set on this printer" }); return; }
+    if (!bridgeUrl) {
+      res.json({ ok: false, error: "Bridge URL not set on this printer" });
+      return;
+    }
+    if (!apiKey) {
+      res.json({ ok: false, error: "API key not set on this printer" });
+      return;
+    }
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const r = await fetch(`${bridgeUrl}/health`, {
-      headers: { "x-api-key": apiKey },
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const r = await fetch(`${bridgeUrl}/health`, {
+        headers: { "x-api-key": apiKey },
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
 
-    let body: unknown;
-    try { body = await r.json(); } catch { body = null; }
+      let body: unknown;
+      try {
+        body = await r.json();
+      } catch {
+        body = null;
+      }
 
-    res.json({
-      ok: r.ok && (body as { status?: string })?.status === "ok",
-      httpStatus: r.status,
-      bridgeUrl,
-      printerName: printer.bridgePrinterName ?? printer.name,
-      hasApiKey: Boolean(apiKey),
-      body,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const isTimeout = msg.includes("AbortError") || (err instanceof Error && err.name === "AbortError");
-    res.json({
-      ok: false,
-      bridgeUrl,
-      hasApiKey: Boolean(apiKey),
-      error: isTimeout
-        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable (check Tailscale connection)`
-        : `Connection failed: ${msg}`,
-    });
-  }
-});
+      res.json({
+        ok: r.ok && (body as { status?: string })?.status === "ok",
+        httpStatus: r.status,
+        bridgeUrl,
+        printerName: printer.bridgePrinterName ?? printer.name,
+        hasApiKey: Boolean(apiKey),
+        body,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTimeout =
+        msg.includes("AbortError") ||
+        (err instanceof Error && err.name === "AbortError");
+      res.json({
+        ok: false,
+        bridgeUrl,
+        hasApiKey: Boolean(apiKey),
+        error: isTimeout
+          ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable (check Tailscale connection)`
+          : `Connection failed: ${msg}`,
+      });
+    }
+  },
+);
 
 /** GET /api/print/bridge/printers?printerId=<id>  — list bridge's known printer queues */
-router.get("/print/bridge/printers", adminOnly, async (req, res): Promise<void> => {
-  const pid = req.query.printerId ? parseInt(String(req.query.printerId), 10) : null;
-  const printerRows = pid
-    ? await db.select().from(printPrintersTable).where(eq(printPrintersTable.id, pid)).limit(1)
-    : await db.select().from(printPrintersTable).where(eq(printPrintersTable.isActive, true)).limit(1);
-  const printer: typeof printPrintersTable.$inferSelect | null = printerRows[0] ?? null;
+router.get(
+  "/print/bridge/printers",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    res
+      .status(410)
+      .json({
+        error:
+          "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
+      });
+    return;
+    const pid = req.query.printerId
+      ? parseInt(String(req.query.printerId), 10)
+      : null;
+    const printerRows =
+      pid != null
+        ? await db
+            .select()
+            .from(printPrintersTable)
+            .where(eq(printPrintersTable.id, Number(pid)))
+            .limit(1)
+        : await db
+            .select()
+            .from(printPrintersTable)
+            .where(eq(printPrintersTable.isActive, true))
+            .limit(1);
+    const printer = printerRows[0];
 
-  if (!printer) { res.status(404).json({ error: "No printer found" }); return; }
+    if (!printer) {
+      res.status(404).json({ error: "No printer found" });
+      return;
+    }
 
-  const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
-  const bridgeUrl = printer.bridgeUrl;
-  const TIMEOUT_MS = 5000;
+    const apiKey = printer.apiKey ?? process.env.PRINT_BRIDGE_API_KEY ?? "";
+    const bridgeUrl = printer.bridgeUrl;
+    const TIMEOUT_MS = 5000;
 
-  if (!bridgeUrl) { res.json({ ok: false, error: "Bridge URL not set on this printer" }); return; }
+    if (!bridgeUrl) {
+      res.json({ ok: false, error: "Bridge URL not set on this printer" });
+      return;
+    }
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const r = await fetch(`${bridgeUrl}/printers`, {
-      headers: apiKey ? { "x-api-key": apiKey } : {},
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const r = await fetch(`${bridgeUrl}/printers`, {
+        headers: apiKey ? { "x-api-key": apiKey } : {},
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
 
-    let body: unknown;
-    try { body = await r.json(); } catch { body = null; }
-    res.json({ ok: r.ok, httpStatus: r.status, bridgeUrl, body });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const isTimeout = err instanceof Error && err.name === "AbortError";
-    res.json({
-      ok: false,
-      bridgeUrl,
-      error: isTimeout
-        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
-        : `Connection failed: ${msg}`,
-    });
-  }
-});
+      let body: unknown;
+      try {
+        body = await r.json();
+      } catch {
+        body = null;
+      }
+      res.json({ ok: r.ok, httpStatus: r.status, bridgeUrl, body });
+    } catch (err) {
+      const msg = String(err);
+      const isTimeout = String(err).includes("AbortError");
+      res.json({
+        ok: false,
+        bridgeUrl,
+        error: isTimeout
+          ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
+          : `Connection failed: ${msg}`,
+      });
+    }
+  },
+);
 
 // ── Bridge Profiles CRUD ──────────────────────────────────────────────────────
 
 /** GET /api/print/bridge-profiles — list all bridge profiles */
-router.get("/print/bridge-profiles", adminOnly, async (_req, res): Promise<void> => {
-  const profiles = await db.select().from(printBridgeProfilesTable).orderBy(printBridgeProfilesTable.priority);
-  res.json(profiles);
-});
+router.get(
+  "/print/bridge-profiles",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const profiles = await db
+      .select({
+        id: printBridgeProfilesTable.id,
+        locationId: printBridgeProfilesTable.locationId,
+        routingScope: printBridgeProfilesTable.routingScope,
+        name: printBridgeProfilesTable.name,
+        bridgeType: printBridgeProfilesTable.bridgeType,
+        isActive: printBridgeProfilesTable.isActive,
+        priority: printBridgeProfilesTable.priority,
+        supportedRoles: printBridgeProfilesTable.supportedRoles,
+      })
+      .from(printBridgeProfilesTable)
+      .where(eq(printBridgeProfilesTable.tenantId, requestTenantId(req)))
+      .orderBy(printBridgeProfilesTable.priority);
+    res.json(profiles);
+  },
+);
 
 /** POST /api/print/bridge-profiles — create a bridge profile */
-router.post("/print/bridge-profiles", adminOnly, async (req, res): Promise<void> => {
-  const b = req.body ?? {};
-  if (!b.name || !b.bridgeUrl) { res.status(400).json({ error: "name and bridgeUrl are required" }); return; }
-  const [row] = await db.insert(printBridgeProfilesTable).values({
-    name: String(b.name),
-    bridgeType: String(b.bridgeType ?? "generic"),
-    bridgeUrl: String(b.bridgeUrl),
-    apiKey: String(b.apiKey ?? ""),
-    isActive: b.isActive !== false,
-    priority: Number(b.priority ?? 10),
-    networkSubnetHint: b.networkSubnetHint ? String(b.networkSubnetHint) : null,
-    supportedRoles: String(b.supportedRoles ?? "both"),
-    notes: b.notes ? String(b.notes) : null,
-  }).returning();
-  res.status(201).json(row);
-});
+router.post(
+  "/print/bridge-profiles",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const b = req.body ?? {};
+    const tenantId = requestTenantId(req);
+    if (!b.name || !b.bridgeUrl) {
+      res.status(400).json({ error: "name and bridgeUrl are required" });
+      return;
+    }
+    if (!isHttpBridgeUrl(b.bridgeUrl)) {
+      res.status(400).json({ error: "bridgeUrl must be an http(s) URL" });
+      return;
+    }
+    if (!isValidBridgeKey(b.apiKey)) {
+      res.status(400).json({ error: BRIDGE_KEY_ERROR });
+      return;
+    }
+    const locationId = b.locationId ? Number(b.locationId) : null;
+    if (locationId) {
+      const [location] = await db
+        .select()
+        .from(inventoryLocationsTable)
+        .where(
+          and(
+            eq(inventoryLocationsTable.tenantId, tenantId),
+            eq(inventoryLocationsTable.id, locationId),
+            eq(inventoryLocationsTable.isActive, true),
+          ),
+        )
+        .limit(1);
+      if (!location) {
+        res
+          .status(400)
+          .json({ error: "Active location not found in this tenant" });
+        return;
+      }
+    }
+    const [row] = await db
+      .insert(printBridgeProfilesTable)
+      .values({
+        tenantId,
+        locationId,
+        routingScope: locationId ? "location" : "general",
+        name: String(b.name),
+        bridgeType: String(b.bridgeType ?? "generic"),
+        bridgeUrl: String(b.bridgeUrl),
+        apiKey: String(b.apiKey ?? ""),
+        isActive: b.isActive !== false,
+        priority: Number(b.priority ?? 10),
+        networkSubnetHint: b.networkSubnetHint
+          ? String(b.networkSubnetHint)
+          : null,
+        supportedRoles: String(b.supportedRoles ?? "both"),
+        notes: b.notes ? String(b.notes) : null,
+      })
+      .returning();
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_BRIDGE_CREATED",
+        resourceType: "print_bridge",
+        resourceId: String(row.id),
+        metadata: {
+          locationId,
+          routingScope: row.routingScope,
+          bridgeType: row.bridgeType,
+        },
+      });
+    res.status(201).json({ ...row, apiKey: undefined });
+  },
+);
 
 /** PATCH /api/print/bridge-profiles/:id — update a bridge profile */
-router.patch("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const b = req.body ?? {};
-  const updates: Partial<typeof printBridgeProfilesTable.$inferInsert> = {};
-  if (b.name !== undefined) updates.name = String(b.name);
-  if (b.bridgeType !== undefined) updates.bridgeType = String(b.bridgeType);
-  if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
-  if (b.apiKey !== undefined) updates.apiKey = String(b.apiKey);
-  if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
-  if (b.priority !== undefined) updates.priority = Number(b.priority);
-  if (b.networkSubnetHint !== undefined) updates.networkSubnetHint = b.networkSubnetHint ? String(b.networkSubnetHint) : null;
-  if (b.supportedRoles !== undefined) updates.supportedRoles = String(b.supportedRoles);
-  if (b.notes !== undefined) updates.notes = b.notes ? String(b.notes) : null;
-  const [row] = await db.update(printBridgeProfilesTable).set(updates).where(eq(printBridgeProfilesTable.id, id)).returning();
-  if (!row) { res.status(404).json({ error: "Bridge profile not found" }); return; }
-  res.json(row);
-});
+router.patch(
+  "/print/bridge-profiles/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    const b = req.body ?? {};
+    const updates: Partial<typeof printBridgeProfilesTable.$inferInsert> = {};
+    if (b.name !== undefined) updates.name = String(b.name);
+    if (b.bridgeType !== undefined) updates.bridgeType = String(b.bridgeType);
+    if (b.bridgeUrl !== undefined) updates.bridgeUrl = String(b.bridgeUrl);
+    if (b.apiKey !== undefined) {
+      if (!isValidBridgeKey(b.apiKey)) {
+        res.status(400).json({ error: BRIDGE_KEY_ERROR });
+        return;
+      }
+      updates.apiKey = String(b.apiKey ?? "");
+    }
+    if (b.isActive !== undefined) updates.isActive = Boolean(b.isActive);
+    if (b.priority !== undefined) updates.priority = Number(b.priority);
+    if (b.networkSubnetHint !== undefined)
+      updates.networkSubnetHint = b.networkSubnetHint
+        ? String(b.networkSubnetHint)
+        : null;
+    if (b.supportedRoles !== undefined)
+      updates.supportedRoles = String(b.supportedRoles);
+    if (b.notes !== undefined) updates.notes = b.notes ? String(b.notes) : null;
+    if (
+      b.tenantId !== undefined ||
+      b.locationId !== undefined ||
+      b.routingScope !== undefined
+    ) {
+      res
+        .status(400)
+        .json({ error: "Bridge ownership and routing scope are immutable" });
+      return;
+    }
+    const [row] = await db
+      .update(printBridgeProfilesTable)
+      .set(updates)
+      .where(
+        and(
+          eq(printBridgeProfilesTable.tenantId, tenantId),
+          eq(printBridgeProfilesTable.id, id),
+        ),
+      )
+      .returning();
+    if (!row) {
+      res.status(404).json({ error: "Bridge profile not found" });
+      return;
+    }
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_BRIDGE_UPDATED",
+        resourceType: "print_bridge",
+        resourceId: String(row.id),
+        metadata: { fields: Object.keys(updates) },
+      });
+    res.json({ ...row, apiKey: undefined });
+  },
+);
 
 /** DELETE /api/print/bridge-profiles/:id */
-router.delete("/print/bridge-profiles/:id", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  await db.delete(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id));
-  res.json({ success: true });
-});
+router.delete(
+  "/print/bridge-profiles/:id",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const tenantId = requestTenantId(req);
+    await db
+      .update(printBridgeProfilesTable)
+      .set({ isActive: false })
+      .where(
+        and(
+          eq(printBridgeProfilesTable.tenantId, tenantId),
+          eq(printBridgeProfilesTable.id, id),
+        ),
+      );
+    await db
+      .insert(auditLogsTable)
+      .values({
+        tenantId,
+        actorId: req.dbUser!.id,
+        actorEmail: req.dbUser!.email ?? "",
+        actorRole: req.dbUser!.role,
+        action: "PRINT_BRIDGE_DEACTIVATED",
+        resourceType: "print_bridge",
+        resourceId: String(id),
+        metadata: {},
+      });
+    res.json({ success: true });
+  },
+);
 
 /** POST /api/print/bridge-profiles/:id/probe — health check a bridge profile */
-router.post("/print/bridge-profiles/:id/probe", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
-  const profile = rows[0];
-  if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
+router.post(
+  "/print/bridge-profiles/:id/probe",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const id = parseInt(String(req.params.id), 10);
+    const rows = await db
+      .select()
+      .from(printBridgeProfilesTable)
+      .where(
+        and(
+          eq(printBridgeProfilesTable.tenantId, requestTenantId(req)),
+          eq(printBridgeProfilesTable.id, id),
+        ),
+      )
+      .limit(1);
+    const profile = rows[0];
+    if (!profile) {
+      res.status(404).json({ error: "Bridge profile not found" });
+      return;
+    }
 
-  const TIMEOUT_MS = 5000;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const r = await fetch(`${profile.bridgeUrl}/health`, {
-      headers: { "x-api-key": profile.apiKey },
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
-    let body: unknown;
-    try { body = await r.json(); } catch { body = null; }
-    res.json({
-      ok: r.ok && (body as { status?: string })?.status === "ok",
-      httpStatus: r.status,
-      bridgeUrl: profile.bridgeUrl,
-      body,
-    });
-  } catch (err) {
-    const isTimeout = err instanceof Error && err.name === "AbortError";
-    res.json({
-      ok: false,
-      bridgeUrl: profile.bridgeUrl,
-      error: isTimeout
-        ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
-        : `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
-});
+    const TIMEOUT_MS = 5000;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const r = await fetch(`${profile.bridgeUrl}/health`, {
+        headers: { "x-api-key": resolveBridgeApiKey(profile.apiKey) },
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+      let body: unknown;
+      try {
+        body = await r.json();
+      } catch {
+        body = null;
+      }
+      res.json({
+        ok: r.ok && (body as { status?: string })?.status === "ok",
+        httpStatus: r.status,
+        bridgeUrl: profile.bridgeUrl,
+        body,
+      });
+    } catch (err) {
+      const errorText = String(err);
+      const isTimeout = errorText.includes("AbortError");
+      res.json({
+        ok: false,
+        bridgeUrl: profile.bridgeUrl,
+        error: isTimeout
+          ? `Timed out after ${TIMEOUT_MS}ms — bridge unreachable`
+          : `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  },
+);
 
 /** POST /api/print/bridge-profiles/:id/list-printers — list CUPS printers on a bridge */
-router.post("/print/bridge-profiles/:id/list-printers", adminOnly, async (req, res): Promise<void> => {
-  const id = parseInt(String(req.params.id), 10);
-  const rows = await db.select().from(printBridgeProfilesTable).where(eq(printBridgeProfilesTable.id, id)).limit(1);
-  const profile = rows[0];
-  if (!profile) { res.status(404).json({ error: "Bridge profile not found" }); return; }
+router.post(
+  "/print/bridge-profiles/:id/list-printers",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    res
+      .status(410)
+      .json({
+        error:
+          "Unrestricted bridge queue discovery is disabled; register an explicit approved queue",
+      });
+    return;
+    const id = parseInt(String(req.params.id), 10);
+    const rows = await db
+      .select()
+      .from(printBridgeProfilesTable)
+      .where(
+        and(
+          eq(printBridgeProfilesTable.tenantId, requestTenantId(req)),
+          eq(printBridgeProfilesTable.id, id),
+        ),
+      )
+      .limit(1);
+    const profile = rows[0];
+    if (!profile) {
+      res.status(404).json({ error: "Bridge profile not found" });
+      return;
+    }
 
-  const TIMEOUT_MS = 5000;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const r = await fetch(`${profile.bridgeUrl}/printers`, {
-      headers: { "x-api-key": profile.apiKey },
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
-    let body: unknown;
-    try { body = await r.json(); } catch { body = null; }
-    res.json({ ok: r.ok, httpStatus: r.status, bridgeUrl: profile.bridgeUrl, body });
-  } catch (err) {
-    const isTimeout = err instanceof Error && err.name === "AbortError";
-    res.json({
-      ok: false,
-      bridgeUrl: profile.bridgeUrl,
-      error: isTimeout ? `Timed out after ${TIMEOUT_MS}ms` : `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  }
-});
+    const TIMEOUT_MS = 5000;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const r = await fetch(`${profile.bridgeUrl}/printers`, {
+        headers: { "x-api-key": resolveBridgeApiKey(profile.apiKey) },
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+      let body: unknown;
+      try {
+        body = await r.json();
+      } catch {
+        body = null;
+      }
+      res.json({
+        ok: r.ok,
+        httpStatus: r.status,
+        bridgeUrl: profile.bridgeUrl,
+        body,
+      });
+    } catch (err) {
+      const errorText = String(err);
+      const isTimeout = errorText.includes("AbortError");
+      res.json({
+        ok: false,
+        bridgeUrl: profile.bridgeUrl,
+        error: isTimeout
+          ? `Timed out after ${TIMEOUT_MS}ms`
+          : `Connection failed: ${errorText}`,
+      });
+    }
+  },
+);
 
 /** GET /api/print/routing/decision — show current routing decision for a test order */
-router.get("/print/routing/decision", adminOnly, async (req, res): Promise<void> => {
-  const { resolveRoutingDecision, getActiveOperatorIp } = await import("../lib/printRoutingResolver.js");
-  const role = (req.query.role as string) === "label" ? "label" : "receipt";
-  const tenantId = req.query.tenantId ? parseInt(String(req.query.tenantId), 10) : undefined;
-  const fulfillmentType = req.query.fulfillmentType ? String(req.query.fulfillmentType) : undefined;
-  const shippingAddress = req.query.shippingAddress ? String(req.query.shippingAddress) : undefined;
+router.get(
+  "/print/routing/decision",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    const { resolveRoutingDecision, getActiveOperatorIp } =
+      await import("../lib/printRoutingResolver.js");
+    const role = (req.query.role as string) === "label" ? "label" : "receipt";
+    const tenantId = requestTenantId(req);
+    const fulfillmentType = req.query.fulfillmentType
+      ? String(req.query.fulfillmentType)
+      : undefined;
+    const shippingAddress = req.query.shippingAddress
+      ? String(req.query.shippingAddress)
+      : undefined;
 
-  const operatorIp = await getActiveOperatorIp();
-  const decision = await resolveRoutingDecision(
-    role,
-    { id: 0, tenantId, fulfillmentType, shippingAddress },
-    operatorIp
-  );
-  res.json({ operatorIp, decision });
-});
+    const operatorIp = await getActiveOperatorIp(tenantId);
+    const decision = await resolveRoutingDecision(
+      role,
+      { id: 0, tenantId, fulfillmentType, shippingAddress },
+      operatorIp,
+    );
+    res.json({ operatorIp, decision });
+  },
+);
 
 /** POST /api/print/printers/seed-defaults — upsert Pi CUPS bridge printers */
-router.post("/print/printers/seed-defaults", adminOnly, async (req, res): Promise<void> => {
-  const body = req.body ?? {};
-  const piHost = process.env.PRINT_SERVER_HOST ?? "100.83.99.2";
-  const defaultBridgeUrl = `http://${piHost}:3100`;
-  const bridgeUrl = String(body.bridgeUrl ?? defaultBridgeUrl);
-  const apiKey    = String(body.apiKey ?? "");
+router.post(
+  "/print/printers/seed-defaults",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    res
+      .status(410)
+      .json({
+        error:
+          "Unscoped printer seeding is disabled; register an explicit tenant bridge and printer",
+      });
+    return;
+    const body = req.body ?? {};
+    const piHost = process.env.PRINT_SERVER_HOST ?? "100.83.99.2";
+    const defaultBridgeUrl = `http://${piHost}:3100`;
+    const bridgeUrl = String(body.bridgeUrl ?? defaultBridgeUrl);
+    const apiKey = String(body.apiKey ?? "");
 
-  const defaults = [
-    {
-      name: "receipt",
-      role: "receipt",
-      connectionType: "bridge" as const,
-      bridgeUrl,
-      bridgePrinterName: process.env.RECEIPT_PRINTER_NAME ?? "receipt",
-      apiKey: apiKey || null,
-      isActive: true,
-      paperWidth: "80mm",
-      timeoutMs: 8000,
-      copies: 1,
-    },
-    {
-      name: "label",
-      role: "label",
-      connectionType: "bridge" as const,
-      bridgeUrl,
-      bridgePrinterName: process.env.LABEL_PRINTER_NAME ?? "Label_Themal_Printer",
-      apiKey: apiKey || null,
-      isActive: true,
-      paperWidth: "58mm",
-      timeoutMs: 8000,
-      copies: 1,
-    },
-  ];
+    const defaults = [
+      {
+        name: "receipt",
+        role: "receipt",
+        connectionType: "bridge" as const,
+        bridgeUrl,
+        bridgePrinterName: process.env.RECEIPT_PRINTER_NAME ?? "receipt",
+        apiKey: apiKey || null,
+        isActive: true,
+        paperWidth: "80mm",
+        timeoutMs: 8000,
+        copies: 1,
+      },
+      {
+        name: "label",
+        role: "label",
+        connectionType: "bridge" as const,
+        bridgeUrl,
+        bridgePrinterName:
+          process.env.LABEL_PRINTER_NAME ?? "Label_Themal_Printer",
+        apiKey: apiKey || null,
+        isActive: true,
+        paperWidth: "58mm",
+        timeoutMs: 8000,
+        copies: 1,
+      },
+    ];
 
-  // Also clean up any old Mac-named printers for the same roles
-  const legacyNames = ["Reciept_POS80_Printer", "Label_Themal_Printer", "Receipt_Printer"];
+    // Also clean up any old Mac-named printers for the same roles
+    const legacyNames = [
+      "Reciept_POS80_Printer",
+      "Label_Themal_Printer",
+      "Receipt_Printer",
+    ];
 
-  const results = [];
-  for (const d of defaults) {
-    // Find by canonical name OR any legacy name for this role
-    const existing = await db.select().from(printPrintersTable)
-      .where(eq(printPrintersTable.name, d.name)).limit(1);
+    const results = [];
+    for (const d of defaults) {
+      // Find by canonical name OR any legacy name for this role
+      const existing = await db
+        .select()
+        .from(printPrintersTable)
+        .where(eq(printPrintersTable.name, d.name))
+        .limit(1);
 
-    const legacyExisting = existing.length ? [] : await db.select().from(printPrintersTable)
-      .where(inArray(printPrintersTable.name, legacyNames)).limit(1);
+      const legacyExisting = existing.length
+        ? []
+        : await db
+            .select()
+            .from(printPrintersTable)
+            .where(inArray(printPrintersTable.name, legacyNames))
+            .limit(1);
 
-    const target = existing[0] ?? legacyExisting[0];
+      const target = existing[0] ?? legacyExisting[0];
 
-    if (target) {
-      const updates: Record<string, unknown> = {
-        name: d.name,
-        role: d.role,
-        connectionType: d.connectionType,
-        bridgeUrl: d.bridgeUrl,
-        bridgePrinterName: d.bridgePrinterName,
-        isActive: d.isActive,
-        paperWidth: d.paperWidth,
-        timeoutMs: d.timeoutMs,
-      };
-      if (d.apiKey) updates.apiKey = d.apiKey;
+      if (target) {
+        const updates: Record<string, unknown> = {
+          name: d.name,
+          role: d.role,
+          connectionType: d.connectionType,
+          bridgeUrl: d.bridgeUrl,
+          bridgePrinterName: d.bridgePrinterName,
+          isActive: d.isActive,
+          paperWidth: d.paperWidth,
+          timeoutMs: d.timeoutMs,
+        };
+        if (d.apiKey) updates.apiKey = d.apiKey;
 
-      const [updated] = await db.update(printPrintersTable)
-        .set(updates)
-        .where(eq(printPrintersTable.id, target.id))
-        .returning();
-      results.push({ action: "updated", id: updated.id, name: updated.name, role: updated.role });
-    } else {
-      const [inserted] = await db.insert(printPrintersTable).values(d).returning();
-      results.push({ action: "created", id: inserted.id, name: inserted.name, role: inserted.role });
+        const [updated] = await db
+          .update(printPrintersTable)
+          .set(updates)
+          .where(eq(printPrintersTable.id, target.id))
+          .returning();
+        results.push({
+          action: "updated",
+          id: updated.id,
+          name: updated.name,
+          role: updated.role,
+        });
+      } else {
+        const [inserted] = await db
+          .insert(printPrintersTable)
+          .values({
+            ...d,
+            tenantId: requestTenantId(req),
+            locationId: null,
+            routingScope: "general",
+          })
+          .returning();
+        results.push({
+          action: "created",
+          id: inserted.id,
+          name: inserted.name,
+          role: inserted.role,
+        });
+      }
     }
-  }
 
-  res.json({ ok: true, bridgeUrl, results });
-});
+    res.json({ ok: true, bridgeUrl, results });
+  },
+);
 
 // ── Users list (for profile assignment) ───────────────────────────────────
-router.get("/print/users", adminOnly, async (_req, res): Promise<void> => {
-  const rows = await db.select({
-    id: usersTable.id,
-    email: usersTable.email,
-    firstName: usersTable.firstName,
-    lastName: usersTable.lastName,
-    role: usersTable.role,
-  }).from(usersTable).where(eq(usersTable.isActive, true)).orderBy(usersTable.email);
+router.get("/print/users", adminOnly, async (req, res): Promise<void> => {
+  const rows = await db
+    .select({
+      id: usersTable.id,
+      email: usersTable.email,
+      firstName: usersTable.firstName,
+      lastName: usersTable.lastName,
+      role: usersTable.role,
+    })
+    .from(usersTable)
+    .where(
+      and(
+        eq(usersTable.tenantId, requestTenantId(req)),
+        eq(usersTable.isActive, true),
+      ),
+    )
+    .orderBy(usersTable.email);
   res.json({ users: rows });
 });
 
-// ── Secure local CUPS receipt printing ────────────────────────────────────
-//
-// Receipt content is built entirely server-side from trusted DB data.
-// Clients supply only the orderId — no receipt content, no printer commands.
-// ESC/POS framing (\x1b@ reset, \x1dV1 cut) is added by escposPrinter, not here.
+// ── Retired local CUPS receipt endpoints ─────────────────────────────────
+// These permanently answer 410; receipts print only through registered
+// printers and authenticated bridges.
 
 const staffOrAbove = requireRole("global_admin", "admin");
 
@@ -1130,116 +2929,19 @@ const staffOrAbove = requireRole("global_admin", "admin");
  * Allowed: admin, supervisor, staff.
  * Logs a print_jobs row for audit and reprint support.
  */
-router.post("/print/receipt/order/:orderId", staffOrAbove, async (req, res): Promise<void> => {
-  const orderId = parseInt(String(req.params.orderId), 10);
-  if (isNaN(orderId)) {
-    res.status(400).json({ error: "Invalid orderId" });
+router.post(
+  "/print/receipt/order/:orderId",
+  staffOrAbove,
+  async (req, res): Promise<void> => {
+    res
+      .status(410)
+      .json({
+        error:
+          "Direct local CUPS printing is disabled; use the tenant-scoped registered-printer receipt endpoint",
+      });
     return;
-  }
-
-  const [order] = await db
-    .select()
-    .from(ordersTable)
-    .where(eq(ordersTable.id, orderId))
-    .limit(1);
-
-  if (!order) {
-    res.status(404).json({ error: "Order not found" });
-    return;
-  }
-
-  const items = await db
-    .select()
-    .from(orderItemsTable)
-    .where(eq(orderItemsTable.orderId, orderId));
-
-  const settings = await getSettings();
-  const s = settings as Record<string, unknown>;
-  const width = charWidth((s.paperWidth as string | undefined) ?? "80mm");
-  const logoLines = s.includeLogo !== false ? getLogo(width) : [];
-
-  let receiptLineNameMode: "alavont_only" | "lucifer_only" | "both" = "lucifer_only";
-  try {
-    const [adminRow] = await db
-      .select({ receiptLineNameMode: adminSettingsTable.receiptLineNameMode })
-      .from(adminSettingsTable)
-      .limit(1);
-    if (adminRow?.receiptLineNameMode) {
-      receiptLineNameMode = adminRow.receiptLineNameMode as typeof receiptLineNameMode;
-    }
-  } catch { /* no admin settings row — use default */ }
-
-  const blocks = buildCustomerReceiptBlocks({
-    orderId: order.id,
-    orderNumber: String(order.id),
-    createdAt: order.createdAt,
-    fulfillmentType: "Pickup",
-    paymentStatus: order.paymentStatus ?? undefined,
-    paymentMethod: order.paymentMethod ?? undefined,
-    notes: order.notes ?? undefined,
-    items: items.map((i) => ({
-      name: i.receiptName ?? i.catalogItemName,
-      quantity: i.quantity,
-      unitPrice: parseFloat(String(i.unitPrice)),
-      totalPrice: parseFloat(String(i.totalPrice)),
-    })),
-    subtotal: parseFloat(String(order.subtotal)),
-    tax: order.tax ? parseFloat(String(order.tax)) : undefined,
-    total: parseFloat(String(order.total)),
-    logoLines,
-    dualBrandName: (s.brandName as string | undefined) ?? undefined,
-    footerMessage: (s.footerMessage as string | undefined) ?? undefined,
-    showDiscreetNotice: Boolean(s.showDiscreetNotice),
-    showOperatorName: s.includeOperatorName !== false,
-  });
-
-  const body = renderBodyOnly(blocks, width);
-  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
-  const iKey = `lp:${orderId}:receipt:${Date.now()}`;
-
-  const [job] = await db
-    .insert(printJobsTable)
-    .values({
-      orderId: order.id,
-      printerId: null,
-      jobType: "receipt",
-      status: "queued",
-      idempotencyKey: iKey,
-      renderFormat: "escpos",
-      payloadJson: { orderId, printerName, receiptLineNameMode },
-      renderedText: body,
-      operatorUserId: req.dbUser!.id,
-    })
-    .returning();
-
-  try {
-    const { jobRef } = await printReceiptEscPos(body);
-    await db
-      .update(printJobsTable)
-      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
-      .where(eq(printJobsTable.id, job.id));
-
-    req.log.info(
-      { event: "receipt_printed", jobId: job.id, orderId, jobRef },
-      "Receipt printed via lp_cups"
-    );
-
-    res.json({ ok: true, jobId: job.id, jobRef });
-  } catch (err) {
-    const msg = (err as Error).message;
-    await db
-      .update(printJobsTable)
-      .set({ status: "failed", errorMessage: msg })
-      .where(eq(printJobsTable.id, job.id));
-
-    req.log.warn(
-      { event: "receipt_print_failed", jobId: job.id, orderId },
-      "Receipt print failed"
-    );
-
-    res.status(500).json({ ok: false, jobId: job.id, error: msg });
-  }
-});
+  },
+);
 
 /**
  * POST /api/print/receipt/jobs/:jobId/reprint
@@ -1248,77 +2950,18 @@ router.post("/print/receipt/order/:orderId", staffOrAbove, async (req, res): Pro
  * Allowed: admin, supervisor only.
  * Creates a new print_jobs row for audit trail.
  */
-router.post("/print/receipt/jobs/:jobId/reprint", adminOnly, async (req, res): Promise<void> => {
-  const jobId = parseInt(String(req.params.jobId), 10);
-  if (isNaN(jobId)) {
-    res.status(400).json({ error: "Invalid jobId" });
+router.post(
+  "/print/receipt/jobs/:jobId/reprint",
+  adminOnly,
+  async (req, res): Promise<void> => {
+    res
+      .status(410)
+      .json({
+        error:
+          "Direct local CUPS reprinting is disabled; use the tenant-scoped registered-printer reprint endpoint",
+      });
     return;
-  }
-
-  const [original] = await db
-    .select()
-    .from(printJobsTable)
-    .where(eq(printJobsTable.id, jobId))
-    .limit(1);
-
-  if (!original) {
-    res.status(404).json({ error: "Job not found" });
-    return;
-  }
-  if (!original.renderedText) {
-    res.status(400).json({ error: "Job has no stored receipt body — cannot reprint" });
-    return;
-  }
-  if (original.renderFormat !== "escpos") {
-    res.status(400).json({ error: "Job was not printed via lp_cups — use the standard reprint endpoint" });
-    return;
-  }
-
-  const printerName = process.env.RECEIPT_PRINTER_NAME || "receipt";
-  const iKey = `lp:reprint:${jobId}:${Date.now()}`;
-
-  const [newJob] = await db
-    .insert(printJobsTable)
-    .values({
-      orderId: original.orderId,
-      printerId: null,
-      jobType: "receipt",
-      status: "queued",
-      idempotencyKey: iKey,
-      renderFormat: "escpos",
-      payloadJson: { reprintOf: jobId, printerName },
-      renderedText: original.renderedText,
-      operatorUserId: req.dbUser!.id,
-    })
-    .returning();
-
-  try {
-    const { jobRef } = await printReceiptEscPos(original.renderedText);
-    await db
-      .update(printJobsTable)
-      .set({ status: "printed", printedVia: "lp_cups", printedAt: new Date() })
-      .where(eq(printJobsTable.id, newJob.id));
-
-    req.log.info(
-      { event: "receipt_reprinted", newJobId: newJob.id, originalJobId: jobId, jobRef },
-      "Receipt reprinted via lp_cups"
-    );
-
-    res.json({ ok: true, jobId: newJob.id, jobRef });
-  } catch (err) {
-    const msg = (err as Error).message;
-    await db
-      .update(printJobsTable)
-      .set({ status: "failed", errorMessage: msg })
-      .where(eq(printJobsTable.id, newJob.id));
-
-    req.log.warn(
-      { event: "receipt_reprint_failed", newJobId: newJob.id, originalJobId: jobId },
-      "Receipt reprint failed"
-    );
-
-    res.status(500).json({ ok: false, jobId: newJob.id, error: msg });
-  }
-});
+  },
+);
 
 export default router;

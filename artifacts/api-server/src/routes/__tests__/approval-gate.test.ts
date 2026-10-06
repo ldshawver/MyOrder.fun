@@ -41,6 +41,8 @@ const makeDrizzleChain = (resolvedValue: unknown[]) => {
   chain.where = vi.fn(() => chain);
   chain.limit = terminal;
   chain.orderBy = vi.fn(() => Promise.resolve(resolvedValue));
+  chain.innerJoin = vi.fn(() => chain);
+  chain.groupBy = terminal;
   chain.from = vi.fn(() => chain);
   chain.then = (resolve: (value: unknown[]) => unknown) => Promise.resolve(resolvedValue).then(resolve);
   return chain;
@@ -66,6 +68,9 @@ vi.mock("@workspace/db", () => {
   };
   const labTechShiftsTable = {};
   const inventoryTemplatesTable = {
+    id: "inventory_id_col",
+    tenantId: "inventory_tenantId_col",
+    displayOrder: "inventory_displayOrder_col",
     isActive: "inventory_isActive_col",
     catalogItemId: "inventory_catalogItemId_col",
     rowType: "inventory_rowType_col",
@@ -132,6 +137,7 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((col) => col),
   desc: vi.fn((col) => col),
   gte: vi.fn((col, val) => ({ col, val })),
+  isNull: vi.fn((col) => ({ col, isNull: true })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
@@ -162,7 +168,7 @@ vi.mock("../../lib/printRouter", () => ({
 // ---------------------------------------------------------------------------
 // Import mocked db so we can configure it per test
 // ---------------------------------------------------------------------------
-import { db } from "@workspace/db";
+import { db, catalogItemsTable, inventoryTemplatesTable } from "@workspace/db";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +181,7 @@ function makePendingUser() {
     firstName: "Pending",
     lastName: "User",
     role: "user",
+    tenantId: 7,
     status: "pending",
     isActive: true,
     mfaEnabled: false,
@@ -264,6 +271,71 @@ describe("Approval gate — catalog endpoints", () => {
     const app = buildApp(catalogRouter);
     const res = await supertest(app).get("/api/catalog");
     expect(res.status).toBe(401);
+  });
+
+  it.each(["user", "csr", "supervisor"])("rejects %s product creation without writing", async (role) => {
+    configureDbForUser({ ...makeApprovedUser(), role, tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: "Test", category: "Staging", price: 1 });
+    expect(res.status).toBe(403);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid required values without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: " ", category: "", price: 0 });
+    expect(res.status).toBe(400);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid nonblank image URL without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({
+      name: "Test", category: "Staging", price: 1, imageUrl: "not-a-url",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/url/i);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unscoped tenant admin without writing", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: null });
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({ name: "Test", category: "Staging", price: 1 });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Tenant assignment required");
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("creates one complete minimal product with blank optional fields normalized", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "admin", tenantId: 7 });
+    const catalogValues = vi.fn((values: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: 41, ...values }]),
+    }));
+    const templateValues = vi.fn().mockResolvedValue(undefined);
+    (db.insert as ReturnType<typeof vi.fn>).mockImplementation((table: unknown) => ({
+      values: table === catalogItemsTable ? catalogValues : templateValues,
+    }));
+
+    const app = buildApp(catalogRouter);
+    const res = await supertest(app).post("/api/catalog").send({
+      name: " Tenant Seven Product ", category: " Staging ", price: 1.25,
+      description: null, imageUrl: null, sku: null, alavontImageUrl: " ", luciferCruzImageUrl: null,
+    });
+
+    expect(res.status).toBe(201);
+    expect(JSON.stringify(res.body)).not.toContain("invalid_type");
+    expect(catalogValues).toHaveBeenCalledTimes(1);
+    expect(catalogValues).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 7, name: "Tenant Seven Product", category: "Staging", price: "1.25",
+      description: undefined, imageUrl: undefined, sku: undefined,
+      alavontImageUrl: null, luciferCruzImageUrl: null,
+    }));
+    expect(templateValues).toHaveBeenCalledTimes(1);
+    expect(db.insert).toHaveBeenCalledWith(inventoryTemplatesTable);
+    expect(db.insert).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -462,6 +534,13 @@ describe("Approval gate — print endpoints", () => {
     const app = buildApp(printRouter);
     const res = await supertest(app).get("/api/print/routing");
     expect(res.status).toBe(401);
+  });
+
+  it("rejects an approved non-admin from printer routing administration", async () => {
+    configureDbForUser({ ...makeApprovedUser(), role: "user" });
+    const app = buildApp(printRouter);
+    const res = await supertest(app).get("/api/print/routing");
+    expect(res.status).toBe(403);
   });
 });
 

@@ -7,11 +7,15 @@ import {
   numeric,
   jsonb,
   boolean,
+  foreignKey,
+  check,
+  unique,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
 import { catalogItemsTable } from "./catalog";
-import { inventoryLocationsTable, labTechShiftsTable } from "./shifts";
+import { generalQueueCashSessionsTable, inventoryLocationsTable, labTechShiftsTable } from "./shifts";
 
 export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
@@ -25,6 +29,15 @@ export const ordersTable = pgTable("orders", {
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).notNull(),
   tax: numeric("tax", { precision: 10, scale: 2 }).notNull().default("0"),
   total: numeric("total", { precision: 10, scale: 2 }).notNull(),
+  grossSubtotal: numeric("gross_subtotal", { precision: 12, scale: 2 }),
+  discountTotal: numeric("discount_total", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxableSubtotal: numeric("taxable_subtotal", { precision: 12, scale: 2 }),
+  nonTaxableSubtotal: numeric("non_taxable_subtotal", { precision: 12, scale: 2 }).notNull().default("0"),
+  customerCreditApplied: numeric("customer_credit_applied", { precision: 12, scale: 2 }).notNull().default("0"),
+  remainingTenderAmount: numeric("remaining_tender_amount", { precision: 12, scale: 2 }),
+  amountTendered: numeric("amount_tendered", { precision: 12, scale: 2 }),
+  changeGiven: numeric("change_given", { precision: 12, scale: 2 }),
+  financialFinalizedAt: timestamp("financial_finalized_at", { withTimezone: true }),
   shippingAddress: text("shipping_address"),
   deliveryMethod: text("delivery_method"),
   orderType: text("order_type").notNull().default("ONLINE"),
@@ -85,17 +98,26 @@ export const ordersTable = pgTable("orders", {
   legalDisclaimerAccepted: boolean("legal_disclaimer_accepted").notNull().default(false),
   legalDisclaimerText: text("legal_disclaimer_text"),
   checkoutConversionSnapshot: jsonb("checkout_conversion_snapshot"),
+  taxSnapshot: jsonb("tax_snapshot"),
+  cashDiscountSnapshot: jsonb("cash_discount_snapshot"),
   checkoutConversionExpiresAt: timestamp("checkout_conversion_expires_at", { withTimezone: true }),
   selectedPaymentMethod: text("selected_payment_method"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdUnique: unique("orders_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 export const orderItemsTable = pgTable("order_items", {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   catalogItemId: integer("catalog_item_id").notNull().references(() => catalogItemsTable.id),
   catalogItemName: text("catalog_item_name").notNull(),
+  optionId: integer("option_id"),
+  optionLabelSnapshot: text("option_label_snapshot"),
+  skuSnapshot: text("sku_snapshot"),
+  inventoryItemId: integer("inventory_item_id"),
+  inventoryQuantitySnapshot: numeric("inventory_quantity_snapshot", { precision: 20, scale: 6 }),
   quantity: integer("quantity").notNull(),
   unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
   totalPrice: numeric("total_price", { precision: 10, scale: 2 }).notNull(),
@@ -126,8 +148,9 @@ export const inventoryReservationsTable = pgTable("inventory_reservations", {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   catalogItemId: integer("catalog_item_id").notNull().references(() => catalogItemsTable.id),
+  orderItemId: integer("order_item_id").references(() => orderItemsTable.id),
   locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id),
-  quantity: integer("quantity").notNull(),
+  quantity: numeric("quantity", { precision: 20, scale: 6 }).notNull(),
   status: text("status").notNull().default("reserved"),
   idempotencyKey: text("idempotency_key"),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -140,13 +163,39 @@ export const cashLedgerEntriesTable = pgTable("cash_ledger_entries", {
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   orderId: integer("order_id").notNull().references(() => ordersTable.id),
   shiftId: integer("shift_id"),
+  generalQueueSessionId: integer("general_queue_session_id").references(() => generalQueueCashSessionsTable.id),
   csrUserId: integer("csr_user_id").notNull().references(() => usersTable.id),
+  actorUserId: integer("actor_user_id").notNull().references(() => usersTable.id),
+  locationId: integer("location_id").references(() => inventoryLocationsTable.id),
   boxAssignmentId: text("box_assignment_id").notNull(),
   amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+  amountTendered: numeric("amount_tendered", { precision: 10, scale: 2 }).notNull(),
+  changeGiven: numeric("change_given", { precision: 10, scale: 2 }).notNull(),
+  internalNote: text("internal_note"),
   entryType: text("entry_type").notNull().default("cash_sale_closeout"),
   idempotencyKey: text("idempotency_key").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  accountabilityContextCheck: check(
+    "cash_ledger_accountability_context_check",
+    sql`((${table.shiftId} IS NOT NULL)::integer + (${table.generalQueueSessionId} IS NOT NULL)::integer = 1)`,
+  ),
+  tenantGeneralQueueSessionFk: foreignKey({
+    name: "cash_ledger_tenant_gq_session_fk",
+    columns: [table.tenantId, table.generalQueueSessionId],
+    foreignColumns: [generalQueueCashSessionsTable.tenantId, generalQueueCashSessionsTable.id],
+  }),
+  tenantActorUserFk: foreignKey({
+    name: "cash_ledger_tenant_actor_user_fk",
+    columns: [table.tenantId, table.actorUserId],
+    foreignColumns: [usersTable.tenantId, usersTable.id],
+  }),
+  tenantLocationFk: foreignKey({
+    name: "cash_ledger_tenant_location_fk",
+    columns: [table.tenantId, table.locationId],
+    foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id],
+  }),
+}));
 
 export type Order = typeof ordersTable.$inferSelect;
 export type InsertOrder = typeof ordersTable.$inferInsert;

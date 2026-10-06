@@ -97,7 +97,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     return false;
   }, [getToken, onPermissionGranted]);
 
-  const sendNotification = useCallback((title: string, body: string, icon = "/lc-icon.png", channel: NotificationChannel = "platformUpdates") => {
+  const sendNotification = useCallback((title: string, body: string, icon = "/myorder-logo-mobile.png", channel: NotificationChannel = "platformUpdates") => {
     const mode = getNotificationMode(channel);
     if (mode === "off") return;
     if (mode === "sound" || mode === "sound_vibrate") playNotificationTone();
@@ -106,8 +106,8 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     const n = new Notification(title, {
       body,
       icon,
-      badge: "/lc-icon.png",
-      tag: `lc-${channel}`,
+      badge: "/favicon-32.png",
+      tag: `myorder-${channel}`,
       silent: false,
       renotify: true,
       vibrate: mode === "vibrate" || mode === "sound_vibrate" ? [90, 40, 90] : undefined,
@@ -124,7 +124,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
       sendNotification(
         "New Order Received",
         `Order #${orderId}${customerName ? ` from ${customerName}` : ""} has been placed and awaits processing.`,
-        "/lc-icon.png",
+        "/myorder-logo-mobile.png",
         "orderAlerts"
       );
     }
@@ -134,8 +134,8 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
     if (role === "user") {
       sendNotification(
         "Your Order is Ready!",
-        `Order #${orderId} has been completed and is ready. Thank you for choosing Lucifer Cruz.`,
-        "/lc-icon.png",
+        `Order #${orderId} has been completed and is ready. Thank you for using MyOrder.fun.`,
+        "/myorder-logo-mobile.png",
         "orderAlerts"
       );
     }
@@ -157,7 +157,7 @@ export function usePushNotifications({ role, onPermissionGranted }: UsePushNotif
       },
     };
     const msg = messages[status];
-    if (msg) sendNotification(msg.title, msg.body, "/lc-icon.png", "orderAlerts");
+    if (msg) sendNotification(msg.title, msg.body, "/myorder-logo-mobile.png", "orderAlerts");
   }, [sendNotification]);
 
   useEffect(() => {

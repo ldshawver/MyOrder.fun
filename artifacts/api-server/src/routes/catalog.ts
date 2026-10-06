@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
-import { and, eq, asc, sql } from "drizzle-orm";
+import { and, eq, asc, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, adminSettingsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
+import { db, adminSettingsTable, auditLogsTable, catalogItemsTable, inventoryTemplatesTable, inventoryBalancesTable, inventoryLocationsTable, orderItemsTable } from "@workspace/db";
 import {
   ListCatalogItemsQueryParams,
   ListCatalogItemsResponse,
@@ -15,12 +15,32 @@ import {
   ListCatalogCategoriesResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, normalizeRole, writeAuditLog } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
+import { loadSellableProducts } from "../lib/catalogueSellable";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
+const optionalBlankText = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? undefined : value,
+  z.string().trim().optional(),
+);
+const optionalBlankHttpUrl = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? undefined : value,
+  z.string().trim().url().refine(value => value.startsWith("http://") || value.startsWith("https://"), "Expected an HTTP or HTTPS URL").optional(),
+);
+const nullableBlankHttpUrl = z.preprocess(
+  value => value == null || (typeof value === "string" && value.trim() === "") ? null : value,
+  z.string().trim().url().refine(value => value.startsWith("http://") || value.startsWith("https://"), "Expected an HTTP or HTTPS URL").nullable().optional(),
+);
+const createCatalogItemRequest = CreateCatalogItemBody.extend({
+  description: optionalBlankText,
+  sku: optionalBlankText,
+  imageUrl: optionalBlankHttpUrl,
+  alavontImageUrl: nullableBlankHttpUrl,
+  luciferCruzImageUrl: nullableBlankHttpUrl,
+});
 const catalogDisplayUpdateSchema = z.object({
   displayName: z.string().trim().max(160).nullable().optional(),
   displayDescription: z.string().trim().max(4000).nullable().optional(),
@@ -38,6 +58,19 @@ const catalogDisplayUpdateSchema = z.object({
 function isArchivedOrSafeDuplicateRow(row: { metadata?: unknown }): boolean {
   const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
   return metadata.archived === true || metadata.safeOnlyDuplicate === true || metadata.mergedIntoCatalogItemId != null;
+}
+
+export type CatalogLifecycleStatus = "customer_visible" | "unavailable_hidden" | "compliance_hold" | "archived";
+
+/** The admin lifecycle projection is server-owned; UI callers must not infer it from availability. */
+export function getCatalogLifecycleStatus(row: { isAvailable: boolean; alavontInStock: boolean | null; metadata?: unknown }): CatalogLifecycleStatus {
+  const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+    ? row.metadata as Record<string, unknown>
+    : {};
+  if (isArchivedOrSafeDuplicateRow({ metadata })) return "archived";
+  if (metadata.complianceHold === true) return "compliance_hold";
+  if (row.isAvailable !== true || row.alavontInStock === false) return "unavailable_hidden";
+  return "customer_visible";
 }
 
 function activeProductRows<T extends { metadata?: unknown }>(rows: T[]): T[] {
@@ -98,6 +131,12 @@ async function archiveSafeDuplicateRows(tenantId: number, actor: { id: number; e
 function safeMetadataPatch(current: unknown, patch: Record<string, unknown>) {
   const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
   return { ...base, presentation: { ...(base.presentation && typeof base.presentation === "object" && !Array.isArray(base.presentation) ? base.presentation as Record<string, unknown> : {}), ...patch } };
+}
+
+/** Lifecycle controls are canonical state, not presentation metadata. */
+export function lifecycleMetadataPatch(current: unknown, patch: Record<string, unknown>) {
+  const base = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  return { ...base, ...patch };
 }
 
 let catalogRouteSchemaEnsured = false;
@@ -233,29 +272,31 @@ function mapItem(
     id: i.id,
     tenantId: i.tenantId,
     name: i.name,
-    description: i.description,
+    description: i.description ?? undefined,
     category: i.alavontCategory ?? i.category,
-    sku: i.sku,
+    sku: i.sku ?? undefined,
     price: parseFloat(i.price as string),
-    compareAtPrice: i.compareAtPrice ? parseFloat(i.compareAtPrice as string) : undefined,
+    compareAtPrice: i.compareAtPrice != null ? parseFloat(i.compareAtPrice as string) : null,
     stockQuantity: linkedInventoryStock ?? (i.stockQuantity != null ? parseFloat(String(i.stockQuantity)) : null),
     isAvailable: i.isAvailable,
+    isTaxable: i.isTaxable,
     imageUrl: resolvedImageUrl,
     mediaGallery,
     tags: i.tags ?? [],
-    metadata: i.metadata,
+    metadata: alavontOnly ? {} : i.metadata,
+    lifecycleStatus: alavontOnly ? undefined : getCatalogLifecycleStatus(i),
     isFeatured: i.isFeatured ?? false,
     isSaleFeatured: i.isSaleFeatured ?? false,
-    internalName: i.internalName ?? null,
-    internalDescription: i.internalDescription ?? null,
-    internalCategory: i.internalCategory ?? null,
-    supplierName: i.supplierName ?? null,
-    supplierCategory: i.supplierCategory ?? null,
-    backendInventoryNotes: i.backendInventoryNotes ?? null,
-    vendorSku: i.vendorSku ?? null,
-    sourceInventoryId: i.sourceInventoryId ?? null,
-    costBasis: i.costBasis ? parseFloat(i.costBasis as string) : null,
-    inventoryTrackingData: i.inventoryTrackingData ?? {},
+    internalName: alavontOnly ? null : (i.internalName ?? null),
+    internalDescription: alavontOnly ? null : (i.internalDescription ?? null),
+    internalCategory: alavontOnly ? null : (i.internalCategory ?? null),
+    supplierName: alavontOnly ? null : (i.supplierName ?? null),
+    supplierCategory: alavontOnly ? null : (i.supplierCategory ?? null),
+    backendInventoryNotes: alavontOnly ? null : (i.backendInventoryNotes ?? null),
+    vendorSku: alavontOnly ? null : (i.vendorSku ?? null),
+    sourceInventoryId: alavontOnly ? null : (i.sourceInventoryId ?? null),
+    costBasis: alavontOnly ? null : (i.costBasis ? parseFloat(i.costBasis as string) : null),
+    inventoryTrackingData: alavontOnly ? {} : (i.inventoryTrackingData ?? {}),
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
     // Dual-brand fields — LC merchant names suppressed in Alavont-only mode
@@ -280,6 +321,9 @@ function mapItem(
     promoBadges: i.promoBadges ?? [],
     regularPrice: i.regularPrice ? parseFloat(i.regularPrice as string) : null,
     homiePrice: i.homiePrice ? parseFloat(i.homiePrice as string) : null,
+    parLevel: i.parLevel != null ? parseFloat(String(i.parLevel)) : null,
+    moq: i.moq != null ? parseFloat(String(i.moq)) : 0,
+    preferredReorderQuantity: i.preferredReorderQuantity != null ? parseFloat(String(i.preferredReorderQuantity)) : 0,
     receiptName: alavontOnly ? null : (i.receiptName ?? null),
     labName: alavontOnly ? null : (i.labName ?? null),
     // Merchant routing fields — suppressed in Alavont-only (storefront) mode
@@ -301,15 +345,14 @@ function isLocalAlavontCatalogRow(row: typeof catalogItemsTable.$inferSelect): b
 async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.$inferSelect): Promise<void> {
   if (!isLocalAlavontCatalogRow(row)) return;
 
-  const stockValue = row.inventoryAmount ?? row.stockQuantity ?? "0";
   const itemName = row.alavontName ?? row.displayName ?? row.name;
   const patch = {
     sectionName: row.alavontCategory ?? row.category ?? "Alavont",
     itemName,
     rowType: "item",
     unitType: row.stockUnit ?? row.unitMeasurement ?? "#",
-    startingQuantityDefault: String(stockValue ?? "0"),
-    currentStock: String(stockValue ?? "0"),
+    startingQuantityDefault: "0",
+    currentStock: null,
     menuPrice: String(row.price ?? "0"),
     payoutPrice: String(row.price ?? "0"),
     isActive: row.isAvailable !== false,
@@ -351,36 +394,40 @@ async function syncCatalogItemToInventoryTemplate(row: typeof catalogItemsTable.
   });
 }
 
-async function getLinkedInventoryStockByCatalogId() {
-  const templateRows = await db
-    .select()
-    .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.isActive, true));
-
+async function getLinkedInventoryStockByCatalogId(tenantId: number) {
+  const balanceRows = await db
+    .select({
+      productId: inventoryBalancesTable.productId,
+      quantity: sql<string>`COALESCE(SUM(${inventoryBalancesTable.quantityOnHand}), 0)`,
+    })
+    .from(inventoryBalancesTable)
+    .innerJoin(
+      inventoryLocationsTable,
+      and(
+        eq(inventoryLocationsTable.tenantId, inventoryBalancesTable.tenantId),
+        eq(inventoryLocationsTable.id, inventoryBalancesTable.locationId),
+      ),
+    )
+    .where(and(
+      eq(inventoryBalancesTable.tenantId, tenantId),
+      eq(inventoryLocationsTable.isActive, true),
+      eq(inventoryBalancesTable.inventoryKind, "sellable_catalog"),
+      eq(inventoryBalancesTable.isSellable, true),
+      isNull(inventoryBalancesTable.quarantinedAt),
+    ))
+    .groupBy(inventoryBalancesTable.productId);
   const stockByCatalogId = new Map<number, number>();
-  for (const row of templateRows) {
-    if (!row.catalogItemId || (row.rowType !== "item" && row.rowType !== "cash")) continue;
-
-    const currentStock = row.currentStock != null
-      ? parseFloat(String(row.currentStock))
-      : parseFloat(String(row.startingQuantityDefault ?? 0));
-    const deductPerSale = parseFloat(String(row.deductionQuantityPerSale ?? 1));
-    const sellableUnits = deductPerSale > 0
-      ? Math.floor(currentStock / deductPerSale)
-      : Math.floor(currentStock);
-
-    const existing = stockByCatalogId.get(row.catalogItemId);
-    stockByCatalogId.set(row.catalogItemId, existing === undefined ? sellableUnits : Math.min(existing, sellableUnits));
-  }
+  for (const row of balanceRows) stockByCatalogId.set(row.productId, Math.max(0, Math.floor(Number(row.quantity ?? 0))));
 
   return stockByCatalogId;
 }
 
-async function getShowOutOfStockSetting(): Promise<boolean> {
+async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
   try {
     const [settings] = await db
       .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
       .from(adminSettingsTable)
+      .where(eq(adminSettingsTable.tenantId, tenantId))
       .limit(1);
     return settings?.showOutOfStock === true;
   } catch {
@@ -407,12 +454,16 @@ router.get("/catalog", async (req, res): Promise<void> => {
   const isAdminActor = actorRole === "global_admin" || actorRole === "admin";
   const alavontOnly = !isLuciferMode && !isAdminActor;
 
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(catalogItemsTable)
     .where(eq(catalogItemsTable.tenantId, tenantId))
     .orderBy(asc(catalogItemsTable.name));
 
-  rows = activeProductRows(rows);
+  // Customer catalogue calls must never receive archived or safe-duplicate
+  // products. Administrators need those same records to audit their
+  // restrictive lifecycle state, so do not discard them before mapping the
+  // server-derived lifecycleStatus.
+  if (!isAdminActor) rows = activeProductRows(rows);
   const totalBeforeFilters = rows.length;
 
   if (query.data.category) {
@@ -432,7 +483,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
       (r.labName ?? "").toLowerCase().includes(s)
     );
   }
-  const showOutOfStock = await getShowOutOfStockSetting();
+  const showOutOfStock = await getShowOutOfStockSetting(tenantId);
   if (query.data.available !== undefined) {
     rows = rows.filter(r => r.isAvailable === query.data.available);
   } else if (!isAdminActor && !showOutOfStock) {
@@ -464,13 +515,19 @@ router.get("/catalog", async (req, res): Promise<void> => {
   }
 
   rows = rows.sort((a, b) => {
-    const aRank = (a.isFeatured ? 0 : 2) + (a.isSaleFeatured || (a.compareAtPrice && Number(a.compareAtPrice) > Number(a.price)) ? 0 : 1);
-    const bRank = (b.isFeatured ? 0 : 2) + (b.isSaleFeatured || (b.compareAtPrice && Number(b.compareAtPrice) > Number(b.price)) ? 0 : 1);
+    // Featured is merchandising priority. Sale is a marker and price state,
+    // never an implicit sorting rule.
+    const aRank = a.isFeatured ? 0 : 1;
+    const bRank = b.isFeatured ? 0 : 1;
     if (aRank !== bRank) return aRank - bRank;
     return a.name.localeCompare(b.name);
   });
 
-  const stockByCatalogId = await getLinkedInventoryStockByCatalogId();
+  const stockByCatalogId = await getLinkedInventoryStockByCatalogId(tenantId);
+  const sellableByCatalogId = new Map<number, Awaited<ReturnType<typeof loadSellableProducts>>[number]>();
+  for (const product of await loadSellableProducts(tenantId)) {
+    for (const option of product.options) sellableByCatalogId.set(option.catalogItemId, product);
+  }
   const total = rows.length;
   const paged = rows.slice((page - 1) * limit, page * limit);
 
@@ -481,7 +538,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
   );
 
   res.json(ListCatalogItemsResponse.parse({
-    items: paged.map(i => mapItem(i, alavontOnly, stockByCatalogId.get(i.id))),
+    items: paged.map(i => ({ ...mapItem(i, alavontOnly, stockByCatalogId.get(i.id)), sellableProduct: sellableByCatalogId.get(i.id) })),
     total,
     page,
     limit,
@@ -492,7 +549,7 @@ router.get("/catalog", async (req, res): Promise<void> => {
 // GET /api/admin/product-master — Edit Catalog Product Master view.
 // Returns exactly the spreadsheet-backed fields plus current per-location balances.
 router.get("/admin/product-master", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [items, locations, balances] = await Promise.all([
     db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), sql`coalesce(${catalogItemsTable.isWooManaged}, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'archived')::boolean, false) = false`, sql`coalesce((${catalogItemsTable.metadata}->>'safeOnlyDuplicate')::boolean, false) = false`)).orderBy(asc(catalogItemsTable.name)),
     db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.isActive, true))),
@@ -507,7 +564,7 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
       active: item.isAvailable !== false,
       unavailable: item.isAvailable === false,
       archived: (item.metadata as Record<string, unknown> | null)?.archived === true,
-      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true || item.alavontInStock === false,
+      complianceHold: (item.metadata as Record<string, unknown> | null)?.complianceHold === true,
       nonSellable: item.isAvailable === false || item.alavontInStock === false,
     },
     "Regular Price": item.regularPrice != null ? parseFloat(String(item.regularPrice)) : parseFloat(String(item.price ?? "0")),
@@ -530,47 +587,96 @@ router.get("/admin/product-master", requireRole("global_admin", "admin"), async 
   res.json({ rows, locations });
 });
 
-// PATCH /api/admin/product-master/:id/lifecycle — archive/reactivate/unavailable/compliance hold.
-router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+type LifecycleChange = { active?: boolean; archived?: boolean; complianceHold?: boolean; reason?: string };
+type LifecycleActor = { id: number; email: string | null; role: string; tenantId: number | null; status: string | null; isActive: boolean | null };
+
+/** Shared, tenant-authorized transition for the HTTP route and audited maintenance. */
+export async function applyCatalogLifecycleTransition(input: {
+  tenantId: number; id: number; actor: LifecycleActor; change: LifecycleChange;
+  ipAddress?: string | null; source?: "http" | "delegated_maintenance";
+}) {
+  const { tenantId, id, actor, change } = input;
+  const role = normalizeRole(actor.role);
+  if (!["global_admin", "admin", "supervisor"].includes(role) || actor.isActive === false || actor.status === "rejected" || actor.status === "deactivated"
+    || (role !== "global_admin" && actor.tenantId !== tenantId)) throw new Error("Unauthorized catalogue lifecycle actor");
+  if (change.complianceHold !== undefined && (!change.reason?.trim() || (change.complianceHold === false && role !== "global_admin"))) throw new Error("Compliance clearance requires Global Admin and an audit reason");
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0 || !Number.isSafeInteger(id) || id <= 0) throw new Error("Explicit tenant and catalogue item IDs are required");
+  return db.transaction(async tx => {
+    const [existing] = await tx.select().from(catalogItemsTable)
+      .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).for("update").limit(1);
+    if (!existing) return null;
+    const currentMetadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+      ? existing.metadata as Record<string, unknown> : {};
+    const metadata = { ...currentMetadata };
+    if (change.archived !== undefined) metadata.archived = change.archived;
+    if (change.complianceHold !== undefined) {
+      metadata.complianceHold = change.complianceHold;
+      metadata.complianceReason = change.complianceHold ? change.reason ?? currentMetadata.complianceReason ?? null : null;
+      metadata.complianceMatchedTerms = change.complianceHold ? currentMetadata.complianceMatchedTerms ?? [] : [];
+    }
+    if (change.reason !== undefined && change.complianceHold === undefined) metadata.lifecycleReason = change.reason;
+    const available = change.active ?? existing.isAvailable;
+    if (available === existing.isAvailable && JSON.stringify(metadata) === JSON.stringify(currentMetadata)) return existing;
+    const [item] = await tx.update(catalogItemsTable).set({
+      ...(change.active !== undefined ? { isAvailable: available } : {}), metadata, updatedAt: new Date(),
+    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id),
+      metadata: { ...change, previousComplianceHold: currentMetadata.complianceHold === true,
+        source: input.source ?? "http" }, ipAddress: input.ipAddress ?? null,
+    });
+    return item;
+  });
+}
+
+// PATCH /api/admin/product-master/:id/lifecycle — independent lifecycle state changes.
+router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid product id" }); return; }
   const body = z.object({
     active: z.boolean().optional(),
     archived: z.boolean().optional(),
     complianceHold: z.boolean().optional(),
-    reason: z.string().trim().max(500).optional(),
+    reason: z.string().trim().min(1).max(500).optional(),
   }).strict().safeParse(req.body);
-  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
-  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).limit(1);
-  if (!existing) { res.status(404).json({ error: "Not found" }); return; }
-  const metadata = safeMetadataPatch(existing.metadata, {
-    archived: body.data.archived ?? (existing.metadata as Record<string, unknown> | null)?.archived === true,
-    complianceHold: body.data.complianceHold ?? (existing.metadata as Record<string, unknown> | null)?.complianceHold === true,
-    lifecycleReason: body.data.reason ?? null,
-  });
-  const available = body.data.complianceHold === true || body.data.archived === true ? false : body.data.active ?? existing.isAvailable;
-  const [updated] = await db.update(catalogItemsTable).set({ isAvailable: available, alavontInStock: available, metadata, updatedAt: new Date() }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
-  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id), metadata: body.data, ipAddress: req.ip });
-  res.json({ item: mapItem(updated ?? existing) });
+  if (!body.success || (body.data.active === undefined && body.data.archived === undefined && body.data.complianceHold === undefined)) {
+    res.status(400).json({ error: body.success ? "A lifecycle state is required" : body.error.message }); return;
+  }
+  if (body.data.complianceHold !== undefined && (!body.data.reason || (body.data.complianceHold === false && normalizeRole(req.dbUser!.role) !== "global_admin"))) {
+    res.status(403).json({ error: "Compliance action requires a reason; clearance requires Global Admin" }); return;
+  }
+  const updated = await applyCatalogLifecycleTransition({ tenantId, id, actor: req.dbUser!,
+    change: body.data, ipAddress: req.ip, source: "http" });
+  if (!updated) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({ item: mapItem(updated) });
 });
 
 // POST /api/catalog
 router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const body = CreateCatalogItemBody.safeParse(req.body);
+  const body = createCatalogItemRequest.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const tenantId = await getHouseTenantId();
+  const name = body.data.name.trim();
+  const category = body.data.category.trim();
+  if (!name || !category || !Number.isFinite(body.data.price) || body.data.price <= 0) {
+    res.status(400).json({ error: "Name, category, and a price greater than zero are required" });
+    return;
+  }
+  const tenantId = req.authorizedTenantId!;
+  if (tenantId == null) { res.status(403).json({ error: "Tenant assignment required" }); return; }
   // price is number in the Zod schema but string in the db schema (numeric precision);
   // use double-cast to satisfy drizzle's strict insert overloads
   const { costBasis, ...createData } = body.data;
   const [row] = await db.insert(catalogItemsTable).values({
     ...(createData as unknown as Partial<typeof catalogItemsTable.$inferInsert>),
     tenantId,
-    name: body.data.name,
-    alavontName: body.data.alavontName ?? body.data.name,
+    name,
+    category,
+    alavontName: body.data.alavontName ?? name,
     alavontDescription: body.data.alavontDescription ?? body.data.description ?? null,
     alavontCategory: body.data.alavontCategory ?? body.data.category,
     alavontImageUrl: body.data.alavontImageUrl ?? body.data.imageUrl ?? null,
@@ -584,8 +690,8 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
     compareAtPrice: body.data.compareAtPrice != null ? String(body.data.compareAtPrice) : undefined,
     costBasis: costBasis != null ? String(costBasis) : undefined,
     isAvailable: body.data.isAvailable ?? true,
-    stockQuantity: String(body.data.stockQuantity ?? 0),
-    inventoryAmount: String(body.data.stockQuantity ?? 0),
+    stockQuantity: "0",
+    inventoryAmount: "0",
   } as unknown as typeof catalogItemsTable.$inferInsert).returning();
   await syncCatalogItemToInventoryTemplate(row);
   res.status(201).json(mapItem(row));
@@ -594,7 +700,7 @@ router.post("/catalog", requireRole("global_admin", "admin"), async (req, res): 
 // GET /api/catalog/categories
 router.get("/catalog/categories", async (req, res): Promise<void> => {
   const mode = req.query.mode === "lucifer" ? "lucifer" : "alavont";
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const rows = await db
     .select({
       alavontCategory: catalogItemsTable.alavontCategory,
@@ -643,7 +749,7 @@ router.patch("/catalog/:id/display", requireRole("global_admin", "admin", "tenan
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [existing] = await db.select().from(catalogItemsTable).where(eq(catalogItemsTable.id, id)).limit(1);
+  const [existing] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, req.authorizedTenantId!), eq(catalogItemsTable.id, id))).limit(1);
   if (!existing) {
     res.status(404).json({ error: "Not found" });
     return;
@@ -666,7 +772,7 @@ router.patch("/catalog/:id/display", requireRole("global_admin", "admin", "tenan
     displayCategory: body.data.displayCategory,
     metadata: Object.keys(presentationPatch).length ? safeMetadataPatch(existing.metadata, presentationPatch) : existing.metadata,
     updatedAt: new Date(),
-  }).where(eq(catalogItemsTable.id, id)).returning();
+  }).where(and(eq(catalogItemsTable.tenantId, req.authorizedTenantId!), eq(catalogItemsTable.id, id))).returning();
   if (req.dbUser) {
     void writeAuditLog({ actorId: req.dbUser.id, actorEmail: req.dbUser.email, actorRole: req.dbUser.role, action: "catalog.display_updated", tenantId: existing.tenantId, resourceType: "catalog_item", resourceId: String(id), ipAddress: req.ip });
   }
@@ -681,7 +787,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [row] = await db.select().from(catalogItemsTable).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, params.data.id))).limit(1);
   if (!row) {
     res.status(404).json({ error: "Not found" });
@@ -689,6 +795,13 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
   }
   const actorRole = normalizeRole(req.dbUser?.role);
   const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
+  if (alavontOnly) {
+    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (row.isAvailable !== true || row.alavontInStock === false || metadata.archived === true || metadata.safeOnlyDuplicate === true || row.isWooManaged === true || row.isLocalAlavont === false) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+  }
   res.json(GetCatalogItemResponse.parse(mapItem(row, alavontOnly)));
 });
 
@@ -700,12 +813,15 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const body = UpdateCatalogItemBody.safeParse(req.body);
+  // Keep the generated field allow-list, and reject rather than silently strip
+  // unexpected client input.  This protects catalogue updates from mass
+  // assignment while preserving the intentionally supported edit fields.
+  const body = UpdateCatalogItemBody.strict().safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   const [existing] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);
@@ -730,7 +846,7 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
     return;
   }
 
-  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, ...restBodyData } = body.data;
+  const { price, compareAtPrice, stockQuantity, regularPrice, homiePrice, costBasis, parLevel, moq, preferredReorderQuantity, ...restBodyData } = body.data;
   if (stockQuantity !== undefined) {
     res.status(409).json({ error: "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction", use: "/api/admin/bootstrap-inventory" });
     return;
@@ -741,6 +857,9 @@ router.patch("/catalog/:id", requireRole("global_admin", "admin"), async (req, r
   if (regularPrice !== undefined) updateData.regularPrice = regularPrice != null ? String(regularPrice) : null;
   if (homiePrice !== undefined) updateData.homiePrice = homiePrice != null ? String(homiePrice) : null;
   if (costBasis !== undefined) updateData.costBasis = costBasis != null ? String(costBasis) : null;
+  if (parLevel !== undefined) updateData.parLevel = parLevel === null ? null : String(parLevel);
+  if (moq !== undefined) updateData.moq = String(moq);
+  if (preferredReorderQuantity !== undefined) updateData.preferredReorderQuantity = String(preferredReorderQuantity);
   // Protect LC/Woo routing fields from null/false-overwrite.
   // Null values in the body (from Alavont-mode UI suppression) must not erase existing data.
   // isWooManaged: false must not downgrade a Woo-managed item without explicit intent.
@@ -781,7 +900,7 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   const [existing] = await db.select().from(catalogItemsTable)
     .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, params.data.id)))
     .limit(1);
@@ -810,7 +929,7 @@ router.delete("/catalog/:id", requireRole("global_admin", "admin"), async (req, 
 });
 
 router.post("/admin/product-master/cleanup-safe-duplicates", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const result = await archiveSafeDuplicateRows(tenantId, req.dbUser ? { id: req.dbUser.id, email: req.dbUser.email ?? "", role: req.dbUser.role } : null);
   res.json({ ok: true, ...result });
 });
@@ -821,7 +940,7 @@ router.get(
   "/admin/settings/diagnostics/catalog",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
-    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const allRows = await db.select().from(catalogItemsTable)
       .where(eq(catalogItemsTable.tenantId, tenantId))
       .orderBy(asc(catalogItemsTable.id));
@@ -918,7 +1037,7 @@ router.post(
         res.status(400).json({ error: "items array required" });
         return;
       }
-      const normalized = await normalizeCheckoutCart(items);
+      const normalized = await normalizeCheckoutCart(items, undefined, true, req.authorizedTenantId!);
       res.json({ normalized });
     } catch (err) {
       res.status(400).json({ error: (err as Error)?.message ?? "Normalization failed" });
@@ -940,8 +1059,8 @@ router.post(
         res.status(400).json({ error: "items array required" });
         return;
       }
-      const settings = await getOrCreateSettings();
-      const normalized = await normalizeCheckoutCart(items);
+      const settings = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
+      const normalized = await normalizeCheckoutCart(items, undefined, true, req.authorizedTenantId!);
       const merchantLines = buildMerchantPayloadLines(normalized, settings.merchantImageEnabled);
 
       const alavontNamesInPayload = merchantLines.filter(l =>
@@ -988,7 +1107,7 @@ router.get(
       total: 86.38,
       createdAt: new Date().toISOString(),
       receiptLineNameMode: typedMode,
-      dualBrandName: "Alavont / Lucifer Cruz",
+      dualBrandName: "Tenant / Supplier",
       footerMessage: "Thank you for your order!",
       showDiscreetNotice: false,
       showOperatorName: true,
@@ -996,17 +1115,17 @@ router.get(
       items: [
         {
           quantity: 2,
-          name: "Sample Alavont Product",
-          alavontName: "Sample Alavont Product",
-          luciferCruzName: "Sample Lucifer Cruz Product",
+          name: "Sample Tenant Product",
+          alavontName: "Sample Tenant Product",
+          luciferCruzName: "Sample Supplier Product",
           unitPrice: 29.99,
           totalPrice: 59.98,
         },
         {
           quantity: 1,
-          name: "Woo Alavont Name",
-          alavontName: "Woo Alavont Name",
-          luciferCruzName: "Woo LC Merchant Name",
+          name: "Imported Tenant Name",
+          alavontName: "Imported Tenant Name",
+          luciferCruzName: "Imported Supplier Name",
           unitPrice: 19.99,
           totalPrice: 19.99,
         },

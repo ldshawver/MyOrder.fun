@@ -6,6 +6,7 @@ import {
   text,
   timestamp,
   numeric,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
@@ -16,10 +17,13 @@ export const adminSettingsTable = pgTable("admin_settings", {
   menuImportEnabled: boolean("menu_import_enabled").notNull().default(true),
   showOutOfStock: boolean("show_out_of_stock").notNull().default(false),
   // Checkout
-  enabledProcessors: text("enabled_processors").array().notNull().default(["stripe"]),
+  enabledProcessors: text("enabled_processors").array().notNull().default(["paypal"]),
   checkoutConversionPreview: boolean("checkout_conversion_preview").notNull().default(false),
   salesTaxMode: text("sales_tax_mode").notNull().default("added"),
   salesTaxRate: numeric("sales_tax_rate", { precision: 6, scale: 5 }).notNull().default("0.08"),
+  cashDiscountEnabled: boolean("cash_discount_enabled").notNull().default(false),
+  cashDiscountType: text("cash_discount_type").notNull().default("percentage"),
+  cashDiscountValue: numeric("cash_discount_value", { precision: 12, scale: 4 }).notNull().default("0"),
   merchantImageEnabled: boolean("merchant_image_enabled").notNull().default(true),
   merchantProcessorConfig: text("merchant_processor_config"),
   // Printing
@@ -32,6 +36,7 @@ export const adminSettingsTable = pgTable("admin_settings", {
   keepAuditToken: boolean("keep_audit_token").notNull().default(true),
   keepFailedPaymentLogs: boolean("keep_failed_payment_logs").notNull().default(true),
   pettyCash: numeric("petty_cash", { precision: 10, scale: 2 }).default("0"),
+  cashDiscrepancyReasonThreshold: numeric("cash_discrepancy_reason_threshold", { precision: 10, scale: 2 }).notNull().default("0"),
   receiptLineNameMode: text("receipt_line_name_mode").notNull().default("lucifer_only"),
   // WooCommerce integration credentials.
   // Consumer key/secret are stored as AES-256-GCM ciphertext (see api-server lib/crypto.ts).
@@ -68,7 +73,9 @@ export const adminSettingsTable = pgTable("admin_settings", {
   feedbackArchiveUnreadAfterDays: integer("feedback_archive_unread_after_days"),
   feedbackArchiveUnreadEnabled: boolean("feedback_archive_unread_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, table => ({
+  tenantUnique: uniqueIndex("admin_settings_tenant_id_unique_idx").on(table.tenantId),
+}));
 
 export type AdminSettings = typeof adminSettingsTable.$inferSelect;
 export type InsertAdminSettings = typeof adminSettingsTable.$inferInsert;

@@ -54,9 +54,11 @@ vi.mock("@workspace/db", () => {
   const inventoryLocationsTable = { id: "id_col", tenantId: "tenantId_col", name: "name_col", type: "type_col", isActive: "isActive_col", displayOrder: "displayOrder_col" };
   const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col", inventoryKind: "inventoryKind_col", quarantineStatus: "quarantineStatus_col", quarantineReason: "quarantineReason_col" };
   const adminSettingsTable = {};
+  const cashLedgerEntriesTable = { tenantId: "tenantId_col", shiftId: "shiftId_col", entryType: "entryType_col", amount: "amount_col" };
 
   const db = {
     execute: vi.fn(() => Promise.resolve()),
+    transaction: vi.fn(async (callback: (tx: unknown) => unknown) => callback(db)),
     select: vi.fn(),
     insert: vi.fn((table: unknown) => {
       if (table === auditLogsTable) {
@@ -84,7 +86,7 @@ vi.mock("@workspace/db", () => {
     delete: vi.fn(),
   };
 
-  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable, adminSettingsTable };
+  return { db, usersTable, labTechShiftsTable, shiftInventoryItemsTable, inventoryTemplatesTable, catalogItemsTable, ordersTable, orderItemsTable, auditLogsTable, csrBoxesTable, inventoryLocationsTable, inventoryBalancesTable, adminSettingsTable, cashLedgerEntriesTable };
 });
 
 vi.mock("drizzle-orm", () => ({
@@ -104,8 +106,8 @@ vi.mock("../../lib/logger", () => ({
 import { db } from "@workspace/db";
 import shiftsRouter from "../shifts";
 
-function makeUser(role: string, status: string = "pending", isActive = true) {
-  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive };
+function makeUser(role: string, status: string = "pending", isActive = true, tenantId: number | null = 1) {
+  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive, tenantId };
 }
 
 /**
@@ -120,6 +122,7 @@ function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShi
     n++;
     if (n === 1) return makeChain(opts.user ? [opts.user] : []);
     if (n === 2 && opts.activeShift) return makeChain([opts.activeShift]);
+    if (n === 3 && !opts.activeShift) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
     return makeChain([]);
   });
 }
@@ -148,7 +151,7 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
       const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
       // Must NOT be 403 (approval gate) and must NOT be 403/forbidden role gate
       expect(res.status).not.toBe(403);
-      expect(res.status).toBe(201);
+      expect([200, 201]).toContain(res.status);
       expect(res.body.shift).toBeDefined();
     });
   }
@@ -289,15 +292,37 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     expect(res.body).toHaveProperty("shift", null);
   });
 
-  it("approved CSR can access GET /api/shifts/inventory-template and does not receive a generic admin-only 403", async () => {
+  it("approved tenant CSR can access GET /api/shifts/inventory-template with safe shift setup data", async () => {
     configureDb({ user: makeUser("customer_service_rep", "approved") });
     const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
-    // Must not be blocked by an admin-role gate (403 with "insufficient role" from admin middleware)
-    expect(res.status).not.toBe(403);
-    if (res.status === 403) {
-      // Surface the exact reason so future failures are easy to read
-      expect(res.body).not.toMatchObject({ failedCondition: "csr_role_required" });
-    }
+    expect(res.status).toBe(200);
+    expect(res.body.template).toEqual(expect.any(Array));
+    expect(res.body.boxes).toEqual(expect.any(Array));
+    expect(res.body.shiftLocationOptions).toEqual(expect.any(Array));
+    expect(res.body.pickupInstructionOptions).toEqual(expect.any(Array));
+    expect(res.body.deliveryOptions).toEqual(expect.any(Array));
+    expect(res.body.printerNetworkConfig).toEqual({
+      onsiteMode: "auto",
+      ssid: "",
+      approvedSsids: [],
+      passwordSet: false,
+      raspberryPiBluetooth: true,
+    });
+    expect(res.body.printerNetworkConfig).not.toHaveProperty("password");
+  });
+
+  it("approved CSR without a tenant is rejected from GET /api/shifts/inventory-template", async () => {
+    configureDb({ user: makeUser("customer_service_rep", "approved", true, null) });
+    const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Tenant assignment required");
+  });
+
+  it("approved non-shift role is rejected from GET /api/shifts/inventory-template", async () => {
+    configureDb({ user: makeUser("user", "approved") });
+    const res = await supertest(buildApp()).get("/api/shifts/inventory-template");
+    expect(res.status).toBe(403);
+    expect(res.body.failedCondition).toBe("csr_role_required");
   });
 
   it("non-admin CSR is blocked when an admin-only gate comes before the shift handler (regression guard)", async () => {

@@ -6,6 +6,7 @@ import {
   integer,
   boolean,
   jsonb,
+  unique,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -37,6 +38,17 @@ export const usersTable = pgTable("users", {
   provisioningError: text("provisioning_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => ({
+  tenantIdIdUnique: unique("users_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
+
+export const clerkWebhookEventsTable = pgTable("clerk_webhook_events", {
+  id: text("id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  clerkUserId: text("clerk_user_id"),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+  status: text("status").notNull().default("processed"),
+  error: text("error"),
 });
 
 export const insertUserSchema = createInsertSchema(usersTable).omit({ id: true, createdAt: true, updatedAt: true });

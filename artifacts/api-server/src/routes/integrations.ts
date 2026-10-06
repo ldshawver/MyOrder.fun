@@ -19,16 +19,20 @@
  * (e.g. Airtable, RevenueCat) report "connected" on config presence alone.
  */
 import { Router, type IRouter } from "express";
+import { eq } from "drizzle-orm";
+import { adminSettingsTable, db } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
-import { logger } from "../lib/logger";
-import { hasUberDirectConfig } from "../lib/uberDirect";
+import { getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
+import { safeDecrypt } from "../lib/crypto";
+import { fetchWooSafely } from "../lib/wooSafeHttp";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 
 const router: IRouter = Router();
 
 type IntegrationStatus = "connected" | "missing_config" | "error";
 
 interface IntegrationResult {
-  stripe: IntegrationStatus;
+  paypal: IntegrationStatus;
   airtable: IntegrationStatus;
   github: IntegrationStatus;
   woocommerce: IntegrationStatus;
@@ -44,33 +48,9 @@ function hasEnv(...keys: string[]): boolean {
   });
 }
 
-/**
- * Attempt a lightweight live check against Stripe's API.
- * Uses the /v1/balance endpoint — minimal permissions, cheap, stable.
- * Falls back to "connected" (config-only) if the fetch itself errors out
- * for an unexpected reason (network unavailable, etc.) to avoid false
- * negatives in environments where outbound traffic is restricted.
- */
-async function checkStripe(): Promise<IntegrationStatus> {
-  if (!hasEnv("STRIPE_SECRET_KEY")) return "missing_config";
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch("https://api.stripe.com/v1/balance", {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${process.env["STRIPE_SECRET_KEY"]}`,
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    // 200 = connected; 401 = key invalid (error); anything else treat as error.
-    return res.ok ? "connected" : "error";
-  } catch (err) {
-    logger.warn({ err }, "integrations/health: Stripe live check failed");
-    // Network issue ≠ misconfiguration; treat as "error" so operators can see it.
-    return "error";
-  }
+async function checkPayPal(tenantId: number): Promise<IntegrationStatus> {
+  try { return (await loadTenantPaymentConfig(tenantId)).enabled ? "connected" : "missing_config"; }
+  catch { return "error"; }
 }
 
 /**
@@ -88,21 +68,25 @@ function checkGitHub(): IntegrationStatus {
   return hasEnv("GITHUB_TOKEN", "GITHUB_REPO") ? "connected" : "missing_config";
 }
 
-/**
- * WooCommerce: server-side URL + consumer key/secret.
- * Note: VITE_WOOCOMMERCE_URL is a frontend-only build var and is NOT
- * checked here — use WOOCOMMERCE_URL (no VITE_ prefix) for server-side
- * integration work. The frontend var controls only the menu tab link.
- */
-function checkWooCommerce(): IntegrationStatus {
-  return hasEnv("WOOCOMMERCE_URL", "WOOCOMMERCE_KEY", "WOOCOMMERCE_SECRET")
-    ? "connected"
-    : "missing_config";
+/** Use the same tenant credentials and safe transport as the admin test. */
+async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return "missing_config";
+  try {
+    const [row] = await db.select({ enabled: adminSettingsTable.wcEnabled, storeUrl: adminSettingsTable.wcStoreUrl,
+      consumerKey: adminSettingsTable.wcConsumerKey, consumerSecret: adminSettingsTable.wcConsumerSecret })
+      .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+    if (!row || row.enabled === false || !row.consumerKey || !row.consumerSecret) return "missing_config";
+    const consumerKey = safeDecrypt(row.consumerKey);
+    const consumerSecret = safeDecrypt(row.consumerSecret);
+    if (!consumerKey || !consumerSecret) return "error";
+    const response = await fetchWooSafely(row.storeUrl ?? "https://lucifercruz.com", "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
+    return response.ok ? "connected" : "error";
+  } catch { return "error"; }
 }
 
 /**
  * RevenueCat: optional SaaS licensing / entitlement gating.
- * Not used for order payments (Stripe is the payment authority).
+ * This integration is unrelated to the PayPal order-payment authority.
  */
 function checkRevenueCat(): IntegrationStatus {
   return hasEnv("REVENUECAT_SECRET_KEY") ? "connected" : "missing_config";
@@ -116,8 +100,9 @@ function checkOpenAI(): IntegrationStatus {
   return hasEnv("OPENAI_API_KEY") ? "connected" : "missing_config";
 }
 
-function checkUberDirect(): IntegrationStatus {
-  return hasUberDirectConfig() ? "connected" : "missing_config";
+async function checkUberDirect(tenantId: number): Promise<IntegrationStatus> {
+  try { return await getUberDirectRuntimeConfig(tenantId) ? "connected" : "missing_config"; }
+  catch { return "error"; }
 }
 
 // ─── Route ───────────────────────────────────────────────────────────────────
@@ -129,19 +114,17 @@ router.get(
   requireDbUser,
   requireApproved,
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     // Run all checks concurrently; individual check failures are caught
     // internally and return "error" rather than throwing.
-    const [stripe] = await Promise.all([checkStripe()]);
-
     const result: IntegrationResult = {
-      stripe,
+      paypal: await checkPayPal(req.dbUser!.tenantId!),
       airtable: checkAirtable(),
       github: checkGitHub(),
-      woocommerce: checkWooCommerce(),
+      woocommerce: await checkWooCommerce(req.dbUser!.tenantId!),
       revenuecat: checkRevenueCat(),
       openai: checkOpenAI(),
-      uberDirect: checkUberDirect(),
+      uberDirect: await checkUberDirect(req.dbUser!.tenantId!),
     };
 
     res.json(result);

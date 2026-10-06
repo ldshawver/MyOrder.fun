@@ -15,3 +15,4 @@ const drizzleSchema = Object.fromEntries(Object.entries(schema).filter(([key]) =
 export const db: NodePgDatabase<Record<string, never>> = drizzle(pool, { schema: drizzleSchema });
 
 export * from "./schema";
+export * from "./inventoryFieldRegistry";

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BrandProvider } from "@/contexts/BrandContext";
+import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { BrandProvider, useBrand } from "@/contexts/BrandContext";
 import { CartProvider } from "@/contexts/CartContext";
 import { Switch, Route, useLocation, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
@@ -13,10 +13,12 @@ import NdaModal from "@/components/nda-modal";
 import SessionWatermark from "@/components/session-watermark";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
+import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPolicy";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
 import Home from "@/pages/home";
+import PublicCatalog from "@/pages/public-catalog";
 import WaitlistPage from "@/pages/waitlist";
 import Terms from "@/pages/terms";
 import Privacy from "@/pages/privacy";
@@ -43,7 +45,9 @@ import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
+import OrderNotifications from "@/pages/admin/order-notifications";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -55,43 +59,16 @@ import AdminVisualEditor from "@/pages/admin/visual-editor";
 import AdminRolesPermissions from "@/pages/admin/roles-permissions";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const isClerkDevelopmentInstance = clerkPubKey?.startsWith("pk_test_");
 
-const clerkProxyUrl = import.meta.env.PROD
+const clerkProxyUrl = import.meta.env.PROD && !isClerkDevelopmentInstance
   ? (import.meta.env.VITE_CLERK_PROXY_URL ?? "").trim() || undefined
   : undefined;
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const BASE_API = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-type AppRole = "global_admin" | "admin" | "supervisor" | "csr" | "user";
-
-function normalizeAppRole(role?: string | null): AppRole {
-  const normalized = role?.trim().toLowerCase().replace(/[\s-]+/g, "_");
-
-  if (normalized === "global_admin") return "global_admin";
-  if (normalized === "admin" || normalized === "tenant_admin" || normalized === "manager") return "admin";
-  if (normalized === "supervisor") return "supervisor";
-
-  if (
-    normalized === "customer_service_rep" ||
-    normalized === "staff" ||
-    normalized === "customer_service_representative" ||
-    normalized === "customer_service" ||
-    normalized === "customer_service_specialist" ||
-    normalized === "customer_success" ||
-    normalized === "service_rep" ||
-    normalized === "csr" ||
-    normalized === "qsr" ||
-    normalized === "business_sitter" ||
-    normalized === "sales_rep" ||
-    normalized === "lab_tech" ||
-    normalized === "lab_technician"
-  ) {
-    return "csr";
-  }
-
-  return "user";
-}
+const normalizeAppRole = normalizeApplicationRole;
 
 function stripBase(path: string): string {
   return basePath && path.startsWith(basePath)
@@ -103,58 +80,39 @@ if (!clerkPubKey) {
   throw new Error("Missing VITE_CLERK_PUBLISHABLE_KEY in .env file");
 }
 
-function AuthBrandWrapper({ children }: { children: ReactNode }) {
+function AuthBrandWrapper({ children, registration = false }: { children: ReactNode; registration?: boolean }) {
   return (
-    <div
-      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden"
-      style={{ background: "#0A0000" }}
-    >
-      <div
-        className="pointer-events-none fixed inset-0"
-        style={{
-          backgroundImage:
-            "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(180,0,0,0.015) 4px)",
-        }}
-      />
-      <div
-        className="pointer-events-none fixed inset-0 opacity-[0.03]"
-        style={{
-          backgroundImage:
-            "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E\")",
-          backgroundRepeat: "repeat",
-          backgroundSize: "128px",
-        }}
-      />
-      <div
-        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none"
-        style={{
-          background: "radial-gradient(circle, rgba(220,20,60,0.08) 0%, transparent 70%)",
-          filter: "blur(60px)",
-        }}
-      />
-      <div className="relative z-10 flex flex-col items-center gap-6 w-full px-4">
-        <div className="flex flex-col items-center gap-3 mb-2">
-          <img
-            src="/lc-icon.png"
-            alt="Lucifer Cruz"
-            className="w-12 h-12 object-contain"
-            style={{ filter: "invert(1) brightness(1.2)" }}
-          />
-          <div className="text-center">
-            <div className="font-bold tracking-[0.2em] text-base" style={{ color: "#C0C0C0" }}>
-              LUCIFER CRUZ
-            </div>
-            <div className="text-[10px] font-mono tracking-[0.35em] uppercase mt-0.5" style={{ color: "#8B0000" }}>
-              Adult Boutique · 18+
-            </div>
-          </div>
+    <main className="relative min-h-screen overflow-hidden bg-[#090909] px-4 py-10 text-white sm:px-6 sm:py-14">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(176,132,57,0.14),transparent_55%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[#b89456] to-transparent" />
+      <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md flex-col items-center justify-center gap-7 sm:min-h-[calc(100vh-7rem)]">
+        <img src="/lc-logo.webp" alt="Lucifer Cruz" className="h-auto w-48 object-contain sm:w-56" />
+        <div className="text-center">
+          <div className="mx-auto mb-5 h-px w-16 bg-[#b89456]" />
+          <h1 className="font-serif text-3xl tracking-wide text-white sm:text-4xl">
+            {registration ? "Create your account" : "Sign into your account"}
+          </h1>
+          <p className="mt-3 text-sm tracking-[0.2em] text-[#d5b777]">18+ Adult Boutique</p>
         </div>
-        {children}
-        <p className="text-[10px] font-mono mt-2" style={{ color: "#333" }}>
-          ADULTS ONLY · 18+ · DISCREET · SECURE
+        <div className="w-full [&_.cl-rootBox]:mx-auto [&_.cl-rootBox]:w-full [&_.cl-cardBox]:w-full">
+          {children}
+        </div>
+        {!registration && (
+          <a
+            href={`${basePath}/sign-up`}
+            className="flex min-h-12 w-full items-center justify-center rounded-md border border-[#c7a664] bg-[#b89456] px-6 py-3 text-sm font-semibold tracking-wide text-[#17120a] transition-colors hover:bg-[#d5b777] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d5b777]"
+          >
+            Create an Account
+          </a>
+        )}
+        <a href="https://lucifercruz.com" target="_blank" rel="noopener noreferrer" className="text-sm text-[#e5d4b2] underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#d5b777]">
+          Visit Lucifer Cruz
+        </a>
+        <p className="max-w-sm text-center text-xs leading-relaxed text-[#aaa49b]">
+          For adults 18 and older. Age verification may be required before purchase.
         </p>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -162,6 +120,7 @@ function SignInPage() {
   return (
     <AuthBrandWrapper>
       <SignIn
+        appearance={{ elements: { headerTitle: { display: "none" } } }}
         routing="path"
         path={`${basePath}/sign-in`}
         signUpUrl={`${basePath}/sign-up`}
@@ -173,8 +132,8 @@ function SignInPage() {
 
 function SignUpPage() {
   return (
-    <AuthBrandWrapper>
-      <SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
+    <AuthBrandWrapper registration>
+      <SignUp appearance={{ elements: { headerTitle: { display: "none" } } }} routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} />
     </AuthBrandWrapper>
   );
 }
@@ -219,22 +178,44 @@ function HomeRedirect() {
   );
 }
 
+function SignedOutCatalog() {
+  const { branding, publicBrandLoading } = useBrand();
+  if (publicBrandLoading) return <LoadingScreen />;
+  if (branding.customer.displayName.trim().toLowerCase() !== "lucifer cruz" && window.location.hostname !== "myorder.fun") {
+    return <Redirect to="/waitlist" />;
+  }
+  return <PublicCatalog />;
+}
+
+/** Legacy customer URLs have one canonical mutable cart: /cart. */
+function LegacyCartRedirect() {
+  const [, setLocation] = useLocation();
+  useEffect(() => {
+    setLocation(`/cart${window.location.search}`, { replace: true });
+  }, [setLocation]);
+  return null;
+}
+
 const LoadingScreen = () => (
-  <div
+  <BrandedLoadingScreen />
+);
+
+function BrandedLoadingScreen() {
+  const { branding } = useBrand();
+  return <div
     className="h-screen w-full flex flex-col items-center justify-center gap-4"
     style={{ background: "#0A0000" }}
   >
     <img
-      src="/lc-icon.png"
-      alt="Lucifer Cruz"
-      className="w-14 h-14 object-contain animate-pulse"
-      style={{ filter: "invert(1) drop-shadow(0 0 24px rgba(220,20,60,0.6))" }}
+      src={branding.customer.logoUrl}
+      alt={branding.customer.displayName}
+      className="h-20 w-auto object-contain animate-pulse"
     />
     <div className="text-xs font-mono tracking-[0.3em] uppercase" style={{ color: "#555" }}>
       Loading...
     </div>
-  </div>
-);
+  </div>;
+}
 
 function useSessionLogger(_userEmail: string) {
   const [location] = useLocation();
@@ -270,12 +251,13 @@ function AuthErrorScreen({
   onSignOut: () => void;
   onRetry: () => void;
 }) {
+  const { branding } = useBrand();
   return (
     <div
       className="h-screen w-full flex flex-col items-center justify-center gap-6"
       style={{ background: "#0A0000" }}
     >
-      <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-10 h-10 object-contain" style={{ filter: "invert(1)" }} />
+      <img src={branding.customer.logoUrl} alt={branding.customer.displayName} className="h-16 w-auto object-contain" />
       <div className="text-center flex flex-col gap-1">
         <p className="text-sm font-mono" style={{ color: "#C0C0C0" }}>
           Unable to load your account.
@@ -313,6 +295,7 @@ function AuthenticatedApp() {
   const { signOut } = useClerk();
   const { getToken } = useAuth();
   const [authTokenReady, setAuthTokenReady] = useState(false);
+  const { setBranding } = useBrand();
 
   useEffect(() => {
     let cancelled = false;
@@ -358,6 +341,17 @@ function AuthenticatedApp() {
   });
 
   const clerkEmail = clerkUser?.primaryEmailAddress?.emailAddress;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authTokenReady || !user) return;
+    getToken()
+      .then((token) => fetch("/api/branding", { headers: token ? { Authorization: `Bearer ${token}` } : {} }))
+      .then((response) => response.ok ? response.json() : null)
+      .then((branding) => { if (!cancelled && branding) setBranding(branding); })
+      .catch(() => { /* platform defaults remain active */ });
+    return () => { cancelled = true; };
+  }, [authTokenReady, getToken, setBranding, user]);
 
   const [disclaimer, setDisclaimer] = useState<{ text: string; version: number; required: boolean } | null>(null);
   const [disclaimerLoading, setDisclaimerLoading] = useState(false);
@@ -484,7 +478,7 @@ function AuthenticatedApp() {
   const normalizedRole = normalizeNotificationRole(user.role);
   const isGlobalAdmin = normalizedRole === "global_admin";
   const isAdmin = normalizedRole === "admin" || isGlobalAdmin;
-  const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizedRole);
+  const isStaff = canAccessStaffRoute(user.role);
   const appRole = normalizeAppRole(user.role);
 
 
@@ -520,14 +514,23 @@ function AuthenticatedApp() {
         <Switch>
           <Route path="/dashboard" component={Dashboard} />
 
+          <Route path="/catalogue"><Redirect to="/catalog" /></Route>
           <Route path="/catalog" component={Catalog} />
           <Route path="/catalog/:id" component={CatalogItemDetail} />
 
           <Route path="/orders" component={Orders} />
-          <Route path="/orders/new" component={NewOrder} />
+          <Route path="/cart" component={NewOrder} />
+          <Route path="/checkout" component={NewOrder} />
+          <Route path="/order-workspace" component={LegacyCartRedirect} />
+          <Route path="/orders/new" component={LegacyCartRedirect} />
           <Route path="/orders/:id">{() => protect(<OrderDetail />)}</Route>
 
           <Route path="/ai-concierge" component={AiConcierge} />
+
+          {/* Keep this direct route ahead of conditional route fragments. Wouter's
+              Switch treats a fragment as a candidate, which previously shadowed
+              /staff for supervisor and admin sessions. */}
+          {isStaff && <Route path="/staff">{() => protect(<StaffQueue />)}</Route>}
 
           {appRole === "global_admin" && (
             <>
@@ -540,6 +543,7 @@ function AuthenticatedApp() {
           )}
 
           {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
+          {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
           {["global_admin", "admin"].includes(appRole) && (
             <>
@@ -548,6 +552,7 @@ function AuthenticatedApp() {
               <Route path="/admin/mfa" component={MfaSetup} />
               <Route path="/admin/import" component={AdminImport} />
               <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
+              <Route path="/admin/order-notifications">{() => protect(<OrderNotifications />)}</Route>
               <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
               <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />
@@ -570,13 +575,13 @@ function AuthenticatedApp() {
           {appRole === "supervisor" && (
             <>
               <Route path="/admin/users">{() => protect(<AdminUsers />)}</Route>
+              <Route path="/admin/closeouts">{() => protect(<AdminCloseouts />)}</Route>
               <Route path="/admin/feedback" component={AdminFeedback} />
             </>
           )}
 
           {isStaff && (
             <>
-              <Route path="/staff">{() => protect(<StaffQueue />)}</Route>
               <Route path="/csr-settings" component={CsrSettings} />
               <Route path="/csr-settings/:section" component={CsrSettings} />
             </>
@@ -602,6 +607,10 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/catalog">
+        <Show when="signed-in"><AuthenticatedApp /></Show>
+        <Show when="signed-out"><SignedOutCatalog /></Show>
+      </Route>
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>
@@ -646,26 +655,70 @@ function ClerkProviderWithRoutes() {
       routerPush={(to) => setLocation(stripBase(to))}
       routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
     >
-      <QueryClientProvider client={queryClient}>
-        <ClerkAuthTokenSetter />
-        <ClerkQueryClientCacheInvalidator />
-        <Router />
-      </QueryClientProvider>
+      <CartProvider>
+        <QueryClientProvider client={queryClient}>
+          <ClerkAuthTokenSetter />
+          <ClerkQueryClientCacheInvalidator />
+          <Router />
+        </QueryClientProvider>
+      </CartProvider>
     </ClerkProvider>
+  );
+}
+
+class ClerkInitializationBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Clerk initialization failed", error, info);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <ClerkInitializationError />;
+    }
+
+    return this.props.children;
+  }
+}
+
+export function ClerkInitializationError() {
+  return (
+    <main className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
+      <section
+        role="alert"
+        className="w-full max-w-lg rounded-2xl border border-destructive/40 bg-card p-6 shadow-xl"
+      >
+        <h1 className="text-xl font-semibold">Authentication unavailable</h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Clerk could not initialize. Reload the page or contact support if the problem continues.
+        </p>
+        <p className="mt-4 font-mono text-xs text-destructive">
+          CLERK_INITIALIZATION_FAILED
+        </p>
+      </section>
+    </main>
   );
 }
 
 function App() {
   return (
     <BrandProvider>
-      <CartProvider>
-        <TooltipProvider>
-          <WouterRouter base={basePath}>
+      <TooltipProvider>
+        <WouterRouter base={basePath}>
+          <ClerkInitializationBoundary>
             <ClerkProviderWithRoutes />
-          </WouterRouter>
-          <Toaster />
-        </TooltipProvider>
-      </CartProvider>
+          </ClerkInitializationBoundary>
+        </WouterRouter>
+        <Toaster />
+      </TooltipProvider>
     </BrandProvider>
   );
 }

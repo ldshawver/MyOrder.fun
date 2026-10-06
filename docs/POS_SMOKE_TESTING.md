@@ -169,6 +169,102 @@ FAIL  step=19  GET /api/audit?limit=200  http=200  missing actions: reprint
 A SKIP is **not** a PASS — investigate why before declaring the system
 POS-ready.
 
+## General Queue cash operations
+
+The Shift / Queue page resolves its operational state from server-side shift
+and order records. It does not use browser-local state:
+
+- **Active CSR** means an eligible CSR shift is authoritative for newly routed
+  orders. The banner shows the CSR's safe display name and shift start time.
+  Eligible cash sales use that shift's existing cash ledger and register.
+- **General Queue Active** means no CSR shift is authoritative. New orders use
+  the tenant-scoped General Queue. Agents may view and atomically claim those
+  orders, but claiming an order does not by itself create a cash drawer or
+  authorize an unaudited cash payment.
+- Starting an eligible CSR shift changes the authoritative banner and routing
+  for new orders. Already-claimed General Queue orders keep their owner and
+  cash-session context unless an authorized release or reassignment occurs.
+
+### Manager: open and reconcile a General Queue cash session
+
+1. Open **Shift / Queue**, then select **View General Queue**.
+2. Confirm the cash-session status is **Closed**.
+3. Select an active tenant register and its linked location, enter the opening
+   balance, and select **Open Cash Session**.
+4. Confirm the session shows **Open**, the correct register/location, opening
+   time and balance, and the opening manager in the participant list.
+5. At reconciliation, enter the physically counted closing balance and select
+   **Reconcile & Close**. The server calculates expected cash from the opening
+   balance plus canonical `cash_ledger_entries`, records any variance, closing
+   actor and closing time, and closes the session.
+
+Opening is serialized with a PostgreSQL advisory transaction lock and a
+partial unique index. Concurrent requests cannot create two open sessions for
+the same tenant/location/register.
+
+### Agent: join, claim, and accept cash
+
+1. Open **View General Queue** and select **Join Cash Session**. Joining a
+   session does not pretend the agent owns a conventional CSR shift.
+2. Claim an unassigned order. The claim uses a conditional update, so only one
+   concurrent claimant succeeds.
+3. Open the claimed order and select **Close as Cash Paid**.
+4. Verify the trusted server-derived amount due, enter the amount tendered and
+   optional internal note, review calculated change, and confirm only after
+   receiving the cash.
+
+The closeout transaction locks the tenant-scoped order, revalidates ownership
+and payment state, calculates the balance from the order, inserts one canonical
+cash-ledger entry, closes the order, updates session totals, and writes the
+completion audit. An idempotency key prevents retry or double-click duplicates.
+
+### Authorization and overrides
+
+- A CSR on an active shift may close only an order assigned to that CSR and
+  eligible shift/register.
+- A General Queue agent may close only an order that agent claimed, and only
+  after joining the selected open General Queue cash session.
+- Merely viewing the queue or session does not grant cash-closeout authority.
+- Supervisors, managers and administrators may explicitly request an audited
+  override. The override does not bypass tenant, order-state, register, or open
+  cash-session validation.
+- Idempotent replay is limited to the original cash actor or an explicitly
+  authorized supervisor override.
+- All queue, user, register, location, session, order and ledger queries are
+  scoped to the authenticated tenant.
+
+Expected actionable errors include:
+
+- `A General Queue cash session must be opened before accepting cash.`
+- `Join the active General Queue cash session before accepting cash`
+- `Claim this General Queue order before accepting cash`
+- `Only the assigned CSR may close this order for cash`
+- `Amount tendered is insufficient`
+- `Another payment is pending or associated with this order`
+- `Order is already paid or is not eligible for cash closeout`
+- `An active General Queue cash session already exists for that register`
+
+### Migration recovery
+
+Migration `0038_general_queue_cash_sessions` is forward-only. It adds the
+General Queue session/participant tables and additive cash-ledger columns,
+backfills legacy ledger actor/tender/change values, adds indexes and
+accountability constraints, and does not delete or recreate orders, shifts,
+cash entries, databases, or volumes.
+
+Do not add or run a backward migration that drops these tables or columns:
+session history and its ledger foreign keys are accounting evidence. If an
+application rollout fails after `0038`:
+
+1. Leave the migrated schema and preserved volume in place.
+2. Stop new cash acceptance if the running build cannot write the new required
+   actor/tender/change fields.
+3. Correct the application build and roll forward.
+4. Validate the migration ledger and confirm every cash entry has exactly one
+   accountability context: an active CSR shift or a General Queue session.
+5. Reconcile any open session from its persisted opening balance and canonical
+   ledger entries. Never delete the session or fabricate a balancing entry.
+
 ## Re-running cleanup
 
 The smoke script tags imported items with `POS-SMOKE-<unix-ts>` so each run

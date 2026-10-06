@@ -1,0 +1,1 @@
+PageSize=Custom.1.9375x1.9375in Resolution=203dpi Horizontal=0 Vertical=0 Rotate=0 ImgMirror=0 ImgNegative=0 Darkness=10

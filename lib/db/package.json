@@ -11,9 +11,11 @@
     "generate": "drizzle-kit generate --config ./drizzle.config.ts",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
-    "db:migrate": "drizzle-kit migrate --config ./drizzle.config.ts",
+    "db:migrate": "tsx ./scripts/migrate-verified.ts",
     "db:push:verbose": "DEBUG=drizzle-kit:* drizzle-kit push --force --config ./drizzle.config.ts",
-    "db:migrate:verbose": "DEBUG=drizzle-kit:* drizzle-kit migrate --config ./drizzle.config.ts",
+    "db:migrate:verbose": "tsx ./scripts/migrate-verified.ts",
+    "db:validate-migrations": "tsx ./scripts/validate-migration-ledger.ts",
+    "db:verify-runtime": "tsx ./scripts/verify-runtime-queries.ts",
     "db:check": "tsx ./scripts/check-db.ts"
   },
   "dependencies": {

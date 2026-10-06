@@ -6,6 +6,8 @@ const guardedTables = ["inventory_" + "balances", "inventory_" + "reservations"]
 const forbiddenFragments = guardedTables.flatMap(table => ["UPDATE ", "INSERT INTO ", "DELETE FROM "].map(prefix => `${prefix}${table}`));
 const allowedAuthorityFile = "artifacts/api-server/src/lib/inventoryAuthority.ts";
 const allowedReservationFile = "artifacts/api-server/src/lib/inventoryReservations.ts";
+const allowedMovementLedgerFile = "artifacts/api-server/src/lib/inventoryMovementLedger.ts";
+const allowedDevFixtureFile = "scripts/src/seed-catalogue-variants-dev.ts";
 const allowedTestSegments = [`${sep}__tests__${sep}`, `${sep}e2e${sep}`];
 const allowedFileSuffixes = [".test.ts", ".spec.ts", ".md"];
 const scannedExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".sql", ".json"]);
@@ -18,7 +20,10 @@ function extensionOf(path: string): string {
 
 function shouldSkipFile(absPath: string, relPath: string): boolean {
   if (!scannedExtensions.has(extensionOf(absPath))) return true;
-  if (relPath === allowedAuthorityFile || relPath === allowedReservationFile) return true;
+  // Historical schema migrations and the explicit DEV fixture seed are not
+  // runtime inventory writers. The guard still scans application code.
+  if (relPath.startsWith("lib/db/drizzle/") || relPath === allowedDevFixtureFile) return true;
+  if (relPath === allowedAuthorityFile || relPath === allowedReservationFile || relPath === allowedMovementLedgerFile) return true;
   if (allowedFileSuffixes.some(suffix => relPath.endsWith(suffix))) return true;
   return allowedTestSegments.some(segment => absPath.includes(segment));
 }

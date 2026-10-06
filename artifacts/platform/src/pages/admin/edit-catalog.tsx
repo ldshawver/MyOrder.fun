@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useAuth } from "@clerk/react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { catalogProductDraftIsValid, createCatalogProductPayload, sanitizedCatalogError, validateCatalogProductDraft } from "@/lib/catalogProductForm";
+import { CATALOG_LIFECYCLE_LABEL, type CatalogLifecycleStatus } from "@/lib/catalogLifecycleStatus";
+import { useGetCurrentUser } from "@workspace/api-client-react";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,18 +32,36 @@ type CatalogProduct = {
   price: number;
   regularPrice: number | null;
   compareAtPrice: number | null;
+  homiePrice: number | null;
   imageUrl: string | null;
   alavontImageUrl: string | null;
   isAvailable: boolean;
+  isTaxable: boolean;
   isWooManaged: boolean;
   isLocalAlavont: boolean;
   sku: string | null;
   alavontInStock: boolean | null;
+  displayName: string | null;
+  displayCategory: string | null;
+  displayDescription: string | null;
+  displayImage: string | null;
+  marketingCopy: string | null;
+  upsellCopy: string | null;
+  promoBadges: string[] | null;
+  mediaGallery: unknown[] | null;
   labName: string | null;
+  receiptName: string | null;
+  isFeatured: boolean;
+  isSaleFeatured: boolean;
+  parLevel: number | string | null;
+  moq: number | string | null;
+  preferredReorderQuantity: number | string | null;
   stockQuantity: number | null;
+  lifecycleStatus?: CatalogLifecycleStatus;
+  metadata?: { complianceReason?: string | null; complianceHold?: boolean } | null;
 };
 
-const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isWooManaged: boolean } = {
+const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolean; isTaxable: boolean; isWooManaged: boolean } = {
   name: "",
   alavontName: "",
   luciferCruzName: "",
@@ -50,6 +71,8 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   alavontDescription: "",
   price: 0,
   regularPrice: null,
+  compareAtPrice: null,
+  homiePrice: null,
   imageUrl: "",
   alavontImageUrl: "",
   luciferCruzImageUrl: "",
@@ -59,7 +82,13 @@ const EMPTY_FORM: Partial<CatalogProduct> & { price: number; isAvailable: boolea
   customerSafeDescription: "",
   labName: "",
   isAvailable: true,
+  isTaxable: true,
   isWooManaged: false,
+  isFeatured: false,
+  isSaleFeatured: false,
+  parLevel: 0,
+  moq: 0,
+  preferredReorderQuantity: 0,
 };
 
 function fieldVal(v: unknown): string {
@@ -76,7 +105,7 @@ function EditDialog({
 }: {
   item: Partial<CatalogProduct> | null;
   onClose: () => void;
-  onSave: (data: Record<string, unknown>) => void;
+  onSave: (data: Record<string, unknown>) => Promise<void>;
   isSaving: boolean;
 }) {
   const isNew = !item?.id;
@@ -94,60 +123,85 @@ function EditDialog({
     luciferCruzDescription: fieldVal(item?.luciferCruzDescription),
     price: fieldVal(item?.price),
     regularPrice: fieldVal(item?.regularPrice),
+    compareAtPrice: fieldVal(item?.compareAtPrice),
+    homiePrice: fieldVal(item?.homiePrice),
     imageUrl: fieldVal(item?.imageUrl),
     alavontImageUrl: fieldVal(item?.alavontImageUrl),
+    alavontInStock: item?.alavontInStock !== false,
     luciferCruzImageUrl: fieldVal(item?.luciferCruzImageUrl),
     customerSafeName: fieldVal(item?.customerSafeName),
     customerSafeDescription: fieldVal(item?.customerSafeDescription),
     labName: fieldVal(item?.labName),
+    receiptName: fieldVal(item?.receiptName),
     sku: fieldVal(item?.sku),
     isAvailable: item?.isAvailable !== false,
+    isTaxable: item?.isTaxable !== false,
+    isFeatured: item?.isFeatured === true,
+    isSaleFeatured: item?.isSaleFeatured === true,
+    parLevel: fieldVal(item?.parLevel),
+    moq: fieldVal(item?.moq),
+    preferredReorderQuantity: fieldVal(item?.preferredReorderQuantity),
+    displayName: fieldVal(item?.displayName),
+    displayCategory: fieldVal(item?.displayCategory),
+    displayDescription: fieldVal(item?.displayDescription),
+    displayImage: fieldVal(item?.displayImage),
+    marketingCopy: fieldVal(item?.marketingCopy),
+    upsellCopy: fieldVal(item?.upsellCopy),
+    promoBadges: Array.isArray(item?.promoBadges) ? item!.promoBadges!.join(", ") : "",
+    mediaGallery: JSON.stringify(item?.mediaGallery ?? []),
   });
+  const [fieldErrors, setFieldErrors] = useState(validateCatalogProductDraft(form));
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
+  const requestPending = isSaving || submitting;
 
-  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }));
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const value = e.target.value;
+    setForm(f => ({ ...f, [k]: value }));
+    const errorKey = k === "alavontName" ? "name" : k === "alavontCategory" ? "category" : k;
+    setFieldErrors(errors => ({ ...errors, [errorKey]: undefined }));
+    setSubmitError(null);
+  };
 
-  function handleSave() {
-    const payload: Record<string, unknown> = {
-      name: form.name || form.alavontName || "Unnamed Product",
-      alavontName: form.alavontName || null,
-      luciferCruzName: form.luciferCruzName || null,
-      luciferCruzCategory: form.luciferCruzCategory || null,
-      luciferCruzDescription: form.luciferCruzDescription || null,
-      luciferCruzImageUrl: form.luciferCruzImageUrl || null,
-      customerSafeName: form.customerSafeName || null,
-      customerSafeDescription: form.customerSafeDescription || null,
-      category: form.category || form.alavontCategory || "General",
-      alavontCategory: form.alavontCategory || null,
-      description: form.description || null,
-      alavontDescription: form.alavontDescription || null,
-      price: parseFloat(String(form.price)) || 0,
-      regularPrice: form.regularPrice ? parseFloat(String(form.regularPrice)) : null,
-      imageUrl: form.imageUrl || null,
-      alavontImageUrl: form.alavontImageUrl || null,
-      labName: form.labName || null,
-      sku: form.sku || null,
-      isAvailable: form.isAvailable,
-    };
-    onSave(payload);
+  async function handleSave() {
+    if (submitLock.current) return;
+    const errors = validateCatalogProductDraft(form);
+    setFieldErrors(errors);
+    setSubmitError(null);
+    if (Object.keys(errors).length > 0) return;
+    submitLock.current = true;
+    setSubmitting(true);
+    const payload = createCatalogProductPayload(form);
+    try {
+      await onSave(payload);
+    } catch (error) {
+      setSubmitError(sanitizedCatalogError(error));
+    } finally {
+      submitLock.current = false;
+      setSubmitting(false);
+    }
   }
 
   const input = (label: string, key: string, disabled = false, type = "text") => (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-muted-foreground font-medium">{label}</span>
+      <span className="text-xs text-muted-foreground font-medium">{label}{["alavontName", "alavontCategory", "price"].includes(key) ? " *" : ""}</span>
       <Input
         type={type}
         value={fieldVal(form[key])}
         onChange={set(key)}
-        disabled={disabled || isSaving}
+        disabled={disabled || requestPending}
         className="text-sm"
         placeholder={disabled ? "WooCommerce managed" : undefined}
       />
+      {(key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]) && (
+        <span className="text-xs text-red-400">{key === "alavontName" ? fieldErrors.name : key === "alavontCategory" ? fieldErrors.category : fieldErrors[key as keyof typeof fieldErrors]}</span>
+      )}
     </label>
   );
 
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={(open) => { if (!open && !requestPending) onClose(); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -165,20 +219,27 @@ function EditDialog({
             </div>
             <div className="grid grid-cols-2 gap-3">
               {input("Alavont Name", "alavontName", isWoo)}
-              {input("Internal Name (base)", "name", isWoo)}
+              {input("Internal Name (base, optional)", "name", isWoo)}
               {input("Alavont Category", "alavontCategory", isWoo)}
+              {input("Internal Category (base, optional)", "category", isWoo)}
               {input("Alavont Image URL", "alavontImageUrl", isWoo)}
               {input("Lab Name / Internal", "labName", isWoo)}
               {input("SKU", "sku")}
               {input("Price ($)", "price", isWoo, "number")}
               {input("Regular / Compare-at Price ($)", "regularPrice", false, "number")}
+              {input("Sale Price ($)", "compareAtPrice", false, "number")}
+              {input("Employee Discount ($)", "homiePrice", false, "number")}
+              {input("PAR", "parLevel", false, "number")}
+              {input("Minimum Order Quantity", "moq", false, "number")}
+              {input("Preferred Reorder Quantity", "preferredReorderQuantity", false, "number")}
+              {input("Receipt Name", "receiptName")}
             </div>
             <label className="flex flex-col gap-1 mt-3">
               <span className="text-xs text-muted-foreground font-medium">Alavont Description</span>
               <textarea
                 value={fieldVal(form.alavontDescription)}
                 onChange={(e) => setForm(f => ({ ...f, alavontDescription: e.target.value }))}
-                disabled={isWoo || isSaving}
+                disabled={isWoo || requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -201,7 +262,7 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.luciferCruzDescription)}
                 onChange={(e) => setForm(f => ({ ...f, luciferCruzDescription: e.target.value }))}
-                disabled={isSaving}
+                disabled={requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -226,7 +287,7 @@ function EditDialog({
               <textarea
                 value={fieldVal(form.customerSafeDescription)}
                 onChange={(e) => setForm(f => ({ ...f, customerSafeDescription: e.target.value }))}
-                disabled={isSaving}
+                disabled={requestPending}
                 rows={2}
                 className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none"
               />
@@ -242,23 +303,50 @@ function EditDialog({
                   type="checkbox"
                   checked={Boolean(form.isAvailable)}
                   onChange={e => setForm(f => ({ ...f, isAvailable: e.target.checked }))}
-                  disabled={isSaving}
+                  disabled={requestPending}
                   className="w-4 h-4"
                 />
                 <span className="text-sm">Available for ordering</span>
               </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isTaxable)} onChange={e => setForm(f => ({ ...f, isTaxable: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Taxable at the transaction location</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.alavontInStock)} onChange={e => setForm(f => ({ ...f, alavontInStock: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Show catalogue stock indicator</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isFeatured)} onChange={e => setForm(f => ({ ...f, isFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Featured (promote in catalogue)</span>
+              </label>
+              <label className="mt-3 flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={Boolean(form.isSaleFeatured)} onChange={e => setForm(f => ({ ...f, isSaleFeatured: e.target.checked }))} disabled={requestPending} className="w-4 h-4" />
+                <span className="text-sm">Sale (show sale marker only)</span>
+              </label>
             </div>
           )}
 
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Optional presentation</div>
+            <div className="grid grid-cols-2 gap-3">
+              {input("Display Name", "displayName")}{input("Display Category", "displayCategory")}{input("Display Image URL", "displayImage")}{input("Promo Badges (comma separated)", "promoBadges")}
+              {input("Marketing Copy", "marketingCopy")}{input("Upsell Copy", "upsellCopy")}
+            </div>
+            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Display Description</span><textarea value={fieldVal(form.displayDescription)} onChange={e => setForm(f => ({ ...f, displayDescription: e.target.value }))} disabled={requestPending} rows={2} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+            <label className="flex flex-col gap-1 mt-3"><span className="text-xs text-muted-foreground font-medium">Media Gallery JSON</span><textarea value={fieldVal(form.mediaGallery)} onChange={e => setForm(f => ({ ...f, mediaGallery: e.target.value }))} disabled={requestPending} rows={2} className="w-full font-mono text-xs rounded-md border border-input bg-background px-3 py-2 resize-none" /></label>
+          </div>
+
           <div className="flex gap-2 pt-2">
-            <Button onClick={handleSave} disabled={isSaving} className="flex-1">
-              {isSaving ? <Loader2 size={14} className="animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
-              {isNew ? "Create Product" : "Save Changes"}
+            <Button type="button" onClick={() => void handleSave()} disabled={requestPending || !catalogProductDraftIsValid(form)} className="flex-1">
+              {requestPending ? <Loader2 size={14} className="animate-spin mr-2" /> : <Save size={14} className="mr-2" />}
+              {requestPending ? (isNew ? "Creating…" : "Saving…") : (isNew ? "Create Product" : "Save Changes")}
             </Button>
-            <Button variant="outline" onClick={onClose} disabled={isSaving}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={requestPending}>
               Cancel
             </Button>
           </div>
+          {submitError && <div role="alert" className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{submitError}</div>}
         </div>
       </DialogContent>
     </Dialog>
@@ -269,11 +357,18 @@ function EditDialog({
 
 export default function AdminEditCatalog() {
   const { getToken } = useAuth();
+  const { data: currentUser } = useGetCurrentUser();
+  const isGlobalAdmin = currentUser?.role === "global_admin";
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [showWoo, setShowWoo] = useState(false);
+  const [lifecycleFilter, setLifecycleFilter] = useState<"all" | CatalogLifecycleStatus>("all");
   const [editItem, setEditItem] = useState<Partial<CatalogProduct> | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [saveConfirmation, setSaveConfirmation] = useState<string | null>(null);
+  const [complianceItem, setComplianceItem] = useState<CatalogProduct | null>(null);
+  const [complianceReason, setComplianceReason] = useState("");
+  const [complianceError, setComplianceError] = useState<string | null>(null);
 
   const fetchCatalog = useCallback(async (): Promise<CatalogProduct[]> => {
     const token = await getToken();
@@ -303,9 +398,17 @@ export default function AdminEditCatalog() {
         body: JSON.stringify(data),
       });
       if (!r.ok) throw new Error(await r.text());
-      return r.json();
+      return r.json() as Promise<CatalogProduct>;
     },
-    onSuccess: () => { setEditItem(null); qc.invalidateQueries({ queryKey: ["edit-catalog"] }); },
+    onSuccess: async (saved) => {
+      qc.setQueryData<CatalogProduct[]>(["edit-catalog"], current => {
+        const withoutSaved = (current ?? []).filter(item => item.id !== saved.id);
+        return [...withoutSaved, saved];
+      });
+      setSaveConfirmation(`Product ${saved.id} saved.`);
+      setEditItem(null);
+      await qc.invalidateQueries({ queryKey: ["edit-catalog"], refetchType: "active" });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -321,8 +424,20 @@ export default function AdminEditCatalog() {
     onSuccess: async () => { setDeleteId(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
   });
 
+  const complianceMutation = useMutation({
+    mutationFn: async ({ item, reason }: { item: CatalogProduct; reason: string }) => {
+      const token = await getToken();
+      const response = await fetch(`/api/admin/product-master/${item.id}/lifecycle`, { method: "PATCH", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ complianceHold: item.lifecycleStatus !== "compliance_hold", reason }) });
+      if (!response.ok) throw new Error(`Compliance action rejected (HTTP ${response.status})`);
+      return response.json();
+    },
+    onSuccess: async () => { setComplianceItem(null); setComplianceReason(""); setComplianceError(null); await qc.invalidateQueries({ queryKey: ["edit-catalog"] }); await refetch(); },
+    onError: error => setComplianceError(error instanceof Error ? error.message : "Compliance action failed"),
+  });
+
   const filtered = items.filter(item => {
     if (!showWoo && item.isWooManaged) return false;
+    if (!item.isWooManaged && lifecycleFilter !== "all" && item.lifecycleStatus !== lifecycleFilter) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return (
@@ -335,6 +450,13 @@ export default function AdminEditCatalog() {
 
   const alavontCount = items.filter(i => !i.isWooManaged).length;
   const wooCount = items.filter(i => i.isWooManaged).length;
+  const localItems = items.filter(i => !i.isWooManaged);
+  const lifecycleCounts = {
+    customerVisible: localItems.filter(item => item.lifecycleStatus === "customer_visible").length,
+    unavailableHidden: localItems.filter(item => item.lifecycleStatus === "unavailable_hidden").length,
+    complianceHold: localItems.filter(item => item.lifecycleStatus === "compliance_hold").length,
+    archived: localItems.filter(item => item.lifecycleStatus === "archived").length,
+  };
 
   return (
     <div className="space-y-5">
@@ -368,6 +490,11 @@ export default function AdminEditCatalog() {
       </div>
 
       {/* Search + filters */}
+      {saveConfirmation && (
+        <div role="status" className="rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300">
+          {saveConfirmation}
+        </div>
+      )}
       <div className="flex gap-3 flex-wrap">
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -387,14 +514,22 @@ export default function AdminEditCatalog() {
           <input type="checkbox" checked={showWoo} onChange={e => setShowWoo(e.target.checked)} className="w-3.5 h-3.5" />
           Show WooCommerce products
         </label>
+        <select aria-label="Catalogue lifecycle filter" value={lifecycleFilter} onChange={event => setLifecycleFilter(event.target.value as "all" | CatalogLifecycleStatus)} className="h-9 rounded-md border bg-background px-2 text-sm">
+          <option value="all">All</option>
+          <option value="customer_visible">Customer Visible</option>
+          <option value="compliance_hold">Held</option>
+          <option value="archived">Archived</option>
+        </select>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {[
           { label: "Total Products", value: alavontCount, icon: Package, color: "text-blue-400" },
-          { label: "Available", value: items.filter(i => !i.isWooManaged && i.isAvailable).length, icon: CheckCircle, color: "text-green-400" },
-          { label: "Hidden / Unavailable", value: items.filter(i => !i.isWooManaged && !i.isAvailable).length, icon: XCircle, color: "text-red-400" },
+          { label: "Customer Visible", value: lifecycleCounts.customerVisible, icon: CheckCircle, color: "text-green-400" },
+          { label: "Unavailable / Hidden", value: lifecycleCounts.unavailableHidden, icon: XCircle, color: "text-amber-400" },
+          { label: "Compliance Hold", value: lifecycleCounts.complianceHold, icon: XCircle, color: "text-orange-400" },
+          { label: "Archived", value: lifecycleCounts.archived, icon: XCircle, color: "text-red-400" },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} className="glass-card rounded-xl p-3 flex items-center gap-3">
             <Icon size={17} className={color} />
@@ -466,10 +601,11 @@ export default function AdminEditCatalog() {
                       )}
                     </td>
                     <td className="p-3 text-center">
-                      {item.isAvailable
-                        ? <span className="text-[10px] font-semibold text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">Active</span>
-                        : <span className="text-[10px] font-semibold text-red-400 bg-red-400/10 px-2 py-0.5 rounded-full">Hidden</span>
-                      }
+                      {(() => {
+                        const lifecycle = item.lifecycleStatus ?? "unavailable_hidden";
+                        const style = lifecycle === "customer_visible" ? "text-green-400 bg-green-400/10" : lifecycle === "archived" ? "text-red-400 bg-red-400/10" : lifecycle === "compliance_hold" ? "text-orange-400 bg-orange-400/10" : "text-amber-400 bg-amber-400/10";
+                        return <span className={`text-[10px] font-semibold ${style} px-2 py-0.5 rounded-full`}>{CATALOG_LIFECYCLE_LABEL[lifecycle]}</span>;
+                      })()}
                     </td>
                     <td className="p-3 text-center">
                       {item.isWooManaged
@@ -486,6 +622,7 @@ export default function AdminEditCatalog() {
                         >
                           <Edit2 size={13} />
                         </button>
+                        {isGlobalAdmin && <button onClick={() => { setComplianceItem(item); setComplianceReason(""); setComplianceError(null); }} className="p-1.5 rounded-lg hover:bg-orange-500/10 text-orange-300" title={item.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"} aria-label={`${item.lifecycleStatus === "compliance_hold" ? "Review" : "Place"} compliance hold for ${item.name}`}><XCircle size={13} /></button>}
                         {!item.isWooManaged && (
                           <button
                             onClick={() => setDeleteId(item.id)}
@@ -510,10 +647,12 @@ export default function AdminEditCatalog() {
         <EditDialog
           item={editItem}
           onClose={() => setEditItem(null)}
-          onSave={data => saveMutation.mutate({ id: editItem.id, data })}
+          onSave={async data => { await saveMutation.mutateAsync({ id: editItem.id, data }); }}
           isSaving={saveMutation.isPending}
         />
       )}
+
+      {complianceItem && <Dialog open onOpenChange={() => setComplianceItem(null)}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>{complianceItem.lifecycleStatus === "compliance_hold" ? "Review compliance hold" : "Place compliance hold"}</DialogTitle></DialogHeader><p className="text-sm">{complianceItem.name}</p><p className="text-xs text-muted-foreground">Current hold: {complianceItem.lifecycleStatus === "compliance_hold" ? "Active" : "None"}. Reason: {complianceItem.metadata?.complianceReason || "—"}</p><label className="text-xs">Audit reason<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} aria-label="Compliance action reason" /></label>{complianceError && <p role="alert" className="text-xs text-red-400">{complianceError}</p>}<Button disabled={!complianceReason.trim() || complianceMutation.isPending} onClick={() => complianceMutation.mutate({ item: complianceItem, reason: complianceReason.trim() })}>{complianceItem.lifecycleStatus === "compliance_hold" ? "Remove hold as Global Admin" : "Place hold"}</Button></DialogContent></Dialog>}
 
       {/* Delete confirm dialog */}
       {deleteId !== null && (

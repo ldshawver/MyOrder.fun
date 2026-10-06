@@ -1,11 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface AnimatedHourglassProps {
   size?: number;
   message?: string;
   /**
    * Optional 0..1 progress through the promised-ready window.
-   * 0 = just routed, sand fully in the top bulb.
+   * 0 = just placed, sand fully in the top bulb.
    * 1 = ETA reached, sand fully in the bottom bulb.
    * When omitted, the hourglass falls back to its self-looping animation
    * (used in loading spinners that have no time anchor).
@@ -19,6 +19,16 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
   const timeRef = useRef(0);
   const progressRef = useRef<number | undefined>(progress);
   progressRef.current = progress;
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const reducedMotionProgress = reducedMotion ? progress : undefined;
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(media.matches);
+    const onChange = () => setReducedMotion(media.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -235,7 +245,7 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, w, h);
 
-      drawRings();
+      if (!reducedMotion) drawRings();
 
       let rotation: number;
       let sandFraction: number;
@@ -266,7 +276,7 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
 
       drawHourglass(rotation, sandFraction);
 
-      if (isTimeDriven) {
+      if (!reducedMotion && isTimeDriven) {
         if (sandFraction < 1 && t % 2 === 0) spawnParticle();
       } else {
         const phase = (t % 250) / 250;
@@ -275,7 +285,7 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
       }
       drawParticles();
 
-      animRef.current = requestAnimationFrame(animate);
+      if (!reducedMotion) animRef.current = requestAnimationFrame(animate);
     }
 
     animate();
@@ -283,12 +293,12 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
     return () => {
       cancelAnimationFrame(animRef.current);
     };
-  }, [size]);
+  }, [size, reducedMotion, reducedMotionProgress]);
 
   return (
     <div className="flex flex-col items-center gap-6">
       <div className="hourglass-container relative">
-        <canvas ref={canvasRef} style={{ width: size, height: size }} />
+        <canvas ref={canvasRef} aria-hidden="true" style={{ width: size, height: size }} />
         {/* Outer glow ring */}
         <div
           className="absolute inset-0 rounded-full pointer-events-none"
@@ -298,14 +308,14 @@ export default function AnimatedHourglass({ size = 180, message = "Processing yo
         />
       </div>
       <div className="text-center space-y-2">
-        <p className="text-base font-medium text-foreground/90">{message}</p>
-        <div className="flex items-center justify-center gap-1.5">
+        <p className="text-base font-medium text-foreground/90" role="status">{message}</p>
+        <div className="flex items-center justify-center gap-1.5" aria-hidden="true">
           {[0, 1, 2].map(i => (
             <div
               key={i}
-              className="w-1.5 h-1.5 rounded-full bg-primary"
+              className="w-1.5 h-1.5 rounded-full bg-primary motion-reduce:animate-none"
               style={{
-                animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
+                animation: reducedMotion ? "none" : `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
               }}
             />
           ))}

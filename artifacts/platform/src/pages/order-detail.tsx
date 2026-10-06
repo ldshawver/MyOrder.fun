@@ -1,12 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "wouter";
 import {
   useGetOrder,
   useGetOrderNotes,
   useAddOrderNote,
   useUpdateOrderStatus,
-  useTokenizePayment,
-  useConfirmPayment,
   getGetOrderQueryKey,
   getGetOrderNotesQueryKey,
   OrderPaymentStatus,
@@ -18,7 +16,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, Gift } from "lucide-react";
+import { ArrowLeft, Lock, MessageSquare, CreditCard, Package, CheckCircle2, MapPin, ExternalLink, Truck, BadgeDollarSign, Banknote, RotateCcw } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -28,8 +26,11 @@ import AnimatedHourglass from "@/components/AnimatedHourglass";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { CatalogNotice } from "@/components/CatalogNotice";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
+import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
+import { customerTracker } from "@/lib/orderTracker";
 
 type OrderWithTracking = Order & {
+  serverNow?: string;
   trackingUrl?: string | null;
   trackingSubmittedAt?: string | null;
   handoffChecklist?: Record<string, boolean> | null;
@@ -37,6 +38,43 @@ type OrderWithTracking = Order & {
   handoffCompletedByUserId?: number | null;
 };
 type CreditSummary = { balance: number };
+
+function RefundReturnPanel({ order, getToken, onDone }: { order: Order; getToken: () => Promise<string | null>; onDone: () => void }) {
+  const [itemId, setItemId] = useState<number | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [disposition, setDisposition] = useState<"RESTOCK" | "DO_NOT_RESTOCK">("RESTOCK");
+  const [reason, setReason] = useState("Customer return");
+  const [quote, setQuote] = useState<{ refundAmount: string; taxAmount: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const items = (order.items ?? []) as Array<{ id: number; catalogItemName: string; quantity: number; unitPrice: number }>;
+  const selected = items.find((item) => item.id === itemId) ?? items[0];
+  useEffect(() => { if (selected && itemId == null) setItemId(selected.id); }, [selected, itemId]);
+  async function submit(preview: boolean) {
+    if (!selected) return;
+    setBusy(true); setMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/orders/${order.id}/returns`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ lines: [{ orderItemId: selected.id, quantity, disposition }], reason, idempotencyKey: `return:${order.id}:${selected.id}:${crypto.randomUUID()}`, preview }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Return was rejected");
+      if (preview) setQuote({ refundAmount: data.refundAmount, taxAmount: data.taxAmount });
+      else { setMessage(`Refund completed: $${Number(data.refundAmount).toFixed(2)}`); setQuote(null); onDone(); }
+    } catch (err) { setMessage(err instanceof Error ? err.message : "Return was rejected"); }
+    finally { setBusy(false); }
+  }
+  return <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="refund-return-panel">
+    <div className="flex items-center gap-2 font-semibold text-sm"><RotateCcw size={15} /> Return / Refund</div>
+    <div className="grid gap-2 sm:grid-cols-3">
+      <Select value={String(selected?.id ?? "")} onValueChange={(v) => setItemId(Number(v))}><SelectTrigger className="text-xs"><SelectValue placeholder="Item" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.catalogItemName} ({item.quantity})</SelectItem>)}</SelectContent></Select>
+      <Input type="number" min={1} max={selected?.quantity ?? 1} value={quantity} onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))} className="text-xs" aria-label="Return quantity" />
+      <Select value={disposition} onValueChange={(v) => setDisposition(v as "RESTOCK" | "DO_NOT_RESTOCK")}><SelectTrigger className="text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="RESTOCK">Restock</SelectItem><SelectItem value="DO_NOT_RESTOCK">Do not restock</SelectItem></SelectContent></Select>
+    </div>
+    <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} className="text-xs" aria-label="Return reason" />
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={busy || !selected}>Calculate refund</Button>{quote && <><span className="text-xs">Authoritative refund: <strong>${Number(quote.refundAmount).toFixed(2)}</strong></span><Button size="sm" onClick={() => void submit(false)} disabled={busy}>Confirm refund</Button></>}</div>
+    {message && <div className="text-xs text-muted-foreground">{message}</div>}
+  </div>;
+}
 
 function formatCourierEta(value?: string | null) {
   if (!value) return null;
@@ -47,12 +85,29 @@ function formatCourierEta(value?: string | null) {
 
 function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   const queryClient = useQueryClient();
-  const [now, setNow] = useState(() => Date.now());
+  const { getToken } = useAuth();
+  const [elapsed, setElapsed] = useState(0);
+  const [courier, setCourier] = useState<{ state: string; courierStatus: string | null } | null>(null);
 
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const start = performance.now();
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(performance.now() - start), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [order.serverNow]);
+
+  useEffect(() => {
+    if (order.deliveryMethod !== "uber_direct") return;
+    let cancelled = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !cancelled) setCourier(await response.json() as { state: string; courierStatus: string | null });
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [getToken, order.id, order.deliveryMethod]);
 
   useOrderEvents((ev) => {
     if (ev.orderId !== order.id) return;
@@ -61,13 +116,12 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
     }
   });
 
-  const isReady = order.fulfillmentStatus === "ready" || order.status === "ready";
-  const isCompleted = order.fulfillmentStatus === "completed" || order.status === "completed" || order.status === "delivered";
-  const etaForCheck = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
-  const timerExpired = etaForCheck !== null && now >= etaForCheck;
-  const isCancelled = order.fulfillmentStatus === "cancelled" || order.status === "cancelled";
+  const serverNow = Date.parse(order.serverNow ?? "");
+  const tracker = customerTracker(order, Number.isFinite(serverNow) ? serverNow + elapsed : NaN);
+  const isReady = tracker.phase === "ready";
+  const isCompleted = tracker.phase === "completed";
 
-  if (isReady || isCompleted || (timerExpired && !isCancelled)) {
+  if (isReady || isCompleted) {
     return (
       <div
         className="glass-card rounded-2xl p-8 border border-emerald-500/30 bg-emerald-500/5 flex flex-col items-center text-center"
@@ -80,55 +134,31 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
         />
         <CheckCircle2 size={56} className="text-emerald-400" />
         <div className="mt-4 text-2xl font-bold text-emerald-300">
-          {isCompleted ? "Order Complete" : "Your order is ready for pickup"}
+          {isCompleted ? "Order Complete" : tracker.label}
         </div>
         <p className="text-sm text-muted-foreground mt-2 max-w-sm" data-testid="customer-stage-message">
-          {isReady || isCompleted
-            ? stageMessageFor(order)
-            : "Your order should be ready right about now — please head to the counter for pickup."}
+          {isCompleted ? "Your order has been completed." : tracker.label}
         </p>
       </div>
     );
   }
 
-  const eta = order.estimatedReadyAt ? new Date(order.estimatedReadyAt).getTime() : null;
-  const routedAt = order.routedAt ? new Date(order.routedAt).getTime() : new Date(order.createdAt).getTime();
-  const total = eta ? Math.max(1, eta - routedAt) : 0;
-  const remaining = eta ? eta - now : 0;
-  const overdue = remaining < 0;
-  const absMs = Math.abs(remaining);
-  const mins = Math.floor(absMs / 60000);
-  const secs = Math.floor((absMs % 60000) / 1000);
-  const pct = eta ? Math.max(0, Math.min(100, ((total - Math.max(0, remaining)) / total) * 100)) : 0;
-
-  // Spec: the hourglass itself is time-driven (sand empties as the
-  // promised window elapses). Stage messaging also progresses:
-  // queued → preparing → almost-ready (>85% of window) → finishing-up.
-  const progress = eta ? Math.max(0, Math.min(1, (now - routedAt) / total)) : 0;
-  const almostReady = !overdue && progress >= 0.85;
-  let message: string;
-  if (overdue) {
-    message = "Almost ready — our team is finishing up your order.";
-  } else if (almostReady) {
-    message = "Almost ready — just putting on the finishing touches.";
-  } else if (order.fulfillmentStatus === "preparing" || order.fulfillmentStatus === "accepted") {
-    message = "Our lab team is preparing your order...";
-  } else if (order.status === "submitted" || order.status === "pending" || order.fulfillmentStatus === "submitted") {
-    message = "Your order is in the queue waiting to be picked up...";
-  } else {
-    message = "Our lab team is working on your order...";
-  }
+  const remaining = tracker.remainingMs;
+  const mins = Math.floor((remaining ?? 0) / 60000);
+  const secs = Math.floor(((remaining ?? 0) % 60000) / 1000);
+  const overdue = tracker.phase === "overdue";
+  const courierLabel: Record<string, string> = { pending: "Courier requested", pickup: "Courier on the way to pickup", picked_up: "Order picked up", dropoff: "Courier on the way", delivered: "Delivered", canceled: "Courier canceled" };
 
   return (
     <div
       className="glass-card rounded-2xl p-8 border border-primary/20 bg-primary/3 flex flex-col items-center text-center"
       data-testid="customer-hourglass-panel"
     >
-      <AnimatedHourglass size={200} message={message} progress={eta ? progress : undefined} />
-      {eta && (
+      <AnimatedHourglass size={200} message={tracker.label} progress={tracker.progress} />
+      {remaining !== null && (
         <div className="mt-6 w-full max-w-sm" data-testid="hourglass-countdown">
           <div className={`font-mono text-3xl font-bold ${overdue ? "text-amber-400" : "text-primary"}`}>
-            {overdue ? "almost ready" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
+            {overdue ? "Finishing up" : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`}
           </div>
           <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-1">
             {overdue ? "finishing up — we'll notify you the moment it's ready" : "estimated time remaining"}
@@ -136,14 +166,13 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
           <div className="mt-3 h-1.5 rounded-full bg-border/40 overflow-hidden">
             <div
               className={`h-full transition-all ${overdue ? "bg-amber-400" : "bg-primary"}`}
-              style={{ width: `${overdue ? 100 : pct}%` }}
+              style={{ width: `${tracker.progress * 100}%` }}
             />
           </div>
         </div>
       )}
-      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message">
-        {stageMessageFor(order)}
-        {" "}You'll receive a push notification the moment it's ready.
+      <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message" role="status" aria-live="polite">
+        {tracker.label}. We'll notify you when staff marks it ready.
       </p>
       {order.deliveryMethod === "uber_direct" && (
         <div className="mt-5 w-full max-w-md rounded-xl border border-primary/20 bg-background/70 p-4 text-left" data-testid="customer-uber-info">
@@ -164,6 +193,7 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
               </div>
             </div>
           </div>
+          {courier && <p className="mt-3 text-xs" role="status">{courierLabel[courier.courierStatus ?? ""] ?? ({ awaiting_staff_request: "Awaiting staff delivery request", delivery_create_pending: "Courier request pending", delivery_created: "Courier requested", reconciliation_required: "Courier status under review" }[courier.state] ?? "Delivery status pending")}</p>}
           {(order as OrderWithTracking).trackingUrl && (
             <a
               href={(order as OrderWithTracking).trackingUrl ?? undefined}
@@ -180,7 +210,15 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
   );
 }
 
-type ActiveCsrOption = { userId: number; shiftId: number; name: string; role: string | null };
+type ActiveCsrOption = {
+  userId: number;
+  shiftId: number;
+  name: string;
+  role: string | null;
+  location: string;
+  clockedInAt: string;
+  label: string;
+};
 
 function SupervisorRoutingPanel({
   order,
@@ -200,13 +238,19 @@ function SupervisorRoutingPanel({
   const [reassignTo, setReassignTo] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   const [activeCsrs, setActiveCsrs] = useState<ActiveCsrOption[]>([]);
+  const [routingMessage, setRoutingMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const token = await getToken();
       const res = await fetch("/api/orders/active-csrs", { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok || cancelled) return;
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        if (!cancelled) setRoutingMessage({ kind: "error", text: body?.error ?? `Could not load eligible shifts (HTTP ${res.status}).` });
+        return;
+      }
+      if (cancelled) return;
       const json = (await res.json()) as { csrs: ActiveCsrOption[] };
       if (!cancelled) setActiveCsrs(json.csrs);
     })();
@@ -215,14 +259,22 @@ function SupervisorRoutingPanel({
 
   const call = async (key: string, url: string, method: "POST" | "PATCH", body?: unknown) => {
     setBusy(key);
+    setRoutingMessage(null);
     try {
       const token = await getToken();
-      await fetch(url, {
+      const response = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: body ? JSON.stringify(body) : undefined,
       });
+      if (!response.ok) {
+        const responseBody = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(responseBody?.error ?? `Request failed with HTTP ${response.status}`);
+      }
       onMutated();
+      setRoutingMessage({ kind: "success", text: key === "reassign" ? "Order reassigned." : "Order updated." });
+    } catch (error) {
+      setRoutingMessage({ kind: "error", text: error instanceof Error ? error.message : "Routing update failed." });
     } finally { setBusy(null); }
   };
 
@@ -316,7 +368,7 @@ function SupervisorRoutingPanel({
               <SelectItem value="__general__">— General Account queue —</SelectItem>
               {activeCsrs.map((c) => (
                 <SelectItem key={c.userId} value={String(c.userId)} data-testid={`option-csr-${c.userId}`}>
-                  {c.name} {c.role ? `· ${c.role}` : ""}
+                  {c.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -325,6 +377,11 @@ function SupervisorRoutingPanel({
         </div>
         {activeCsrs.length === 0 && (
           <p className="text-[11px] text-muted-foreground">No CSRs are currently clocked in — orders will go to the General Account queue.</p>
+        )}
+        {routingMessage && (
+          <p role={routingMessage.kind === "error" ? "alert" : "status"} className={routingMessage.kind === "error" ? "text-xs text-red-300" : "text-xs text-emerald-300"}>
+            {routingMessage.text}
+          </p>
         )}
       </div>
     </div>
@@ -386,14 +443,19 @@ export default function OrderDetail() {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditBusy, setCreditBusy] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
+  const creditIdempotencyKey = useRef(`customer-credit:${id}:${crypto.randomUUID()}`);
   const [closeoutBusy, setCloseoutBusy] = useState<string | null>(null);
   const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
+  const [showCashCloseout, setShowCashCloseout] = useState(false);
+  const [amountTendered, setAmountTendered] = useState("");
+  const [cashInternalNote, setCashInternalNote] = useState("");
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
   const { getToken } = useAuth();
   const userRole = normalizeNotificationRole(user?.role);
   const canEditStatus = userRole === "global_admin" || userRole === "admin" || userRole === "csr";
   const canManageRouting = userRole === "global_admin" || userRole === "admin";
+  const canRefund = userRole === "global_admin" || userRole === "admin" || userRole === "supervisor";
   const isCustomer = userRole === "user";
 
   const { notifyOrderStatusChange } = usePushNotifications({
@@ -405,6 +467,12 @@ export default function OrderDetail() {
     { query: { enabled: !!id, queryKey: getGetOrderQueryKey(id) } }
   );
 
+  useEffect(() => {
+    if (!order || new URLSearchParams(window.location.search).get("cashCloseout") !== "1") return;
+    setAmountTendered(Number(order.total).toFixed(2));
+    setShowCashCloseout(true);
+  }, [order]);
+
   const { data: notesRes, isLoading: isNotesLoading } = useGetOrderNotes(
     id,
     { query: { enabled: !!id, queryKey: getGetOrderNotesQueryKey(id) } }
@@ -412,8 +480,6 @@ export default function OrderDetail() {
 
   const addNoteMutation = useAddOrderNote();
   const updateStatusMutation = useUpdateOrderStatus();
-  const tokenizeMutation = useTokenizePayment();
-  const confirmMutation = useConfirmPayment();
 
   const handleAddNote = () => {
     if (!noteContent.trim()) return;
@@ -440,25 +506,6 @@ export default function OrderDetail() {
     );
   };
 
-  const handlePay = () => {
-    if (!order) return;
-    tokenizeMutation.mutate(
-      { data: { orderId: order.id, amount: order.total } },
-      {
-        onSuccess: (res) => {
-          confirmMutation.mutate(
-            { orderId: id, data: { paymentIntentId: res.paymentIntentId } },
-            {
-              onSuccess: () => {
-                queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
-              }
-            }
-          );
-        }
-      }
-    );
-  };
-
   useEffect(() => {
     let cancelled = false;
     getToken().then(async token => {
@@ -478,7 +525,7 @@ export default function OrderDetail() {
       const token = await getToken();
       const res = await fetch(`/api/payments/${order.id}/apply-credit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": creditIdempotencyKey.current, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ amount: Number(creditAmount) }),
       });
       const data = await res.json().catch(() => ({}));
@@ -486,6 +533,7 @@ export default function OrderDetail() {
       setCreditAmount("");
       setCreditBalance(Number(data.remainingBalance ?? 0));
       setCreditMessage(`Applied $${Number(data.applied ?? 0).toFixed(2)} credit.`);
+      creditIdempotencyKey.current = `customer-credit:${id}:${crypto.randomUUID()}`;
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
     } catch (err) {
       setCreditMessage(err instanceof Error ? err.message : "Failed to apply credit");
@@ -495,20 +543,32 @@ export default function OrderDetail() {
   }
 
 
-  async function closeOut(method: "cash" | "gift_card" | "cash_app" | "card" | "paypal" | "venmo" | "manual") {
+  async function closeOutCash() {
     if (!order) return;
-    setCloseoutBusy(method);
+    setCloseoutBusy("cash");
     setCloseoutMessage(null);
     try {
       const token = await getToken();
+      const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `cash-${order.id}-${Date.now()}`;
       const res = await fetch(`/api/orders/${order.id}/closeout`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ paymentMethod: method }),
+        body: JSON.stringify({
+          paymentMethod: "cash",
+          amountTendered,
+          internalNote: cashInternalNote || undefined,
+          idempotencyKey,
+          supervisorOverride: userRole === "supervisor" || userRole === "admin" || userRole === "global_admin",
+        }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Failed to close out order");
-      setCloseoutMessage(`Closed out as ${method.replace("_", " ")}.`);
+      if (!res.ok) {
+        setCloseoutMessage(data.error ?? "Failed to close out order");
+        if (data.action === "open_general_queue_cash_session") return;
+        throw new Error(data.error ?? "Failed to close out order");
+      }
+      setCloseoutMessage(`Cash recorded. Change due: $${Number(data.cash?.changeGiven ?? 0).toFixed(2)}.`);
+      setShowCashCloseout(false);
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) });
     } catch (err) {
       setCloseoutMessage(err instanceof Error ? err.message : "Failed to close out order");
@@ -559,7 +619,7 @@ export default function OrderDetail() {
     }
   };
 
-  const isPendingOrProcessing = order?.status === "pending" || order?.status === "processing";
+  const isActiveFulfillment = !!order && !["cancelled", "voided", "refunded", "archived"].includes(order.fulfillmentStatus ?? order.status);
   const isReady = order?.status === "ready";
   const isDelivered = order?.status === "delivered";
 
@@ -582,8 +642,9 @@ export default function OrderDetail() {
   }
 
   const requestedCredit = Number(creditAmount) || 0;
-  const maxApplicableCredit = Math.min(creditBalance ?? 0, order.total);
-  const remainingAfterCredit = Math.max(order.total - Math.min(requestedCredit, maxApplicableCredit), 0);
+  const unpaidBalance = order.remainingTenderAmount ?? order.total;
+  const maxApplicableCredit = Math.min(creditBalance ?? 0, unpaidBalance);
+  const remainingAfterCredit = Math.max(unpaidBalance - Math.min(requestedCredit, maxApplicableCredit), 0);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -623,8 +684,12 @@ export default function OrderDetail() {
         </p>
       </div>
 
+      {canRefund && order.paymentStatus !== OrderPaymentStatus.unpaid && (
+        <RefundReturnPanel order={order} getToken={getToken} onDone={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+      )}
+
       {/* ── Customer waiting view: Hourglass with ETA countdown ────── */}
-      {isCustomer && isPendingOrProcessing && (
+      {isCustomer && isActiveFulfillment && (
         <CustomerHourglassPanel order={order as OrderWithTracking} />
       )}
 
@@ -1000,81 +1065,37 @@ export default function OrderDetail() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Button className="rounded-xl font-semibold text-xs h-10" onClick={() => void closeOut("cash")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
-                      <Banknote size={14} className="mr-2" /> Cash closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("gift_card")} disabled={closeoutBusy !== null} data-testid="button-closeout-gift-card">
-                      <Gift size={14} className="mr-2" /> Gift card closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("cash_app")} disabled={closeoutBusy !== null} data-testid="button-closeout-cash-app">
-                      Cash App closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("card")} disabled={closeoutBusy !== null} data-testid="button-closeout-card">
-                      <CreditCard size={14} className="mr-2" /> Card closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("paypal")} disabled={closeoutBusy !== null} data-testid="button-closeout-paypal">
-                      PayPal closeout
-                    </Button>
-                    <Button className="rounded-xl font-semibold text-xs h-10" variant="outline" onClick={() => void closeOut("venmo")} disabled={closeoutBusy !== null} data-testid="button-closeout-venmo">
-                      Venmo closeout
-                    </Button>
-                  </div>
+                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                    <Banknote size={14} className="mr-2" /> Close as Cash Paid
+                  </Button>
+                  {showCashCloseout && (
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="cash-closeout-dialog">
+                      <div className="font-semibold text-sm">Confirm cash payment for order #{order.id}</div>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>Trusted amount due<br /><strong className="text-base">${Number(unpaidBalance).toFixed(2)}</strong></div>
+                        <div>Calculated change<br /><strong className="text-base">${Math.max(0, Number(amountTendered || 0) - Number(unpaidBalance)).toFixed(2)}</strong></div>
+                      </div>
+                      <Label htmlFor="cash-tendered">Amount tendered</Label>
+                      <Input id="cash-tendered" inputMode="decimal" value={amountTendered} onChange={(event) => setAmountTendered(event.target.value)} data-testid="input-cash-tendered" />
+                      <Label htmlFor="cash-note">Internal note (optional)</Label>
+                      <Textarea id="cash-note" maxLength={500} value={cashInternalNote} onChange={(event) => setCashInternalNote(event.target.value)} data-testid="input-cash-note" />
+                      <p className="text-xs text-amber-300">Confirm only after physically receiving the tendered cash. This creates an audited cash-ledger entry and cannot be undone here.</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) < Number(unpaidBalance)} data-testid="button-confirm-cash-closeout">Confirm Cash Paid</Button>
+                        <Button variant="outline" onClick={() => setShowCashCloseout(false)}>Cancel</Button>
+                        {closeoutMessage?.includes("General Queue cash session") && canManageRouting && (
+                          <Link href={`/staff?openGeneralQueue=1&returnOrder=${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-2 text-xs font-semibold" data-testid="button-open-general-queue-session">
+                            Open General Queue Cash Session
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
-                  {/* Card via Stripe */}
-                  <Button
-                    className="w-full rounded-xl font-semibold text-xs h-10"
-                    onClick={handlePay}
-                    disabled={tokenizeMutation.isPending || confirmMutation.isPending}
-                    data-testid="button-pay"
-                  >
-                    <CreditCard size={14} className="mr-2" />
-                    {tokenizeMutation.isPending || confirmMutation.isPending ? "Processing..." : "Pay with Card"}
-                  </Button>
+                  {/* Provider-verified PayPal checkout */}
+                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
 
-                  <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-border/40" />
-                    </div>
-                    <div className="relative flex justify-center">
-                      <span className="px-2 bg-card text-[10px] text-muted-foreground uppercase tracking-widest">or send directly</span>
-                    </div>
-                  </div>
-
-                  {/* PayPal */}
-                  <a
-                    href={`https://www.paypal.com/paypalme/LuciferCruz/${order.total.toFixed(2)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#003087]/40 text-[#009cde] bg-[#003087]/10 hover:bg-[#003087]/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-paypal"
-                  >
-                    <ExternalLink size={12} />
-                    PayPal · ${order.total.toFixed(2)}
-                  </a>
-
-                  {/* Venmo */}
-                  <a
-                    href={`venmo://paycharge?txn=pay&recipients=LuciferCruz&amount=${order.total.toFixed(2)}&note=Order%20%23${order.id}`}
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-[#3D95CE]/40 text-[#3D95CE] bg-[#3D95CE]/10 hover:bg-[#3D95CE]/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-venmo"
-                  >
-                    <ExternalLink size={12} />
-                    Venmo · ${order.total.toFixed(2)}
-                  </a>
-
-                  {/* CashApp */}
-                  <a
-                    href={`https://cash.app/$LuciferCruz/${order.total.toFixed(2)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full text-xs font-semibold border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-4 py-2.5 rounded-xl transition-all"
-                    data-testid="button-cashapp"
-                  >
-                    <ExternalLink size={12} />
-                    Cash App · ${order.total.toFixed(2)}
-                  </a>
                 </div>
               )}
 

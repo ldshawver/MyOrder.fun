@@ -4,18 +4,22 @@ import usersRouter from "./users";
 import onboardingRouter from "./onboarding";
 import tenantsRouter from "./tenants";
 import catalogRouter from "./catalog";
+import catalogueProductsRouter from "./catalogue-products";
 import ordersRouter from "./orders";
 import auditRouter from "./audit";
 import notificationsRouter from "./notifications";
 import adminRouter from "./admin";
 import aiRouter from "./ai";
 import paymentsRouter from "./payments";
+import paypalPaymentsRouter from "./paypal-payments";
 import shiftsRouter from "./shifts";
 import shiftQueueRouter from "./shift-queue";
 import printRouter from "./print";
 import adminPrintersRouter from "./admin-printers";
+import printingRouter from "./printing";
 import importRouter from "./import";
 import settingsRouter from "./settings";
+import orderNotificationSettingsRouter from "./order-notification-settings";
 import tenantSettingsRouter from "./tenant-settings";
 import woocommerceRouter from "./woocommerce";
 import inventoryRouter from "./inventory";
@@ -28,27 +32,42 @@ import visualEditorRouter from "./visual-editor";
 import rolePermissionsRouter from "./role-permissions";
 import privacyRouter from "./privacy";
 import pwaPushRouter from "./pwa-push";
+import taxConfigurationsRouter from "./tax-configurations";
+import printBridgeDiscoveryRouter from "./print-bridge-discovery";
+import returnsRouter from "./returns";
+import publicBrandingRouter from "./public-branding";
+import publicCatalogRouter from "./public-catalog";
+import uberDirectWebhooksRouter from "./uber-direct-webhooks";
 
 const router: IRouter = Router();
 
 router.use(webhooksRouter);
+router.use(uberDirectWebhooksRouter);
+// Provider webhooks must reach their own signature verifier before any
+// unrelated router-wide customer authentication middleware.
+router.use(paypalPaymentsRouter);
+router.use(publicBrandingRouter);
+router.use(publicCatalogRouter);
+router.use(printBridgeDiscoveryRouter);
 router.use(usersRouter);
 router.use(onboardingRouter);
 router.use(tenantsRouter);
 router.use(catalogRouter);
+router.use(catalogueProductsRouter);
 router.use(ordersRouter);
+router.use(returnsRouter);
 router.use(notificationsRouter);
+router.use(settingsRouter);
+router.use(orderNotificationSettingsRouter);
+router.use(tenantSettingsRouter);
 router.use(shiftsRouter);
 router.use(shiftQueueRouter);
-router.use(auditRouter);
-router.use(adminRouter);
 router.use(aiRouter);
 router.use(paymentsRouter);
 router.use(printRouter);
+router.use(printingRouter);
 router.use(adminPrintersRouter);
 router.use(importRouter);
-router.use(settingsRouter);
-router.use(tenantSettingsRouter);
 router.use(woocommerceRouter);
 router.use(inventoryRouter);
 router.use(sessionRouter);
@@ -56,9 +75,15 @@ router.use(feedbackRouter);
 router.use(integrationsRouter);
 router.use(creditsRouter);
 router.use(reportsRouter);
+router.use(taxConfigurationsRouter);
 router.use(visualEditorRouter);
 router.use(rolePermissionsRouter);
 router.use(privacyRouter);
 router.use(pwaPushRouter);
+// These legacy routers install router-wide admin role middleware. Keep them
+// last so an unrelated route owned by a later module (for example inventory,
+// printers, or role permissions) is not rejected before Express can match it.
+router.use(auditRouter);
+router.use(adminRouter);
 
 export default router;

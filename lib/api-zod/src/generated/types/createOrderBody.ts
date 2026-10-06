@@ -6,17 +6,26 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CreateOrderBodyCheckoutConfirmation } from './createOrderBodyCheckoutConfirmation';
+import type { CreateOrderBodyCheckoutConversionSnapshot } from './createOrderBodyCheckoutConversionSnapshot';
 import type { CreateOrderBodyDeliveryMethod } from './createOrderBodyDeliveryMethod';
 import type { CreateOrderBodyItemsItem } from './createOrderBodyItemsItem';
+import type { CreateOrderBodyOrderType } from './createOrderBodyOrderType';
+import type { CreateOrderBodyPaymentMethod } from './createOrderBodyPaymentMethod';
+import type { CreateOrderBodySelectedPaymentMethod } from './createOrderBodySelectedPaymentMethod';
 import type { DeliveryQuoteSelection } from './deliveryQuoteSelection';
 
 export interface CreateOrderBody {
   shippingAddress?: string;
   notes?: string;
+  checkoutConversionToken?: string;
+  checkoutConversionSnapshot?: CreateOrderBodyCheckoutConversionSnapshot;
+  selectedPaymentMethod?: CreateOrderBodySelectedPaymentMethod;
+  paymentMethod?: CreateOrderBodyPaymentMethod;
+  csrDeliveryDistanceMiles?: number | null;
   /** @minItems 1 */
   items: CreateOrderBodyItemsItem[];
   checkoutConfirmation?: CreateOrderBodyCheckoutConfirmation;
   deliveryQuote?: DeliveryQuoteSelection;
   deliveryMethod?: CreateOrderBodyDeliveryMethod;
-  csrDeliveryDistanceMiles?: number | null;
+  orderType?: CreateOrderBodyOrderType;
 }

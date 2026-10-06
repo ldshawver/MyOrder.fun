@@ -70,6 +70,7 @@ const hoistedDb = vi.hoisted(() => {
     firstName: string | null;
     lastName: string | null;
     role: string;
+    tenantId: number;
     status: string;
     isActive: boolean;
     contactPhone: string | null;
@@ -396,6 +397,7 @@ function seedUser(id: number, clerkId: string, role: string): UserRow {
     firstName: "F",
     lastName: "L",
     role,
+    tenantId: 1,
     status: "approved",
     isActive: true,
     contactPhone: null,
@@ -1069,6 +1071,6 @@ describe("tenant-scoped user feedback history and notes", () => {
     const res = await supertest(buildApp())
       .patch("/api/admin/feedback/41")
       .send({ status: "reviewed", tenantId: 999 });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
   });
 });

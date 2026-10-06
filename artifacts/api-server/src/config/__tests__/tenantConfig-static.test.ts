@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 describe("tenant settings migration and service contract", () => {
   it("creates normalized tenant_settings with guarded version and idempotent backfill", () => {
-    const migration = readFileSync(new URL("../../../../../lib/db/drizzle/0032_tenant_settings.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../../../lib/db/drizzle/0037_tenant_settings.sql", import.meta.url), "utf8");
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "tenant_settings"');
     expect(migration).toContain('"tenant_id" integer NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE');
     expect(migration).toContain('"updated_by_user_id" integer REFERENCES "users"("id") ON DELETE SET NULL');

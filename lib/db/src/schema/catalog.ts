@@ -34,6 +34,7 @@ export const catalogItemsTable = pgTable("catalog_items", {
   compareAtPrice: numeric("compare_at_price", { precision: 10, scale: 2 }),
   stockQuantity: numeric("stock_quantity", { precision: 10, scale: 2 }).default("0"),
   isAvailable: boolean("is_available").notNull().default(true),
+  isTaxable: boolean("is_taxable").notNull().default(true),
   imageUrl: text("image_url"),
   mediaGallery: jsonb("media_gallery").default([]),
   tags: text("tags").array().default([]),
@@ -88,6 +89,8 @@ export const catalogItemsTable = pgTable("catalog_items", {
   stockUnit: text("stock_unit").default("#"),
   // Par level — minimum desired stock; drives restock slip generation
   parLevel: numeric("par_level", { precision: 10, scale: 2 }).default("0"),
+  moq: numeric("moq", { precision: 10, scale: 3 }).notNull().default("0"),
+  preferredReorderQuantity: numeric("preferred_reorder_quantity", { precision: 10, scale: 3 }).notNull().default("0"),
   // ── Task #10: 14-column menu import spec ──
   externalMenuId: text("external_menu_id"),
   inventoryAmount: numeric("inventory_amount", { precision: 10, scale: 2 }),

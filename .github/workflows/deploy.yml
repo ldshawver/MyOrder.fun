@@ -1,14 +1,16 @@
 name: Deploy to VPS
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      production_confirmation:
+        description: Type I_AUTHORIZE_PRODUCTION_DEPLOYMENT to enable the production job
+        required: true
+        type: string
 
 concurrency:
   group: deploy-myorderfun
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   test:
@@ -19,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -46,31 +50,54 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Test guarded production release orchestration
+        run: node --test deploy/safe-compose.test.mjs deploy/production-release.test.mjs
+
   deploy:
     name: Deploy to VPS
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: test
+    environment: production
+    if: ${{ inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' }}
+
+    permissions:
+      contents: read
 
     env:
-      VPS_HOST: ${{ secrets.VPS_HOST }}
-      VPS_HOST_FALLBACK: ${{ secrets.VPS_HOST_FALLBACK || '100.85.15.43' }}
+      VPS_TAILSCALE_HOST: 100.85.15.43
+
+      # Used only to match the pre-pinned SSH host key; never used as a
+      # network destination.
+      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_HOST }}
+
       VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
-      VPS_HOST_FALLBACK_PORT: ${{ secrets.VPS_HOST_FALLBACK_PORT || '22' }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+
       DEPLOY_PATH: /opt/alavont
-      COMPOSE_PROJECT_NAME: alavont
+
+      RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360
+      RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf
+
+      # The production database and current application containers belong to
+      # the `deploy` project. Never create a second `alavont` stack: it has a
+      # separate, empty database volume and would collide with the live nginx
+      # loopback port.
+      COMPOSE_PROJECT_NAME: deploy
+
       VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
-      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Confirm deploy commit
         run: |
+          set -euo pipefail
+
           echo "Deploying SHA: $GITHUB_SHA"
           git log --oneline -n 1
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
@@ -78,6 +105,7 @@ jobs:
       - name: Install SSH key
         run: |
           set -euo pipefail
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -88,92 +116,84 @@ jobs:
 
           printf '%s\n' "${VPS_PRIVATE_KEY}" > ~/.ssh/vps_deploy_key
           chmod 600 ~/.ssh/vps_deploy_key
+
+          # Fail closed if the configured secret is not a usable private key.
           ssh-keygen -y -f ~/.ssh/vps_deploy_key > /dev/null
+
           echo "SSH_KEY_PATH=${HOME}/.ssh/vps_deploy_key" >> "$GITHUB_ENV"
 
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ env.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ env.TS_OAUTH_SECRET }}
-          tags: tag:github-actions
+      - name: Validate production Tailscale credentials
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          test -n "${TS_OAUTH_CLIENT_ID:-}" || {
+            echo "::error::Missing production environment secret TS_OAUTH_CLIENT_ID."
+            exit 1
+          }
+
+          test -n "${TS_OAUTH_SECRET:-}" || {
+            echo "::error::Missing production environment secret TS_OAUTH_SECRET."
+            exit 1
+          }
+
+          test -n "${VPS_KNOWN_HOSTS:-}" || {
+            echo "::error::Missing pinned SSH host keys in production environment secret VPS_KNOWN_HOSTS."
+            exit 1
+          }
+
+          test -n "${VPS_SSH_HOST_KEY_ALIAS:-}" || {
+            echo "::error::Missing known_hosts identity alias in production environment secret VPS_HOST."
+            exit 1
+          }
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
-        oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-        oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-        tags: tag:ci
-    
-      - name: Select reachable VPS host and configure known_hosts
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Verify Tailscale route to production SSH
+        run: |
+          set -euo pipefail
+
+          echo "Checking the production SSH endpoint over Tailscale."
+
+          for attempt in $(seq 1 12); do
+            if nc -z -w 5 "$VPS_TAILSCALE_HOST" "$VPS_PORT"; then
+              echo "Tailscale SSH route is reachable."
+              exit 0
+            fi
+
+            echo "Tailscale SSH route not ready: $attempt/12"
+            sleep 5
+          done
+
+          echo "::error::Production SSH is not reachable at the Tailscale address. Check the tagged CI grant and production Tailscale secrets."
+          exit 1
+
+      - name: Pin production SSH host identity and select Tailscale target
         run: |
           set -euo pipefail
 
           mkdir -p ~/.ssh
-          touch ~/.ssh/known_hosts
+
+          printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
-            echo "Using VPS_KNOWN_HOSTS secret."
-            printf '%s\n' "${VPS_KNOWN_HOSTS}" >> ~/.ssh/known_hosts
+          if ! ssh-keygen \
+            -F "$VPS_SSH_HOST_KEY_ALIAS" \
+            -f ~/.ssh/known_hosts \
+            >/dev/null; then
+            echo "::error::VPS_KNOWN_HOSTS must contain the pinned production host key for the VPS_HOST identity alias."
+            exit 1
           fi
 
-          try_host() {
-            local host="$1"
-            local port="$2"
-            local tmp_keys
-            tmp_keys="$(mktemp)"
-
-            if [ -z "${host:-}" ]; then
-              return 1
-            fi
-
-            echo "Scanning ${host}:${port} for host keys..."
-
-            if ssh-keyscan -T 15 -p "$port" -H "$host" > "$tmp_keys" 2>ssh-keyscan.err && [ -s "$tmp_keys" ]; then
-              cat "$tmp_keys" >> ~/.ssh/known_hosts
-              rm -f "$tmp_keys"
-              echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
-              echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
-              echo "Collected SSH host key(s) for ${host}:${port}."
-              return 0
-            fi
-
-            echo "No keys from ${host}:${port}."
-            cat ssh-keyscan.err || true
-            rm -f "$tmp_keys"
-
-            echo "Trying SSH preflight with StrictHostKeyChecking=accept-new for ${host}:${port}..."
-
-            if ssh \
-              -i "$SSH_KEY_PATH" \
-              -o BatchMode=yes \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=accept-new \
-              -o ConnectTimeout=20 \
-              -p "$port" \
-              "$VPS_USER@$host" \
-              'echo "SSH preflight OK:" $(whoami)@$(hostname)' ; then
-                echo "SELECTED_VPS_HOST=${host}" >> "$GITHUB_ENV"
-                echo "SELECTED_VPS_PORT=${port}" >> "$GITHUB_ENV"
-                return 0
-            fi
-
-            return 1
-          }
-
-          if try_host "$VPS_HOST" "$VPS_PORT"; then
-            exit 0
-          fi
-
-          echo "Primary VPS_HOST failed. Trying fallback..."
-
-          if try_host "$VPS_HOST_FALLBACK" "$VPS_HOST_FALLBACK_PORT"; then
-            exit 0
-          fi
-
-          echo "::error::No reachable SSH host found from primary or fallback."
-          exit 1
+          echo "SELECTED_VPS_HOST=${VPS_TAILSCALE_HOST}" >> "$GITHUB_ENV"
+          echo "SELECTED_VPS_PORT=${VPS_PORT}" >> "$GITHUB_ENV"
 
       - name: Verify SSH access
         run: |
@@ -184,36 +204,42 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
             -o ConnectTimeout=20 \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
             'echo "SSH OK:" $(whoami)@$(hostname)'
 
-      - name: Sync repository to VPS
+      - name: Package the frozen application release
         run: |
           set -euo pipefail
 
-          ssh \
-            -i "$SSH_KEY_PATH" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -p "$SELECTED_VPS_PORT" \
-            "$VPS_USER@$SELECTED_VPS_HOST" \
-            "mkdir -p '$DEPLOY_PATH'"
+          test "$(git rev-parse "$RELEASE_SHA^{tree}")" = "$RELEASE_TREE"
 
-          rsync -az --delete \
-            -e "ssh -i $SSH_KEY_PATH -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p $SELECTED_VPS_PORT" \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='**/node_modules' \
-            --exclude='deploy/.env' \
-            --exclude='deploy/nginx/ssl' \
-            ./ "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/"
+          test "$RELEASE_SHA" = \
+            "65a85f2f82daf9f30a07f1a2de13092d5be80360"
 
-      - name: Build and deploy on VPS
+          test "$RELEASE_TREE" = \
+            "0411a10aa3326308bc480ff2fd15ecca037419bf"
+
+          RELEASE_ARCHIVE="$RUNNER_TEMP/myorder-release-$RELEASE_SHA.tar.gz"
+
+          git archive --format=tar "$RELEASE_SHA" |
+            gzip -n > "$RELEASE_ARCHIVE"
+
+          RELEASE_ARCHIVE_SHA256="$(
+            sha256sum "$RELEASE_ARCHIVE" | awk '{print $1}'
+          )"
+
+          RELEASE_ARCHIVE_NAME="$RELEASE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.tar.gz"
+
+          echo "RELEASE_ARCHIVE_SHA256=$RELEASE_ARCHIVE_SHA256" >> "$GITHUB_ENV"
+          echo "RELEASE_ARCHIVE=$RELEASE_ARCHIVE" >> "$GITHUB_ENV"
+          echo "RELEASE_ARCHIVE_NAME=$RELEASE_ARCHIVE_NAME" >> "$GITHUB_ENV"
+
+      - name: Transfer immutable release and deployment controller
         env:
-          GITHUB_SHA: ${{ github.sha }}
+          TOOLING_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -222,84 +248,101 @@ jobs:
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
             -p "$SELECTED_VPS_PORT" \
             "$VPS_USER@$SELECTED_VPS_HOST" \
-            "DEPLOY_SHA='${GITHUB_SHA}' DEPLOY_PATH='${DEPLOY_PATH}' COMPOSE_PROJECT_NAME='${COMPOSE_PROJECT_NAME}' bash -s" << 'ENDSSH'
-              set -euo pipefail
+            "set -euo pipefail; \
+             test -d '$DEPLOY_PATH' && \
+             test ! -L '$DEPLOY_PATH'; \
+             mkdir -p \
+               '$DEPLOY_PATH/incoming' \
+               '$DEPLOY_PATH/releases' \
+               '$DEPLOY_PATH/control/$TOOLING_SHA' \
+               '$DEPLOY_PATH/shared'; \
+             for p in \
+               '$DEPLOY_PATH/incoming' \
+               '$DEPLOY_PATH/releases' \
+               '$DEPLOY_PATH/control' \
+               '$DEPLOY_PATH/control/$TOOLING_SHA' \
+               '$DEPLOY_PATH/shared'; \
+             do \
+               test -d \"\$p\" && test ! -L \"\$p\"; \
+             done; \
+             test ! -e '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' && \
+             test ! -L '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME'"
 
-              echo "Deploy path: ${DEPLOY_PATH}"
-              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
-              echo "Deploy SHA: ${DEPLOY_SHA:-unknown}"
+          scp \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
+            -P "$SELECTED_VPS_PORT" \
+            "$RELEASE_ARCHIVE" \
+            "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME"
 
-              cd "${DEPLOY_PATH}"
+          scp \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
+            -P "$SELECTED_VPS_PORT" \
+            deploy/production-release.mjs \
+            deploy/production-runtime-overlay.yml \
+            "$VPS_USER@$SELECTED_VPS_HOST:$DEPLOY_PATH/control/$TOOLING_SHA/"
 
-              echo "SHA=${DEPLOY_SHA:-unknown}" > .deployed-sha
-              date -u >> .deployed-sha
+      - name: Execute guarded production release sequence
+        env:
+          TOOLING_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
 
-              chmod +x deploy/*.sh 2>/dev/null || true
-
-              cd "${DEPLOY_PATH}/deploy"
-
-              echo "Deploy path: ${DEPLOY_PATH}/deploy"
-              echo "Compose project: ${COMPOSE_PROJECT_NAME}"
-
-              echo "Building images without taking the live site down..."
-              DEPLOY_SHA="${DEPLOY_SHA:-unknown}" COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose build --pull
-
-              echo "Starting database..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d db
-
-              for i in $(seq 1 30); do
-                if COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose exec -T db pg_isready -q; then
-                  echo "Database ready"
-                  break
-                fi
-
-                if [ "$i" = "30" ]; then
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs db --tail=80
-                  exit 1
-                fi
-
-                sleep 2
-              done
-
-              echo "Running migrations..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose run --rm migrate
-
-              echo "Starting app services..."
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose up -d api platform nginx
-
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
-
-              for i in $(seq 1 45); do
-                if curl -fsS http://127.0.0.1/api/healthz; then
-                  echo "API healthy"
-                  break
-                fi
-
-                if [ "$i" = "45" ]; then
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs api --tail=100
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs platform --tail=100
-                  COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose logs nginx --tail=100
-                  exit 1
-                fi
-
-                sleep 2
-              done
-
-              COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" docker compose ps
-              docker image prune -f
-              echo "Deploy complete"
-          ENDSSH
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
+            -p "$SELECTED_VPS_PORT" \
+            "$VPS_USER@$SELECTED_VPS_HOST" \
+            "flock -n '$DEPLOY_PATH/control/.production-deploy.lock' \
+             env PRODUCTION_DEPLOY_CONFIRMATION=DEPLOY-PRODUCTION \
+             node '$DEPLOY_PATH/control/$TOOLING_SHA/production-release.mjs' \
+             deploy \
+             --authorized \
+             --release-sha '$RELEASE_SHA' \
+             --release-tree '$RELEASE_TREE' \
+             --archive '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' \
+             --archive-sha '$RELEASE_ARCHIVE_SHA256' \
+             --tooling-sha '$TOOLING_SHA'"
 
       - name: Verify public site
         run: |
           set -euo pipefail
 
           for i in $(seq 1 45); do
-            if curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz; then
-              echo "Public health check passed"
+            HEALTH_JSON="$(
+              curl \
+                -fsS \
+                --connect-timeout 10 \
+                --max-time 20 \
+                https://myorder.fun/api/healthz \
+                || true
+            )"
+
+            HEALTH_SHA="$(
+              node -e \
+                'try {
+                  process.stdout.write(
+                    String(JSON.parse(process.argv[1]).sha || "")
+                  );
+                } catch {}' \
+                "${HEALTH_JSON}"
+            )"
+
+            if [ "${HEALTH_SHA}" = "${RELEASE_SHA}" ]; then
+              echo "Public health check passed with expected release SHA"
               exit 0
             fi
 

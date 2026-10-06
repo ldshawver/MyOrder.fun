@@ -11,10 +11,7 @@ export type CreateOrderBodyCheckoutConfirmationPaymentMethod = typeof CreateOrde
 
 export const CreateOrderBodyCheckoutConfirmationPaymentMethod = {
   cash: 'cash',
-  cash_app: 'cash_app',
-  stripe: 'stripe',
   paypal: 'paypal',
-  venmo: 'venmo',
-  gift_card: 'gift_card',
-  manual: 'manual',
+  paypal_card: 'paypal_card',
+  customer_credit: 'customer_credit',
 } as const;

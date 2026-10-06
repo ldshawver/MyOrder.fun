@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import { db, ordersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import { computeCheckoutTotals, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
+import { and, eq } from "drizzle-orm";
+import { computeBaseCheckoutTotals, computeCheckoutTotals, normalizeCheckoutCart, type CartLineInputType, type NormalizedCartLine } from "./checkoutNormalizer";
 
-export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Cart must be converted before checkout";
+export const CHECKOUT_CONVERSION_REQUIRED_MESSAGE = "Checkout needs to be prepared before payment";
 export const CHECKOUT_CONVERSION_TTL_MS = 15 * 60 * 1000;
 
 export class CheckoutConversionRequiredError extends Error {
@@ -48,13 +48,13 @@ export async function requireVerifiedCheckoutConversion(input: { tenantId: numbe
     if (itemsKey(payload.items) !== itemsKey(input.requestedItems)) throw new CheckoutConversionRequiredError();
     if (!input.snapshot || hashConversionSnapshot(input.snapshot) !== payload.snapshotHash) throw new CheckoutConversionRequiredError();
     const lines = await normalizeCheckoutCart(input.requestedItems, undefined, true, input.tenantId);
-    const totals = computeCheckoutTotals(lines);
+    const totals = computeBaseCheckoutTotals(lines);
     return { lines, totals, conversionExpiresAt: expiresAt, snapshot: input.snapshot };
   } catch (err) { if (err instanceof CheckoutConversionRequiredError) throw err; throw new CheckoutConversionRequiredError(); }
 }
 
-export async function requireOrderHasVerifiedCheckoutConversion(orderId: number): Promise<void> {
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+export async function requireOrderHasVerifiedCheckoutConversion(tenantId: number, orderId: number): Promise<void> {
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
   if (!order?.legalDisclaimerAccepted || !order.finalConfirmationAt || !order.checkoutConversionSnapshot || !order.checkoutConversionExpiresAt) throw new CheckoutConversionRequiredError();
   if (new Date(order.checkoutConversionExpiresAt as Date).getTime() <= Date.now()) throw new CheckoutConversionRequiredError();
 }

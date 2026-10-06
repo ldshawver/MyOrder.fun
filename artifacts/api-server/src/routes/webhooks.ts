@@ -53,9 +53,9 @@ router.post("/webhooks/clerk", async (req, res): Promise<void> => {
       return;
     }
 
-    if (type === "user.created" || type === "user.updated" || type === "email.created" || type === "email.updated") {
+    if (type === "user.created" || type === "user.updated") {
       const clerkId = data.id as string;
-      const result = await provisionVerifiedClerkUser({ clerkUser: data as never, source: `webhook:${type}`, correlationId, requireVerified: type !== "user.created" ? false : true });
+      const result = await provisionVerifiedClerkUser({ clerkUser: data as never, source: `webhook:${type}`, correlationId, requireVerified: true });
       if (result.status === "failed") {
         await db.execute(sql`UPDATE clerk_webhook_events SET status='failed', error=${result.error ?? "failed"} WHERE id=${eventId}`);
         res.status(500).json({ error: "Provisioning failed", correlationId });
@@ -73,6 +73,10 @@ router.post("/webhooks/clerk", async (req, res): Promise<void> => {
         await db.update(usersTable).set({ identityStatus: "deactivated", provisioningStatus: "identity_missing", isActive: false, updatedAt: new Date() }).where(eq(usersTable.clerkId, clerkId));
         logger.info({ clerkId, correlationId }, "User identity marked deleted via webhook");
       }
+      await db.execute(sql`UPDATE clerk_webhook_events SET status='processed', error=NULL WHERE id=${eventId}`);
+    }
+
+    if (type !== "user.created" && type !== "user.updated" && type !== "user.deleted") {
       await db.execute(sql`UPDATE clerk_webhook_events SET status='processed', error=NULL WHERE id=${eventId}`);
     }
 

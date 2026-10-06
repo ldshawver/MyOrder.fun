@@ -20,7 +20,7 @@ function sql(strings: TemplateStringsArray, ...vals: any[]) {
   return { text, vals };
 }
 
-vi.mock("drizzle-orm", () => ({ eq, sql }));
+vi.mock("drizzle-orm", () => ({ eq, sql, asc: (column: unknown) => column }));
 vi.mock("@clerk/express", () => ({ clerkClient: { users: { getUser: vi.fn() } } }));
 vi.mock("../logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("@workspace/db", () => {
@@ -73,8 +73,18 @@ describe("Clerk provisioning reconciliation", () => {
     expect(state.users).toHaveLength(1);
   });
   it("out-of-order update before create creates safely", async () => {
-    const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_ooo"), source: "webhook:user.updated", requireVerified: false });
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_ooo"), source: "webhook:user.updated" });
     expect(res.user?.clerkId).toBe("user_ooo");
+  });
+  it("does not provision an unverified Clerk user", async () => {
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_unverified", "new@example.com", "unverified"), source: "webhook:user.updated" });
+    expect(res).toMatchObject({ status: "skipped", error: "email_not_verified" });
+    expect(state.users).toHaveLength(0);
+  });
+  it("promotes a pending customer and repairs tenant access after verification", async () => {
+    state.users.push({ id: 3, clerkId: "user_1", email: "new@example.com", normalizedEmail: "new@example.com", tenantId: null, role: "user", status: "pending", isActive: false });
+    const res = await provisionVerifiedClerkUser({ clerkUser: clerk(), source: "webhook:user.updated" });
+    expect(res.user).toMatchObject({ tenantId: 1, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" });
   });
   it("identity exists but local user missing self-heals", async () => {
     const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_login"), source: "login_reconciliation" });

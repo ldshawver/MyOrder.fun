@@ -9,6 +9,7 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings 0",
+    "test:catalog": "vitest run src/lib/__tests__/catalogProductForm.test.ts",
     "e2e": "playwright test --config playwright.config.ts",
     "e2e:live": "MYORDER_LIVE_E2E=1 playwright test --config playwright.config.ts e2e/myorder-live-pos.spec.ts"
   },
@@ -60,6 +61,7 @@
     "eslint": "^10.2.0",
     "eslint-plugin-react-hooks": "^7.1.0",
     "framer-motion": "catalog:",
+    "happy-dom": "^20.14.5",
     "input-otp": "^1.4.2",
     "lucide-react": "catalog:",
     "next-themes": "^0.4.6",
@@ -77,6 +79,7 @@
     "typescript-eslint": "^8.58.2",
     "vaul": "^1.1.2",
     "vite": "^7.3.0",
+    "vitest": "^4.1.4",
     "wouter": "^3.3.5",
     "zod": "catalog:"
   },

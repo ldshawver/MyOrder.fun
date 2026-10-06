@@ -1,8 +1,10 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { useAuth } from "@clerk/react";
 import { useBrand, type Brand } from "@/contexts/BrandContext";
 
 export type CartItem = {
   id: number;
+  optionId?: number;
   name: string;
   price: number;
   quantity: number;
@@ -12,7 +14,7 @@ export type CartItem = {
 interface CartContextValue {
   cart: CartItem[];
   brand: Brand;
-  addItem: (item: { id: number; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
+  addItem: (item: { id: number; optionId?: number; name: string; price: number; imageUrl?: string | null }, quantity?: number) => void;
   removeItem: (id: number) => void;
   updateQuantity: (id: number, delta: number) => void;
   setQuantity: (id: number, quantity: number) => void;
@@ -38,46 +40,70 @@ const CartContext = createContext<CartContextValue>({
 const STORAGE_KEY = "orderflow_cart";
 
 type PersistedCart = { alavont: CartItem[]; lucifer_cruz: CartItem[] };
+type StoredCartState = { storageKey: string | null; carts: PersistedCart };
 
-function loadFromStorage(): PersistedCart {
+function emptyCart(): PersistedCart {
+  return { alavont: [], lucifer_cruz: [] };
+}
+
+function loadFromStorage(storageKey: string): PersistedCart {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { alavont: [], lucifer_cruz: [] };
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return emptyCart();
     const parsed = JSON.parse(raw) as Partial<PersistedCart>;
     return {
       alavont: Array.isArray(parsed.alavont) ? parsed.alavont : [],
       lucifer_cruz: Array.isArray(parsed.lucifer_cruz) ? parsed.lucifer_cruz : [],
     };
   } catch {
-    return { alavont: [], lucifer_cruz: [] };
+    return emptyCart();
   }
 }
 
-function saveToStorage(carts: PersistedCart) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(carts)); } catch { /* storage unavailable */ }
+function saveToStorage(storageKey: string, carts: PersistedCart) {
+  try { localStorage.setItem(storageKey, JSON.stringify(carts)); } catch { /* storage unavailable */ }
 }
 
 export function CartProvider({ children }: { children: ReactNode }) {
   const { brand } = useBrand();
-  const [carts, setCarts] = useState<PersistedCart>(loadFromStorage);
+  const { userId, isLoaded } = useAuth();
+  const storageKey = isLoaded && userId ? `${STORAGE_KEY}:${userId}` : null;
+  const [cartState, setCartState] = useState<StoredCartState>({
+    storageKey: null,
+    carts: emptyCart(),
+  });
 
   useEffect(() => {
-    saveToStorage(carts);
-  }, [carts]);
+    if (!isLoaded) return;
+    setCartState({
+      storageKey,
+      carts: storageKey ? loadFromStorage(storageKey) : emptyCart(),
+    });
+  }, [isLoaded, storageKey]);
 
-  const cart = carts[brand];
+  useEffect(() => {
+    // Do not write a previous signed-in user's in-memory cart into the next
+    // user's storage namespace while Clerk identity is changing.
+    if (!isLoaded || !storageKey || cartState.storageKey !== storageKey) return;
+    saveToStorage(storageKey, cartState.carts);
+  }, [cartState, isLoaded, storageKey]);
+
+  const cart = cartState.carts[brand];
 
   const mutate = useCallback((fn: (prev: CartItem[]) => CartItem[]) => {
-    setCarts(prev => ({ ...prev, [brand]: fn(prev[brand]) }));
-  }, [brand]);
+    setCartState(prev => prev.storageKey === storageKey
+      ? { ...prev, carts: { ...prev.carts, [brand]: fn(prev.carts[brand]) } }
+      : prev);
+  }, [brand, storageKey]);
 
-  const addItem = useCallback((item: { id: number; name: string; price: number; imageUrl?: string | null }, quantity = 1) => {
+  const addItem = useCallback((item: { id: number; optionId?: number; name: string; price: number; imageUrl?: string | null }, quantity = 1) => {
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) return;
     mutate(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
         return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + quantity } : i);
       }
-      return [...prev, { id: item.id, name: item.name, price: item.price, quantity, imageUrl: item.imageUrl ?? null }];
+      return [...prev, { id: item.id, optionId: item.optionId, name: item.name, price: item.price, quantity, imageUrl: item.imageUrl ?? null }];
     });
   }, [mutate]);
 
@@ -86,12 +112,18 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const updateQuantity = useCallback((id: number, delta: number) => {
-    mutate(prev =>
-      prev.map(i => i.id === id ? { ...i, quantity: Math.max(1, i.quantity + delta) } : i)
-    );
+    if (!Number.isSafeInteger(delta) || delta === 0) return;
+    mutate(prev => prev.flatMap(i => {
+      if (i.id !== id) return [i];
+      const quantity = i.quantity + delta;
+      // A decrement from one uses the normal cart removal behavior; a cart
+      // never persists a zero or negative line quantity.
+      return quantity > 0 ? [{ ...i, quantity }] : [];
+    }));
   }, [mutate]);
 
   const setQuantity = useCallback((id: number, quantity: number) => {
+    if (!Number.isSafeInteger(quantity)) return;
     if (quantity <= 0) {
       mutate(prev => prev.filter(i => i.id !== id));
     } else {
@@ -104,8 +136,10 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }, [mutate]);
 
   const replaceCart = useCallback((items: CartItem[]) => {
-    setCarts(prev => ({ ...prev, [brand]: items }));
-  }, [brand]);
+    setCartState(prev => prev.storageKey === storageKey
+      ? { ...prev, carts: { ...prev.carts, [brand]: items } }
+      : prev);
+  }, [brand, storageKey]);
 
   const itemCount = cart.reduce((s, i) => s + i.quantity, 0);
   const cartTotal = cart.reduce((s, i) => s + i.price * i.quantity, 0);

@@ -35,5 +35,17 @@ describe("default permissions", () => {
   });
   it("does not allow csr role management", () => {
     expect(defaultHasPermission("csr", "users.manage_roles")).toBe(false);
+    expect(defaultHasPermission("csr", "queue.view")).toBe(true);
+    expect(defaultHasPermission("csr", "queue.claim")).toBe(true);
+    expect(defaultHasPermission("csr", "cash_sessions.join")).toBe(true);
+    expect(defaultHasPermission("csr", "cash_closeout.own")).toBe(true);
+    expect(defaultHasPermission("csr", "queue.manage")).toBe(false);
+    expect(defaultHasPermission("csr", "cash_closeout.override")).toBe(false);
+  });
+  it("allows supervisors to manage General Queue cash sessions without tenant settings access", () => {
+    expect(defaultHasPermission("supervisor", "settings.manage_tenant")).toBe(false);
+    expect(defaultHasPermission("supervisor", "queue.manage")).toBe(true);
+    expect(defaultHasPermission("supervisor", "cash_sessions.manage")).toBe(true);
+    expect(defaultHasPermission("supervisor", "cash_closeout.override")).toBe(true);
   });
 });

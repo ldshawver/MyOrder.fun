@@ -23,7 +23,11 @@ const dbState: {
   catalog: Array<Record<string, unknown>>;
   inventoryLocations: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], disclaimerAcceptances: [] };
+  taxSnapshots: Array<Record<string, unknown>>;
+  uberQuotes: Array<Record<string, unknown>>;
+  disclaimerAcceptances: Array<Record<string, unknown>>;
+  auditLogs: Array<Record<string, unknown>>;
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -78,12 +82,22 @@ vi.mock("../../lib/uberDirect", () => {
     getUberPickupAction: () => "default",
     createUberDeliveryQuote: async (input: { manifestItems: unknown[] }) => {
       uberQuoteCalls.push({ manifestItems: input.manifestItems });
-      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default" };
+      return { id: "quote_safe_1", fee: 599, currency_type: "USD", pickup_action: "default", expires: new Date(Date.now() + 15 * 60_000).toISOString() };
     },
+    normalizeUberAddress: (value: string) => ({ street_address: [value], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
+    formatUberAddress: () => "500 Test Street, Test City, CA 94105, US",
     UberDirectConfigError,
     UberDirectApiError,
   };
 });
+vi.mock("../../lib/uberDirectConfig", () => ({
+  getUberDirectRuntimeConfig: async () => ({ tenantId: 1, environment: "sandbox", customerId: "customer-test", clientId: "client-test", clientSecret: "test-only" }),
+  getUberDirectPickupAddress: async () => ({ street_address: ["123 Pickup St"], city: "Test City", state: "CA", zip_code: "94105", country: "US" }),
+  requirePickupAddress: (value: unknown) => value,
+  getUberDirectPickupContact: async () => null,
+  isUberDirectDispatchEnabledForTenant: async () => false,
+  verifyUberWebhookSignatureForAnyTenant: async () => false,
+}));
 vi.mock("../../lib/checkoutNormalizer", async () => {
   const { z } = await import("zod");
   class CheckoutMappingError extends Error {
@@ -102,7 +116,6 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       .object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })
       .strict(),
     CHECKOUT_TAX_RATE: 0.08,
-    getCheckoutTaxSettings: async () => ({ taxRate: 0.08 }),
     normalizeCheckoutCart: async (items: Array<{ catalogItemId: number; quantity: number }> = [{ catalogItemId: 1, quantity: 1 }]) => (items.length ? items : [{ catalogItemId: 1, quantity: 1 }]).map((item) => ({
         catalog_item_id: item.catalogItemId,
         source_type: "local_mapped",
@@ -135,12 +148,16 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
         receipt_name: null,
         label_name: null,
       })),
+    computeBaseCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
+      const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
+      return { subtotal, taxableSubtotal: subtotal, nonTaxableSubtotal: 0, tax: 0, total: subtotal, taxRate: 0, taxMode: "added", taxJurisdiction: "PENDING_TENDER", taxConfigurationId: -1 };
+    },
     computeCheckoutTotals: (lines: Array<{ line_subtotal: number }>) => {
       const subtotal = lines.reduce((s, l) => s + l.line_subtotal, 0);
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
-      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08 };
+      return { subtotal, tax, total: subtotal + tax, taxRate: 0.08, taxMode: "added" };
     },
-    getCheckoutTaxSettings: async () => ({ rate: 0.08 }),
+    getCheckoutTaxSettings: async () => ({ taxRate: 0.08, taxMode: "added" }),
     buildMerchantPayloadLines: () => [],
     buildReceiptLines: () => [],
   };
@@ -164,17 +181,20 @@ vi.mock("../../lib/checkoutConversionGate", async () => {
 
 vi.mock("@workspace/db", () => {
   type Pred = ((row: Record<string, unknown>) => boolean) | null;
-  const ordersTable = { __t: "orders", id: "id", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status" };
+  const ordersTable = { __t: "orders", id: "id", tenantId: "tenantId", customerId: "customerId", assignedCsrUserId: "assignedCsrUserId", assignedShiftId: "assignedShiftId", routeSource: "routeSource", routedTo: "routedTo", routedAt: "routedAt", acceptedAt: "acceptedAt", estimatedReadyAt: "estimatedReadyAt", status: "status", fulfillmentStatus: "fulfillmentStatus" };
   const usersTable = { __t: "users", id: "id", role: "role", firstName: "firstName", lastName: "lastName", email: "email", contactPhone: "contactPhone", notificationPreferences: "notificationPreferences" };
   const labTechShiftsTable = { __t: "shifts", id: "id", techId: "techId", status: "status", clockedInAt: "clockedInAt" };
-  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId" };
+  const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
-  const tenantsTable = { __t: "tenants", id: "id" };
+  const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
   const inventoryBalancesTable = { __t: "inventory_balances", id: "id", tenantId: "tenantId", productId: "productId", locationId: "locationId", quantityOnHand: "quantityOnHand", inventoryKind: "inventoryKind", isSellable: "isSellable", quarantinedAt: "quarantinedAt", quarantinedByUserId: "quarantinedByUserId", quarantineReason: "quarantineReason" };
   const csrBoxesTable = { __t: "csr_boxes", id: "id", tenantId: "tenantId", slug: "slug" };
+  const orderTaxSnapshotsTable = { __t: "order_tax_snapshots", id: "id", tenantId: "tenantId", orderId: "orderId" };
+  const uberDeliveryQuotesTable = { __t: "uber_quotes", id: "id", tenantId: "tenantId", customerId: "customerId", status: "status", expiresAt: "expiresAt" };
+  const auditLogsTable = { __t: "audit_logs" };
   const orderItems: Array<Record<string, unknown>> = [];
 
   function tableFor(t: { __t: string }): Array<Record<string, unknown>> {
@@ -188,6 +208,9 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
     if (t.__t === "inventory_balances") return dbState.inventoryBalances;
     if (t.__t === "customer_disclaimer_acceptances") return dbState.disclaimerAcceptances;
+    if (t.__t === "order_tax_snapshots") return dbState.taxSnapshots;
+    if (t.__t === "uber_quotes") return dbState.uberQuotes;
+    if (t.__t === "audit_logs") return dbState.auditLogs;
     return [];
   }
 
@@ -203,14 +226,41 @@ vi.mock("@workspace/db", () => {
   const select = vi.fn((cols?: Record<string, unknown>) => {
     let pred: Pred = null;
     let target: { __t: string } | null = null;
+    let joinUsers = false;
     const chain: Record<string, unknown> = {};
     chain.from = vi.fn((t: { __t: string }) => { target = t; return chain; });
-    chain.innerJoin = vi.fn(() => chain);
+    chain.innerJoin = vi.fn((t: { __t: string }) => { joinUsers = t.__t === "users"; return chain; });
     chain.where = vi.fn((p: unknown) => {
       pred = (row) => matchesPredicate(row, p);
       return chain;
     });
-    const resolveRows = () => target ? tableFor(target).filter(r => pred ? pred(r) : true) : [];
+    const resolveRows = () => {
+      if (!target) return [];
+      const rows = tableFor(target)
+        .map((row) => {
+          if (!joinUsers || target?.__t !== "shifts") return row;
+          const user = dbState.users.find((candidate) => candidate.id === row.techId) ?? {};
+          return {
+            ...row,
+            userId: row.techId,
+            shiftId: row.id,
+            userTenantId: user.tenantId,
+            userIsActive: user.isActive,
+            userStatus: user.status,
+            role: user.role,
+          };
+        })
+        .filter(r => pred ? pred(r) : true);
+      if (!cols) return rows;
+      if (joinUsers && target.__t === "shifts") {
+        return rows.map((row) => Object.fromEntries(
+          Object.keys(cols).map((alias) => [alias, row[alias]]),
+        ));
+      }
+      return rows.map((row) => Object.fromEntries(
+        Object.entries(cols).map(([alias, column]) => [alias, row[String(column)]]),
+      ));
+    };
     chain.orderBy = vi.fn(() => {
       // orderBy is chainable (e.g. .orderBy().limit()) but also awaitable
       const p = Promise.resolve(resolveRows()) as unknown as Record<string, unknown>;
@@ -221,25 +271,31 @@ vi.mock("@workspace/db", () => {
     chain.groupBy = vi.fn(() => Promise.resolve([]));
     void cols;
     (chain as Record<string, unknown>).then = (resolve: (v: unknown) => unknown) =>
-      resolve(target ? tableFor(target).filter(r => pred ? pred(r) : true) : []);
+      resolve(resolveRows());
     return chain;
   });
 
   const insert = vi.fn((t: { __t: string }) => ({
-    values: (vals: Record<string, unknown>) => ({
-      returning: async () => {
-        const now = new Date();
-        const row = {
-          id: tableFor(t).length + 100,
-          createdAt: now, updatedAt: now,
-          notes: "", paymentStatus: "unpaid",
-          ...vals,
-        };
-        if (row.notes === null) row.notes = "";
-        tableFor(t).push(row);
-        return [row];
-      },
-    }),
+    values: (vals: Record<string, unknown>) => {
+      if (t.__t === "audit_logs") {
+        dbState.auditLogs.push({ id: dbState.auditLogs.length + 1, ...vals });
+        return Promise.resolve();
+      }
+      return {
+        returning: async () => {
+          const now = new Date();
+          const row = {
+            id: tableFor(t).length + 100,
+            createdAt: now, updatedAt: now,
+            notes: "", paymentStatus: "unpaid",
+            ...vals,
+          };
+          if (row.notes === null) row.notes = "";
+          tableFor(t).push(row);
+          return [row];
+        },
+      };
+    },
   }));
 
   const update = vi.fn((t: { __t: string }) => {
@@ -265,8 +321,8 @@ vi.mock("@workspace/db", () => {
   });
 
   return {
-    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve()) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable,
+    db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event" }] })) })) },
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -274,6 +330,7 @@ vi.mock("@workspace/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...a) => a),
+  isNull: vi.fn((col) => ({ col, val: null })),
   inArray: vi.fn((col, vals) => ({ col, vals })),
   asc: vi.fn((c) => c),
   desc: vi.fn((c) => c),
@@ -350,25 +407,27 @@ function captureEvents(role: string, userId: number): { received: OrderEvent[]; 
       return true;
     }),
   } as unknown as import("express").Response;
-  const teardown = subscribe({ res: fakeRes, userId, role });
+  const teardown = subscribe({ res: fakeRes, tenantId: 1, userId, role });
   return { received, teardown };
 }
 
 beforeEach(() => {
   dbState.orders = [];
+  dbState.auditLogs = [];
   dbState.users = [
     { id: 5, clerkId: "cust", email: "c@x.com", firstName: "Cust", lastName: "A", role: "user", status: "approved", tenantId: 1 },
-    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved" },
-    { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved" },
+    { id: 7, clerkId: "csr", email: "csr@x.com", firstName: "Cs", lastName: "R", role: "csr", status: "approved", isActive: true, tenantId: 1 },
+    { id: 9, clerkId: "admin", email: "admin@x.com", firstName: "Ad", lastName: "Min", role: "admin", status: "approved", isActive: true, tenantId: 1 },
   ];
   dbState.shifts = [];
   dbState.settings = [{
-    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1,
+    id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1, enabledProcessors: ["cash", "paypal"],
   }];
-  dbState.tenants = [{ id: 1 }];
+  dbState.tenants = [{ id: 1, name: "Test Tenant" }];
   dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
+  dbState.uberQuotes = [];
   dbState.disclaimerAcceptances = [{ id: 70, tenantId: 1, userId: 5, disclaimerVersion: 1, acceptedAt: new Date() }];
   mockActor = {};
   uberQuoteCalls.length = 0;
@@ -376,6 +435,69 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("hides courier status from another customer and another tenant", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.orders.push({ id: 91, tenantId: 1, customerId: 99, deliveryMethod: "uber_direct" });
+    const app = buildApp();
+    expect((await supertest(app).get("/api/orders/91/courier")).status).toBe(404);
+    dbState.orders[0] = { id: 91, tenantId: 2, customerId: 5, deliveryMethod: "uber_direct" };
+    expect((await supertest(app).get("/api/orders/91/courier")).status).toBe(404);
+  });
+
+  it("offers enabled Cash but marks PayPal unavailable when the provider is disabled", async () => {
+    mockActor = dbState.users[0]!;
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+
+    expect(converted.status).toBe(200);
+    expect(converted.body.converted.paymentMethods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "cash" }),
+      expect.objectContaining({ id: "paypal", available: false }),
+    ]));
+  });
+
+  it("omits Cash when the tenant disables it and rejects a forged Cash checkout", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.settings[0]!.enabledProcessors = ["paypal"];
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+    expect(converted.status).toBe(200);
+    expect(converted.body.converted.paymentMethods).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "cash" })]));
+
+    const conversionToken = converted.body.conversionToken as string;
+    const checkoutConversionSnapshot = { ...converted.body } as Record<string, unknown>;
+    for (const field of ["conversionToken", "checkoutConversionToken", "conversionExpiresAt", "snapshotHash"]) delete checkoutConversionSnapshot[field];
+    const order = await supertest(buildApp()).post("/api/orders").send({
+      items: convertedItems,
+      checkoutConversionToken: conversionToken,
+      checkoutConversionSnapshot,
+      checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+    });
+    expect(order.status).toBe(422);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
+  it("rejects PayPal order creation while global payment configuration is disabled", async () => {
+    mockActor = dbState.users[0]!;
+    const converted = await supertest(buildApp())
+      .post("/api/cart/convert")
+      .send({ items: convertedItems, confirmation: checkoutConfirmation });
+    const conversionToken = converted.body.conversionToken as string;
+    const checkoutConversionSnapshot = { ...converted.body } as Record<string, unknown>;
+    for (const field of ["conversionToken", "checkoutConversionToken", "conversionExpiresAt", "snapshotHash"]) delete checkoutConversionSnapshot[field];
+    const order = await supertest(buildApp()).post("/api/orders").send({
+      items: convertedItems,
+      checkoutConversionToken: conversionToken,
+      checkoutConversionSnapshot,
+      checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "paypal" },
+    });
+    expect(order.status).toBe(422);
+    expect(order.body.error).toMatch(/PayPal checkout is unavailable/);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
   it("POST /api/cart/convert returns conversionToken and POST /api/orders accepts converted Cash checkout", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
@@ -402,7 +524,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect([200, 201]).toContain(res.status);
     expect(dbState.orders).toHaveLength(1);
-    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
     expect(conversionExpiresAt).toEqual(expect.any(String));
     expect(snapshotHash).toEqual(expect.any(String));
@@ -436,7 +558,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect([200, 201]).toContain(order.status);
     expect(dbState.orders).toHaveLength(1);
-    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash" }));
+    expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
     expect(conversionExpiresAt).toEqual(expect.any(String));
     expect(snapshotHash).toEqual(expect.any(String));
@@ -452,7 +574,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted/i);
+    expect(res.body.error).toMatch(/prepared/i);
   });
 
   it("POST /api/orders/delivery-quote rejects unconverted provider payloads with 422", async () => {
@@ -462,7 +584,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
       .send({ items: [{ catalogItemId: 1, quantity: 1 }], dropoffAddress: "456 Dropoff St, Test City, CA" });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/converted/i);
+    expect(res.body.error).toMatch(/prepared/i);
     expect(uberQuoteCalls).toHaveLength(0);
   });
 
@@ -598,5 +720,106 @@ describe("SSE event emission via the live route handlers", () => {
     const csrs = await supertest(app).get("/api/orders/active-csrs");
     expect(delayed.status).toBe(403);
     expect(csrs.status).toBe(403);
+  });
+});
+
+describe("order completion authorization", () => {
+  it("completes a paid, ready pickup once and treats a duplicate close as idempotent", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09", customerCreditApplied: "0.00", deliveryMethod: "pickup" });
+    mockActor = dbState.users[2]!;
+    const app = buildApp();
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.status).toBe("completed");
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.status).toBe("completed");
+  });
+
+  it("rejects an unpaid ready pickup", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "unpaid", paymentMethod: "cash", total: "1.09", deliveryMethod: "pickup" });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/complete").send({})).status).toBe(409);
+    expect(dbState.orders[0]!.status).toBe("ready");
+  });
+
+  it("does not let another tenant close a paid ready order", async () => {
+    dbState.orders.push({ id: 48, tenantId: 2, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09" });
+    mockActor = dbState.users[2]!; // Tenant 1 admin
+    const response = await supertest(buildApp()).post("/api/orders/48/complete").send({});
+    expect(response.status).toBe(404);
+    expect(dbState.orders[0]!.status).toBe("ready");
+  });
+
+  it("does not let a customer close a paid ready order", async () => {
+    dbState.orders.push({ id: 48, tenantId: 1, customerId: 5, status: "ready", fulfillmentStatus: "ready", paymentStatus: "paid", paymentMethod: "cash", total: "1.09" });
+    mockActor = dbState.users[0]!; // Customer, not staff
+    const response = await supertest(buildApp()).post("/api/orders/48/complete").send({});
+    expect(response.status).toBe(403);
+    expect(dbState.orders[0]!.status).toBe("ready");
+  });
+});
+
+describe("default-queue Admin start and CSR claim", () => {
+  const unowned = () => ({
+    id: 48, tenantId: 1, customerId: 5, status: "confirmed", fulfillmentStatus: "submitted",
+    paymentStatus: "paid", paymentMethod: "cash", total: "1.09", deliveryMethod: "pickup",
+    routeSource: "supervisor_override", routedTo: "csr_shift", // legacy stale routing label
+    assignedCsrUserId: null, assignedShiftId: null, acceptedAt: null,
+  });
+
+  it("lets a Tenant 1 Admin start an unowned default-queue order without a shift and audits that Admin", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    const response = await supertest(buildApp()).post("/api/orders/48/fulfillment").send({ fulfillmentStatus: "in_progress" });
+    expect(response.status).toBe(200);
+    expect(dbState.orders[0]).toMatchObject({ status: "in_progress", fulfillmentStatus: "in_progress", assignedCsrUserId: null, assignedShiftId: null, routedTo: "default_queue" });
+    expect(dbState.auditLogs).toContainEqual(expect.objectContaining({ action: "ORDER_STARTED_BY_ADMIN", actorId: 9, actorRole: "admin", tenantId: 1, resourceId: "48" }));
+  });
+
+  it("also accepts the prior Admin claim-button request without inventing a CSR shift", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.assignedShiftId).toBeNull();
+  });
+
+  it("requires an eligible active shift for a CSR claim", async () => {
+    dbState.orders.push({ ...unowned(), routeSource: "active_csr", assignedCsrUserId: 7, assignedShiftId: 77 });
+    mockActor = dbState.users[1]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(403);
+    dbState.shifts.push({ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: {} });
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.assignedCsrUserId).toBe(7);
+  });
+
+  it("does not expose another tenant's order or allow a customer to start", async () => {
+    dbState.orders.push({ ...unowned(), tenantId: 2 });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(404);
+    dbState.orders[0]!.tenantId = 1;
+    mockActor = dbState.users[0]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(403);
+    expect(dbState.auditLogs).toHaveLength(0);
+  });
+
+  it("does not take an assigned or specialized order from another worker", async () => {
+    dbState.orders.push({ ...unowned(), assignedCsrUserId: 7, assignedShiftId: 77 });
+    mockActor = dbState.users[2]!;
+    expect((await supertest(buildApp()).post("/api/orders/48/fulfillment").send({ fulfillmentStatus: "in_progress" })).status).toBe(409);
+    dbState.orders[0] = { ...unowned(), routeSource: "active_csr" };
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(409);
+    expect(dbState.auditLogs).toHaveLength(0);
+  });
+
+  it("does not let Admin privilege skip fulfillment or payment completion rules", async () => {
+    dbState.orders.push(unowned());
+    mockActor = dbState.users[2]!;
+    const app = buildApp();
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
+    expect((await supertest(app).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
+    dbState.orders[0]!.paymentStatus = "unpaid";
+    expect((await supertest(app).post("/api/orders/48/prepare").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/ready").send({})).status).toBe(200);
+    expect((await supertest(app).post("/api/orders/48/complete").send({})).status).toBe(409);
   });
 });

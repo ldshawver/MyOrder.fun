@@ -4,7 +4,7 @@ import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { DebugPanel, type DebugEntry } from "@/components/debug-panel";
 
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   ChevronRight, Package, Clock, RefreshCw, LogIn, LogOut,
   Activity, Users, BarChart3, Boxes, Wifi, X, CheckCircle2,
@@ -15,9 +15,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
+import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
+type GeneralQueueSessionState = {
+  session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number | null; locationName?: string; registerLabel?: string | null; accountableCash?: string; expectedClosingCash?: string; opener?: { firstName?: string | null; lastName?: string | null; email?: string | null } | null } | null;
+  participants: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null; joinedAt: string }[];
+};
+type GeneralSessionOptions = {
+  locations: { locationId: number; locationName: string }[];
+  boxes: { registerBoxId: number; registerLabel: string; locationIds: number[] }[];
+  eligibleCsrs: { id: number; firstName?: string | null; lastName?: string | null; email?: string | null }[];
+};
 
 function safeArray<T>(value: T[] | null | undefined): T[];
 function safeArray<T>(value: unknown): T[];
@@ -35,7 +45,6 @@ function formatCourierEta(value?: string | null) {
 const STATUS_TABS = [
   { value: "submitted", label: "Incoming" },
   { value: "in_progress", label: "In Progress" },
-  { value: "preparing", label: "Preparing" },
   { value: "ready", label: "Ready" },
 ];
 
@@ -108,6 +117,7 @@ type ActiveShift = {
   boxAssignmentId: string | null;
   clockedInAt: string;
   cashBankStart: number;
+  accountableCash?: number;
   runningCashBank: number;
   csrDeliveryOptIn: boolean;
   csrDeliveryEarnings: number;
@@ -144,6 +154,7 @@ function normalizeActiveShift(raw: RawShift | null | undefined): ActiveShift | n
     boxAssignmentId: raw.boxAssignmentId ?? raw.box_assignment_id ?? null,
     clockedInAt: raw.clockedInAt ?? new Date().toISOString(),
     cashBankStart: Number(raw.cashBankStart ?? 0),
+    accountableCash: Number(raw.accountableCash ?? raw.stats?.cashSales ?? 0),
     runningCashBank: Number(raw.runningCashBank ?? raw.cashBankStart ?? 0),
     csrDeliveryOptIn: Boolean(raw.csrDeliveryOptIn),
     csrDeliveryEarnings: Number(raw.csrDeliveryEarnings ?? 0),
@@ -261,7 +272,7 @@ function ClockInPanel({ onClockIn, getToken }: {
   const [pickupNote, setPickupNote] = useState("");
   const [csrDeliveryOptIn, setCsrDeliveryOptIn] = useState(false);
   const [quantities, setQuantities] = useState<Record<number, string>>({});
-  const [cashBankStart, setCashBankStart] = useState("100");
+  const cashBankStart = "100";
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [clocking, setClocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -522,19 +533,11 @@ function ClockInPanel({ onClockIn, getToken }: {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex-1">
-            <div className="text-xs text-muted-foreground mb-1">Cash bank par is $100. Confirm the box starts at par or enter the counted total</div>
+            <div className="text-xs text-muted-foreground mb-1">Checking out this box accepts responsibility for its fixed $100 opening bank.</div>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-emerald-400">$</span>
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              value={cashBankStart}
-              onChange={e => setCashBankStart(e.target.value)}
-              className="h-9 w-28 text-right text-sm rounded-xl bg-background/50 border-emerald-500/30 font-mono font-bold text-emerald-400 focus:border-emerald-500/60"
-              placeholder="100.00"
-            />
+            <span className="font-mono font-bold text-emerald-400" data-testid="text-box-opening-bank">100.00</span>
           </div>
         </div>
       </div>
@@ -639,7 +642,7 @@ function ClockOutModal({ shift, onConfirm, onCancel }: {
     }
   }
 
-  const expectedCash = (shift.cashBankStart ?? 0) + (shiftStats.cashSales ?? 0);
+  const expectedCash = (shift.cashBankStart ?? 0) + (shift.accountableCash ?? shiftStats.cashSales ?? 0);
 
   const [actualCounts, setActualCounts] = useState<Record<number, string>>(initialCounts);
   const [cashBankEnd, setCashBankEnd] = useState(expectedCash.toFixed(2));
@@ -894,11 +897,10 @@ function ShiftSummaryModal({ summary, onClose }: {
   const hasProblems = flaggedItems.length > 0 || hasCashDisc;
   const hasActualCounts = safeInventorySummary.some(i => i.rowType === "item" && i.quantityEndActual != null);
   const paymentTotals = safeSummaryStats.paymentTotals ?? {};
-  const cashAppSales = paymentTotals.cashapp ?? 0;
-  const venmoSales = paymentTotals.venmo ?? 0;
-  const applePaySales = paymentTotals.apple_pay ?? 0;
-  const zelleSales = paymentTotals.zelle ?? 0;
   const paypalSales = paymentTotals.paypal ?? 0;
+  const paypalCardSales = paymentTotals.paypal_card ?? 0;
+  const customerCreditSales = paymentTotals.customer_credit ?? 0;
+  const splitSales = paymentTotals.split ?? 0;
   const differenceAmount = summary.differenceAmount ?? safeSummaryStats.totalRevenue;
 
 
@@ -969,12 +971,11 @@ function ShiftSummaryModal({ summary, onClose }: {
             <div className="px-4 py-2.5 bg-muted/10 text-[10px] font-bold text-muted-foreground uppercase tracking-widest border-b border-border/20 flex items-center gap-1.5">
               Payment Method Totals
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-px bg-border/20 text-sm">
-              <PaymentStat label="Cash App" amount={cashAppSales} />
-              <PaymentStat label="Venmo" amount={venmoSales} />
-              <PaymentStat label="Apple Pay" amount={applePaySales} />
-              <PaymentStat label="Zelle" amount={zelleSales} />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-border/20 text-sm">
               <PaymentStat label="PayPal" amount={paypalSales} />
+              <PaymentStat label="PayPal Card" amount={paypalCardSales} />
+              <PaymentStat label="Customer Credit" amount={customerCreditSales} />
+              <PaymentStat label="Split tender" amount={splitSales} />
             </div>
           </div>
 
@@ -1354,12 +1355,12 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 
 // ─── Fulfillment Card ─────────────────────────────────────────────────────────
 
-const FULFILLMENT_STEPS = [
-  { status: "in_progress", label: "Claim", icon: HandshakeIcon, color: "yellow" },
-  { status: "preparing", label: "Prepare", icon: Activity, color: "blue" },
-  { status: "ready", label: "Ready", icon: DoorOpen, color: "emerald" },
-  { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
-];
+const FULFILLMENT_STEPS = STAFF_FULFILLMENT_STATUSES.map(status => ({
+  status,
+  label: status === "in_progress" ? "Claim" : status === "ready" ? "Ready" : "Complete",
+  icon: status === "in_progress" ? HandshakeIcon : status === "ready" ? DoorOpen : CheckCircle2,
+  color: status === "in_progress" ? "yellow" : "emerald",
+}));
 
 function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolean } | null {
   if (!order.estimatedReadyAt) return null;
@@ -1371,21 +1372,53 @@ function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolea
   return { label: `${lateMinutes}m late`, stale: false };
 }
 
-function FulfillmentCard({ order, onRefresh, getToken }: {
+function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
   order: ExtendedOrder;
   onRefresh: () => void;
   getToken: () => Promise<string | null>;
+  isAdmin: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const [printingReceipt, setPrintingReceipt] = useState(false);
   const [printingLabel, setPrintingLabel] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
+  const [actionMessage, setActionMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [courierState, setCourierState] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<Record<string, boolean>>(
     (order.handoffChecklist as Record<string, boolean> | null) ?? {}
   );
   const fulfillment = order.fulfillmentStatus as string | null;
   const safeItems = safeArray<ExtendedOrderItem>(order.items);
+
+  useEffect(() => {
+    if (order.deliveryMethod !== "uber_direct") return;
+    let stopped = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !stopped) setCourierState((await response.json() as { state: string }).state);
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 15000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [getToken, order.id, order.deliveryMethod]);
+
+  async function requestCourier() {
+    setLoading("courier");
+    setActionMessage(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier/request`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: "{}" });
+      const result = await response.json() as { error?: string; state?: string };
+      if (!response.ok) throw new Error(result.error ?? result.state ?? "Courier request requires review");
+      setCourierState(result.state ?? null);
+      setActionMessage({ kind: "success", text: "Courier request recorded." });
+      onRefresh();
+    } catch (error) {
+      setActionMessage({ kind: "error", text: error instanceof Error ? error.message : "Courier request failed" });
+    } finally { setLoading(null); }
+  }
 
   async function toggleChecklistItem(key: string, value: boolean) {
     const next = { ...checklist, [key]: value };
@@ -1413,32 +1446,46 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     } catch { /* non-critical */ } finally { setHandoffBusy(false); }
   }
 
-  async function setFulfillmentStatus(status: string) {
+  async function setFulfillmentStatus(status: "in_progress" | "preparing" | "ready" | "completed") {
+    if (loading !== null) return;
     setLoading(status);
+    setActionMessage(null);
     try {
       const token = await getToken();
-      const endpoint = status === "in_progress"
-      ? `/api/orders/${order.id}/claim`
-        : status === "preparing"
-        ? `/api/orders/${order.id}/prepare`
-        : status === "ready"
-        ? `/api/orders/${order.id}/ready`
-        : `/api/orders/${order.id}/complete`;
-      const res = await fetch(endpoint, {
+      const action = staffFulfillmentAction(order.id, status, isAdmin);
+      const res = await fetch(action.endpoint, {
         method: "POST",
         headers: status === "completed"
           ? { Authorization: `Bearer ${token}` }
           : { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        ...(status === "completed" ? {} : { body: JSON.stringify({ fulfillmentStatus: status }) }),
+        ...(action.body ? { body: JSON.stringify(action.body) } : {}),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null) as { error?: string } | null;
         throw new Error(body?.error ?? `Request failed with HTTP ${res.status}`);
       }
       onRefresh();
+      setActionMessage({ kind: "success", text: status === "in_progress" ? (isAdmin ? "Order started." : "Order claimed and assigned to your active shift.") : "Order updated." });
     } catch (err) {
       console.error("Fulfillment action failed", err);
+      setActionMessage({ kind: "error", text: err instanceof Error ? err.message : "The order could not be updated." });
     } finally { setLoading(null); }
+  }
+
+  async function releaseToGeneralQueue() {
+    setLoading("release");
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ reason: "Released from Shift/Queue management" }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.error ?? "Release failed");
+      onRefresh();
+    } finally {
+      setLoading(null);
+    }
   }
 
   async function printReceipt() {
@@ -1463,7 +1510,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     } catch { /* ignore fetch errors */ } finally { setPrintingLabel(false); }
   }
 
-  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === fulfillment);
+  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === staffVisibleFulfillmentState(fulfillment));
   const lateState = getOrderLateState(order);
 
   return (
@@ -1479,10 +1526,13 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
               {order.paymentStatus === "paid" ? "PAID" : order.paymentStatus?.toUpperCase()}
             </span>
             {order.paymentMethod && (
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentMethod === "card" ? "bg-blue-500/15 text-blue-400 border-blue-500/20" : order.paymentMethod === "comp" ? "bg-purple-500/15 text-purple-400 border-purple-500/20" : "bg-green-500/15 text-green-400 border-green-500/20"}`}>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${order.paymentMethod.includes("paypal_card") ? "bg-blue-500/15 text-blue-400 border-blue-500/20" : order.paymentMethod.includes("customer_credit") ? "bg-purple-500/15 text-purple-400 border-purple-500/20" : "bg-green-500/15 text-green-400 border-green-500/20"}`}>
                 {order.paymentMethod.toUpperCase()}
               </span>
             )}
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border/50">
+              {order.assignedCsrUserId ? `Claimed by agent ${order.assignedCsrUserId}` : "Unassigned · General Queue"}
+            </span>
             {fulfillment && (
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-primary/20 bg-primary/10 text-primary capitalize">
                 {fulfillment.replace(/_/g, " ")}
@@ -1625,6 +1675,15 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
           ))}
         </div>
       )}
+      {actionMessage && (
+        <div
+          role={actionMessage.kind === "error" ? "alert" : "status"}
+          className={`mx-4 mb-3 rounded-lg border px-3 py-2 text-xs ${actionMessage.kind === "error" ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"}`}
+          data-testid={`claim-message-${order.id}`}
+        >
+          {actionMessage.text}
+        </div>
+      )}
 
       <div className="border-t border-border/30 px-4 py-2.5 flex items-center gap-2">
         <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7 rounded-lg border-border/50" onClick={printReceipt} disabled={printingReceipt}>
@@ -1641,6 +1700,12 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
       </div>
 
       <div className="border-t border-border/30 px-4 py-3">
+        <div className="flex flex-wrap gap-2 mb-3">
+          <Link href={`/orders/${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-semibold">Open order</Link>
+          {order.assignedCsrUserId && order.paymentStatus !== "paid" && (
+            <Button size="sm" variant="outline" onClick={() => void releaseToGeneralQueue()} disabled={loading !== null} data-testid={`button-release-${order.id}`}>Release to General Queue</Button>
+          )}
+        </div>
         <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
         <div className="flex flex-wrap gap-2">
           {FULFILLMENT_STEPS.map((step, idx) => {
@@ -1668,11 +1733,17 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
                   : isDone && !isActive && !isLast
                   ? <CheckCircle2 size={11} />
                   : <Icon size={11} />}
-                {step.label}
+                {isAdmin && step.status === "in_progress" ? "Start" : step.label}
               </button>
             );
           })}
+          {order.deliveryMethod === "uber_direct" && fulfillment === "ready" && (
+            <Button size="sm" onClick={() => void requestCourier()} disabled={loading !== null || order.paymentStatus !== "paid" || ![null, "payment_pending", "awaiting_staff_request"].includes(courierState)} data-testid={`button-request-delivery-${order.id}`}>
+              Request Delivery
+            </Button>
+          )}
         </div>
+        {order.deliveryMethod === "uber_direct" && courierState && <p className="mt-2 text-xs text-muted-foreground" role="status">Courier: {({ awaiting_staff_request: "Awaiting staff request", delivery_create_pending: "Request pending", delivery_created: "Courier requested", reconciliation_required: "Status under review", manual_reconciliation_required: "Operator review required", delivered: "Delivered", canceled: "Canceled" } as Record<string, string>)[courierState] ?? "Status pending"}</p>}
       </div>
     </div>
   );
@@ -1681,6 +1752,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 function CustomerServiceRepQueueContent() {
+  const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
@@ -1695,6 +1767,17 @@ function CustomerServiceRepQueueContent() {
   const userRole = normalizeUiRole(user?.role);
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+  const [generalSession, setGeneralSession] = useState<GeneralQueueSessionState>({ session: null, participants: [] });
+  const [sessionOptions, setSessionOptions] = useState<GeneralSessionOptions>({ locations: [], boxes: [], eligibleCsrs: [] });
+  const [selectedLocationId, setSelectedLocationId] = useState("");
+  const [selectedRegisterBoxId, setSelectedRegisterBoxId] = useState("");
+  const [selectedParticipantId, setSelectedParticipantId] = useState("");
+  const [openingBalance, setOpeningBalance] = useState("0.00");
+  const [closingBalance, setClosingBalance] = useState("");
+  const [discrepancyReason, setDiscrepancyReason] = useState("");
+  const [openIdempotencyKey, setOpenIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [closeIdempotencyKey, setCloseIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
     setIsLoadingQueue(true);
@@ -1710,17 +1793,46 @@ function CustomerServiceRepQueueContent() {
     }
   }, [getToken]);
 
+  const fetchGeneralSession = useCallback(async () => {
+    const token = await getToken();
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const [sessionResponse, optionsResponse] = await Promise.all([
+      fetch("/api/shift-queue/general/session", { headers }),
+      fetch("/api/shift-queue/general/session/options", { headers }),
+    ]);
+    if (sessionResponse.ok) setGeneralSession(await sessionResponse.json());
+    if (optionsResponse.ok) {
+      const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
+      const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
+      setSessionOptions(options);
+      setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
+      setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
+    }
+  }, [getToken]);
+
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => {
     const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
-    return lifecycle === activeTab;
+    return (lifecycle === "preparing" ? "in_progress" : lifecycle) === activeTab;
   });
 
   const refresh = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    for (const queryKey of [
+      ["shiftQueueOrders"],
+      ["generalQueueOrders"],
+      ["csrAssignedOrders"],
+      ["queueCounts"],
+      ["activeAssignment"],
+      ["getCurrentShift"],
+      ["getOrders"],
+      ["getOrder"],
+    ]) {
+      queryClient.invalidateQueries({ queryKey });
+    }
     void fetchQueue();
     refetchShift();
-  }, [fetchQueue, queryClient, refetchShift]);
+    void fetchGeneralSession();
+  }, [fetchGeneralSession, fetchQueue, queryClient, refetchShift]);
 
   useOrderEvents(() => {
     refresh();
@@ -1728,7 +1840,8 @@ function CustomerServiceRepQueueContent() {
 
   useEffect(() => {
     void fetchQueue();
-  }, [fetchQueue, shift]);
+    void fetchGeneralSession();
+  }, [fetchGeneralSession, fetchQueue, shift]);
 
   useEffect(() => {
     if (!shift) return;
@@ -1814,6 +1927,58 @@ function CustomerServiceRepQueueContent() {
   // Spec: CSR alert banner + Accept controls are CSR-only. Supervisors/admins
   // get the supervisor surfaces (delayed list, reassign panel) instead.
   const isCsrOnly = userRole === "csr";
+  const canManageGeneralSession = userRole === "supervisor" || userRole === "admin" || userRole === "global_admin";
+
+  async function openGeneralQueueSession() {
+    const locationId = Number(selectedLocationId);
+    const registerBoxId = selectedRegisterBoxId ? Number(selectedRegisterBoxId) : null;
+    setSessionMessage(null);
+    const token = await getToken();
+    const response = await fetch("/api/shift-queue/general/session/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ registerBoxId, locationId, openingBalance: Number(openingBalance), idempotencyKey: openIdempotencyKey }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { setSessionMessage(data.error ?? "Could not open General Queue cash session"); return; }
+    setSessionMessage("General Queue cash session opened.");
+    setOpenIdempotencyKey(crypto.randomUUID());
+    await fetchGeneralSession();
+    const returnOrder = new URLSearchParams(window.location.search).get("returnOrder");
+    if (returnOrder && /^\d+$/.test(returnOrder)) navigate(`/orders/${returnOrder}?cashCloseout=1`);
+  }
+
+  async function manageParticipant(method: "POST" | "DELETE", participantId: number) {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const endpoint = method === "POST" ? `/api/shift-queue/general/session/${generalSession.session.id}/participants` : `/api/shift-queue/general/session/${generalSession.session.id}/participants/${participantId}`;
+    const response = await fetch(endpoint, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(method === "POST" ? { "Content-Type": "application/json" } : {}) }, ...(method === "POST" ? { body: JSON.stringify({ userId: participantId }) } : {}) });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? (method === "POST" ? "Participant added." : "Participant removed.") : data.error ?? "Could not update participant");
+    if (response.ok) await fetchGeneralSession();
+  }
+
+  async function joinGeneralQueueSession() {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const response = await fetch(`/api/shift-queue/general/session/${generalSession.session.id}/join`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? "Joined General Queue cash session." : data.error ?? "Could not join session");
+    if (response.ok) await fetchGeneralSession();
+  }
+
+  async function closeGeneralQueueSession() {
+    if (!generalSession.session) return;
+    const token = await getToken();
+    const response = await fetch(`/api/shift-queue/general/session/${generalSession.session.id}/close`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ closingBalance: Number(closingBalance), idempotencyKey: closeIdempotencyKey, ...(discrepancyReason.trim() ? { discrepancyReason: discrepancyReason.trim() } : {}) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setSessionMessage(response.ok ? "General Queue cash session closed and reconciled." : data.error ?? "Could not close session");
+    if (response.ok) { setCloseIdempotencyKey(crypto.randomUUID()); await fetchGeneralSession(); }
+  }
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -1836,6 +2001,68 @@ function CustomerServiceRepQueueContent() {
       {isCsrOnly && user?.id != null && (
         <CsrAlertBanner currentUserId={user.id} onAccepted={refresh} />
       )}
+
+      <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-4" data-testid="general-queue-management">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold">View General Queue</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Cash session: <span className={generalSession.session ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>{generalSession.session ? "Open" : "No open cash session"}</span>
+            </p>
+          </div>
+          {generalSession.session && isCsrOnly && !generalSession.participants.some(participant => participant.id === user?.id) && <Button size="sm" onClick={() => void joinGeneralQueueSession()} data-testid="button-join-general-session">Join Cash Session</Button>}
+        </div>
+        {generalSession.session ? (
+          <div className="space-y-3">
+            <div className="grid gap-1 text-xs sm:grid-cols-2">
+              <div>Location: {generalSession.session.locationName ?? `Location ${generalSession.session.locationId}`}</div>
+              <div>Register: {generalSession.session.registerLabel ?? "No register selected"}</div>
+              <div>Opened by: {`${generalSession.session.opener?.firstName ?? ""} ${generalSession.session.opener?.lastName ?? ""}`.trim() || generalSession.session.opener?.email || "Authorized manager"}</div>
+              <div>Opened: {new Date(generalSession.session.openedAt).toLocaleString()}</div>
+              <div>Opening amount: ${Number(generalSession.session.openingBalance).toFixed(2)}</div>
+              <div>Accountable cash: ${Number(generalSession.session.accountableCash ?? 0).toFixed(2)}</div>
+              <div>Expected closing cash: ${Number(generalSession.session.expectedClosingCash ?? generalSession.session.openingBalance).toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Participating agents</div>
+              <div className="flex flex-wrap gap-2">
+                {generalSession.participants.map(participant => <span key={participant.id} className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs">{`${participant.firstName ?? ""} ${participant.lastName ?? ""}`.trim() || participant.email || `Agent ${participant.id}`}{canManageGeneralSession && <button type="button" aria-label="Remove participant" onClick={() => void manageParticipant("DELETE", participant.id)}>×</button>}</span>)}
+              </div>
+            </div>
+            {canManageGeneralSession && (
+              <div className="space-y-2 max-w-xl">
+                <div className="flex gap-2">
+                  <select className="h-10 flex-1 rounded-md border bg-background px-3 text-sm" value={selectedParticipantId} onChange={event => setSelectedParticipantId(event.target.value)} aria-label="Eligible CSR">
+                    {sessionOptions.eligibleCsrs.filter(csr => !generalSession.participants.some(participant => participant.id === csr.id)).map(csr => <option key={csr.id} value={csr.id}>{`${csr.firstName ?? ""} ${csr.lastName ?? ""}`.trim() || csr.email || `CSR ${csr.id}`}</option>)}
+                  </select>
+                  <Button variant="outline" onClick={() => void manageParticipant("POST", Number(selectedParticipantId))} disabled={!selectedParticipantId}>Add Participant</Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Input inputMode="decimal" placeholder="Counted cash" value={closingBalance} onChange={event => setClosingBalance(event.target.value)} />
+                  <Input placeholder="Discrepancy reason (required above threshold)" value={discrepancyReason} onChange={event => setDiscrepancyReason(event.target.value)} />
+                </div>
+                <Button variant="outline" onClick={() => void closeGeneralQueueSession()} disabled={!closingBalance} data-testid="button-close-general-session">Reconcile &amp; Close</Button>
+              </div>
+            )}
+          </div>
+        ) : canManageGeneralSession ? (
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_140px_auto]">
+            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedLocationId} onChange={event => { setSelectedLocationId(event.target.value); setSelectedRegisterBoxId(""); }} data-testid="select-general-session-location">
+              <option value="">Select location</option>
+              {sessionOptions.locations.map(option => <option key={option.locationId} value={option.locationId}>{option.locationName}</option>)}
+            </select>
+            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedRegisterBoxId} onChange={event => setSelectedRegisterBoxId(event.target.value)} data-testid="select-general-session-register">
+              <option value="">No register (optional)</option>
+              {sessionOptions.boxes.filter(box => box.locationIds.includes(Number(selectedLocationId))).map(box => <option key={box.registerBoxId} value={box.registerBoxId}>{box.registerLabel}</option>)}
+            </select>
+            <Input inputMode="decimal" value={openingBalance} onChange={event => setOpeningBalance(event.target.value)} aria-label="Opening balance" />
+            <Button onClick={() => void openGeneralQueueSession()} disabled={!selectedLocationId || !/^\d+(\.\d{1,2})?$/.test(openingBalance)} data-testid="button-open-general-session">Open Cash Session</Button>
+          </div>
+        ) : (
+          <p className="text-xs text-amber-300">A supervisor or manager must open a General Queue cash session before cash can be accepted.</p>
+        )}
+        {sessionMessage && <p className="text-xs text-muted-foreground">{sessionMessage}</p>}
+      </section>
 
       {/* Shift panel */}
       {isStaff && (
@@ -1893,6 +2120,7 @@ function CustomerServiceRepQueueContent() {
                 order={order as ExtendedOrder}
                 onRefresh={refresh}
                 getToken={getToken}
+                isAdmin={isAdmin}
               />
             ))}
           </div>

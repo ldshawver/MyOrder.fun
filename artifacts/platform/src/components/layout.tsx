@@ -1,8 +1,8 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { UserProfile } from "@workspace/api-client-react";
-import { useClerk } from "@clerk/react";
+import { useAuth, useClerk } from "@clerk/react";
 import { useBrand } from "@/contexts/BrandContext";
 import { 
   FlaskConical, 
@@ -63,6 +63,7 @@ function roleCanSee(roles: string[], userRole: string): boolean {
 export default function Layout({ children, user }: { children: ReactNode, user: UserProfile }) {
   const [location] = useLocation();
   const { signOut } = useClerk();
+  const { getToken } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     navigation: true,
@@ -70,8 +71,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
     admin: false,
     platform: false,
   });
-  const { brand } = useBrand();
+  const { brand, branding } = useBrand();
   const isLC = brand === "lucifer_cruz";
+  const activeDisplayName = isLC ? (branding.supplier.displayName ?? "Supplier catalog") : branding.customer.displayName;
+  const activeLogo = isLC ? (branding.supplier.logoUrl ?? branding.platform.mobileLogoUrl) : branding.customer.logoUrl;
 
   const userRole = normalizeNotificationRole(user.role);
   const notificationRole = userRole;
@@ -88,20 +91,44 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
   const SHIFT_ROLES = ["global_admin", "admin", "supervisor", "csr"];
   const ALL_ROLES = [...SHIFT_ROLES, "user"];
   const isCustomer = userRole === "user";
+  const showOperationalQueueStatus = ["global_admin", "admin", "supervisor"].includes(userRole);
+  const [queueStatus, setQueueStatus] = useState<{
+    activeShift: { clockedInAt: string } | null;
+    activeCsr: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
+    queueCounts: { defaultQueue: number };
+  } | null>(null);
+
+  useEffect(() => {
+    if (!showOperationalQueueStatus) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch("/api/shift-queue/status", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !cancelled) setQueueStatus(await response.json());
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 15_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [getToken, showOperationalQueueStatus]);
 
   const navSections: NavSection[] = [
     {
       title: "Navigation",
       roles: ALL_ROLES,
       items: [
-        { href: "/catalog", label: "Catalog", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+        { href: "/catalog", label: "Catalogue", icon: FlaskConical, roles: ALL_ROLES, mobileShow: true },
+        { href: "/cart", label: isCustomer ? "My Order" : "Cart", icon: ShoppingCart, roles: ALL_ROLES, mobileShow: true },
         {
           href: "/orders",
-          label: isCustomer ? "Order" : "Orders",
-          mobileLabel: isCustomer ? "Order" : "Orders",
+          label: isCustomer ? "Order Status" : "Orders",
+          mobileLabel: isCustomer ? "Order Status" : "Orders",
           icon: ShoppingCart,
           roles: ALL_ROLES,
           mobileShow: true,
+          children: isCustomer ? [
+            { href: "/orders", label: "Order Status", icon: ListTodo, roles: ALL_ROLES },
+            { href: "/cart", label: "My Order", icon: ShoppingCart, roles: ALL_ROLES },
+          ] : undefined,
         },
         {
           href: "/ai-concierge",
@@ -158,19 +185,21 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           roles: ["global_admin", "admin"],
           children: [
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin", "admin"] },
+            { href: "/admin/order-notifications", label: "New Order Alerts", icon: Settings, roles: ["global_admin", "admin"] },
           ],
         },
         {
           href: "/admin/edit-catalog",
           label: "Products",
           icon: PackageOpen,
-          roles: ["global_admin", "admin"],
+          roles: ["global_admin", "admin", "supervisor"],
           children: [
+            { href: "/admin/catalogue-products", label: "Products & Variants", icon: PackageOpen, roles: ["global_admin", "admin", "supervisor"] },
             { href: "/admin/edit-catalog", label: "Edit Catalog", icon: PackageOpen, roles: ["global_admin", "admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin", "admin"] },
           ],
         },
-        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin"] },
+        { href: "/admin/closeouts", label: "Shift Closeouts", icon: ClipboardCheck, roles: ["global_admin", "admin", "supervisor"] },
         {
           href: "/admin/concierge-settings",
           label: "AI Concierge",
@@ -181,7 +210,7 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/edit-catalog", label: "Sales & Packages", icon: PackageOpen, roles: ["global_admin", "admin"] },
           ],
         },
-        { href: "/admin/inventory", label: "Inventory & Par", icon: ClipboardList, roles: SHIFT_ROLES },
+        { href: "/admin/inventory", label: "Inventory", icon: ClipboardList, roles: SHIFT_ROLES },
         { href: "/admin/reports", label: "Reports", icon: BarChart3, roles: ["global_admin", "admin"] },
         { href: "/admin/visual-editor", label: "Visual Editor", icon: PanelsTopLeft, roles: ["global_admin", "admin"] },
       ],
@@ -206,7 +235,6 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             { href: "/admin/receipts", label: "Receipts & Printers", icon: ReceiptText, roles: ["global_admin"] },
             { href: "/admin/import", label: "Import Menu", icon: Upload, roles: ["global_admin"] },
             { href: "/admin/concierge-settings", label: "AI Concierge", icon: Bot, roles: ["global_admin"] },
-            { href: "/admin/inventory", label: "Edit Inventory & Par", icon: ClipboardList, roles: ["global_admin"] },
             { href: "/admin/credits", label: "Customer Credit", icon: BadgeDollarSign, roles: ["global_admin"] },
             { href: "/admin/roles-permissions", label: "Roles & Permissions", icon: ShieldAlert, roles: ["global_admin"] },
           ],
@@ -282,26 +310,13 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
         {/* Logo */}
         <div className="p-5 border-b border-border/40">
           <Link href="/catalog" className="flex items-center gap-3 group">
-            {isLC ? (
-              <img
-                src="/lc-icon.png"
-                alt="Lucifer Cruz"
-                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-                style={{ filter: "invert(1) brightness(1.15)" }}
-              />
-            ) : (
-              <img
-                src="/alavont-logo-glow.png"
-                alt="Alavont"
-                className="w-9 h-9 object-contain group-hover:scale-105 transition-transform"
-              />
-            )}
+            <img src={activeLogo} alt={activeDisplayName} className="h-10 w-auto max-w-24 object-contain group-hover:scale-105 transition-transform" />
             <div>
               <div className="font-bold text-sm tracking-wide text-foreground" data-testid="text-sidebar-logo">
-                {isLC ? "LUCIFER CRUZ" : "ALAVONT"}
+                {activeDisplayName}
               </div>
               <div className="text-[10px] text-primary/80 font-medium tracking-widest uppercase">
-                {isLC ? "Adult Boutique" : "Premium Platform"}
+                {isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}
               </div>
             </div>
           </Link>
@@ -372,14 +387,10 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
           <div className="relative w-72 bg-sidebar border-r border-border/50 flex flex-col h-full shadow-2xl">
             <div className="p-5 border-b border-border/40 flex items-center justify-between">
               <Link href="/catalog" className="flex items-center gap-3" onClick={() => setMobileMenuOpen(false)}>
-                {isLC ? (
-                  <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-8 h-8 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-                ) : (
-                  <img src="/alavont-logo-glow.png" alt="Alavont" className="w-8 h-8 object-contain" />
-                )}
+                <img src={activeLogo} alt={activeDisplayName} className="h-9 w-auto max-w-20 object-contain" />
                 <div>
-                  <div className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</div>
-                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Adult Boutique" : "Premium Platform"}</div>
+                  <div className="font-bold text-sm tracking-wide">{activeDisplayName}</div>
+                  <div className="text-[10px] text-primary/80 tracking-widest uppercase">{isLC ? "Supplier catalog" : "Powered by MyOrder.fun"}</div>
                 </div>
               </Link>
               <button onClick={() => setMobileMenuOpen(false)} className="text-muted-foreground hover:text-foreground p-1">
@@ -449,12 +460,8 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
             <Menu size={22} />
           </button>
           <Link href="/catalog" className="flex items-center gap-2">
-            {isLC ? (
-              <img src="/lc-icon.png" alt="Lucifer Cruz" className="w-7 h-7 object-contain" style={{ filter: "invert(1) brightness(1.15)" }} />
-            ) : (
-              <img src="/alavont-logo-glow.png" alt="Alavont" className="w-7 h-7 object-contain" />
-            )}
-            <span className="font-bold text-sm tracking-wide">{isLC ? "LUCIFER CRUZ" : "ALAVONT"}</span>
+            <img src={activeLogo} alt={activeDisplayName} className="h-8 w-auto max-w-20 object-contain" />
+            <span className="font-bold text-sm tracking-wide truncate max-w-36">{activeDisplayName}</span>
           </Link>
           <Link href="/notifications" className="relative text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-sidebar-accent/60 transition-colors">
             <Bell size={20} />
@@ -488,6 +495,23 @@ export default function Layout({ children, user }: { children: ReactNode, user: 
               exit={{ opacity: 0, y: -10, scale: 1.01 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
             >
+              {showOperationalQueueStatus && queueStatus && (
+                <div className={`mb-5 rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${queueStatus.activeShift ? "border-emerald-500/40 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"}`} data-testid="queue-status-banner">
+                  <div>
+                    <div className="font-semibold" data-testid="queue-status-title">
+                      {queueStatus.activeShift ? "Active CSR" : "General Queue Active"}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {queueStatus.activeShift
+                        ? `${`${queueStatus.activeCsr?.firstName ?? ""} ${queueStatus.activeCsr?.lastName ?? ""}`.trim() || queueStatus.activeCsr?.email || "Assigned CSR"} · active since ${new Date(queueStatus.activeShift.clockedInAt).toLocaleString()}`
+                        : `${queueStatus.queueCounts.defaultQueue} open/unassigned order${queueStatus.queueCounts.defaultQueue === 1 ? "" : "s"}`}
+                    </div>
+                  </div>
+                  <Link href={queueStatus.activeShift ? "/staff" : "/staff?view=general"} className="inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" data-testid="button-view-operational-queue">
+                    {queueStatus.activeShift ? "View Shift/Queue" : "View General Queue"}
+                  </Link>
+                </div>
+              )}
               {children}
             </motion.div>
           </AnimatePresence>

@@ -20,7 +20,7 @@ systemctl enable --now avahi-daemon
 
 echo "Preparing ${APP_DIR}..."
 mkdir -p "${APP_DIR}"
-cp server.js package.json print-bridge.service smoke-test.sh provision-pl70e-bt.sh env.pi.example "${APP_DIR}/"
+cp server.js queue-policy.js package.json print-bridge.service smoke-test.sh provision-pl70e-bt.sh env.pi.example "${APP_DIR}/"
 chmod +x "${APP_DIR}/smoke-test.sh" "${APP_DIR}/provision-pl70e-bt.sh"
 if [[ ! -f "${APP_DIR}/.env" ]]; then
   cp env.pi.example "${APP_DIR}/.env"

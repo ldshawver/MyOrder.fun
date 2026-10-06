@@ -22,12 +22,14 @@
  */
 
 const http = require("http");
+const https = require("https");
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
+const { parseAllowedQueues, filterPrinters, checkPrintTarget } = require("./queue-policy");
 
 try {
   require("dotenv").config();
@@ -48,6 +50,21 @@ const USB_DEVICE = process.env.USB_DEVICE ?? "";
 const CUPS_RAW = String(process.env.CUPS_RAW ?? "false").toLowerCase() === "true";
 const MAX_COPIES = parseInt(process.env.MAX_COPIES ?? "5", 10);
 const MAX_BODY_BYTES = parseInt(process.env.MAX_BODY_BYTES ?? String(2 * 1024 * 1024), 10);
+const DISCOVERY_URL = process.env.PRINT_BRIDGE_DISCOVERY_URL ?? "";
+const DISCOVERY_CREDENTIAL = process.env.PRINT_BRIDGE_CREDENTIAL ?? "";
+const DISCOVERY_BRIDGE_ID = process.env.PRINT_BRIDGE_ID ?? "";
+const DISCOVERY_ENVIRONMENT = process.env.PRINT_BRIDGE_ENVIRONMENT ?? "staging";
+const DISCOVERY_INTERVAL_MS = Math.max(60_000, Math.min(Number(process.env.PRINT_BRIDGE_DISCOVERY_INTERVAL_MS ?? 300_000), 3_600_000));
+
+// Optional queue allowlist (hardened bridges such as the Raspberry Pi).
+// Unset keeps the previous behaviour; set-but-invalid refuses to start.
+let QUEUE_POLICY;
+try {
+  QUEUE_POLICY = parseAllowedQueues(process.env.ALLOWED_QUEUES, PRINTER_NAME);
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
 
 if (!API_KEY) {
   console.error("PRINT_BRIDGE_API_KEY is required");
@@ -119,7 +136,12 @@ function clampCopies(copies) {
   return Math.min(Math.floor(n), MAX_COPIES);
 }
 
+// Every caller sees only allowlisted queues when ALLOWED_QUEUES is set.
 function listPrinters() {
+  return filterPrinters(listCupsPrinters(), QUEUE_POLICY);
+}
+
+function listCupsPrinters() {
   try {
     const out = execFileSync("lpstat", ["-p"], {
       timeout: 5000,
@@ -137,6 +159,29 @@ function listPrinters() {
   } catch {
     return [];
   }
+}
+
+function discoveryConfigured() {
+  return Boolean(DISCOVERY_URL && DISCOVERY_CREDENTIAL && DISCOVERY_BRIDGE_ID);
+}
+
+function postDiscovery(body) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(DISCOVERY_URL);
+    const client = target.protocol === "https:" ? https : http;
+    const request = client.request({ hostname: target.hostname, port: target.port || (target.protocol === "https:" ? 443 : 80), path: `${target.pathname}${target.search}`, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), "Authorization": `Bearer ${DISCOVERY_CREDENTIAL}`, "X-MyOrder-Bridge-ID": DISCOVERY_BRIDGE_ID, "X-MyOrder-Environment": DISCOVERY_ENVIRONMENT }, timeout: 8000 }, response => { response.resume(); response.on("end", () => resolve(response.statusCode)); });
+    request.on("timeout", () => request.destroy(new Error("discovery timeout")));
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
+async function discoverPrinters() {
+  if (!discoveryConfigured()) return;
+  const printers = listPrinters().filter(printer => printer.enabled).map(printer => ({ queue: printer.name, displayName: printer.name, receiptCapable: true, labelCapable: true }));
+  if (!printers.length) return;
+  try { const status = await postDiscovery(JSON.stringify({ printers })); log(status >= 200 && status < 300 ? "info" : "warn", "Printer discovery completed", { status, queueCount: printers.length }); }
+  catch (error) { log("warn", "Printer discovery failed", { error: String(error).replace(/(?:bearer|token|secret|key)\\s*[:=]\\s*\\S+/gi, "credential=[redacted]").slice(0, 240) }); }
 }
 
 /**
@@ -183,7 +228,7 @@ function printerNames(printers) {
   return printers.map((printer) => typeof printer === "string" ? printer : printer.name).filter(Boolean);
 }
 
-function printViaCups({ text, imagePath, printerName, copies, raw }) {
+function printViaCups({ text, imagePath, printerName, copies, raw, media }) {
   const name = printerName || PRINTER_NAME;
   const safeCopies = clampCopies(copies);
 
@@ -205,6 +250,13 @@ function printViaCups({ text, imagePath, printerName, copies, raw }) {
 
     if (raw && !imagePath) {
       args.push("-o", "raw");
+    }
+
+    if (media) {
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(media)) {
+        throw new Error(`Invalid CUPS media option: ${media}`);
+      }
+      args.push("-o", `media=${media}`);
     }
 
     args.push("-n", String(safeCopies), fileToPrint);
@@ -269,6 +321,7 @@ async function handleHealth(req, res) {
     cupsAvailable,
     printers,
     printerNames: printerNames(printers),
+    discoveryConfigured: discoveryConfigured(),
     time: new Date().toISOString(),
   });
 }
@@ -318,6 +371,7 @@ async function handlePrint(req, res) {
     text = "",
     imagePath = "",
     imageBase64 = "",
+    documentBase64 = "",
     payloadBase64 = "",
     format = "text",
     printerName: explicitPrinterName = "",
@@ -326,17 +380,42 @@ async function handlePrint(req, res) {
     copies = 1,
     role = "",
     raw = undefined,
+    media = "",
   } = body;
   const printerName = explicitPrinterName || printer || "";
+  const target = checkPrintTarget({ printerName, imagePath }, QUEUE_POLICY);
+  if (!target.ok) {
+    log("warn", "Print rejected by queue policy", { jobId, error: target.error });
+    return respond(res, target.status, { success: false, error: target.error });
+  }
   const decodedText = payloadBase64 ? Buffer.from(payloadBase64, "base64").toString("binary") : "";
   const printableText = text || decodedText;
-  const rawMode = typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
+  // Server-rendered PDFs (full-page documents) are never sent raw.
+  const rawMode = documentBase64 ? false : typeof raw === "boolean" ? raw : CUPS_RAW || role === "receipt" || format === "escpos";
 
-  if (!printableText && !imagePath && !imageBase64) {
+  // Printer purpose is assigned by the tenant registry, not by a CUPS queue
+  // name. The bridge accepts only the already-registered explicit queue sent
+  // by the server and never selects a default queue on its own.
+
+  if (!printableText && !imagePath && !imageBase64 && !documentBase64) {
     return respond(res, 400, {
       success: false,
-      error: "Missing text, payloadBase64, imagePath, or imageBase64 payload",
+      error: "Missing text, payloadBase64, imagePath, imageBase64 or documentBase64 payload",
     });
+  }
+  if (documentBase64 && (imageBase64 || imagePath)) {
+    return respond(res, 400, { success: false, error: "Send one document or image, not both" });
+  }
+
+  // A full-page document: only real PDFs, written to a private temp file.
+  let tempDocumentPath = null;
+  if (documentBase64) {
+    const pdf = Buffer.from(String(documentBase64), "base64");
+    if (pdf.length < 8 || pdf.subarray(0, 5).toString("latin1") !== "%PDF-") {
+      return respond(res, 400, { success: false, error: "documentBase64 must be a PDF" });
+    }
+    tempDocumentPath = path.join(os.tmpdir(), `print_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`);
+    fs.writeFileSync(tempDocumentPath, pdf, { mode: 0o600 });
   }
 
   // If an imageBase64 payload came in, decode it to a temp PNG so CUPS can print it.
@@ -366,7 +445,7 @@ async function handlePrint(req, res) {
     });
   }
 
-  const resolvedImagePath = tempImagePath || imagePath || null;
+  const resolvedImagePath = tempDocumentPath || tempImagePath || imagePath || null;
   const safeCopies = clampCopies(copies);
   const methodTargetPrinter = printerName || PRINTER_NAME || null;
 
@@ -381,10 +460,11 @@ async function handlePrint(req, res) {
     isBase64Image: Boolean(imageBase64),
     copies: safeCopies,
     rawMode,
+    media: media || null,
   });
 
   // 1) Direct raw socket: text only
-  if (printableText && DIRECT_PRINTER_IP) {
+  if (role !== "thank_you_sticker" && printableText && DIRECT_PRINTER_IP) {
     try {
       const payload = Buffer.from(printableText.repeat(safeCopies), "binary");
       await printRawSocket(payload);
@@ -410,6 +490,9 @@ async function handlePrint(req, res) {
 
   // Helper: clean up the temp PNG after we're done (success or failure)
   const cleanupTemp = () => {
+    if (tempDocumentPath) {
+      try { fs.unlinkSync(tempDocumentPath); } catch {}
+    }
     if (tempImagePath) {
       try { fs.unlinkSync(tempImagePath); } catch {}
     }
@@ -423,6 +506,7 @@ async function handlePrint(req, res) {
       printerName,
       copies: safeCopies,
       raw: rawMode,
+      media,
     });
 
     cleanupTemp();
@@ -520,5 +604,8 @@ server.listen(PORT, BIND_HOST, () => {
     cupsPrinter: PRINTER_NAME || "default",
     usbDevice: USB_DEVICE || "none",
     cupsRaw: CUPS_RAW,
+    allowedQueues: QUEUE_POLICY.configured ? [...QUEUE_POLICY.queues] : "any",
   });
+  void discoverPrinters();
+  if (discoveryConfigured()) setInterval(() => { void discoverPrinters(); }, DISCOVERY_INTERVAL_MS).unref();
 });

@@ -10,18 +10,18 @@ export type UpdateOrderStatusBodyStatus = typeof UpdateOrderStatusBodyStatus[key
 
 
 export const UpdateOrderStatusBodyStatus = {
-  draft: 'draft',
+  pending: 'pending',
   submitted: 'submitted',
-  in_progress: 'in_progress',
+  confirmed: 'confirmed',
+  accepted: 'accepted',
+  processing: 'processing',
   preparing: 'preparing',
   ready: 'ready',
-  completed: 'completed',
-  cancelled: 'cancelled',
-  refunded: 'refunded',
-  reconciliation_required: 'reconciliation_required',
-  pending: 'pending',
-  confirmed: 'confirmed',
-  processing: 'processing',
   shipped: 'shipped',
   delivered: 'delivered',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  voided: 'voided',
+  archived: 'archived',
+  refunded: 'refunded',
 } as const;

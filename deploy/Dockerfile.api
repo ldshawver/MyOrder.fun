@@ -70,6 +70,8 @@ COPY scripts/ scripts/
 # Defaults to "unknown" for local docker builds (not via CI).
 ARG DEPLOY_SHA=unknown
 ENV DEPLOY_SHA=$DEPLOY_SHA
+LABEL org.opencontainers.image.revision=$DEPLOY_SHA \
+      com.myorder.deploy-sha=$DEPLOY_SHA
 
 ENV NODE_ENV=production
 ENV PORT=8080

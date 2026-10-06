@@ -11,6 +11,11 @@ import twilioVoiceRouter from "./routes/twilio-voice";
 import twilioSmsRouter from "./routes/twilio-sms";
 import { logger } from "./lib/logger";
 import { submitOnboardingRequestHandler } from "./routes/onboarding";
+import { loadPaymentConfig } from "./payments/config";
+
+// Validate once at startup. Invalid/contradictory payment configuration must
+// stop the application before it can accept traffic.
+loadPaymentConfig();
 
 const app: Express = express();
 app.set("trust proxy", 1);
@@ -84,6 +89,8 @@ app.use(cors({ credentials: true, origin: true }));
 
 // ── Raw body for Clerk webhooks (must precede the JSON parser) ───────────────
 app.use("/api/webhooks/clerk", express.raw({ type: "application/json" }));
+app.use("/api/webhooks/paypal", express.raw({ type: "application/json", limit: "256kb" }));
+app.use("/api/webhooks/uber-direct", express.raw({ type: "application/json", limit: "256kb" }));
 
 // ── Body parsers ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "2mb" }));
@@ -163,9 +170,11 @@ const _clerkPubKey =
   process.env.VITE_CLERK_PUBLISHABLE_KEY ||
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
   process.env.PUBLIC_KEY;
-const _clerkProxyUrl =
-  process.env.CLERK_PROXY_URL ||
-  process.env.VITE_CLERK_PROXY_URL;
+// Clerk development instances use their direct *.clerk.accounts.dev FAPI.
+// Clerk Frontend API proxying is supported only for live instances.
+const _clerkProxyUrl = _clerkPubKey?.startsWith("pk_test_")
+  ? undefined
+  : process.env.CLERK_PROXY_URL || process.env.VITE_CLERK_PROXY_URL;
 app.use(clerkMiddleware({
   publishableKey: _clerkPubKey,
   ...(process.env.NODE_ENV === "production" && _clerkProxyUrl
@@ -221,12 +230,13 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, _next) => {
         ? (err as { statusCode: number }).statusCode
         : 500;
 
-  const message =
+  const internalMessage =
     err instanceof Error
       ? err.message
       : typeof err === "string"
         ? err
         : "Internal Server Error";
+  const message = status >= 500 ? "Internal Server Error" : internalMessage;
 
   // Log with the request-scoped logger so we keep request id correlation.
   if (req.log) {
@@ -244,7 +254,7 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     error: message,
     requestId: req.id,
   };
-  if (process.env["NODE_ENV"] !== "production" && err instanceof Error && err.stack) {
+  if (process.env["NODE_ENV"] === "development" && err instanceof Error && err.stack) {
     body["stack"] = err.stack;
   }
 

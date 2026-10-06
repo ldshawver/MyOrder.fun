@@ -28,7 +28,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
     });
 
     it("is tenant-scoped and cannot list another tenant's products", () => {
-      expect(catalog).toContain("const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId()");
+      expect(catalog).toContain("const tenantId = req.authorizedTenantId!");
       expect(catalog).toContain("eq(catalogItemsTable.tenantId, tenantId)");
       expect(catalog).toContain("eq(inventoryLocationsTable.tenantId, tenantId)");
       expect(catalog).toContain("eq(inventoryBalancesTable.tenantId, tenantId)");
@@ -37,7 +37,7 @@ describe("Phase 3 POS operations Product Master integration", () => {
 
   describe("/api/admin/product-master/:id/lifecycle", () => {
     it("supports lifecycle fields, rejects unknown fields, scopes updates, and audits changes", () => {
-      expect(catalog).toContain('router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin")');
+      expect(catalog).toContain('router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor")');
       expect(catalog).toContain("active: z.boolean().optional()");
       expect(catalog).toContain("archived: z.boolean().optional()");
       expect(catalog).toContain("complianceHold: z.boolean().optional()");
@@ -47,9 +47,9 @@ describe("Phase 3 POS operations Product Master integration", () => {
     });
 
     it("inactive, archive, compliance hold, and non-sellable rows are kept out of customer catalog and checkout", () => {
-      expect(catalog).toContain("const available = body.data.complianceHold === true || body.data.archived === true ? false");
-      expect(catalog).toContain("isAvailable: available");
-      expect(catalog).toContain("alavontInStock: available");
+      expect(catalog).toContain("const available = change.active ?? existing.isAvailable");
+      expect(catalog).toContain("...(change.active !== undefined ? { isAvailable: available } : {})");
+      expect(catalog).not.toContain("alavontInStock: available");
       expect(catalog).toContain("rows = rows.filter(r => r.isAvailable === true && r.alavontInStock !== false)");
       expect(checkout).toContain("if (ci.isAvailable === false)");
       expect(checkout).toContain('"item_unavailable"');
@@ -100,14 +100,10 @@ describe("Phase 3 POS operations Product Master integration", () => {
 
 
   describe("Import Menu UI Product Master mapping", () => {
-    it("displays canonical Product Master labels instead of old required headers", () => {
-      expect(importMenuUi).toContain('"Regular Price"');
-      expect(importMenuUi).toContain('"Sale Price"');
-      expect(importMenuUi).toContain('"Active Sale"');
-      expect(importMenuUi).toContain('"Box 1 Inventory"');
-      expect(importMenuUi).toContain('"Box 2 Inventory"');
-      expect(importMenuUi).toContain('"Storefront Inventory"');
-      expect(importMenuUi).toContain('"Backstock Inventory"');
+    it("loads canonical Product Master labels from the server registry instead of a stale handwritten client list", () => {
+      expect(importMenuUi).toContain("/api/admin/products/import-template");
+      expect(importMenuUi).toContain("server registry is authoritative");
+      expect(importMenuUi).toContain("columns: []");
       expect(importMenuUi).toContain("product_master_import_template.csv");
       expect(importMenuUi).not.toContain('"alavont_in_stock"');
       expect(importMenuUi).not.toContain('"quantity_size"');
@@ -145,7 +141,8 @@ describe("Phase 3 POS operations Product Master integration", () => {
       expect(catalog).toContain('router.get("/admin/product-master"');
       expect(shifts).toContain("balanceByProductId.set(b.productId");
       expect(shifts).toContain("quantityStart: String(");
-      expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
+      expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+      expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
       expect(shifts).toContain("expectedEnding: i.quantityEnd ?? i.quantityStart - i.quantitySold");
     });
   });

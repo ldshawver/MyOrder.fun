@@ -25,8 +25,8 @@ import {
   labTechShiftsTable,
 } from "@workspace/db";
 import type { PrintBridgeProfile, PrintPrinter } from "@workspace/db";
-import { eq, and, asc } from "drizzle-orm";
-import { probeBridge } from "./printRouter.js";
+import { eq, and, asc, sql } from "drizzle-orm";
+import { probeBridge, resolveBridgeApiKey } from "./printRouter.js";
 import pino from "pino";
 
 const rLog = pino({ name: "printRoutingResolver" });
@@ -38,6 +38,7 @@ export type PrintOrderContext = {
   tenantId?: number | null;
   fulfillmentType?: string | null;
   shippingAddress?: string | null;
+  locationId?: number | null;
 };
 
 export type LabelEligibility = {
@@ -46,7 +47,7 @@ export type LabelEligibility = {
 };
 
 export type RoutingDecision = {
-  requestedRole: "receipt" | "label";
+  requestedRole: "receipt" | "label" | "thank_you_sticker";
   eligible: boolean;
   selectedBridgeProfileId: number | null;
   selectedBridgeUrl: string | null;
@@ -56,6 +57,40 @@ export type RoutingDecision = {
   decisionReason: string;
   blockedReason: string | null;
 };
+
+export const THANK_YOU_STICKER_ARTWORK_SHA256 = "0fad41aa3b9f338e00f02d4bcd1e80acc34a6d4bb1cb8a846ce52b4d740a83f4";
+export const THANK_YOU_STICKER_TEMPLATE_VERSION = 1;
+/** Legacy staging-pull compatibility only; never used for assignment or routing. */
+export const THANK_YOU_STICKER_QUEUE = "MARKLIFE_X2";
+
+/** Tenant assignment decides the thank-you destination; queue names never do. */
+export function validateThankYouStickerPrinter(printer: Pick<PrintPrinter, "role" | "bridgePrinterName" | "name" | "isActive"> | null): { eligible: boolean; reason: string } {
+  if (!printer?.isActive) return { eligible: false, reason: "No active thank-you printer is assigned" };
+  if (printer.role !== "thank_you") return { eligible: false, reason: "printer is not assigned to thank_you" };
+  if (!(printer.bridgePrinterName ?? printer.name)) return { eligible: false, reason: "assigned thank-you printer has no queue" };
+  return { eligible: true, reason: "tenant thank-you assignment verified" };
+}
+
+export async function resolveThankYouStickerRouting(order: PrintOrderContext): Promise<RoutingDecision> {
+  const base = { requestedRole: "thank_you_sticker" as const, selectedBridgeProfileId: null, selectedBridgeUrl: null, selectedPrinterName: null, selectedPrinter: null, fallbackUsed: false };
+  if (!order.tenantId) return { ...base, eligible: false, decisionReason: "tenant ownership is required for printer routing", blockedReason: "tenant ownership is required for printer routing" };
+  const tenantId = order.tenantId;
+  const profiles = await getActiveBridgeProfiles(tenantId, order.locationId ?? null);
+  if (!profiles.length) return { ...base, eligible: false, decisionReason: "no active tenant bridge is assigned", blockedReason: "no active tenant bridge is assigned" };
+  const assignments = (await Promise.all(profiles.map(async (profile) => {
+    const printers = await db.select().from(printPrintersTable).where(and(
+      eq(printPrintersTable.tenantId, tenantId), eq(printPrintersTable.bridgeProfileId, profile.id),
+      eq(printPrintersTable.role, "thank_you"), eq(printPrintersTable.isActive, true),
+    )).limit(2);
+    return printers.map((printer) => ({ profile, printer }));
+  }))).flat();
+  if (assignments.length !== 1) return { ...base, eligible: false, decisionReason: "exactly one active thank-you printer must be assigned", blockedReason: "exactly one active thank-you printer must be assigned" };
+  const { profile, printer } = assignments[0]!;
+  const validation = validateThankYouStickerPrinter(printer ?? null);
+  if (!validation.eligible) return { ...base, eligible: false, decisionReason: validation.reason, blockedReason: validation.reason };
+  if (!await isBridgeHealthy(profile)) return { ...base, eligible: false, decisionReason: "assigned thank-you bridge is unavailable", blockedReason: "assigned thank-you bridge is unavailable" };
+  return { requestedRole: "thank_you_sticker", eligible: true, selectedBridgeProfileId: profile.id, selectedBridgeUrl: profile.bridgeUrl, selectedPrinterName: printer.bridgePrinterName ?? printer.name, selectedPrinter: printer, fallbackUsed: false, decisionReason: validation.reason, blockedReason: null };
+}
 
 // ── Label Eligibility ─────────────────────────────────────────────────────────
 
@@ -100,11 +135,11 @@ export function isOnSameNetwork(
  * Get the IP address of the currently active operator from their shift record.
  * Returns null if no active shift or no IP was recorded.
  */
-export async function getActiveOperatorIp(): Promise<string | null> {
+export async function getActiveOperatorIp(tenantId: number): Promise<string | null> {
   const shifts = await db
     .select({ ipAddress: labTechShiftsTable.ipAddress })
     .from(labTechShiftsTable)
-    .where(eq(labTechShiftsTable.status, "active"))
+    .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active")))
     .orderBy(asc(labTechShiftsTable.clockedInAt))
     .limit(1);
   return shifts[0]?.ipAddress ?? null;
@@ -113,16 +148,24 @@ export async function getActiveOperatorIp(): Promise<string | null> {
 // ── Bridge Profile Helpers ────────────────────────────────────────────────────
 
 /** Load all active bridge profiles ordered by priority (ascending = highest first). */
-async function getActiveBridgeProfiles(): Promise<PrintBridgeProfile[]> {
+async function getActiveBridgeProfiles(tenantId: number, locationId: number | null): Promise<PrintBridgeProfile[]> {
   return db
     .select()
     .from(printBridgeProfilesTable)
-    .where(eq(printBridgeProfilesTable.isActive, true))
+    .where(and(
+      eq(printBridgeProfilesTable.tenantId, tenantId),
+      eq(printBridgeProfilesTable.isActive, true),
+      locationId === null
+        ? and(eq(printBridgeProfilesTable.routingScope, "general"), sql`${printBridgeProfilesTable.locationId} IS NULL`)
+        : and(eq(printBridgeProfilesTable.routingScope, "location"), eq(printBridgeProfilesTable.locationId, locationId)),
+    ))
     .orderBy(asc(printBridgeProfilesTable.priority));
 }
 
 /** Find the best active printer for a role on a given bridge profile (by bridgeProfileId). */
 async function getPrinterForBridgeProfile(
+  tenantId: number,
+  locationId: number | null,
   bridgeProfileId: number,
   role: "receipt" | "label"
 ): Promise<PrintPrinter | null> {
@@ -132,8 +175,12 @@ async function getPrinterForBridgeProfile(
     .where(
       and(
         eq(printPrintersTable.bridgeProfileId, bridgeProfileId),
+        eq(printPrintersTable.tenantId, tenantId),
         eq(printPrintersTable.isActive, true),
-        eq(printPrintersTable.role, role)
+        eq(printPrintersTable.role, role),
+        locationId === null
+          ? and(eq(printPrintersTable.routingScope, "general"), sql`${printPrintersTable.locationId} IS NULL`)
+          : and(eq(printPrintersTable.routingScope, "location"), eq(printPrintersTable.locationId, locationId)),
       )
     )
     .limit(1);
@@ -144,38 +191,17 @@ async function getPrinterForBridgeProfile(
  * Find a printer by connectionType that matches the bridge type (legacy fallback
  * for printers not yet linked to a bridge profile).
  */
-async function getPrinterByConnectionType(
-  connectionType: string,
-  role: "receipt" | "label"
-): Promise<PrintPrinter | null> {
-  const printers = await db
-    .select()
-    .from(printPrintersTable)
-    .where(
-      and(
-        eq(printPrintersTable.connectionType, connectionType),
-        eq(printPrintersTable.isActive, true),
-        eq(printPrintersTable.role, role)
-      )
-    )
-    .limit(1);
-  return printers[0] ?? null;
-}
-
-/** Map a bridge profile's bridgeType to the legacy connectionType string. */
-function bridgeTypeToConnectionType(bridgeType: string): string {
-  if (bridgeType === "mac_studio") return "mac_bridge";
-  if (bridgeType === "raspberry_pi") return "pi_bridge";
-  return "bridge";
-}
-
 /**
  * Probe a bridge profile's /health endpoint.
  * Returns true if bridge is reachable and healthy.
  */
 async function isBridgeHealthy(profile: PrintBridgeProfile): Promise<boolean> {
   try {
-    return await probeBridge(profile.bridgeUrl, profile.apiKey, 3000);
+    return await probeBridge(
+      profile.bridgeUrl,
+      resolveBridgeApiKey(profile.apiKey),
+      3000,
+    );
   } catch {
     return false;
   }
@@ -207,6 +233,11 @@ export async function resolveRoutingDecision(
     selectedPrinter: null,
     fallbackUsed: false,
   };
+  if (!order.tenantId) {
+    const msg = "tenant ownership is required for printer routing";
+    return { ...base, eligible: false, decisionReason: msg, blockedReason: msg };
+  }
+  const locationId = order.locationId ?? null;
 
   // ── Label eligibility gate ─────────────────────────────────────────────────
   if (role === "label") {
@@ -218,13 +249,14 @@ export async function resolveRoutingDecision(
   }
 
   // ── Get bridge profiles ────────────────────────────────────────────────────
-  const profiles = await getActiveBridgeProfiles();
+  const profiles = await getActiveBridgeProfiles(order.tenantId, locationId);
   if (profiles.length === 0) {
-    return { ...base, eligible: role === "receipt", decisionReason: "no bridge profiles configured — falling back to printer-direct routing", blockedReason: null };
+    const msg = locationId === null ? "no tenant general bridge configured" : "no bridge configured for the assigned location";
+    return { ...base, eligible: false, decisionReason: msg, blockedReason: msg };
   }
 
   // ── Detect operator network ────────────────────────────────────────────────
-  const resolvedOperatorIp = operatorIp ?? await getActiveOperatorIp();
+  const resolvedOperatorIp = operatorIp ?? await getActiveOperatorIp(order.tenantId);
   const macProfile = profiles.find(p => p.bridgeType === "mac_studio");
   const piProfile = profiles.find(p => p.bridgeType === "raspberry_pi");
 
@@ -267,41 +299,25 @@ export async function resolveRoutingDecision(
     rLog.info({ event: "mac_excluded_for_label", orderId: order.id }, "Mac bridge excluded for label (operator not on Mac network)");
   }
 
-  // ── Priority + network ordering ────────────────────────────────────────────
-  // Default: prefer Pi (lower priority number).
-  // Exception: if operator is on Mac network, bump Mac profile to front.
-  const ordered = [...candidateProfiles].sort((a, b) => {
-    if (operatorOnMacNetwork) {
-      if (a.bridgeType === "mac_studio" && b.bridgeType !== "mac_studio") return -1;
-      if (b.bridgeType === "mac_studio" && a.bridgeType !== "mac_studio") return 1;
-    } else {
-      if (a.bridgeType === "raspberry_pi" && b.bridgeType !== "raspberry_pi") return -1;
-      if (b.bridgeType === "raspberry_pi" && a.bridgeType !== "raspberry_pi") return 1;
-    }
-    return a.priority - b.priority;
-  });
+  // Scope is authoritative. Never try a second bridge for a different location.
+  const ordered = [...candidateProfiles].sort((a, b) => a.priority - b.priority).slice(0, 1);
 
   // ── Try each candidate bridge in order ────────────────────────────────────
-  let fallbackUsed = false;
+  const fallbackUsed = false;
   for (const profile of ordered) {
     const healthy = await isBridgeHealthy(profile);
     if (!healthy) {
       rLog.warn({ event: "bridge_unhealthy", bridgeId: profile.id, bridgeType: profile.bridgeType, url: profile.bridgeUrl }, "bridge unhealthy, trying next");
-      fallbackUsed = true;
-      continue;
+      const msg = `assigned bridge ${profile.id} is unavailable`;
+      return { ...base, eligible: false, decisionReason: msg, blockedReason: msg };
     }
 
-    // Find printer: first by bridgeProfileId link, then by legacy connectionType
-    let printer = await getPrinterForBridgeProfile(profile.id, role);
-    if (!printer) {
-      const ct = bridgeTypeToConnectionType(profile.bridgeType);
-      printer = await getPrinterByConnectionType(ct, role);
-    }
+    const printer = await getPrinterForBridgeProfile(order.tenantId, locationId, profile.id, role);
 
     if (!printer) {
       rLog.warn({ event: "no_printer_on_bridge", bridgeId: profile.id, role }, "bridge healthy but no printer configured for role");
-      fallbackUsed = true;
-      continue;
+      const msg = `assigned bridge ${profile.id} has no active ${role} printer in scope`;
+      return { ...base, eligible: false, decisionReason: msg, blockedReason: msg };
     }
 
     const decision: RoutingDecision = {

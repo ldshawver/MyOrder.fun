@@ -14,11 +14,12 @@ export interface UpdateCatalogItemBody {
   category?: string;
   sku?: string;
   price?: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: UpdateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;
@@ -60,4 +61,10 @@ export interface UpdateCatalogItemBody {
   promoBadges?: string[];
   labName?: string | null;
   receiptName?: string | null;
+  /** @minimum 0 */
+  parLevel?: number | null;
+  /** @minimum 0 */
+  moq?: number;
+  /** @minimum 0 */
+  preferredReorderQuantity?: number;
 }

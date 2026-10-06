@@ -13,7 +13,7 @@ export interface TokenizePaymentBody {
      * DEPRECATED — IGNORED BY THE SERVER. The charge amount is recomputed
   server-side from the normalized order lines + tax rule. Provided
   here only for legacy clients; mismatches are logged but do not
-  change the amount sent to Stripe.
+  change the amount for this retired endpoint.
 
      * @minimum 0
      */

@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
 import {
-  useListCatalogItems,
   useUpdateCatalogItem,
   useGetCurrentUser,
   getListCatalogItemsQueryKey,
   type CatalogItem,
 } from "@workspace/api-client-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -17,8 +16,10 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
+import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 
 type MenuMode = "alavont" | "lucifer";
+type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
 
 const LC_MAIN_CATEGORIES = [
   "Anal Play",
@@ -81,7 +82,12 @@ type ExtendedCatalogItem = CatalogItem & {
   mediaGallery?: Array<{ type?: "image" | "video"; src: string; alt?: string | null }>;
   isFeatured?: boolean;
   isSaleFeatured?: boolean;
+  parLevel?: string | number | null;
+  moq?: string | number | null;
+  preferredReorderQuantity?: string | number | null;
 };
+
+type GroupedProduct = SellableProduct;
 
 type MediaFormEntry = { type: "image" | "video"; src: string; alt: string };
 
@@ -96,7 +102,11 @@ interface CatalogItemForm {
   sku: string;
   imageUrl: string;
   stockQuantity: string;
+  parLevel: string;
+  moq: string;
+  preferredReorderQuantity: string;
   isAvailable: boolean;
+  isTaxable: boolean;
   alavontName: string;
   alavontDescription: string;
   alavontCategory: string;
@@ -133,11 +143,15 @@ type StringFormKey = {
 
 function CatalogItemCard({
   item,
+  product,
+  optionsLoading,
   canEdit,
   onEdit,
   menuMode,
 }: {
   item: ExtendedCatalogItem;
+  product?: GroupedProduct;
+  optionsLoading: boolean;
   canEdit: boolean;
   onEdit: (item: ExtendedCatalogItem) => void;
   menuMode: MenuMode;
@@ -145,9 +159,11 @@ function CatalogItemCard({
   const isLC = menuMode === "lucifer";
   const [imgError, setImgError] = useState(false);
   const [addedFeedback, setAddedFeedback] = useState(false);
+  const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
   const { addItem, cart } = useCart();
-  const isInCart = cart.some(c => c.id === item.id);
-  const displayName = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
+  const selectedOption = selectedSellableOption(product, selectedOptionId);
+  const isInCart = !!selectedOption && cart.some(c => c.optionId === selectedOption.id);
+  const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
     ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
@@ -212,7 +228,7 @@ function CatalogItemCard({
             FEATURED
           </div>
         )}
-        {!item.isAvailable && (
+        {!item.isAvailable && !selectedOption && (
           <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center">
             <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Unavailable</span>
           </div>
@@ -243,30 +259,44 @@ function CatalogItemCard({
           )}
         </div>
 
+        {showOptionSelector(product) && product && (
+          <label className="text-xs font-semibold" htmlFor={`catalog-option-${product.id}`}>
+            Choose option
+            <select id={`catalog-option-${product.id}`} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm"
+              value={selectedOption?.id ?? ""}
+              onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
+              aria-label={`${product.name} option`}>
+              <option value="">Select an option</option>
+              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+            </select>
+          </label>
+        )}
         <div className="flex items-center justify-between mt-1">
           <div className="flex items-baseline gap-1.5">
             <span
               className="text-base font-bold"
               style={isLC ? { color: "#DC143C" } : { color: "hsl(var(--primary))" }}
             >
-              ${parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price)).toFixed(2)}
+              {showOptionSelector(product) && !selectedOption
+                ? "Select an option for price"
+                : `$${parseFloat(String(selectedOption?.price ?? (isLC && item.regularPrice ? item.regularPrice : item.price))).toFixed(2)}`}
             </span>
           </div>
-          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (
+          {item.stockQuantity !== undefined && item.isAvailable && !isLC && (!product || product.options.length === 1) && (
             <span className={`text-[10px] font-mono ${item.stockQuantity === 0 ? "text-red-400" : "text-muted-foreground/70"}`}>
               {item.stockQuantity === 0 ? "OUT" : `${item.stockQuantity} avail`}
             </span>
           )}
         </div>
 
+        {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
-            disabled={!item.isAvailable}
+            disabled={!selectedOption || optionsLoading}
             onClick={() => {
-              const name = isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name);
-              const price = parseFloat(String(isLC && item.regularPrice ? item.regularPrice : item.price));
-              addItem({ id: item.id, name, price, imageUrl: item.imageUrl ?? null });
+              if (!product || !selectedOption) return;
+              addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
               setAddedFeedback(true);
               setTimeout(() => setAddedFeedback(false), 1800);
             }}
@@ -279,7 +309,7 @@ function CatalogItemCard({
             data-testid={`link-buy-now-${item.id}`}
           >
             <ShoppingCart size={11} />
-            {addedFeedback ? "Added ✓" : isInCart ? "In Cart ✓" : "Add to Cart"}
+            {addedFeedback ? "Added ✓" : isInCart ? "In My Order ✓" : "Add to My Order"}
           </button>
           <Link
             href={`/catalog/${item.id}`}
@@ -304,9 +334,11 @@ function ItemFormFields({ form, setForm }: { form: CatalogItemForm; setForm: (up
     { label: "Price / Sale Price ($) *", key: "price", type: "number" },
     { label: "Compare-at Price ($)", key: "compareAtPrice", type: "number" },
     { label: "Regular Price ($)", key: "regularPrice", type: "number" },
-    { label: "Homie Price ($)", key: "homiePrice", type: "number" },
+    { label: "Employee Discount ($)", key: "homiePrice", type: "number" },
     { label: "SKU", key: "sku", type: "text" },
-    { label: "Stock Quantity", key: "stockQuantity", type: "number" },
+    { label: "PAR", key: "parLevel", type: "number" },
+    { label: "Minimum Order Quantity", key: "moq", type: "number" },
+    { label: "Preferred Reorder Quantity", key: "preferredReorderQuantity", type: "number" },
     { label: "Image URL", key: "imageUrl", type: "url", placeholder: "https://example.com/image.jpg" },
   ];
   return (
@@ -476,7 +508,11 @@ function emptyCatalogForm(): CatalogItemForm {
     sku: "",
     imageUrl: "",
     stockQuantity: "0",
+    parLevel: "0",
+    moq: "0",
+    preferredReorderQuantity: "0",
     isAvailable: true,
+    isTaxable: true,
     alavontName: "",
     alavontDescription: "",
     alavontCategory: "",
@@ -523,7 +559,11 @@ function formFromItem(item: ExtendedCatalogItem | null): CatalogItemForm {
     sku: item.sku || "",
     imageUrl: item.imageUrl || "",
     stockQuantity: item.stockQuantity?.toString() || "0",
+    parLevel: item.parLevel?.toString() ?? "",
+    moq: item.moq?.toString() || "0",
+    preferredReorderQuantity: item.preferredReorderQuantity?.toString() || "0",
     isAvailable: item.isAvailable ?? true,
+    isTaxable: item.isTaxable ?? true,
     alavontName: item.alavontName || "",
     alavontDescription: item.alavontDescription || "",
     alavontCategory: item.alavontCategory || "",
@@ -679,17 +719,20 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
   const [form, setForm] = useState<CatalogItemForm>(() => formFromItem(item));
   const updateMutation = useUpdateCatalogItem();
   const queryClient = useQueryClient();
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setForm(formFromItem(item));
       setShowDualBrand(false);
       setShowPresentation(false);
+      setSaveError(null);
     }
   }, [item, open]);
 
   const handleSave = () => {
     if (!item) return;
+    setSaveError(null);
     const mediaGallery = normalizeMediaForSave(form.mediaGallery, form.imageUrl);
     updateMutation.mutate(
       {
@@ -698,15 +741,18 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
           name: form.name,
           description: form.description || undefined,
           price: parseFloat(form.price),
-          compareAtPrice: form.compareAtPrice ? parseFloat(form.compareAtPrice) : undefined,
+          compareAtPrice: form.compareAtPrice.trim() ? Number(form.compareAtPrice) : null,
           regularPrice: form.regularPrice ? parseFloat(form.regularPrice) : null,
           homiePrice: form.homiePrice ? parseFloat(form.homiePrice) : null,
           category: form.category,
           sku: form.sku || undefined,
           imageUrl: form.imageUrl || undefined,
           mediaGallery,
-          stockQuantity: parseInt(form.stockQuantity) || 0,
           isAvailable: form.isAvailable,
+          isTaxable: form.isTaxable,
+          parLevel: form.parLevel.trim() ? Number(form.parLevel) : null,
+          moq: parseFloat(form.moq || "0"),
+          preferredReorderQuantity: parseFloat(form.preferredReorderQuantity || "0"),
           alavontName: form.alavontName || undefined,
           alavontDescription: form.alavontDescription || undefined,
           alavontCategory: form.alavontCategory || undefined,
@@ -737,10 +783,11 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
         },
       },
       {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
-          onClose();
-        },
+          onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: getListCatalogItemsQueryKey() });
+            onClose();
+          },
+          onError: () => setSaveError("Could not save this catalogue item. No changes were applied."),
       }
     );
   };
@@ -753,6 +800,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
         </DialogHeader>
         <div className="space-y-3 pt-2">
           <ItemFormFields form={form} setForm={setForm} />
+          <p className="text-xs text-muted-foreground">Inventory quantities are managed through Inventory movements, not catalogue editing.</p>
           <MediaGalleryFields form={form} setForm={setForm} />
           <div className="flex items-center gap-3 pt-1">
             <span className="text-xs text-muted-foreground">Available for ordering</span>
@@ -762,6 +810,10 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
             >
               <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isAvailable ? "left-5" : "left-0.5"}`} />
             </button>
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            <span className="text-xs text-muted-foreground">Taxable</span>
+            <button onClick={() => setForm(prev => ({ ...prev, isTaxable: !prev.isTaxable }))} className={`w-10 h-5 rounded-full transition-colors relative shrink-0 ${form.isTaxable ? "bg-primary" : "bg-muted"}`}><div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${form.isTaxable ? "left-5" : "left-0.5"}`} /></button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <button
@@ -793,6 +845,7 @@ function EditItemDialog({ item, open, onClose }: { item: ExtendedCatalogItem | n
             {showPresentation ? "Hide" : "Show"} Checkout Presentation Fields
           </button>
           {showPresentation && <CheckoutPresentationFields form={form} setForm={setForm} />}
+          {saveError && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">{saveError}</p>}
           <Button className="w-full rounded-xl" onClick={handleSave} disabled={updateMutation.isPending}>
             {updateMutation.isPending ? "Saving..." : "Save Changes"}
           </Button>
@@ -808,15 +861,12 @@ export default function Catalog() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [bannerImages, setBannerImages] = useState(DEFAULT_CATALOG_BANNERS);
-  const { brand, setBrand } = useBrand();
+  const { brand, branding } = useBrand();
+  const { itemCount } = useCart();
   const [menuMode, setMenuMode] = useState<MenuMode>(() =>
     brand === "lucifer_cruz" ? "lucifer" : "alavont"
   );
   const [editItem, setEditItem] = useState<ExtendedCatalogItem | null>(null);
-
-  useEffect(() => {
-    setBrand(menuMode === "lucifer" ? "lucifer_cruz" : "alavont");
-  }, [menuMode, setBrand]);
 
   useEffect(() => {
     let cancelled = false;
@@ -849,10 +899,27 @@ export default function Catalog() {
       return res.json() as Promise<{ categories: string[] }>;
     },
   });
-  const { data, isLoading } = useListCatalogItems(
-    { search, category: category !== "all" ? category : undefined, limit: 200, mode: menuMode === "lucifer" ? "lucifer" : "alavont" },
-    { query: { queryKey: ["listCatalogItems", search, category, menuMode] } }
-  );
+  const catalogQuery = useInfiniteQuery({
+    queryKey: ["listCatalogItems", search, category, menuMode],
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }): Promise<CatalogPage> => {
+      const query = new URLSearchParams({ limit: "200", page: String(pageParam), mode: menuMode === "lucifer" ? "lucifer" : "alavont" });
+      if (search) query.set("search", search);
+      if (category !== "all") query.set("category", category);
+      const token = await getToken();
+      const res = await fetch(`/api/catalog?${query.toString()}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+      if (!res.ok) throw new Error(`Could not load catalogue (${res.status})`);
+      return res.json() as Promise<CatalogPage>;
+    },
+    getNextPageParam: lastPage => lastPage.page * lastPage.limit < lastPage.total ? lastPage.page + 1 : undefined,
+  });
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = catalogQuery;
+
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage) {
+      void fetchNextPage();
+    }
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const isLC = menuMode === "lucifer";
   const categories = ["all", ...(categoriesRes?.categories ?? [])]
@@ -866,12 +933,25 @@ export default function Catalog() {
       return a.localeCompare(b);
     });
 
-  const allItems = data?.items ?? [];
+  const allItems = catalogQuery.data?.pages.flatMap(page => page.items) ?? [];
+  const isLoading = catalogQuery.isLoading || catalogQuery.isFetchingNextPage;
 
   // In LC mode the API returns only WooCommerce-synced Lucifer Cruz products.
   // Alavont rows can still carry LC mapping fields for payment conversion,
   // but those mapped fields do not make them Lucifer Cruz storefront items.
-  const displayItems = allItems;
+  const groupByCatalogId = new Map<number, GroupedProduct>();
+  for (const item of allItems) {
+    const product = item.sellableProduct;
+    if (product) for (const option of product.options) groupByCatalogId.set(option.catalogItemId, product);
+  }
+  const seenGroups = new Set<number>();
+  const displayItems = allItems.filter(item => {
+    const product = groupByCatalogId.get(item.id);
+    if (!product) return true;
+    if (seenGroups.has(product.id)) return false;
+    seenGroups.add(product.id);
+    return true;
+  });
 
   // Determine empty-state reason for better messaging
   const hasItemsInResponse = allItems.length > 0;
@@ -882,7 +962,7 @@ export default function Catalog() {
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* Hero/header: banner sits behind the title and brand buttons. */}
-      <div className="relative overflow-hidden rounded-3xl border border-border/30 bg-background/95 min-h-[180px] sm:min-h-[220px] md:min-h-[280px] catalog-hero" data-testid="catalog-hero-banner">
+      <div className="relative aspect-[3/1] w-full overflow-hidden rounded-3xl border border-border/30 bg-background/95 catalog-hero" data-testid="catalog-hero-banner">
         {!isLC && (
           <div className="absolute inset-0 z-0">
             {getSafeImageSources(bannerImages).map((src, index) => (
@@ -890,7 +970,7 @@ export default function Catalog() {
                 key={src}
                 src={src}
                 alt=""
-                className="absolute inset-0 h-full w-full object-contain catalog-hero-frame"
+                className="absolute inset-x-0 top-0 block h-auto w-full catalog-hero-frame"
                 style={{ animationDelay: `${index * 10}s` }}
               />
             ))}
@@ -899,8 +979,12 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="relative z-10 flex min-h-[180px] sm:min-h-[220px] md:min-h-[280px] flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
-          <div className="flex justify-end">
+        <div className="relative z-10 flex h-full flex-col justify-start gap-3 p-3 sm:p-4 md:p-5">
+          <div className="flex flex-wrap justify-end gap-2">
+            <Link href="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur" data-testid="catalog-cart-link">
+              <ShoppingCart size={14} /> My Order{itemCount > 0 ? ` (${itemCount})` : ""}
+            </Link>
+            {itemCount > 0 && <Link href="/checkout" className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-lg" data-testid="catalog-checkout-link">Checkout</Link>}
             <div className="relative z-20 inline-flex w-full p-1 rounded-xl border border-border/40 bg-background/70 backdrop-blur-md shadow-xl sm:w-fit">
               <button
                 onClick={() => setMenuMode("alavont")}
@@ -910,7 +994,7 @@ export default function Catalog() {
                 data-testid="tab-alavont"
               >
                 <FlaskConical size={12} />
-                Alavont Therapeutics
+                {branding.customer.displayName}
               </button>
               <button
                 onClick={() => setMenuMode("lucifer")}
@@ -921,7 +1005,7 @@ export default function Catalog() {
                 data-testid="tab-lucifer"
               >
                 <Flame size={12} />
-                Lucifer Cruz
+                {branding.supplier.displayName ?? "Supplier catalog"}
               </button>
             </div>
           </div>
@@ -929,17 +1013,23 @@ export default function Catalog() {
       </div>
 
       {/* Filters */}
-      <div className="relative z-30 -mt-24 flex gap-2 flex-wrap items-center rounded-2xl border border-border/30 bg-background/90 p-3 shadow-xl backdrop-blur-md sm:-mt-28 md:-mt-32">
-        <div className="relative min-w-[180px] max-w-xs">
-          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="pl-9 h-9 rounded-xl text-sm bg-background/50"
-            data-testid="input-search"
-          />
-        </div>
+      <div className="relative z-30 -mt-16 flex flex-wrap items-center gap-2 bg-transparent p-3 sm:-mt-20 md:-mt-24" data-testid="catalog-search-wrapper">
+        <form className="flex min-w-0 max-w-md flex-1 gap-2 sm:min-w-[260px]" role="search" onSubmit={event => event.preventDefault()}>
+          <div className="relative min-w-0 flex-1">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="Search catalogue"
+              placeholder="Search..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="h-9 rounded-xl bg-background pl-9 text-sm shadow-sm"
+              data-testid="input-search"
+            />
+          </div>
+          <Button type="submit" className="h-9 shrink-0 rounded-xl bg-primary px-4 text-primary-foreground shadow-sm" aria-label="Search catalogue">
+            Search
+          </Button>
+        </form>
         <div className="flex gap-1.5 flex-wrap">
           {categories.map(cat => (
             <button
@@ -960,28 +1050,13 @@ export default function Catalog() {
         </div>
       </div>
 
-      {/* LC branded banner */}
-      {isLC && (
-        <div
-          className="rounded-2xl p-4 border flex items-center gap-3"
-          style={{ borderColor: "rgba(220,20,60,0.2)", background: "rgba(220,20,60,0.04)" }}
-        >
-          <Flame size={18} style={{ color: "#DC143C", flexShrink: 0 }} />
-          <p className="text-xs" style={{ color: "#C0C0C0" }}>
-            All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
-      {!isLC && (
-        <div className="rounded-2xl p-4 border border-blue-500/15 bg-blue-500/5">
-          <p className="text-xs text-muted-foreground">
-            Alavont fulfilled by Lucifer Cruz. All transactions are private and discreet.
-          </p>
-        </div>
-      )}
-
       {/* Grid */}
+      {catalogQuery.isError && (
+        <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
+          The catalogue and product options could not be loaded.
+          <Button type="button" size="sm" variant="outline" className="ml-3" onClick={() => void catalogQuery.refetch()}>Retry catalogue</Button>
+        </div>
+      )}
       {isLoading ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {[...Array(10)].map((_, i) => (
@@ -999,7 +1074,7 @@ export default function Catalog() {
           {/* "Hidden by LC filter" message */}
           {hiddenByLCFilter && (
             <>
-              <div className="text-sm font-semibold mb-1">Products exist but have no Lucifer Cruz names</div>
+              <div className="text-sm font-semibold mb-1">Products exist but have no {branding.supplier.displayName ?? "supplier"} names</div>
               <div className="text-xs text-muted-foreground max-w-xs">
                 {allItems.length} product{allItems.length !== 1 ? "s" : ""} are in the database but none have a <code className="font-mono bg-muted/30 px-1 rounded">lucifer_cruz_name</code> assigned.
                 {canEdit && " Re-import your CSV with the lucifer_cruz_name column populated, or check Edit Catalog."}
@@ -1024,7 +1099,7 @@ export default function Catalog() {
           {trulyEmpty && !hiddenByLCFilter && !hiddenBySearchOrCategory && (
             <>
               <div className="text-sm font-semibold mb-1">
-                {isLC ? "No Lucifer Cruz items found" : "No products imported"}
+                {isLC ? `No ${branding.supplier.displayName ?? "supplier"} items found` : "No products imported"}
               </div>
               <div className="text-xs text-muted-foreground max-w-xs">
                 {isLC
@@ -1042,6 +1117,8 @@ export default function Catalog() {
             <CatalogItemCard
               key={item.id}
               item={item}
+              product={groupByCatalogId.get(item.id)}
+              optionsLoading={catalogQuery.isLoading}
               canEdit={canEdit}
               onEdit={setEditItem}
               menuMode={menuMode}
@@ -1050,7 +1127,6 @@ export default function Catalog() {
         </div>
       )}
 
-      <div className="mt-8 rounded-2xl border border-border/30 bg-background/80 p-3 text-center text-xs text-muted-foreground">Alavont fulfilled by Lucifer Cruz</div>
 
       <CatalogNotice className="mt-4" />
 

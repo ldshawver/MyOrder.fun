@@ -1,0 +1,49 @@
+[Unit]
+Description=MyOrder print bridge (hardened, queue allowlisted)
+Documentation=file:///opt/myorder-print-bridge/README.md
+After=network-online.target tailscaled.service cups.service
+Wants=network-online.target
+Requires=cups.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=printbridge
+Group=printbridge
+WorkingDirectory=/opt/myorder-print-bridge
+# Root-owned, mode 600: systemd reads it; the service account cannot.
+EnvironmentFile=/etc/myorder-print-bridge/bridge.env
+ExecStart=/usr/bin/node /opt/myorder-print-bridge/server.js
+# Also covers boot ordering: BIND_HOST is the Tailscale address.
+Restart=always
+RestartSec=5
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# lp talks to CUPS over its Unix socket; the API arrives over TCP.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=myorder-print-bridge
+
+[Install]
+WantedBy=multi-user.target

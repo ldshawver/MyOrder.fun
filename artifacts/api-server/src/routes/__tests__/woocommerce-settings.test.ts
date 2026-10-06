@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import { fetchWooSafely } from "../../lib/wooSafeHttp";
 
 process.env.SETTINGS_ENC_KEY = "0".repeat(64);
 
@@ -45,6 +46,10 @@ vi.mock("@workspace/db", () => {
 
   const insert = vi.fn(() => ({
     values: (vals: Record<string, unknown>) => ({
+      onConflictDoNothing: () => {
+        if (!state.row) state.row = { id: nextId++, tenantId: vals.tenantId, wcStoreUrl: "https://lucifercruz.com", wcConsumerKey: null, wcConsumerSecret: null, wcEnabled: true };
+        return { returning: () => Promise.resolve([state.row]) };
+      },
       returning: () => {
         state.row = {
           id: nextId++,
@@ -85,18 +90,25 @@ vi.mock("@workspace/db", () => {
     }),
   }));
 
-  const db = { execute: vi.fn(() => Promise.resolve()), select, insert, update };
+  const db = { execute: vi.fn(() => Promise.resolve()), select, insert, update, transaction: vi.fn() };
+  db.transaction.mockImplementation((callback: (tx: typeof db) => Promise<unknown>) => callback(db));
   return { db, adminSettingsTable, tenantsTable, catalogItemsTable };
 });
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
+  and: vi.fn((...values) => ({ values })),
   asc: vi.fn(() => ({})),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
 }));
 
 vi.mock("../../lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock("../../lib/wooSafeHttp", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../lib/wooSafeHttp")>()),
+  fetchWooSafely: vi.fn(),
 }));
 
 // Bypass auth/role middleware
@@ -109,6 +121,7 @@ vi.mock("../../lib/auth", () => ({
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
   requireRole: () => (_req: unknown, _res: unknown, next: () => void) => next(),
   requireApproved: (_req: unknown, _res: unknown, next: () => void) => next(),
+  writeAuditLog: vi.fn(async () => undefined),
 }));
 
 vi.mock("../../lib/singleTenant", () => ({
@@ -179,13 +192,29 @@ describe("woocommerce settings save/load/sync", () => {
     expect(typeof res.body.message).toBe("string");
   });
 
+  it("rejects unknown configuration fields without persisting or echoing them", async () => {
+    const response = await supertest(makeApp()).put("/api/admin/settings/woocommerce")
+      .send({ wcConsumerKey: "ck_test", wcConsumerSecret: "cs_test", unexpected: 2 });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).not.toContain("cs_test");
+    expect(state.row).toBeNull();
+  });
+
+  it("rejects cross-tenant configuration selection before credential storage", async () => {
+    const response = await supertest(makeApp()).put("/api/admin/settings/woocommerce?tenantId=2")
+      .send({ wcConsumerKey: "ck_test", wcConsumerSecret: "cs_test" });
+    expect(response.status).toBe(403);
+    expect(state.row).toBeNull();
+    expect(JSON.stringify(response.body)).not.toContain("cs_test");
+  });
+
   it("test-connection success path (mocked fetch)", async () => {
     const app = makeApp();
     await supertest(app)
       .put("/api/admin/settings/woocommerce")
       .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_x", wcConsumerSecret: "cs_x" });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    const fetchSpy = vi.mocked(fetchWooSafely).mockResolvedValue(
       new Response(JSON.stringify({ environment: { version: "8.5.0" } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -196,10 +225,7 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.wcVersion).toBe("8.5.0");
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "https://shop.test/wp-json/wc/v3/system_status",
-      expect.objectContaining({ headers: expect.objectContaining({ Authorization: expect.stringMatching(/^Basic /) }) }),
-    );
+    expect(fetchSpy).toHaveBeenCalledWith("https://shop.test", "/wp-json/wc/v3/system_status", "ck_x", "cs_x");
   });
 
   it("test-connection failure path (mocked fetch returns 401)", async () => {
@@ -208,15 +234,17 @@ describe("woocommerce settings save/load/sync", () => {
       .put("/api/admin/settings/woocommerce")
       .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_bad", wcConsumerSecret: "cs_bad" });
 
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.mocked(fetchWooSafely).mockResolvedValue(
       new Response("Unauthorized", { status: 401 }),
     );
 
     const res = await supertest(app).post("/api/admin/woocommerce/test").send({});
-    expect(res.status).toBe(502);
+    // Credential rejection is distinguishable from an unavailable upstream.
+    expect(res.status).toBe(424);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
     expect(res.body.ok).toBe(false);
-    expect(res.body.status).toBe(401);
+    expect(res.body.upstreamStatus).toBe(401);
+    expect(res.body.code).toBe("woocommerce_auth_failed");
     expect(typeof res.body.message).toBe("string");
   });
 });

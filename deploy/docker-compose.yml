@@ -1,5 +1,6 @@
-services:
+name: deploy
 
+services:
   # ── PostgreSQL ────────────────────────────────────────────
   db:
     image: postgres:16-alpine
@@ -22,9 +23,16 @@ services:
   # ── Database Migrations (one-shot) ───────────────────────
   # Usage: docker compose run --rm migrate
   migrate:
+    # Do not let `docker compose run migrate` silently reuse the project-scoped
+    # build cache. The migration artifact must be the release SHA supplied by
+    # the deploy command, just like the API and platform artifacts.
+    image: myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.migrate
+      labels:
+        org.opencontainers.image.revision: ${DEPLOY_SHA:?DEPLOY_SHA is required}
+        com.myorder.deploy-sha: ${DEPLOY_SHA:?DEPLOY_SHA is required}
     environment:
       DATABASE_URL: ${DATABASE_URL}
       # The `db` container runs Postgres without SSL (Docker-internal network).
@@ -40,6 +48,7 @@ services:
 
   # ── API Server ────────────────────────────────────────────
   api:
+    image: myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
@@ -62,9 +71,14 @@ services:
       CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
       CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
       SESSION_SECRET: ${SESSION_SECRET}
+      SETTINGS_ENC_KEY: ${SETTINGS_ENC_KEY:?SETTINGS_ENC_KEY is required}
+      PAYMENT_MODE: ${PAYMENT_MODE:-disabled}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-paypal}
+      PAYPAL_ENVIRONMENT: ${PAYPAL_ENVIRONMENT:-}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_CLIENT_SECRET: ${PAYPAL_CLIENT_SECRET:-}
+      PAYPAL_WEBHOOK_ID: ${PAYPAL_WEBHOOK_ID:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
-      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
@@ -98,15 +112,29 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     networks:
       - internal
 
   # ── Platform (SPA) ────────────────────────────────────────
   platform:
+    image: myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.platform
       args:
+        DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
         # Fall back to the plain CLERK_PUBLISHABLE_KEY so a single-key .env
         # still produces a SPA bundle with a real Clerk publishable key.
         # An empty key here causes the deployed app to treat every visitor as
@@ -115,6 +143,14 @@ services:
         VITE_WOOCOMMERCE_URL: ${VITE_WOOCOMMERCE_URL:-}
         VITE_CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:-https://myorder.fun/api/__clerk}
     restart: unless-stopped
+    healthcheck:
+      # deploy/nginx-spa.conf listens on 3000 inside the platform container.
+      # nginx:alpine includes wget; probe the actual internal SPA listener.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - internal
 
@@ -123,17 +159,21 @@ services:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:8081:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # deploy.yml copies /etc/letsencrypt/live/myorder.fun/{fullchain,privkey}.pem
-      # into nginx/ssl/ before starting the container — plain files, no symlinks.
-      - ./nginx/ssl:/etc/nginx/ssl:ro
       - nginx_logs:/var/log/nginx
     depends_on:
-      - api
-      - platform
+      api:
+        condition: service_healthy
+      platform:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
     networks:
       - internal
       - external

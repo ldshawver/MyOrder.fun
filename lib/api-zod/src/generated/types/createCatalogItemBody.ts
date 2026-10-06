@@ -14,11 +14,12 @@ export interface CreateCatalogItemBody {
   category: string;
   sku?: string;
   price: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   regularPrice?: number | null;
   homiePrice?: number | null;
   stockQuantity?: number;
   isAvailable?: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: CreateCatalogItemBodyMediaGalleryItem[];
   isFeatured?: boolean;

@@ -20,6 +20,7 @@ import { normalizeRole } from "./auth";
  */
 
 export type OrderEventBase = {
+  tenantId: number;
   orderId: number;
   customerId: number;
   assignedCsrUserId: number | null;
@@ -86,6 +87,7 @@ export function getRecentEventsForClient(client: SseClient, sinceIso: string): O
 
 export type SseClient = {
   res: Response;
+  tenantId: number;
   userId: number;
   role: string;
 };
@@ -105,6 +107,7 @@ export function subscribe(client: SseClient): () => void {
 }
 
 export function shouldDeliver(client: SseClient, ev: OrderEvent): boolean {
+  if (client.tenantId !== ev.tenantId) return false;
   const role = normalizeRole(client.role);
   // Privileged roles see everything
   if (role === "global_admin" || role === "admin") {

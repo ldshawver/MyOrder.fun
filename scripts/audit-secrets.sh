@@ -59,6 +59,9 @@ looks_real_secret() {
     STRIPE_SECRET_KEY|CLERK_SECRET_KEY)
       [[ "$value" =~ ^sk_(live|test)_[A-Za-z0-9_-]{16,}$ ]]
       ;;
+    PAYPAL_CLIENT_SECRET)
+      [[ ${#value} -ge 24 && "$value" =~ [A-Za-z] && "$value" =~ [0-9] ]]
+      ;;
     TWILIO_AUTH_TOKEN)
       [[ "$value" =~ ^[A-Fa-f0-9]{32,}$ || "$value" =~ ^[A-Za-z0-9_-]{40,}$ ]]
       ;;
@@ -95,14 +98,14 @@ while IFS=: read -r file line_number line; do
 
   # Only assignments are suspicious; bare env var names, process.env.NAME, and
   # docker-compose ${NAME} interpolation do not match this branch.
-  if [[ "$line" =~ (^|[^A-Za-z0-9_])(OPENAI_API_KEY|DATABASE_URL|SESSION_SECRET|STRIPE_SECRET_KEY|TWILIO_AUTH_TOKEN|CLERK_SECRET_KEY)[[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
+  if [[ "$line" =~ (^|[^A-Za-z0-9_])(OPENAI_API_KEY|DATABASE_URL|SESSION_SECRET|STRIPE_SECRET_KEY|TWILIO_AUTH_TOKEN|CLERK_SECRET_KEY|PAYPAL_CLIENT_SECRET)[[:space:]]*[:=][[:space:]]*([^[:space:]]+) ]]; then
     key="${BASH_REMATCH[2]}"
     value="${BASH_REMATCH[3]}"
     if looks_real_secret "$key" "$value"; then
       failures+=("$file:$line_number: possible committed value for $key")
     fi
   fi
-done < <(git grep -nI -E 'OPENAI_API_KEY|DATABASE_URL|SESSION_SECRET|STRIPE_SECRET_KEY|TWILIO_AUTH_TOKEN|CLERK_SECRET_KEY|postgres(ql)?://' -- . ':(exclude)node_modules/**' ':(exclude)dist/**' ':(exclude)build/**' ':(exclude)coverage/**' || true)
+done < <(git grep -nI -E 'OPENAI_API_KEY|DATABASE_URL|SESSION_SECRET|STRIPE_SECRET_KEY|TWILIO_AUTH_TOKEN|CLERK_SECRET_KEY|PAYPAL_CLIENT_SECRET|postgres(ql)?://' -- . ':(exclude)node_modules/**' ':(exclude)dist/**' ':(exclude)build/**' ':(exclude)coverage/**' || true)
 
 if ((${#failures[@]} > 0)); then
   printf 'Secret audit failed. Real-looking committed secret values were found:\n' >&2

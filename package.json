@@ -10,7 +10,7 @@
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "lint": "pnpm -r --if-present run lint && pnpm run inventory:lockdown",
     "lint:ratchet": "pnpm --filter @workspace/scripts lint:ratchet",
-    "test": "pnpm --filter @workspace/api-server test",
+    "test": "pnpm --filter @workspace/api-server test && node --input-type=module -e 'await import(\"./deploy/safe-compose.test.mjs\")'",
     "inventory:lockdown": "pnpm --filter @workspace/scripts inventory:lockdown"
   },
   "private": true,

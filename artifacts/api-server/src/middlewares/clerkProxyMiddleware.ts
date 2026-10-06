@@ -8,7 +8,9 @@
  * See: https://clerk.com/docs/guides/dashboard/dns-domains/proxy-fapi
  *
  * IMPORTANT:
- * - Only active in production (Clerk proxying doesn't work for dev instances)
+ * - Active in production, or when Clerk proxy configuration is explicitly
+ *   present (for deployed development stacks that use a production Clerk proxy)
+ * - CLERK_SECRET_KEY is always required to authenticate proxy requests upstream
  * - Must be mounted BEFORE express.json() middleware
  *
  * Usage in app.ts:
@@ -90,11 +92,17 @@ function oauthCallbackHandler(secretKey: string): RequestHandler {
 }
 
 export function clerkProxyMiddleware(): RequestHandler {
-  if (process.env.NODE_ENV !== "production") {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  const hasExplicitProxyConfig = Boolean(
+    secretKey ||
+      process.env.CLERK_PROXY_URL ||
+      process.env.VITE_CLERK_PROXY_URL,
+  );
+
+  if (process.env.NODE_ENV !== "production" && !hasExplicitProxyConfig) {
     return (_req, _res, next) => next();
   }
 
-  const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) {
     return (_req, _res, next) => next();
   }

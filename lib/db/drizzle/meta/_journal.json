@@ -68,8 +68,281 @@
     {
       "idx": 9,
       "version": "7",
-      "when": 1781308800000,
-      "tag": "0022_delete_test_employee_users",
+      "when": 1784047334000,
+      "tag": "0032_order_lifecycle_preparing_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784047394000,
+      "tag": "0033_orders_shift_routing_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784047454000,
+      "tag": "0034_pos_cash_ledger_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784047514000,
+      "tag": "0035_print_job_schema_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784047574000,
+      "tag": "0036_clerk_provisioning_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784047634000,
+      "tag": "0037_tenant_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785081600000,
+      "tag": "0038_general_queue_cash_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785510000000,
+      "tag": "0039_general_queue_cash_schema_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786032000000,
+      "tag": "0040_tenant_printing_reporting_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1786424277000,
+      "tag": "0041_role_permissions_compatibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786510800000,
+      "tag": "0042_provider_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787148000000,
+      "tag": "0043_payments_tax_credit_stickers",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787234400000,
+      "tag": "0044_staging_sticker_pull_bridge",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787238000000,
+      "tag": "0045_sticker_print_job_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787418000000,
+      "tag": "0046_print_bridge_printer_health",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787504400000,
+      "tag": "0047_inventory_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787508000000,
+      "tag": "0048_sales_tax_period_paid_amount",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788031800000,
+      "tag": "0049_catalog_import_preview_tokens",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788062400000,
+      "tag": "0050_tenant_wide_tax_configuration",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788066000000,
+      "tag": "0051_staging_inventory_receipts_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788069600000,
+      "tag": "0052_staging_sales_tax_paid_amount_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788535661740,
+      "tag": "0053_non_catalog_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788535661741,
+      "tag": "0054_inventory_movement_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788535661742,
+      "tag": "0055_locations_csr_box_consolidation",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788931987000,
+      "tag": "0056_shift13_closeout_nan_repair_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788931988000,
+      "tag": "0057_refund_return_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789095830000,
+      "tag": "0058_paypal_refund_durability",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789200000000,
+      "tag": "0059_print_bridge_discovery_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789916400000,
+      "tag": "0060_uber_direct_durable_quotes",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790002800000,
+      "tag": "0061_uber_direct_tenant_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790600000000,
+      "tag": "0062_tenant_print_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790600000001,
+      "tag": "0063_print_document_routing",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790600000002,
+      "tag": "0067_print_routes_document_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790600000003,
+      "tag": "0068_print_jobs_document_job_types",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790600000004,
+      "tag": "0069_inventory_tenant_quantity_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790600000005,
+      "tag": "0070_catalogue_products_options_reorder",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790600000006,
+      "tag": "0071_refund_state_constraint_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1790600000007,
+      "tag": "0072_order_created_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1790985600000,
+      "tag": "0073_admin_settings_tenant_uniqueness",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790985600001,
+      "tag": "0074_tenant_slug_case_insensitive_unique",
       "breakpoints": true
     }
   ]

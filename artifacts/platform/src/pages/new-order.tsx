@@ -1,18 +1,20 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@clerk/react";
-import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, useTokenizePayment, useConfirmPayment, type CatalogItem } from "@workspace/api-client-react";
+import { useCreateOrder, useListCatalogItems, useGetCatalogItem, useAiUpsellSuggestions, useGetCurrentUser, type CatalogItem } from "@workspace/api-client-react";
 import { useCart } from "@/contexts/CartContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ReceiptText, ShoppingCart, MapPin, PackageCheck, HandCoins } from "lucide-react";
+import { ArrowLeft, Search, Plus, Minus, Trash, Sparkles, ShieldCheck, Wand2, Banknote, CreditCard, Gift, CheckCircle2, Truck, RefreshCw, ShoppingCart, MapPin, PackageCheck, HandCoins } from "lucide-react";
 import { normalizeNotificationRole, usePushNotifications } from "@/hooks/usePushNotifications";
 import { useBrand } from "@/contexts/BrandContext";
 import { CatalogNotice } from "@/components/CatalogNotice";
+import { PayPalCheckoutButton } from "@/components/PayPalCheckoutButton";
 import { toast } from "@/hooks/use-toast";
+import { checkoutOptionLines } from "@/lib/sellableOptions";
 
 type PromotedItem = { id: number; name: string; category: string; price: number; imageUrl: string | null; isAvailable: boolean };
 type DeliveryMethod = "pickup" | "manual_delivery" | "uber_direct" | "csr_delivery";
@@ -55,7 +57,7 @@ type ConversionPreview = {
     brandName: string;
     headline: string;
     zappyMessage: string;
-    paymentMethods: Array<{ id: string; label: string; promoted?: boolean; message?: string }>;
+    paymentMethods: Array<{ id: string; label: string; promoted?: boolean; available?: boolean; message?: string }>;
     items: Array<{
       catalogItemId: number;
       displayName: string;
@@ -77,9 +79,21 @@ type ConversionPreview = {
     }>;
   };
 };
+type CheckoutQuote = {
+  merchandiseSubtotal: number;
+  availableCustomerCredit: number;
+  appliedCustomerCredit: number;
+  remainingMerchandiseAmount: number;
+  taxableDigitalBase: number;
+  customerTax: number;
+  deliveryFee: number;
+  tipAmount: number;
+  finalAmountDue: number;
+  tenderDue: number;
+};
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
-const CONVERSION_NOTE = "Items in this cart will be converted to the appropriate customer-facing items before purchase.";
+const CHECKOUT_NOTE = "We verify items, availability, taxes, and eligible payment methods before payment.";
 
 const isDevelopment = import.meta.env.DEV;
 
@@ -126,6 +140,11 @@ export default function NewOrder() {
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState("cash");
+  const [useCustomerCredit, setUseCustomerCredit] = useState(false);
+  const [customerCreditAmount, setCustomerCreditAmount] = useState("");
+  const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
+  const [checkoutQuoteError, setCheckoutQuoteError] = useState<string | null>(null);
+  const [isQuotingCheckout, setIsQuotingCheckout] = useState(false);
   const [promotedItems, setPromotedItems] = useState<PromotedItem[]>([]);
   const [reviewedLastItemPrompt, setReviewedLastItemPrompt] = useState(false);
   const [tipMode, setTipMode] = useState<"none" | "10" | "15" | "20" | "custom">("none");
@@ -160,13 +179,28 @@ export default function NewOrder() {
   );
 
   const createOrderMutation = useCreateOrder();
-  const tokenizeMutation = useTokenizePayment();
-  const confirmMutation = useConfirmPayment();
   const upsellMutation = useAiUpsellSuggestions();
+  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
+  const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
+  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
+  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
+    ? deliveryQuote.fee
+    : deliveryMethod === "csr_delivery"
+      ? csrDeliveryFee
+      : 0;
+  const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
+  const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
+  const tipAmount = tipMode === "none"
+    ? 0
+    : tipMode === "custom"
+      ? Math.round(customTipAmount * 100) / 100
+      : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
 
   useEffect(() => {
     setConversionPreview(null);
     setConversionError(null);
+    setCheckoutQuote(null);
   }, [cart, shippingAddress, notes]);
 
   useEffect(() => {
@@ -219,7 +253,7 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: checkoutOptionLines(cart),
           confirmation: {
             acceptedAllSalesFinal: true,
             confirmedAt: new Date().toISOString(),
@@ -229,20 +263,22 @@ export default function NewOrder() {
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.error ?? "Product conversion failed.");
+        throw new Error(data?.error ?? "Could not prepare checkout.");
       }
       const converted = data as ConversionPreview;
       setConversionPreview(converted);
-      setSelectedPaymentMethod(current => current || converted.converted.paymentMethods[0]?.id || "cash");
+      setSelectedPaymentMethod(current => converted.converted.paymentMethods.some(method => method.id === current && method.available !== false)
+        ? current
+        : converted.converted.paymentMethods.find(method => method.available !== false)?.id || "customer_credit");
     } catch (e) {
-      setConversionError(e instanceof Error ? e.message : "Product conversion failed.");
+      setConversionError(e instanceof Error ? e.message : "Could not prepare checkout.");
     } finally {
       setIsConverting(false);
     }
   };
 
   const handleDeliveryQuote = async () => {
-    if (cart.length === 0 || !shippingAddress.trim()) return;
+    if (cart.length === 0 || !shippingAddress.trim() || !conversionPreview) return;
     setIsQuotingDelivery(true);
     setDeliveryQuoteError(null);
     try {
@@ -254,8 +290,11 @@ export default function NewOrder() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
+          items: checkoutOptionLines(cart),
           dropoffAddress: shippingAddress,
+          checkoutConversionToken: conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken,
+          checkoutConversionSnapshot: checkoutSnapshotFromConversion(conversionPreview),
+          checkoutConfirmation: conversionPreview.confirmation,
         }),
       });
       const data = await res.json();
@@ -270,55 +309,45 @@ export default function NewOrder() {
     }
   };
 
-  const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
-    if (cart.length === 0 || !conversionPreview) return;
-    if (deliveryMethod === "uber_direct" && !deliveryQuote) return;
-    if (requiresDeliveryAddress && !shippingAddress.trim()) return;
+  const createCheckoutOrder = useCallback(async (paymentMethodOverride = selectedPaymentMethod): Promise<number> => {
+    if (cart.length === 0 || !conversionPreview || !checkoutQuote) throw new Error("Checkout quote is not ready.");
+    if (!conversionPreview.converted.paymentMethods.some(method => method.id === paymentMethodOverride && method.available !== false)) {
+      throw new Error("This payment method is unavailable. Review the checkout options again.");
+    }
+    if (deliveryMethod === "uber_direct" && !deliveryQuote) throw new Error("A current delivery quote is required.");
+    if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
     setOrderSubmitError(null);
-    const paymentMethod = paymentMethodOverride as "cash" | "cash_app" | "stripe" | "paypal" | "venmo" | "gift_card" | "manual";
+    const paymentMethod = (checkoutQuote.tenderDue === 0 && checkoutQuote.appliedCustomerCredit > 0 ? "customer_credit" : paymentMethodOverride) as "cash" | "paypal" | "paypal_card" | "customer_credit";
 
     try {
-      const checkoutConversionToken = conversionPreview.conversionToken;
+      const checkoutConversionToken = conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken;
       const checkoutConversionSnapshot = checkoutSnapshotFromConversion(conversionPreview);
       const checkoutConfirmation = {
         acceptedAllSalesFinal: true as const,
         confirmedAt: conversionPreview.confirmation.confirmedAt,
         legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
         paymentMethod,
+        customerCreditAmount: checkoutQuote.appliedCustomerCredit,
         tipAmount,
         tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
       };
       const order = await createOrderMutation.mutateAsync({
         data: {
-          items: cart.map(i => ({ catalogItemId: i.id, quantity: i.quantity })),
-          shippingAddress: requiresDeliveryAddress ? shippingAddress : "",
+          items: checkoutOptionLines(cart) as unknown as Array<{ catalogItemId: number; quantity: number }>,
+          shippingAddress: deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct" ? shippingAddress : "",
           notes,
           deliveryMethod: deliveryMethod !== "pickup" ? deliveryMethod : undefined,
           checkoutConversionToken,
           checkoutConversionSnapshot,
           selectedPaymentMethod: paymentMethod,
           paymentMethod,
-          csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? csrDeliveryDistanceMiles : undefined,
+          csrDeliveryDistanceMiles: deliveryMethod === "csr_delivery" ? 0 : undefined,
           deliveryQuote: deliveryMethod === "uber_direct" && deliveryQuote ? deliveryQuote : undefined,
           checkoutConfirmation,
         }
       });
-
-      if (paymentMethod === "stripe") {
-        const tokenized = await tokenizeMutation.mutateAsync({ data: { orderId: order.id, amount: order.total } });
-        await confirmMutation.mutateAsync({ orderId: order.id, data: { paymentIntentId: tokenized.paymentIntentId } });
-      }
-
-      notifyOrderPlaced(order.id, user?.firstName || undefined);
-      await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
-      clearCart();
-      try {
-        const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
-        sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, order.id]));
-      } catch { /* ignore storage errors */ }
-      setLocation(`/orders/${order.id}`);
+      return order.id;
     } catch (error) {
       const checkoutConversionToken = conversionPreview?.conversionToken;
       const checkoutConversionSnapshot = conversionPreview ? checkoutSnapshotFromConversion(conversionPreview) : undefined;
@@ -329,43 +358,74 @@ export default function NewOrder() {
       );
       setOrderSubmitError(message);
       toast({ title: "Order failed", description: message, variant: "destructive" });
+      throw error;
     }
+  }, [cart, checkoutQuote, conversionPreview, createOrderMutation, deliveryMethod, deliveryQuote, notes, selectedPaymentMethod, shippingAddress, tipAmount, tipMode]);
+
+  const finishCheckout = useCallback(async (orderId: number) => {
+    notifyOrderPlaced(orderId, user?.firstName || undefined);
+    await queryClient.invalidateQueries({ queryKey: ["shiftQueueOrders"] });
+    await queryClient.invalidateQueries({ queryKey: ["listOrders"] });
+    clearCart();
+    try {
+      const existing = JSON.parse(sessionStorage.getItem("alavont_session_orders") || "[]");
+      sessionStorage.setItem("alavont_session_orders", JSON.stringify([...existing, orderId]));
+    } catch { /* ignore storage errors */ }
+    setLocation(`/orders/${orderId}`);
+  }, [clearCart, notifyOrderPlaced, queryClient, setLocation, user?.firstName]);
+
+  const handleSubmit = async (paymentMethodOverride = selectedPaymentMethod) => {
+    try {
+      const orderId = await createCheckoutOrder(paymentMethodOverride);
+      if (orderId) await finishCheckout(orderId);
+    } catch { /* createCheckoutOrder presents the customer-safe error */ }
   };
 
   const handlePaymentMethodClick = (methodId: string) => {
     setSelectedPaymentMethod(methodId);
-    if (methodId === "cash" && canSubmit) {
-      void handleSubmit(methodId);
-    }
   };
 
   const convertedItemById = new Map((conversionPreview?.converted.items ?? []).map(item => [item.catalogItemId, item]));
-  const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const csrDeliveryDistanceMiles = 0; // TODO: replace with geocoded customer distance when address verification is enabled
-  const csrDeliveryAllowed = csrDeliveryDistanceMiles <= 2;
-  const csrDeliveryFee = deliveryMethod === "csr_delivery" ? Math.round((6 + 0.03 * (conversionPreview?.pricingSnapshot.total ?? subtotal)) * 100) / 100 : 0;
-  const deliveryFee = deliveryMethod === "uber_direct" && deliveryQuote?.fee != null
-    ? deliveryQuote.fee
-    : deliveryMethod === "csr_delivery"
-      ? csrDeliveryFee
-      : 0;
-  const tipBase = conversionPreview?.pricingSnapshot.subtotal ?? subtotal;
-  const customTipAmount = Math.max(0, Number.parseFloat(customTip) || 0);
-  const tipAmount = tipMode === "none"
-    ? 0
-    : tipMode === "custom"
-      ? Math.round(customTipAmount * 100) / 100
-      : Math.round(tipBase * (Number(tipMode) / 100) * 100) / 100;
-  const displayedTotal = (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
+  const displayedTotal = checkoutQuote?.finalAmountDue ?? (conversionPreview?.pricingSnapshot.total ?? subtotal) + deliveryFee + tipAmount;
   const requiresDeliveryAddress = deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct";
   const lastItemPromptRequired = promotedItems.length > 0 && cart.length > 0 && !reviewedLastItemPrompt;
   const deliveryReady = deliveryMethod === "pickup"
     || (deliveryMethod === "csr_delivery" && csrDeliveryAllowed)
     || (deliveryMethod === "manual_delivery" && shippingAddress.trim().length > 0)
     || (deliveryMethod === "uber_direct" && !!deliveryQuote);
-  const paymentBusy = createOrderMutation.isPending || tokenizeMutation.isPending || confirmMutation.isPending;
-  const canSubmit = cart.length > 0 && !!conversionPreview && deliveryReady && !paymentBusy;
+  const paymentBusy = createOrderMutation.isPending;
+  const canSubmit = cart.length > 0 && !!conversionPreview && !!checkoutQuote && !checkoutQuoteError && !isQuotingCheckout && deliveryReady && !paymentBusy;
+  const selectedMethodAvailable = conversionPreview?.converted.paymentMethods.some(method => method.id === selectedPaymentMethod && method.available !== false) ?? false;
   const canCurateSuggestions = ["csr", "supervisor", "admin", "global_admin"].includes(normalizeNotificationRole(user?.role));
+
+  useEffect(() => {
+    setCheckoutQuote(null);
+    setCheckoutQuoteError(null);
+    if (!conversionPreview || cart.length === 0 || (deliveryMethod === "uber_direct" && !deliveryQuote)) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      setIsQuotingCheckout(true);
+      getToken().then(token => fetch("/api/checkout/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          items: checkoutOptionLines(cart),
+          paymentMethod: selectedPaymentMethod,
+          ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
+          tipAmount,
+          deliveryMethod,
+          ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
+        }),
+      })).then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error ?? "Checkout quote unavailable.");
+        if (!cancelled) setCheckoutQuote(data as CheckoutQuote);
+      }).catch(error => {
+        if (!cancelled) setCheckoutQuoteError(error instanceof Error ? error.message : "Checkout quote unavailable.");
+      }).finally(() => { if (!cancelled) setIsQuotingCheckout(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [conversionPreview, cart, selectedPaymentMethod, useCustomerCredit, customerCreditAmount, tipAmount, deliveryMethod, deliveryQuote, getToken]);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto min-h-[calc(100vh-8rem)] flex flex-col">
@@ -374,17 +434,17 @@ export default function NewOrder() {
           <ArrowLeft size={20} />
         </Link>
         <div>
-          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">Cart & Checkout</h1>
-          <p className="text-muted-foreground">Review the cart, choose pickup or delivery, convert with Zappy, then collect payment.</p>
+          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-title">My Order</h1>
+          <p className="text-muted-foreground">Review your order, choose fulfillment, and pay securely.</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(320px,1fr)_minmax(360px,0.95fr)_minmax(300px,0.85fr)] gap-6 items-start">
-        {/* Receipt Cart */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* Cart */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-card">
           <CardHeader className="pb-3 bg-muted/10 border-b border-border/50">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2">
-              <ReceiptText size={16} /> Receipt Cart
+              <ShoppingCart size={16} /> Cart
             </CardTitle>
             <div className="relative mt-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
@@ -424,17 +484,15 @@ export default function NewOrder() {
           <CardContent className="p-5">
             <div className="rounded-sm border border-border/70 bg-background text-foreground shadow-inner">
               <div className="border-b border-dashed border-border px-4 py-3 text-center">
-                <div className="text-xs font-semibold uppercase tracking-[0.24em]">Order Receipt</div>
+                <div className="text-xs font-semibold uppercase tracking-[0.24em]">Cart Summary</div>
                 <div className="text-[10px] text-muted-foreground mt-1 font-mono">{new Date().toLocaleString()}</div>
               </div>
               <div className="min-h-[420px] p-4 space-y-3">
-              {!conversionPreview && cart.length > 0 && (
-                <div className="rounded-sm border border-amber-500/40 bg-amber-500/10 p-3 text-xs font-semibold text-amber-700 dark:text-amber-300">Cart must be converted before payment.</div>
-              )}
               {cart.length === 0 ? (
                 <div className="h-72 flex flex-col items-center justify-center text-center text-muted-foreground text-sm font-mono uppercase tracking-wider border border-dashed border-border/50 rounded-sm">
                   <ShoppingCart size={24} className="mb-3" />
-                  Cart is empty
+                  Your order is empty
+                  <Link href="/catalog" className="mt-3 text-primary normal-case font-semibold hover:underline">Browse Catalogue</Link>
                 </div>
               ) : (
                 cart.map(item => {
@@ -473,15 +531,21 @@ export default function NewOrder() {
                 {conversionPreview && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Tax</span>
-                    <span className="font-mono">${conversionPreview.pricingSnapshot.tax.toFixed(2)}</span>
+                    <span className="font-mono">${checkoutQuote?.customerTax.toFixed(2) ?? "—"}</span>
                   </div>
                 )}
-                {deliveryFee > 0 && (
+                {checkoutQuote && checkoutQuote.appliedCustomerCredit > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Customer Credit</span>
+                    <span className="font-mono">-${checkoutQuote.appliedCustomerCredit.toFixed(2)}</span>
+                  </div>
+                )}
+                {(checkoutQuote?.deliveryFee ?? deliveryFee) > 0 && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">
                       {deliveryMethod === "csr_delivery" ? "CSR Delivery Fee" : "Uber Courier"}
                     </span>
-                    <span className="font-mono">${deliveryFee.toFixed(2)}</span>
+                    <span className="font-mono">${(checkoutQuote?.deliveryFee ?? deliveryFee).toFixed(2)}</span>
                   </div>
                 )}
                 {tipAmount > 0 && (
@@ -492,29 +556,29 @@ export default function NewOrder() {
                 )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border/40">
                   <span>Total</span>
-                  <span className="font-mono" data-testid="text-total">${displayedTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  <span className="font-mono" data-testid="text-total">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating quote…"}</span>
                 </div>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Checkout Steps */}
+        {/* Checkout */}
         <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm">
           <CardHeader className="pb-3 bg-muted/10 border-b border-border/50">
-            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Checkout Steps</CardTitle>
+            <CardTitle className="text-sm font-semibold uppercase tracking-wider">Checkout</CardTitle>
           </CardHeader>
           <CardContent className="p-5 space-y-5">
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <MapPin size={14} /> 1. Delivery or Pickup
+                <MapPin size={14} /> Fulfillment
               </div>
               <div className={`grid gap-2 ${csrStatus?.csrDeliveryAvailable ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}>
                     {[
                       { id: "pickup", label: "Pickup" },
                       { id: "manual_delivery", label: "Delivery" },
                       { id: "uber_direct", label: "Uber Courier" },
-                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "CSR Delivery" }] : []),
+                      ...(csrStatus?.csrDeliveryAvailable ? [{ id: "csr_delivery", label: "Personal delivery" }] : []),
                     ].map(option => (
                       <button
                         key={option.id}
@@ -530,9 +594,9 @@ export default function NewOrder() {
 
                   {deliveryMethod === "csr_delivery" && (
                     <div className="rounded-sm border border-primary/30 bg-primary/5 p-3 text-xs space-y-1">
-                      <div className="font-semibold text-primary">CSR Personal Delivery</div>
+                      <div className="font-semibold text-primary">Personal delivery</div>
                       <div className="text-muted-foreground">Your order will be personally delivered by the on-shift rep only within 2 miles.</div>
-                      <div className="font-mono text-primary pt-1">Delivery fee: ${csrDeliveryFee.toFixed(2)} ($6 + 3% of sale total)</div>
+                      <div className="font-mono text-primary pt-1">Delivery fee: ${(checkoutQuote?.deliveryFee ?? csrDeliveryFee).toFixed(2)} ($6 + 3% of merchandise subtotal)</div>
                       {!csrDeliveryAllowed && <div className="text-destructive">Personal delivery is blocked beyond 2 miles.</div>}
                       {csrStatus?.pickupNote && (
                         <div className="text-muted-foreground italic mt-1">{csrStatus.pickupNote}</div>
@@ -582,7 +646,7 @@ export default function NewOrder() {
 
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <PackageCheck size={14} /> 2. Confirm Order is Correct
+                <PackageCheck size={14} /> Review order
               </div>
               <Textarea
                 placeholder="Order notes (optional)"
@@ -593,7 +657,7 @@ export default function NewOrder() {
               />
               <CatalogNotice />
               <div className="rounded-sm border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground leading-relaxed">
-                {CONVERSION_NOTE}
+                {CHECKOUT_NOTE}
               </div>
 
                 <label className="flex items-start gap-3 text-sm leading-relaxed">
@@ -615,7 +679,7 @@ export default function NewOrder() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold">Need one last item?</div>
-                      <div className="text-xs text-muted-foreground">Supervisor-selected add-ons can be added before Zappy converts the cart.</div>
+                      <div className="text-xs text-muted-foreground">Optional suggestions are available before checkout.</div>
                     </div>
                     {reviewedLastItemPrompt && <CheckCircle2 size={17} className="text-emerald-500 shrink-0" />}
                   </div>
@@ -653,21 +717,21 @@ export default function NewOrder() {
                   data-testid="button-preview-conversion"
                 >
                   <Wand2 size={15} className="mr-2" />
-                {isConverting ? "Converting..." : "Convert Shopping Cart"}
+                {isConverting ? "Preparing checkout..." : "Continue to payment"}
                 </Button>
                 {conversionError && (
                   <div className="text-xs text-destructive" data-testid="text-conversion-error">{conversionError}</div>
                 )}
               {conversionPreview && (
                 <div className="rounded-sm border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-700" data-testid="conversion-ready">
-                  Shopping cart converted. Payment options are ready.
+                  Checkout is ready. Choose a payment method below.
                 </div>
               )}
             </div>
 
             <div className="rounded-sm border border-border/50 bg-background p-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <CreditCard size={14} /> 4. Select Payment Option & Pay
+                <CreditCard size={14} /> Payment
               </div>
               {conversionPreview ? (
                 <div className="space-y-4">
@@ -713,31 +777,59 @@ export default function NewOrder() {
                     </div>
                   </div>
 
+                  <div className="rounded-sm border border-border/60 bg-background p-3 space-y-3">
+                    <div className="flex justify-between text-xs">
+                      <span>Customer Credit available</span>
+                      <span className="font-mono" data-testid="text-customer-credit-available">${(checkoutQuote?.availableCustomerCredit ?? 0).toFixed(2)}</span>
+                    </div>
+                    {selectedPaymentMethod !== "customer_credit" && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={useCustomerCredit} onChange={event => {
+                          setUseCustomerCredit(event.target.checked);
+                          if (event.target.checked && !customerCreditAmount) setCustomerCreditAmount(Math.min(checkoutQuote?.availableCustomerCredit ?? 0, checkoutQuote?.merchandiseSubtotal ?? 0).toFixed(2));
+                        }} data-testid="checkbox-use-customer-credit" />
+                        Apply Customer Credit
+                      </label>
+                    )}
+                    {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && (
+                      <Input type="number" min="0" step="0.01" value={customerCreditAmount} onChange={event => setCustomerCreditAmount(event.target.value)} aria-label="Customer Credit amount" data-testid="input-customer-credit-amount" />
+                    )}
+                    <div className="flex justify-between text-xs"><span>Taxable PayPal merchandise</span><span className="font-mono" data-testid="text-taxable-digital-base">${(checkoutQuote?.taxableDigitalBase ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-xs"><span>Customer tax</span><span className="font-mono" data-testid="text-customer-tax">${(checkoutQuote?.customerTax ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-sm font-semibold"><span>Amount due by selected tender</span><span className="font-mono" data-testid="text-tender-due">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating…"}</span></div>
+                    {isQuotingCheckout && <p className="text-xs text-muted-foreground">Updating checkout quote…</p>}
+                    {checkoutQuoteError && <p className="text-xs text-destructive" data-testid="text-checkout-quote-error">{checkoutQuoteError}</p>}
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {conversionPreview.converted.paymentMethods.map(method => {
-                      const Icon = method.id === "cash" ? Banknote : method.id === "stripe" ? CreditCard : method.id === "gift_card" ? Gift : CheckCircle2;
+                    {conversionPreview.converted.paymentMethods.filter(method => method.id !== "paypal_card").map(method => {
+                      const Icon = method.id === "cash" ? Banknote : method.id === "customer_credit" ? Gift : CheckCircle2;
                       const active = selectedPaymentMethod === method.id;
                       return (
                         <button
                           key={method.id}
                           type="button"
                           onClick={() => handlePaymentMethodClick(method.id)}
-                          className={`rounded-sm border p-3 text-left transition-colors ${active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
+                          disabled={method.available === false}
+                          className={`rounded-sm border p-3 text-left transition-colors ${method.available === false ? "border-border/50 bg-muted/30 text-muted-foreground cursor-not-allowed" : active ? "border-primary bg-primary/10" : "border-border/50 bg-background hover:border-primary/40"}`}
                           data-testid={`payment-method-${method.id}`}
                         >
                           <span className="flex items-center gap-2 text-sm font-semibold">
                             <Icon size={16} className={method.promoted ? "text-emerald-500" : "text-primary"} />
                             {method.label}
                           </span>
-                          {method.message && <span className="block mt-1 text-[11px] text-emerald-600">{method.message}</span>}
+                          {method.message && <span className={`block mt-1 text-[11px] ${method.available === false ? "text-destructive" : "text-emerald-600"}`}>{method.message}</span>}
                         </button>
                       );
                     })}
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Card details are entered only in PayPal&apos;s secure payment form when card payments are available. We never collect card numbers or CVV.
+                  </p>
                 </div>
               ) : (
                 <div className="rounded-sm border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">
-                  Payment options appear after the shopping cart is converted.
+                  Confirm your cart details to see available payment options.
                 </div>
               )}
 
@@ -745,20 +837,34 @@ export default function NewOrder() {
                 <div className="rounded-sm border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive" data-testid="text-order-submit-error">{orderSubmitError}</div>
               )}
 
-              <Button 
-                className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider" 
-                disabled={!canSubmit}
-                onClick={() => void handleSubmit()}
-                data-testid="button-submit-order"
-              >
-                {paymentBusy ? "Processing Payment..." : `Pay & Send Order · $${displayedTotal.toFixed(2)}`}
-              </Button>
+              {selectedPaymentMethod === "paypal" && selectedMethodAvailable && (checkoutQuote?.tenderDue ?? 0) > 0 ? (
+                <div className="rounded-sm border border-border/50 bg-background/50 p-4 space-y-2" data-testid="paypal-checkout">
+                  <p className="text-sm font-semibold">Pay securely with PayPal</p>
+                  <p className="text-xs text-muted-foreground">Continue in the secure PayPal Wallet approval window. Your order is created only after you start a provider-controlled payment.</p>
+                  <PayPalCheckoutButton
+                    createOrder={() => createCheckoutOrder("paypal")}
+                    eligibilityAmount={checkoutQuote?.tenderDue}
+                    getToken={getToken}
+                    disabled={!canSubmit || !selectedMethodAvailable}
+                    onCaptured={(orderId) => { void finishCheckout(orderId); }}
+                  />
+                </div>
+              ) : (
+                <Button
+                  className="w-full rounded-sm h-12 text-sm font-semibold uppercase tracking-wider"
+                  disabled={!canSubmit || !selectedMethodAvailable}
+                  onClick={() => void handleSubmit()}
+                  data-testid="button-submit-order"
+                >
+                  {paymentBusy ? "Preparing order..." : `Place order · $${(checkoutQuote?.tenderDue ?? displayedTotal).toFixed(2)}`}
+                </Button>
+              )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Zappy Suggestions + Product Conversion */}
-        <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20">
+        {/* Optional Zappy suggestions */}
+        <Card className="overflow-hidden rounded-sm border-border/50 shadow-sm bg-primary/5 border-primary/20 lg:col-span-2">
           <CardHeader className="pb-3 shrink-0 border-b border-primary/10">
             <CardTitle className="text-sm font-semibold uppercase tracking-wider flex items-center gap-2 text-primary">
               <Sparkles size={16} /> Zappy Suggestions

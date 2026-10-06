@@ -19,7 +19,7 @@ vi.mock("../logger", () => ({
 
 function chain(result: unknown) {
   const obj: Record<string, unknown> = {};
-  const all = ["from", "orderBy", "limit", "values", "onConflictDoNothing", "returning"];
+  const all = ["from", "where", "orderBy", "limit", "values", "onConflictDoNothing", "returning"];
   for (const m of all) obj[m] = vi.fn(() => obj);
   // The terminal awaited call returns the result; simplest is to make every
   // method return `obj` and add a `.then` so awaiting the chain resolves.
@@ -48,11 +48,13 @@ describe("getHouseTenantId", () => {
 
   it("auto-seeds a default tenant when none exists, then returns its id", async () => {
     selectMock.mockReturnValueOnce(chain([])); // initial lookup: empty
-    insertMock.mockReturnValueOnce(chain([{ id: 1 }])); // seed returns new id
+    const insertResult = chain([{ id: 1 }]); // seed returns new id
+    insertMock.mockReturnValueOnce(insertResult);
 
     const { getHouseTenantId } = await loadModuleFresh();
     await expect(getHouseTenantId()).resolves.toBe(1);
     expect(insertMock).toHaveBeenCalledTimes(1);
+    expect(insertResult.onConflictDoNothing).toHaveBeenCalledWith();
     expect(loggerInfo).toHaveBeenCalledWith(
       expect.objectContaining({ event: "tenant_auto_seed" }),
       expect.any(String),
@@ -86,5 +88,11 @@ describe("getHouseTenantId", () => {
     await getHouseTenantId();
     await getHouseTenantId();
     expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+  it("refuses to choose the first tenant when multiple exist", async () => {
+    selectMock.mockReturnValueOnce(chain([{ id: 7 }, { id: 8 }]));
+    const { getHouseTenantId } = await loadModuleFresh();
+    await expect(getHouseTenantId()).rejects.toThrow(/Explicit signup tenant/);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });

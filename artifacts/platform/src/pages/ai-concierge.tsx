@@ -8,7 +8,7 @@ import { Link } from "wouter";
 import { useCart } from "@/contexts/CartContext";
 
 const INTRO_KEY = "hasSeenConciergeIntro_v2";
-const ZAPPY_HERO_IMAGE = "/zappy-new-animated.gif";
+const ZAPPY_HERO_IMAGE = "/assets/media/happy-animated.gif";
 const ZAPPY_AVATAR_IMAGE = "/zappy-new.png";
 
 // ─── Background Particle Field ────────────────────────────────────────────────
@@ -193,7 +193,7 @@ const DEFAULT_STEPS: IntroStep[] = [
   {
     emoji: "⚡",
     title: "Hey! I'm Zappy",
-    body: "Your personal shopping buddy for everything at Alavont & Lucifer Cruz. No judgment, no awkwardness — just me helping you find what you need. I know this menu inside and out.",
+    body: "Your personal shopping buddy for your tenant catalogue. No judgment, no awkwardness — just help finding what you need.",
     cta: "Let's go!",
   },
   {

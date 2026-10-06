@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Migration entrypoint for the Docker migrate service.
-# Runs pre-flight diagnostics, then applies drizzle-kit migrations safely.
+# Runs pre-flight diagnostics, then applies verified Drizzle migrations safely.
 set -Eeuo pipefail
 
 echo "════════════════════════════════════════════════════════"
@@ -45,10 +45,18 @@ until pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -q; do
 done
 echo "  ✓ Postgres is accepting connections"
 
+# ── Migration-ledger preflight ────────────────────────────────────────────────
+echo ""
+cd /app
+echo "▶ Validating migration journal and applied database prefix..."
+if ! pnpm --filter @workspace/db db:validate-migrations; then
+  echo "  ✗ Migration ledger validation failed; refusing to run migrations." >&2
+  exit 1
+fi
+
 # ── Pre-migration DB check ────────────────────────────────────────────────────
 echo ""
 echo "▶ Running pre-migration connectivity check (check-db)..."
-cd /app
 if ! pnpm --filter @workspace/db db:check; then
   echo ""
   echo "  ✗ db:check failed — running diagnostics:" >&2
@@ -61,8 +69,8 @@ fi
 
 # ── Run migrations ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Running migrations: drizzle-kit migrate"
-echo "  (Safe — applies pending SQL files from lib/db/drizzle/ in order."
+echo "▶ Running migrations: verified Drizzle runner"
+echo "  (Safe — applies verified pending SQL files from lib/db/drizzle/ in order."
 echo "   Does NOT drop or reset tables. Use push-force only for dev resets.)"
 echo ""
 

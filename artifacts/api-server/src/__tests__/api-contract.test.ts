@@ -40,7 +40,7 @@ vi.mock("@workspace/db", () => {
     },
     usersTable: cols(["clerkId", "id", "email", "firstName", "lastName", "role", "status", "isActive"]),
     catalogItemsTable: cols(["id", "name", "alavontName", "isWooManaged", "isLocalAlavont", "isAvailable", "alavontCategory", "category", "stockUnit", "inventoryAmount", "stockQuantity", "parLevel", "alavontId", "externalMenuId", "costBasis", "price"]),
-    ordersTable: cols(["id", "customerId", "assignedShiftId"]),
+    ordersTable: cols(["id", "customerId", "assignedShiftId", "status", "fulfillmentStatus"]),
     orderItemsTable: cols(["orderId"]),
     notificationsTable: cols(["id"]),
     labTechShiftsTable: cols(["id", "techId", "status", "tenantId"]),
@@ -82,6 +82,10 @@ vi.mock("../lib/auth", () => {
   };
 });
 
+vi.mock("../lib/tenantContext", () => ({
+  requireTenantContext: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 vi.mock("../lib/singleTenant", () => ({
   getHouseTenantId: vi.fn().mockResolvedValue(1),
 }));
@@ -103,6 +107,8 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
   or: vi.fn((...args) => args),
+  inArray: vi.fn((col, values) => ({ col, values })),
+  isNull: vi.fn(col => ({ col, isNull: true })),
   ilike: vi.fn((col, val) => ({ col, val })),
   like: vi.fn((col, val) => ({ col, val })),
   asc: vi.fn(c => c),
@@ -153,14 +159,14 @@ describe("API contract — global error middleware (real assembled app)", () => 
     const res = await supertest(app).get("/api/__contract/sync-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(res.body.error).toBe("sync boom");
+    expect(res.body.error).toBe("Internal Server Error");
   });
 
   it("asynchronous throw → JSON 500 via the real chain", async () => {
     const res = await supertest(app).get("/api/__contract/async-throw");
     expect(res.status).toBe(500);
     expect(res.headers["content-type"]).toMatch(/application\/json/);
-    expect(res.body.error).toBe("async boom");
+    expect(res.body.error).toBe("Internal Server Error");
   });
 
   it("error with custom status → that status, JSON body, via the real chain", async () => {

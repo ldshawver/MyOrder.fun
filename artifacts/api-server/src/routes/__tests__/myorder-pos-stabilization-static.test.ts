@@ -51,6 +51,10 @@ describe("MyOrder.fun navigation and editor consolidation", () => {
     expect(layout).not.toContain('label: "Reprint Receipts"');
     expect(layout).not.toContain('label: "WooCommerce"');
     expect(layout).not.toContain('label: "Integrations"');
+    expect(layout).toContain('label: isCustomer ? "Order Status" : "Orders"');
+    expect(layout).toContain('{ href: "/cart", label: isCustomer ? "My Order" : "Cart"');
+    expect(app).toContain('path="/cart" component={NewOrder}');
+    expect(app).toContain('path="/orders/new" component={LegacyCartRedirect}');
   });
 
   it("replaces web-editor Plasmic UI copy with Puck copy", () => {
@@ -88,8 +92,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
-    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id)");
+    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+    expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
+    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id,");
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
     expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
     expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");
@@ -130,7 +135,7 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 
 
-  it("keeps inventory balance writes centralized in inventoryAuthority", () => {
+  it("routes physical inventory writes through the canonical movement service", () => {
     const authority = api("lib/inventoryAuthority.ts");
     expect(authority).toContain("DIRECT INVENTORY WRITE BLOCKED — USE inventoryAuthority");
     expect(authority).toContain("upsertInventoryBalanceThroughAuthority");
@@ -149,8 +154,9 @@ describe("catalog/inventory/par/order source of truth", () => {
       expect(content, `${label} must not write inventory_balances outside inventoryAuthority`).not.toMatch(bypassPattern);
     }
 
-    expect(api("lib/inventoryReservations.ts")).toContain("deductInventoryBalanceThroughAuthority");
-    expect(api("routes/import.ts")).toContain("upsertInventoryBalanceThroughAuthority");
+    expect(api("lib/inventoryReservations.ts")).toContain("postInventoryMovement");
+    expect(api("routes/import.ts")).toContain("postImportedInventoryBalanceCorrection");
+    expect(api("lib/inventoryMovementLedger.ts")).toContain("INSERT INTO inventory_movements");
     expect(api("lib/inventoryBalances.ts")).toContain("bootstrapMissingInventoryBalancesThroughAuthority");
   });
 
@@ -189,13 +195,51 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 });
 
+describe("authenticated CSR claim client contract", () => {
+  const staff = platform("pages/staff.tsx");
+  const fulfillmentActions = platform("lib/staffFulfillmentAction.ts");
+  const detail = platform("pages/order-detail.tsx");
+
+  it("sends an identity-free claim once, surfaces errors, and refreshes affected state", () => {
+    expect(staff).toContain("if (loading !== null) return;");
+    expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
+    expect(fulfillmentActions).toContain('endpoint: `/api/orders/${orderId}/claim`, body: {}');
+    expect(fulfillmentActions).toContain('STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"]');
+    expect(staff).toContain("body?.error ?? `Request failed with HTTP ${res.status}`");
+    expect(staff).toContain('data-testid={`claim-message-${order.id}`}');
+    for (const key of ["shiftQueueOrders", "generalQueueOrders", "csrAssignedOrders", "queueCounts", "activeAssignment", "getCurrentShift", "getOrder"]) {
+      expect(staff).toContain(`["${key}"]`);
+    }
+  });
+
+  it("does not swallow reassignment option or mutation failures", () => {
+    expect(detail).toContain("Could not load eligible shifts");
+    expect(detail).toContain("if (!response.ok)");
+    expect(detail).toContain("responseBody?.error");
+    expect(detail).toContain("{c.label}");
+    expect(detail).toContain('role={routingMessage.kind === "error" ? "alert" : "status"}');
+  });
+});
+
 describe("receipts and deploy workflow", () => {
   it("centralizes receipt and printer sections", () => {
     const receipts = platform("pages/admin/receipts.tsx");
-    for (const label of ["Receipts & Printers", "Reprint Receipts", "Templates", "Printers", "Routing", "Test Print"]) {
+    for (const label of ["Receipts & Printers", "Printers", "Bridges", "Routing", "Receipt Layout", "Automatic Printing", "Test Printing", "Reprint Receipts"]) {
       expect(receipts).toContain(label);
     }
-    expect(receipts).toContain("Printer hardware must be configured");
+    expect(receipts).toContain("aria-selected={activeTab === key}");
+    expect(receipts).toContain("<RegisteredPrintAdmin mode={activeTab} />");
+    const checkout = platform("pages/new-order.tsx");
+    expect(checkout).toContain("grid grid-cols-1 lg:grid-cols-2 gap-6 items-start");
+    expect(checkout).toContain("Optional Zappy suggestions");
+    expect(checkout).not.toContain("Receipt Cart");
+  });
+
+  it("keeps restrictive catch-all admin routers after feature routers", () => {
+    const routesIndex = api("routes/index.ts");
+    expect(routesIndex.indexOf("router.use(inventoryRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
+    expect(routesIndex.indexOf("router.use(adminPrintersRouter)")).toBeLessThan(routesIndex.indexOf("router.use(adminRouter)"));
+    expect(routesIndex.indexOf("router.use(aiRouter)")).toBeLessThan(routesIndex.indexOf("router.use(auditRouter)"));
   });
 
   it("uses safer deploy flow and OAuth Tailscale tags", () => {
@@ -206,17 +250,21 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
     expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
     expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
-    expect(deploy).toContain("COMPOSE_PROJECT_NAME: alavont");
+    expect(deploy).toContain("COMPOSE_PROJECT_NAME: deploy");
     expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
     expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
     expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
-    expect(deploy).toContain("docker compose build --pull");
-    expect(deploy).toContain("docker compose up -d db");
-    expect(deploy).toContain("docker compose run --rm migrate");
-    expect(deploy).toContain("docker compose up -d api platform nginx");
-    expect(deploy).toContain("docker compose ps");
-    expect(deploy).toContain("curl -fsS http://127.0.0.1/api/healthz");
-    expect(deploy).toContain("curl -fsS --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz");
+    expect(deploy).toContain("production_confirmation:");
+    expect(deploy).toContain("environment: production");
+    expect(deploy).toContain("node safe-compose.mjs production config --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production build --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production up db --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production migrate --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production up api platform nginx --authorize-production");
+    expect(deploy).toContain("docker compose --project-name deploy --env-file .env --file docker-compose.yml ps");
+    expect(deploy).toContain("deploy_postgres_data");
+    expect(deploy).toContain("http://127.0.0.1:8081/api/healthz");
+    expect(deploy).toContain("Public health check passed with expected release SHA");
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");
@@ -245,28 +293,31 @@ describe("POS order closeout cash-bank safeguards", () => {
   const orders = api("routes/orders.ts");
   const orderDetail = platform("pages/order-detail.tsx");
 
-  it("exposes all supported closeout payment methods including cash", () => {
-    expect(orders).toContain('z.enum(["cash", "customer_credit", "gift_card", "cash_app", "venmo", "paypal", "card"])');
-    for (const method of ["cash", "gift_card", "cash_app", "card", "paypal", "venmo"]) {
-      expect(orderDetail).toContain(`closeOut("${method}")`);
-    }
+  it("exposes accountable cash closeout without bypassing canonical card or credit flows", () => {
+    expect(orders).toContain('paymentMethod: z.literal("cash")');
+    expect(orderDetail).toContain("Close as Cash Paid");
+    expect(orderDetail).toContain("Trusted amount due");
+    expect(orderDetail).toContain("Calculated change");
+    expect(orderDetail).toContain("PayPalCheckoutButton");
+    expect(orderDetail).toContain("Apply Customer Credit");
   });
 
   it("closes out cash in a transaction without trusting client box totals", () => {
     expect(orders).toContain('await db.transaction(async (tx) => {');
-    expect(orders).toContain('if (order.paymentStatus === "paid")');
-    expect(orders).toContain("sql`${ordersTable.paymentStatus} <> 'paid'`");
-    expect(orders).toContain('const cashBoxAssignmentId = method === "cash"');
-    expect(orders).toContain('closeoutShift?.boxAssignmentId || "sales-box-1"');
-    expect(orders).toContain("assignedShiftId: order.assignedShiftId ?? closeoutShift.id");
+    expect(orders).toContain("await tx.execute(sql`select pg_advisory_xact_lock");
+    expect(orders).toContain("moneyToCents(order.remainingTenderAmount ?? order.total)");
+    expect(orders).toContain("amountTendered: (tenderedCents / 100).toFixed(2)");
+    expect(orders).toContain("generalQueueSessionId: session?.id ?? null");
+    expect(orders).toContain("CASH_CLOSEOUT_COMPLETED");
     expect(orders).not.toContain("cashBankEnd: req.body");
     expect(orders).not.toContain("boxAssignmentId: req.body");
   });
 
   it("requires CSR ownership or general queue access before closeout", () => {
-    expect(orders).toContain("orderIsAssignedToActor");
-    expect(orders).toContain("orderIsGeneralQueue");
-    expect(orders).toContain('return { updated: null, auditTotal: order.total, cashShiftId: null, cashBoxAssignmentId: null, cashLedgerId: null, status: 403 as const };');
+    expect(orders).toContain("const assignedToActor = order.assignedCsrUserId === actor.id");
+    expect(orders).toContain("Only the assigned CSR may close this order for cash");
+    expect(orders).toContain("Claim this General Queue order before accepting cash");
+    expect(orders).toContain("Join the active General Queue cash session before accepting cash");
   });
 });
 
@@ -403,8 +454,8 @@ describe("admin/POS/security cleanup regressions", () => {
     const newOrder = platform("pages/new-order.tsx");
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
-    expect(orders).toContain('Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100');
-    expect(newOrder).toContain('$6 + 3% of sale total');
+    expect(orders).toContain('BigInt(dollarsToCents(subtotal)) * 3n');
+    expect(newOrder).toContain('$6 + 3% of merchandise subtotal');
   });
 
 

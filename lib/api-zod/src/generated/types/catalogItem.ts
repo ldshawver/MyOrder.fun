@@ -5,10 +5,13 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { CatalogItemLifecycleStatus } from './catalogItemLifecycleStatus';
 import type { CatalogItemMediaGalleryItem } from './catalogItemMediaGalleryItem';
 import type { CatalogItemMetadata } from './catalogItemMetadata';
+import type { CatalogItemSellableProduct } from './catalogItemSellableProduct';
 
 export interface CatalogItem {
+  sellableProduct?: CatalogItemSellableProduct;
   id: number;
   tenantId: number;
   name: string;
@@ -16,9 +19,10 @@ export interface CatalogItem {
   category: string;
   sku?: string;
   price: number;
-  compareAtPrice?: number;
+  compareAtPrice?: number | null;
   stockQuantity?: number;
   isAvailable: boolean;
+  isTaxable?: boolean;
   imageUrl?: string;
   mediaGallery?: CatalogItemMediaGalleryItem[];
   tags?: string[];
@@ -43,7 +47,16 @@ export interface CatalogItem {
   wooProductId?: string | null;
   wooVariationId?: string | null;
   receiptName?: string | null;
+  /** @minimum 0 */
+  parLevel?: number | null;
+  /** @minimum 0 */
+  moq?: number;
+  /** @minimum 0 */
+  preferredReorderQuantity?: number;
+  lifecycleStatus?: CatalogItemLifecycleStatus;
   labName?: string | null;
+  customerSafeName?: string | null;
+  customerSafeDescription?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -104,11 +104,9 @@ export default function AdminReports() {
             <select className="h-9 w-full rounded-sm bg-background border border-input px-3 text-sm" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
               <option value="all">All methods</option>
               <option value="cash">Cash</option>
-              <option value="stripe">Stripe</option>
-              <option value="card">Card</option>
-              <option value="venmo">Venmo</option>
-              <option value="cash_app">Cash App</option>
-              <option value="credit">Credit</option>
+              <option value="paypal">PayPal wallet</option>
+              <option value="paypal_card">PayPal-processed card</option>
+              <option value="customer_credit">Customer Credit</option>
             </select>
           </div>
           <div>

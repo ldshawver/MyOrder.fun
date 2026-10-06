@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { resolveBranding, type ResolvedBranding } from "@/lib/branding";
 
 
 type BusinessAddress = {
@@ -48,15 +49,25 @@ const EMPTY_BUSINESS: TenantBusinessSettings = {
   businessDescription: null,
 };
 
-type MerchantProcessorConfig = Record<string, {
-  displayName?: string;
-  accountId?: string;
-  publicKey?: string;
-  webhookConfigured?: boolean;
-  notes?: string;
-}>;
-
 type CatalogDiagnostics = { summary?: Record<string, unknown>; items?: Array<{ id: number; name: string; missingFields?: string[]; filteredBecause?: string[]; isAvailable?: boolean; alavontName?: string | null; luciferCruzName?: string | null }> };
+type PayPalStatus = {
+  enabled: boolean;
+  environment: "sandbox" | "live" | "disabled" | "invalid";
+  clientIdConfigured: boolean;
+  clientSecretConfigured: boolean;
+  webhookIdConfigured: boolean;
+  wallet: string;
+  advancedCards: string;
+  vault: string;
+  connection: string;
+};
+type UberDirectSettings = {
+  enabled: boolean; environment: "sandbox" | "production"; customerId: string | null; clientId: string | null;
+  clientSecret: { configured: boolean }; webhookSigningKey: { configured: boolean };
+  pickupLocationId: number | null; dispatchEnabled: boolean;
+  pickupLocations: Array<{ id: number; name: string; type: string; eligible: boolean }>;
+};
+const EMPTY_UBER: UberDirectSettings = { enabled: false, environment: "sandbox", customerId: null, clientId: null, clientSecret: { configured: false }, webhookSigningKey: { configured: false }, pickupLocationId: null, dispatchEnabled: false, pickupLocations: [] };
 
 type AdminSettings = {
   menuImportEnabled: boolean;
@@ -64,7 +75,6 @@ type AdminSettings = {
   enabledProcessors: string[];
   checkoutConversionPreview: boolean;
   merchantImageEnabled: boolean;
-  merchantProcessorConfig: MerchantProcessorConfig;
   autoPrintOnPayment: boolean;
   receiptTemplateStyle: string;
   labelTemplateStyle: string;
@@ -93,31 +103,16 @@ type AdminSettings = {
 const AI_PROMPT_MAX_CHARS = 8000;
 
 const PAYMENT_PROCESSORS = [
-  { id: "stripe", label: "Stripe" },
-  { id: "apple_pay", label: "Apple Pay" },
-  { id: "cashapp", label: "Cash App" },
-  { id: "venmo", label: "Venmo" },
   { id: "paypal", label: "PayPal" },
   { id: "cash", label: "Cash" },
 ];
 
-const DEFAULT_MERCHANT_PROCESSOR_CONFIG: MerchantProcessorConfig = Object.fromEntries(
-  PAYMENT_PROCESSORS.map(p => [p.id, {
-    displayName: p.label,
-    accountId: "",
-    publicKey: "",
-    webhookConfigured: false,
-    notes: p.id === "cash" ? "Cash is reconciled against the active CSR shift cash bank." : "",
-  }])
-);
-
 const DEFAULTS: AdminSettings = {
   menuImportEnabled: true,
   showOutOfStock: false,
-  enabledProcessors: ["stripe"],
+  enabledProcessors: ["paypal"],
   checkoutConversionPreview: false,
   merchantImageEnabled: true,
-  merchantProcessorConfig: DEFAULT_MERCHANT_PROCESSOR_CONFIG,
   autoPrintOnPayment: false,
   receiptTemplateStyle: "standard",
   labelTemplateStyle: "standard",
@@ -164,6 +159,22 @@ export default function AdminSettingsPage() {
   const [diagnostics, setDiagnostics] = useState<CatalogDiagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [paypalStatus, setPayPalStatus] = useState<PayPalStatus | null>(null);
+  const [paypalTesting, setPayPalTesting] = useState(false);
+  const [paypalEnabled, setPayPalEnabled] = useState(false);
+  const [paypalEnvironment, setPayPalEnvironment] = useState<"sandbox" | "live">("sandbox");
+  const [paypalClientId, setPayPalClientId] = useState("");
+  const [paypalClientSecret, setPayPalClientSecret] = useState("");
+  const [paypalWebhookId, setPayPalWebhookId] = useState("");
+  const [paypalSaving, setPayPalSaving] = useState(false);
+  const [paypalMessage, setPayPalMessage] = useState<string | null>(null);
+  const [uber, setUber] = useState<UberDirectSettings>(EMPTY_UBER);
+  const [uberClientSecret, setUberClientSecret] = useState("");
+  const [uberWebhookKey, setUberWebhookKey] = useState("");
+  const [uberSaving, setUberSaving] = useState(false);
+  const [uberTesting, setUberTesting] = useState<"connection" | "quote" | null>(null);
+  const [uberDestination, setUberDestination] = useState("");
+  const [uberMessage, setUberMessage] = useState<string | null>(null);
 
   const [business, setBusiness] = useState<TenantBusinessSettings>(EMPTY_BUSINESS);
   const [businessSaving, setBusinessSaving] = useState(false);
@@ -171,16 +182,22 @@ export default function AdminSettingsPage() {
   const [businessError, setBusinessError] = useState<string | null>(null);
   const [businessFieldErrors, setBusinessFieldErrors] = useState<Record<string, string>>({});
   const [businessConflict, setBusinessConflict] = useState<string | null>(null);
+  const [branding, setBranding] = useState<ResolvedBranding>(() => resolveBranding());
+  const [brandingSaving, setBrandingSaving] = useState(false);
+  const [brandingMessage, setBrandingMessage] = useState<string | null>(null);
 
 
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        const [genRes, wcRes, tenantRes] = await Promise.all([
+        const [genRes, wcRes, tenantRes, brandingRes, paypalRes, uberRes] = await Promise.all([
           fetch("/api/admin/settings", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/admin/settings/woocommerce", { headers: { Authorization: `Bearer ${token}` } }),
           fetch("/api/settings", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/branding", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/paypal-status", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/api/admin/settings/uber-direct", { headers: { Authorization: `Bearer ${token}` } }),
         ]);
         let merged: Partial<AdminSettings> = {};
         if (genRes.ok) merged = { ...merged, ...(await genRes.json()) };
@@ -188,6 +205,14 @@ export default function AdminSettingsPage() {
           const tenantSettings = await tenantRes.json();
           setBusiness({ ...EMPTY_BUSINESS, ...(tenantSettings.business ?? {}) });
         }
+        if (brandingRes.ok) setBranding(resolveBranding(await brandingRes.json()));
+        if (paypalRes.ok) {
+          const status = await paypalRes.json() as PayPalStatus;
+          setPayPalStatus(status);
+          setPayPalEnabled(status.enabled);
+          if (status.environment === "sandbox" || status.environment === "live") setPayPalEnvironment(status.environment);
+        }
+        if (uberRes.ok) setUber(await uberRes.json() as UberDirectSettings);
         if (wcRes.ok) {
           const wc = await wcRes.json();
           merged = {
@@ -202,10 +227,6 @@ export default function AdminSettingsPage() {
         setSettings(s => ({
           ...s,
           ...merged,
-          merchantProcessorConfig: {
-            ...DEFAULT_MERCHANT_PROCESSOR_CONFIG,
-            ...(merged.merchantProcessorConfig ?? {}),
-          },
         }));
       } catch { /* ignore fetch errors */ }
       setLoading(false);
@@ -276,6 +297,28 @@ export default function AdminSettingsPage() {
       setBusinessError((e as Error)?.message ?? "Network error");
     } finally {
       setBusinessSaving(false);
+    }
+  }
+
+  async function saveBranding() {
+    setBrandingSaving(true);
+    setBrandingMessage(null);
+    try {
+      const token = await getToken();
+      const customer = Object.fromEntries(Object.entries(branding.customer).filter(([key]) => key !== "domainVerificationState"));
+      const res = await fetch("/api/settings/branding", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ customer, supplier: branding.supplier }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Branding save failed");
+      setBranding(resolveBranding(data));
+      setBrandingMessage("Branding saved");
+    } catch (error) {
+      setBrandingMessage(error instanceof Error ? error.message : "Branding save failed");
+    } finally {
+      setBrandingSaving(false);
     }
   }
 
@@ -383,22 +426,32 @@ export default function AdminSettingsPage() {
     }
   }
 
-  function set<K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) {
-    setSettings(s => ({ ...s, [key]: value }));
+  async function saveUber() {
+    setUberSaving(true); setUberMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/admin/settings/uber-direct", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ enabled: uber.enabled, environment: uber.environment, customerId: uber.customerId?.trim() || undefined, clientId: uber.clientId?.trim() || undefined, clientSecret: uberClientSecret, webhookSigningKey: uberWebhookKey, pickupLocationId: uber.pickupLocationId, dispatchEnabled: uber.dispatchEnabled }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Uber Direct settings save failed");
+      setUber(data as UberDirectSettings); setUberClientSecret(""); setUberWebhookKey(""); setUberMessage("Uber Direct settings saved");
+    } catch (error) { setUberMessage(error instanceof Error ? error.message : "Uber Direct settings save failed"); }
+    finally { setUberSaving(false); }
   }
 
-  function setProcessorConfig(processorId: string, key: "accountId" | "publicKey" | "notes" | "webhookConfigured", value: string | boolean) {
-    setSettings(s => ({
-      ...s,
-      merchantProcessorConfig: {
-        ...s.merchantProcessorConfig,
-        [processorId]: {
-          ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[processorId],
-          ...(s.merchantProcessorConfig?.[processorId] ?? {}),
-          [key]: value,
-        },
-      },
-    }));
+  async function testUber(kind: "connection" | "quote") {
+    setUberTesting(kind); setUberMessage(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/admin/settings/uber-direct/test-${kind}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: kind === "quote" ? JSON.stringify({ dropoffAddress: uberDestination }) : undefined });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? data.connection ?? "Uber Direct test failed");
+      setUberMessage(kind === "connection" ? "OAuth connection verified" : `Test quote: ${data.amountCents} ${data.currency}; expires ${data.expires ?? "unknown"}. No courier was created.`);
+    } catch (error) { setUberMessage(error instanceof Error ? error.message : "Uber Direct test failed"); }
+    finally { setUberTesting(null); }
+  }
+
+  function set<K extends keyof AdminSettings>(key: K, value: AdminSettings[K]) {
+    setSettings(s => ({ ...s, [key]: value }));
   }
 
   function BusinessField({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
@@ -447,8 +500,10 @@ export default function AdminSettingsPage() {
       <Tabs defaultValue="business">
         <TabsList className="rounded-xl bg-muted/30 border border-border/40 mb-2 flex flex-wrap h-auto justify-start">
           <TabsTrigger value="business" className="rounded-lg text-xs">Business</TabsTrigger>
+          <TabsTrigger value="branding" className="rounded-lg text-xs">Branding</TabsTrigger>
           <TabsTrigger value="products" className="rounded-lg text-xs">Products</TabsTrigger>
           <TabsTrigger value="checkout" className="rounded-lg text-xs">Checkout</TabsTrigger>
+          <TabsTrigger value="uber" className="rounded-lg text-xs">Delivery · Uber Direct</TabsTrigger>
           <TabsTrigger value="printing" className="rounded-lg text-xs">Printing</TabsTrigger>
           <TabsTrigger value="purge" className="rounded-lg text-xs">Purge</TabsTrigger>
           <TabsTrigger value="woocommerce" className="rounded-lg text-xs">WooCommerce</TabsTrigger>
@@ -494,6 +549,42 @@ export default function AdminSettingsPage() {
               {businessSaving ? <RefreshCw size={14} className="animate-spin" /> : businessSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
               {businessSaved ? "Business saved" : businessSaving ? "Saving..." : "Save Business Settings"}
             </Button>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="branding">
+          <div className="space-y-5">
+            <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+              <div><div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer-facing tenant brand</div><p className="mt-1 text-xs text-muted-foreground">Blank fields fall back to MyOrder.fun. Domain verification state is server-controlled.</p></div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <BusinessField label="Display name"><Input value={branding.customer.displayName} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, displayName: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Legal/business name"><Input value={branding.customer.legalName ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, legalName: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Logo path or HTTPS URL"><Input value={branding.customer.logoUrl} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, logoUrl: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Favicon path or HTTPS URL"><Input value={branding.customer.faviconUrl} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, faviconUrl: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Primary color"><Input value={branding.customer.primaryColor} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, primaryColor: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Secondary color"><Input value={branding.customer.secondaryColor} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, secondaryColor: e.target.value } }))} /></BusinessField>
+                <BusinessField label="Support email"><Input value={branding.customer.supportEmail ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, supportEmail: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Support phone"><Input value={branding.customer.supportPhone ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, supportPhone: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Website"><Input value={branding.customer.websiteUrl ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, websiteUrl: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Checkout descriptor"><Input maxLength={22} value={branding.customer.checkoutDescriptor ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, checkoutDescriptor: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Custom domain"><Input value={branding.customer.customDomain ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, customDomain: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Verification state"><Input readOnly value={branding.customer.domainVerificationState} /></BusinessField>
+              </div>
+              <BusinessField label="Customer-facing terms/disclaimer"><Textarea rows={3} value={branding.customer.termsDisclaimer ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, termsDisclaimer: e.target.value || null } }))} /></BusinessField>
+              <BusinessField label="Privacy/discretion notice"><Textarea rows={3} value={branding.customer.privacyNotice ?? ""} onChange={e => setBranding(v => ({ ...v, customer: { ...v.customer, privacyNotice: e.target.value || null } }))} /></BusinessField>
+            </div>
+            <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+              <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Supplier / fulfillment brand</div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <BusinessField label="Display name"><Input value={branding.supplier.displayName ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, displayName: e.target.value || null } }))} /></BusinessField>
+                <BusinessField label="Logo path or HTTPS URL"><Input value={branding.supplier.logoUrl ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, logoUrl: e.target.value || null } }))} /></BusinessField>
+              </div>
+              <BusinessField label="Attribution wording"><Textarea rows={2} value={branding.supplier.attribution ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, attribution: e.target.value || null } }))} /></BusinessField>
+              <BusinessField label="Supplier disclaimer"><Textarea rows={3} value={branding.supplier.disclaimer ?? ""} onChange={e => setBranding(v => ({ ...v, supplier: { ...v.supplier, disclaimer: e.target.value || null } }))} /></BusinessField>
+              <SettingRow label="Display supplier attribution" description="When disabled or empty, no wrapper or spacing is rendered."><Switch checked={branding.supplier.showAttribution} onCheckedChange={value => setBranding(v => ({ ...v, supplier: { ...v.supplier, showAttribution: value } }))} /></SettingRow>
+            </div>
+            {brandingMessage && <div className="text-xs text-muted-foreground">{brandingMessage}</div>}
+            <Button onClick={() => void saveBranding()} disabled={brandingSaving} className="gap-2 rounded-xl"><Save size={14} />{brandingSaving ? "Saving..." : "Save Branding"}</Button>
           </div>
         </TabsContent>
 
@@ -685,47 +776,85 @@ export default function AdminSettingsPage() {
 
             <div className="mt-5 pt-5 border-t border-border/40 space-y-3">
               <div>
-                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Customer Credit Setup</div>
-                <p className="text-xs text-muted-foreground mt-1">Store public account IDs, checkout keys, webhook status, and admin notes for each accepted payment method.</p>
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Cash</div>
+                <p className="text-xs text-muted-foreground mt-1">Cash is an internal tender. It has no merchant ID, API key, checkout handle, or webhook.</p>
               </div>
-              <div className="grid gap-3">
-                {PAYMENT_PROCESSORS.map(({ id, label }) => {
-                  const config = { ...DEFAULT_MERCHANT_PROCESSOR_CONFIG[id], ...(settings.merchantProcessorConfig?.[id] ?? {}) };
-                  const active = settings.enabledProcessors.includes(id);
-                  return (
-                    <div key={id} className={`rounded-xl border p-3 space-y-3 ${active ? "border-primary/30 bg-primary/5" : "border-border/30 bg-muted/10 opacity-75"}`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-sm font-semibold">{label}</div>
-                        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                          <Switch checked={!!config.webhookConfigured} onCheckedChange={v => setProcessorConfig(id, "webhookConfigured", v)} />
-                          Webhook configured
-                        </label>
-                      </div>
-                      <div className="grid gap-2 md:grid-cols-2">
-                        <Input
-                          value={config.accountId ?? ""}
-                          onChange={e => setProcessorConfig(id, "accountId", e.target.value)}
-                          placeholder={`${label} account / merchant ID`}
-                          className="h-9 rounded-xl text-xs bg-background/50"
-                        />
-                        <Input
-                          value={config.publicKey ?? ""}
-                          onChange={e => setProcessorConfig(id, "publicKey", e.target.value)}
-                          placeholder={`${label} public checkout key / handle`}
-                          className="h-9 rounded-xl text-xs bg-background/50"
-                        />
-                      </div>
-                      <Input
-                        value={config.notes ?? ""}
-                        onChange={e => setProcessorConfig(id, "notes", e.target.value)}
-                        placeholder="Supervisor/admin notes for this payment method"
-                        className="h-9 rounded-xl text-xs bg-background/50"
-                      />
-                    </div>
-                  );
-                })}
+              <div className="rounded-xl border border-border/30 bg-muted/10 p-3 text-xs text-muted-foreground space-y-1">
+                <p><strong className="text-foreground">Enabled:</strong> {settings.enabledProcessors.includes("cash") ? "Yes" : "No"}</p>
+                <p>Cash acceptance requires the employee to be authorized and assigned to the active accountable cash session/shift. Closeout is reconciled through General Queue or the assigned CSR shift.</p>
+              </div>
+
+              <div className="pt-3">
+                <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">PayPal</div>
+                <p className="text-xs text-muted-foreground mt-1">PayPal credentials are encrypted for this tenant. Saved values are never displayed; leave a field blank to retain it.</p>
+              </div>
+              <div className="rounded-xl border border-border/30 bg-muted/10 p-3 text-xs space-y-2">
+                <div className="grid gap-1 sm:grid-cols-2">
+                  <p><strong>Enabled:</strong> {paypalStatus?.enabled ? "Yes" : "No"}</p>
+                  <p><strong>Environment:</strong> {paypalStatus?.environment ?? "Not tested"}</p>
+                  <p><strong>Client ID:</strong> {paypalStatus?.clientIdConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Client Secret:</strong> {paypalStatus?.clientSecretConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Webhook ID:</strong> {paypalStatus?.webhookIdConfigured ? "Configured" : "Not configured"}</p>
+                  <p><strong>Connection:</strong> {paypalStatus?.connection === "not_tested" ? "Not tested" : paypalStatus?.connection ?? "Not tested"}</p>
+                </div>
+                <p><strong>Webhook URL:</strong> <code>{typeof window === "undefined" ? "/api/webhooks/paypal" : `${window.location.origin}/api/webhooks/paypal`}</code></p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="text-xs">Environment
+                    <select className="mt-1 w-full rounded border border-border bg-background p-2" value={paypalEnvironment} onChange={event => setPayPalEnvironment(event.target.value as "sandbox" | "live")}>
+                      <option value="sandbox">Sandbox</option><option value="live">Live</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={paypalEnabled} onChange={event => setPayPalEnabled(event.target.checked)} /> Enable PayPal</label>
+                  <label className="text-xs">Client ID (blank retains saved value)<Input className="mt-1" value={paypalClientId} onChange={event => setPayPalClientId(event.target.value)} autoComplete="off" /></label>
+                  <label className="text-xs">Client Secret (blank retains saved value)<Input className="mt-1" type="password" value={paypalClientSecret} onChange={event => setPayPalClientSecret(event.target.value)} autoComplete="new-password" /></label>
+                  <label className="text-xs">Webhook ID (blank retains saved value)<Input className="mt-1" value={paypalWebhookId} onChange={event => setPayPalWebhookId(event.target.value)} autoComplete="off" /></label>
+                </div>
+                <Button type="button" variant="outline" size="sm" disabled={paypalSaving} onClick={async () => {
+                  setPayPalSaving(true); setPayPalMessage(null);
+                  try {
+                    const token = await getToken();
+                    const body = { enabled: paypalEnabled, environment: paypalEnvironment, ...(paypalClientId.trim() ? { clientId: paypalClientId.trim() } : {}), ...(paypalClientSecret.trim() ? { clientSecret: paypalClientSecret.trim() } : {}), ...(paypalWebhookId.trim() ? { webhookId: paypalWebhookId.trim() } : {}) };
+                    const response = await fetch("/api/admin/settings/paypal-status", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+                    const result = await response.json() as PayPalStatus & { error?: string };
+                    if (!response.ok) throw new Error(result.error ?? "PayPal settings save failed");
+                    setPayPalStatus(result); setPayPalClientId(""); setPayPalClientSecret(""); setPayPalWebhookId(""); setPayPalMessage("PayPal settings saved for this tenant.");
+                  } catch (error) { setPayPalMessage(error instanceof Error ? error.message : "PayPal settings save failed"); }
+                  finally { setPayPalSaving(false); }
+                }}>{paypalSaving ? "Saving…" : "Save PayPal Settings"}</Button>
+                {paypalMessage && <p role="status">{paypalMessage}</p>}
+                <p><strong>PayPal Wallet:</strong> determined by the official PayPal SDK for the current merchant, buyer, and session.</p>
+                <p><strong>Credit/Debit Cards:</strong> not exposed until this merchant's PayPal Advanced Cards capability and v6 hosted-fields integration are verified. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
+                <Button type="button" variant="outline" size="sm" disabled={paypalTesting} onClick={async () => {
+                  setPayPalTesting(true);
+                  try {
+                    const token = await getToken();
+                    const response = await fetch("/api/admin/settings/paypal-status/test", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+                    const result = await response.json() as { connection?: string };
+                    setPayPalStatus(current => current ? { ...current, connection: response.ok ? "connected" : result.connection ?? "failed" } : current);
+                  } catch { setPayPalStatus(current => current ? { ...current, connection: "failed" } : current); }
+                  finally { setPayPalTesting(false); }
+                }}>{paypalTesting ? "Testing…" : "Test Connection"}</Button>
               </div>
             </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="uber">
+          <div className="glass-card rounded-2xl p-5 border border-border/40 space-y-4">
+            <div><div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Uber Direct</div><p className="mt-1 text-xs text-muted-foreground">Tenant-scoped credentials are encrypted and write-only. Dispatch remains separately controlled.</p></div>
+            {uberMessage && <div className="rounded-xl border border-border/40 bg-muted/20 p-3 text-xs">{uberMessage}</div>}
+            <SettingRow label="Enabled" description="Allows this tenant to request quotes after configuration is complete."><Switch checked={uber.enabled} onCheckedChange={value => setUber(current => ({ ...current, enabled: value }))} /></SettingRow>
+            <SettingRow label="Dispatch enabled" description="When off, payment can never create a courier. Keep this off for staging acceptance."><Switch checked={uber.dispatchEnabled} onCheckedChange={value => setUber(current => ({ ...current, dispatchEnabled: value }))} /></SettingRow>
+            <div className="grid gap-3 md:grid-cols-2">
+              <BusinessField label="Environment"><Select value={uber.environment} onValueChange={value => setUber(current => ({ ...current, environment: value as "sandbox" | "production" }))}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="sandbox">Sandbox</SelectItem><SelectItem value="production">Production</SelectItem></SelectContent></Select></BusinessField>
+              <BusinessField label="Pickup location"><Select value={uber.pickupLocationId ? String(uber.pickupLocationId) : "none"} onValueChange={value => setUber(current => ({ ...current, pickupLocationId: value === "none" ? null : Number(value) }))}><SelectTrigger><SelectValue placeholder="Select Storefront" /></SelectTrigger><SelectContent><SelectItem value="none">Select Storefront</SelectItem>{uber.pickupLocations.filter(location => location.eligible).map(location => <SelectItem key={location.id} value={String(location.id)}>{location.name}</SelectItem>)}</SelectContent></Select></BusinessField>
+              <BusinessField label="Customer ID"><Input value={uber.customerId ?? ""} onChange={event => setUber(current => ({ ...current, customerId: event.target.value }))} /></BusinessField>
+              <BusinessField label="Client ID"><Input value={uber.clientId ?? ""} onChange={event => setUber(current => ({ ...current, clientId: event.target.value }))} /></BusinessField>
+              <BusinessField label={`Client Secret ${uber.clientSecret.configured ? "(saved; blank preserves)" : ""}`}><Input type="password" value={uberClientSecret} onChange={event => setUberClientSecret(event.target.value)} placeholder={uber.clientSecret.configured ? "Leave blank to preserve" : "Required"} /></BusinessField>
+              <BusinessField label={`Webhook Signing Key ${uber.webhookSigningKey.configured ? "(saved; blank preserves)" : ""}`}><Input type="password" value={uberWebhookKey} onChange={event => setUberWebhookKey(event.target.value)} placeholder={uber.webhookSigningKey.configured ? "Leave blank to preserve" : "Optional until provided"} /></BusinessField>
+            </div>
+            <Button type="button" onClick={() => void saveUber()} disabled={uberSaving}>{uberSaving ? "Saving…" : "Save Uber Direct settings"}</Button>
+            <div className="border-t border-border/30 pt-4 space-y-3"><div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Safe acceptance tests</div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={() => void testUber("connection")} disabled={uberTesting !== null}>{uberTesting === "connection" ? "Testing…" : "Test Connection"}</Button><Input className="max-w-md" value={uberDestination} onChange={event => setUberDestination(event.target.value)} placeholder="Complete test destination address" /><Button type="button" variant="outline" onClick={() => void testUber("quote")} disabled={uberTesting !== null || !uberDestination.trim()}>{uberTesting === "quote" ? "Quoting…" : "Test Delivery Quote"}</Button></div><p className="text-xs text-muted-foreground">The quote test never creates a delivery.</p></div>
           </div>
         </TabsContent>
 

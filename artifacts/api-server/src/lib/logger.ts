@@ -8,6 +8,9 @@ export const logger = pino({
     "req.headers.authorization",
     "req.headers.cookie",
     "res.headers['set-cookie']",
+    "req.headers['paypal-transmission-sig']",
+    "req.body.client_secret",
+    "req.body.access_token",
   ],
   ...(isProduction
     ? {}

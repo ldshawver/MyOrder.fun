@@ -1,5 +1,6 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { eq, and, desc, asc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, notInArray } from "drizzle-orm";
 import {
   db,
   labTechShiftsTable,
@@ -15,11 +16,19 @@ import {
   adminSettingsTable,
   shiftRoutingConfigTable,
   printJobsTable,
+  cashLedgerEntriesTable,
+  shiftCloseoutPackagesTable,
+  commissionSnapshotsTable,
+  auditLogsTable,
+  shiftPrintAssignmentsTable,
+  printPrintersTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
+import { quantityUnits } from "../lib/exactQuantity";
+import { calculateCloseoutFinancials, moneyNumber, requiredMoneyCents, requiredNonNegativeMoneyCents } from "../lib/shiftCloseoutFinancials";
 import { z } from "zod";
 
 // Roles permitted to operate a shift. Legacy role names are normalized in
@@ -109,37 +118,34 @@ function logAndSendShiftDatabaseError(
   });
 }
 
-async function createShiftReceiptPrintJob(args: {
-  shiftId: number;
-  tenantId: number | null;
-  operatorUserId: number;
-  jobType: "shift_start_receipt" | "shift_end_receipt";
-  payload: Record<string, unknown>;
-  renderedText: string;
-}): Promise<void> {
+/**
+ * Automatic shift documents (clock-in/out slips, deposit, shift reports).
+ * Gated by the shift tenant's receipt auto-print switch and routed by
+ * document type through the shift's location. Never blocks the shift.
+ */
+async function printShiftDocuments(
+  args: { tenantId: number | null; shiftId: number; operatorUserId: number },
+  event: { kind: "clock_in" } | { kind: "clock_out"; figures: import("../lib/print/shiftDocuments").ClockOutFigures },
+): Promise<void> {
+  if (!args.tenantId) return;
+  const tenantId = args.tenantId;
   try {
+    const { getPrintControls } = await import("../lib/printControls");
+    if (!(await getPrintControls(tenantId)).autoPrintReceipts) return;
+    const shiftDocs = await import("../lib/print/shiftDocuments");
+    const ctx = await shiftDocs.loadShiftDocumentContext(tenantId, args.shiftId);
+    if (!ctx) return;
     const { getOperatorProfile, resolveReceiptPrinters } = await import("../lib/printRouter");
-    const { dispatchReceiptJob } = await import("../lib/printService");
-    const profile = await getOperatorProfile(args.operatorUserId);
-    const { primary: receiptPrinter } = await resolveReceiptPrinters(profile);
-    const [job] = await db.insert(printJobsTable).values({
-      orderId: null,
-      printerId: receiptPrinter?.id ?? null,
-      operatorUserId: args.operatorUserId,
-      jobType: args.jobType,
-      status: receiptPrinter ? "queued" : "failed",
-      idempotencyKey: `${args.jobType}:${args.shiftId}`,
-      renderFormat: "text",
-      payloadJson: { ...args.payload, shiftId: args.shiftId, tenantId: args.tenantId },
-      renderedText: args.renderedText,
-      errorMessage: receiptPrinter ? null : "No active receipt printer assigned or configured",
-    }).returning();
-    if (receiptPrinter) dispatchReceiptJob(job, receiptPrinter).catch(() => {});
+    // Existing receipt-printer resolution, used only for thermal slips when no route is configured.
+    const legacyFallback = async () => (await resolveReceiptPrinters(
+      await getOperatorProfile(tenantId, args.operatorUserId), { tenantId, shiftId: args.shiftId },
+    )).primary;
+    if (event.kind === "clock_in") await shiftDocs.printClockInDocuments(ctx, legacyFallback);
+    else await shiftDocs.printClockOutDocuments(ctx, event.figures, legacyFallback);
   } catch {
-    // Receipt creation must never block shift start/end in tests or production.
+    // Printing must never block shift start/end.
   }
 }
-
 
 // Always-on structured log for every shift auth decision.
 // Fires for ALL users so production logs capture the full picture.
@@ -163,7 +169,6 @@ function logCsrShiftAuth(
       result,
       reason: reason ?? null,
       userId: user?.id ?? null,
-      email: user?.email ?? (sessionClaims.email as string | undefined) ?? null,
       dbRoleRaw: user?.role ?? null,
       dbRoleNormalized: user ? normalizeRole(user.role) : null,
       clerkRoleJwt: (publicMetadata.role as string | undefined) ?? null,
@@ -171,7 +176,6 @@ function logCsrShiftAuth(
       status: user?.status ?? null,
       isActive: user?.isActive ?? null,
       tenantId: user?.tenantId ?? null,
-      clerkUserId: auth?.userId ?? user?.clerkId ?? null,
     },
     `shift_auth:${gate}:${result}`,
   );
@@ -179,7 +183,7 @@ function logCsrShiftAuth(
 
 const router: IRouter = Router();
 const forbiddenInventoryBalanceMutationMessage = "inventory_balances mutation forbidden outside bootstrap-inventory, importer, and checkout deduction";
-router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApprovedWithCsrDebug, requireTenantContext);
 const RoutingStrategyBody = z.object({
   routingStrategy: z.enum(["round_robin", "geo", "pickup_delivery", "manual", "default_queue"]),
   reason: z.string().trim().min(1).max(1000),
@@ -192,7 +196,7 @@ router.post("/shifts/approve-multiple-active", requireRole("supervisor", "admin"
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [config] = await db.insert(shiftRoutingConfigTable).values({
     tenantId,
     allowMultipleActiveShifts: true,
@@ -418,8 +422,12 @@ function parsePrinterNetworkConfig(raw: string | null | undefined) {
   }
 }
 
-async function getTenantCsrSettings() {
-  const [settings] = await db.select().from(adminSettingsTable).limit(1);
+async function getTenantCsrSettings(tenantId: number) {
+  const [settings] = await db
+    .select()
+    .from(adminSettingsTable)
+    .where(eq(adminSettingsTable.tenantId, tenantId))
+    .limit(1);
   return {
     pickupInstructionOptions: parseSettingsArray(settings?.pickupInstructionOptions, DEFAULT_PICKUP_INSTRUCTIONS),
     shiftLocationOptions: parseSettingsArray(settings?.shiftLocationOptions, DEFAULT_SHIFT_LOCATIONS),
@@ -430,7 +438,7 @@ async function getTenantCsrSettings() {
 
 let shiftSchemaEnsured = false;
 
-async function ensureShiftSchema(): Promise<void> {
+async function ensureShiftSchema(tenantId: number): Promise<void> {
   if (shiftSchemaEnsured) return;
   const statements = [
     sql`ALTER TABLE "lab_tech_shifts" ADD COLUMN IF NOT EXISTS "box_assignment_id" text`,
@@ -634,7 +642,7 @@ async function ensureShiftSchema(): Promise<void> {
   }
   await ensureInventoryBalanceClassificationSchema();
   // Seed default boxes if the table is empty for this tenant
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = tenantId;
   const existing = await db
     .select({ id: csrBoxesTable.id })
     .from(csrBoxesTable)
@@ -711,19 +719,18 @@ async function getActiveCsrBoxes(tenantId: number) {
 
 router.use(async (_req, res, next) => {
   try {
-    await ensureShiftSchema();
+    await ensureShiftSchema(_req.authorizedTenantId!);
     next();
   } catch {
     res.status(500).json({ error: "Could not prepare shift schema" });
   }
 });
 
-async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
-  const houseTenantId = await getHouseTenantId();
+async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const allTemplateRows = await db
     .select()
     .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.isActive, true))
+    .where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.isActive, true)))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
 
   const catalogRows = await db
@@ -731,6 +738,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
     .from(catalogItemsTable)
     .where(
       and(
+        eq(catalogItemsTable.tenantId, tenantId),
         eq(catalogItemsTable.isAvailable, true),
         sql`COALESCE(${catalogItemsTable.isWooManaged}, false) = false`,
         sql`COALESCE(${catalogItemsTable.isLocalAlavont}, true) = true`,
@@ -748,7 +756,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
   const existingTemplateRows = await db
     .select()
     .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.tenantId, houseTenantId));
+    .where(eq(inventoryTemplatesTable.tenantId, tenantId));
   const existingCatalogIds = new Set(
     existingTemplateRows
       .map(r => r.catalogItemId)
@@ -762,13 +770,13 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
       const stockValue = item.inventoryAmount ?? item.stockQuantity ?? "0";
       const itemName = item.alavontName ?? item.displayName ?? item.name;
       return {
-        tenantId: houseTenantId,
+        tenantId,
         sectionName: item.alavontCategory ?? item.category ?? "Alavont",
         itemName,
         rowType: "item",
         unitType: item.stockUnit ?? item.unitMeasurement ?? "#",
         startingQuantityDefault: String(stockValue ?? "0"),
-        currentStock: String(stockValue ?? "0"),
+        currentStock: null,
         menuPrice: String(item.price ?? "0"),
         payoutPrice: String(item.price ?? "0"),
         displayOrder: currentMaxOrder + ((idx + 1) * 10),
@@ -787,7 +795,7 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
   const updatedRows = await db
     .select()
     .from(inventoryTemplatesTable)
-    .where(eq(inventoryTemplatesTable.isActive, true))
+    .where(and(eq(inventoryTemplatesTable.tenantId, tenantId), eq(inventoryTemplatesTable.isActive, true)))
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
   const filtered = updatedRows.filter(row => {
     const name = String(row.itemName ?? "").trim().toLowerCase();
@@ -814,10 +822,10 @@ async function ensureClockInInventoryTemplate(): Promise<typeof inventoryTemplat
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // Tenant-scoped replacement for legacy computeShiftStats(shiftId) calls.
 
-async function computeShiftStats(shiftId: number, tenantId: number | null, req?: Request) {
+async function computeShiftStats(shiftId: number, tenantId: number | null, req?: Request, executor: Pick<typeof db, "select"> = db) {
   let shiftOrders: (typeof ordersTable.$inferSelect)[];
   try {
-    shiftOrders = await db
+    shiftOrders = await executor
       .select()
       .from(ordersTable)
       .where(
@@ -846,7 +854,7 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
 
   const lineItems: (typeof orderItemsTable.$inferSelect)[] = [];
   for (const orderId of orderIds) {
-    const items = await db
+    const items = await executor
       .select()
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, orderId));
@@ -864,28 +872,29 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       };
     }
     itemMap[item.catalogItemId].qtySold += item.quantity;
-    itemMap[item.catalogItemId].revenue += parseFloat(item.totalPrice as string);
+    itemMap[item.catalogItemId].revenue += moneyNumber(requiredMoneyCents(item.totalPrice, `orderItem.${item.id}.totalPrice`));
   }
 
   const customerMap: Record<number, { customerId: number; name: string; orderCount: number; total: number; paymentMethod: string }> = {};
-  const paymentTotals: Record<string, number> = {
-    cash: 0, card: 0, cash_app: 0, cashapp: 0, venmo: 0, apple_pay: 0, zelle: 0, paypal: 0, comp: 0, other: 0,
+  const paymentTotalsCents: Record<string, bigint> = {
+    cash: 0n, card: 0n, paypal: 0n, paypal_card: 0n, customer_credit: 0n, split: 0n, comp: 0n, other: 0n,
   };
 
   for (const order of shiftOrders) {
     if (order.paymentStatus !== "paid") continue;
     const rawMethod = (order as typeof ordersTable.$inferSelect & { paymentMethod?: string }).paymentMethod ?? "cash";
     const method = rawMethod.toLowerCase().replace(/[\s-]+/g, "_");
-    const orderTotal = parseFloat(order.total as string);
-    if (method in paymentTotals) {
-      paymentTotals[method] += orderTotal;
-      if (method === "cash_app") paymentTotals.cashapp += orderTotal;
+    const orderTotal = requiredMoneyCents(order.total, `order.${order.id}.total`);
+    if (method.includes("+")) {
+      paymentTotalsCents.split += orderTotal;
+    } else if (method in paymentTotalsCents) {
+      paymentTotalsCents[method] += orderTotal;
     } else {
-      paymentTotals.other += orderTotal;
+      paymentTotalsCents.other += orderTotal;
     }
 
     if (!customerMap[order.customerId]) {
-      const [u] = await db
+      const [u] = await executor
         .select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
         .from(usersTable)
         .where(eq(usersTable.id, order.customerId))
@@ -899,12 +908,17 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
       };
     }
     customerMap[order.customerId].orderCount++;
-    customerMap[order.customerId].total += orderTotal;
+    customerMap[order.customerId].total += moneyNumber(orderTotal);
   }
+
+  const paymentTotals = Object.fromEntries(
+    Object.entries(paymentTotalsCents).map(([method, cents]) => [method, moneyNumber(cents)]),
+  ) as Record<string, number>;
+  const totalRevenue = moneyNumber(Object.values(paymentTotalsCents).reduce((total, cents) => total + cents, 0n));
 
   return {
     orderCount: shiftOrders.length,
-    totalRevenue: shiftOrders.filter(o => o.paymentStatus === "paid").reduce((s, o) => s + parseFloat(o.total as string), 0),
+    totalRevenue,
     cashSales: paymentTotals.cash,
     cardSales: paymentTotals.card,
     compSales: paymentTotals.comp,
@@ -912,6 +926,20 @@ async function computeShiftStats(shiftId: number, tenantId: number | null, req?:
     byItem: Object.values(itemMap),
     byCustomer: Object.values(customerMap),
   };
+}
+
+async function computeShiftAccountableCash(shiftId: number, tenantId: number): Promise<number> {
+  const [row] = await db.select({
+    total: sql<string>`coalesce(sum(case
+      when ${cashLedgerEntriesTable.entryType} in ('cash_refund', 'cash_removal') then -abs(${cashLedgerEntriesTable.amount})
+      when ${cashLedgerEntriesTable.entryType} in ('cash_sale_closeout', 'cash_addition') then abs(${cashLedgerEntriesTable.amount})
+      else ${cashLedgerEntriesTable.amount}
+    end), 0)`,
+  }).from(cashLedgerEntriesTable).where(and(
+    eq(cashLedgerEntriesTable.tenantId, tenantId),
+    eq(cashLedgerEntriesTable.shiftId, shiftId),
+  ));
+  return moneyNumber(requiredMoneyCents(row?.total ?? "0", "shift accountable cash"));
 }
 
 type EnrichedItem = {
@@ -978,8 +1006,12 @@ router.get(
   "/shifts/inventory-template",
   requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
-    const rows = await ensureClockInInventoryTemplate();
-    const houseTenantId = await getHouseTenantId();
+    const tenantId = req.dbUser!.tenantId;
+    if (tenantId == null) {
+      res.status(403).json({ error: "Tenant assignment is required" });
+      return;
+    }
+    const rows = await ensureClockInInventoryTemplate(tenantId);
     const catalogIds = rows
       .map((row) => row.catalogItemId)
       .filter((id): id is number => typeof id === "number");
@@ -987,15 +1019,15 @@ router.get(
       ? await db
           .select({ id: catalogItemsTable.id, price: catalogItemsTable.price })
           .from(catalogItemsTable)
-          .where(inArray(catalogItemsTable.id, catalogIds))
+          .where(and(eq(catalogItemsTable.tenantId, tenantId), inArray(catalogItemsTable.id, catalogIds)))
       : [];
     const catalogPriceMap = new Map(
       catalogPriceRows.map((row) => [row.id, parseFloat(String(row.price ?? "0"))]),
     );
 
-    const dbBoxes = await getActiveCsrBoxes(houseTenantId);
+    const dbBoxes = await getActiveCsrBoxes(tenantId);
 
-    await ensureInventoryLocations(houseTenantId);
+    await ensureInventoryLocations(tenantId);
 
     const boxes = dbBoxes.length > 0
       ? dbBoxes.map((b) => ({
@@ -1018,7 +1050,7 @@ router.get(
         .from(inventoryBalancesTable)
         .where(
           and(
-            eq(inventoryBalancesTable.tenantId, houseTenantId),
+            eq(inventoryBalancesTable.tenantId, tenantId),
             eq(inventoryBalancesTable.locationId, locationId),
           )
         );
@@ -1026,7 +1058,7 @@ router.get(
     }
 
     // Load CSR settings (pickup instructions, shift locations, delivery options)
-    const csrSettings = await getTenantCsrSettings();
+    const csrSettings = await getTenantCsrSettings(tenantId);
 
 
     res.json({
@@ -1069,13 +1101,15 @@ async function buildActiveShiftPayload(activeShift: typeof labTechShiftsTable.$i
   const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
   const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
   const csrDeliveryEarnings = parseFloat(String(activeShift.csrDeliveryEarnings ?? 0));
+  const accountableCash = await computeShiftAccountableCash(activeShift.id, activeShift.tenantId);
 
   return {
     ...activeShift,
     cashBankStart,
+    accountableCash,
     csrDeliveryEarnings,
     csrDeliveryOptIn: activeShift.csrDeliveryOptIn ?? false,
-    runningCashBank: cashBankStart + stats.cashSales,
+    runningCashBank: cashBankStart + accountableCash,
     inventory,
     stats,
   };
@@ -1122,6 +1156,8 @@ router.post(
   requireShiftOperatorRoleWithDebug,
   async (req, res): Promise<void> => {
     const tech = req.dbUser!;
+    const tenantId = tech.tenantId;
+    if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
 
     const existing = await db
       .select()
@@ -1129,7 +1165,7 @@ router.post(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
-          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
+          eq(labTechShiftsTable.tenantId, tenantId),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1156,13 +1192,12 @@ router.post(
     }
 
     const ip = getClientIp(req);
-    const houseTenantId = await getHouseTenantId();
     if (process.env.NODE_ENV !== "test" && normalizeRole(tech.role) === "csr" && shiftRoutingConfigTable) {
       const activeTenantCsrShifts = await db.select({ id: labTechShiftsTable.id })
         .from(labTechShiftsTable)
         .innerJoin(usersTable, eq(labTechShiftsTable.techId, usersTable.id))
         .where(and(
-          eq(labTechShiftsTable.tenantId, houseTenantId),
+          eq(labTechShiftsTable.tenantId, tenantId),
           eq(labTechShiftsTable.status, "active"),
           eq(usersTable.role, "csr"),
         ))
@@ -1170,7 +1205,7 @@ router.post(
       if (activeTenantCsrShifts.length > 0) {
         const [config] = await db.select().from(shiftRoutingConfigTable)
           .where(and(
-            eq(shiftRoutingConfigTable.tenantId, houseTenantId),
+            eq(shiftRoutingConfigTable.tenantId, tenantId),
             eq(shiftRoutingConfigTable.allowMultipleActiveShifts, true),
           ))
           .orderBy(desc(shiftRoutingConfigTable.approvedAt))
@@ -1182,10 +1217,9 @@ router.post(
       }
     }
 
-    const { inventorySnapshot, inventory: legacyInventory = [], cashBankStart, boxAssignmentId, setup } = req.body as {
+    const { inventorySnapshot, inventory: legacyInventory = [], boxAssignmentId, setup } = req.body as {
       inventorySnapshot?: { templateItemId: number; quantityStart: number }[];
       inventory?: { catalogItemId?: number; itemName: string; unitPrice?: number; quantityStart: number }[];
-      cashBankStart?: number;
       boxAssignmentId?: string;
       setup?: {
         wifiReady?: boolean;
@@ -1202,12 +1236,17 @@ router.post(
       };
     };
 
-    const selectedBox = DEFAULT_CSR_BOXES.some(box => box.slug === boxAssignmentId)
-      ? boxAssignmentId
-      : DEFAULT_CSR_BOXES[0].slug;
+    const requestedBox = typeof boxAssignmentId === "string" ? boxAssignmentId.trim() : "";
+    const [selectedBoxRow] = await db.select().from(csrBoxesTable).where(and(
+      eq(csrBoxesTable.tenantId, tenantId),
+      eq(csrBoxesTable.slug, requestedBox),
+      eq(csrBoxesTable.isActive, true),
+    )).limit(1);
+    if (!selectedBoxRow) { res.status(422).json({ error: "Select an active CSR box for this tenant" }); return; }
+    const selectedBox = selectedBoxRow.slug;
 
     // Auto-validate WiFi: compare entered SSID against admin-approved list
-    const activeCsrSettings = await getTenantCsrSettings();
+    const activeCsrSettings = await getTenantCsrSettings(tenantId);
     const approvedSsids: string[] = activeCsrSettings.printerNetworkConfig.approvedSsids;
     const enteredSsid = (setup?.wifiSsid ?? "").trim();
     const wifiMatchesApproved = enteredSsid.length > 0 &&
@@ -1227,14 +1266,21 @@ router.post(
     const hasConfirmedParLevels = setup?.parLevelsConfirmed === true || hasConfirmedInventory;
     const hasAssignedPrinter = setup?.printerReady === true;
 
-    const [shift] = await db
-      .insert(labTechShiftsTable)
-      .values({
-        tenantId: houseTenantId,
+    const shiftResult = await db.transaction(async tx => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${tenantId}, ${selectedBoxRow.id})`);
+      const [occupied] = await tx.select({ id: labTechShiftsTable.id, techId: labTechShiftsTable.techId })
+        .from(labTechShiftsTable).where(and(
+          eq(labTechShiftsTable.tenantId, tenantId),
+          eq(labTechShiftsTable.boxAssignmentId, selectedBox),
+          eq(labTechShiftsTable.status, "active"),
+        )).limit(1);
+      if (occupied) return { occupied } as const;
+      const [created] = await tx.insert(labTechShiftsTable).values({
+        tenantId,
         techId: tech.id,
         status: "active",
         ipAddress: ip,
-        cashBankStart: cashBankStart != null ? String(cashBankStart) : "0",
+        cashBankStart: "100.00",
         boxAssignmentId: selectedBox,
         csrDeliveryOptIn,
         csrDeliveryEarnings: "0",
@@ -1254,13 +1300,16 @@ router.post(
           pickupNote: (setup?.pickupNote ?? "").trim() || null,
           csrDeliveryOptIn,
         },
-      })
-      .returning();
+      }).returning();
+      return { created } as const;
+    });
+    if ("occupied" in shiftResult) { res.status(409).json({ error: "This CSR box is already checked out" }); return; }
+    const shift = shiftResult.created;
 
     let inventoryItemsInserted = 0;
 
     if (inventorySnapshot && inventorySnapshot.length > 0) {
-      const templateRows = await ensureClockInInventoryTemplate();
+      const templateRows = await ensureClockInInventoryTemplate(tenantId);
 
       // Resolve the inventory_location for the chosen CSR box so we can
       // (a) tag each shift_inventory_items row with the box it belongs to, and
@@ -1268,7 +1317,7 @@ router.post(
       const csrBoxRows = await db
         .select()
         .from(csrBoxesTable)
-        .where(eq(csrBoxesTable.tenantId, houseTenantId));
+        .where(eq(csrBoxesTable.tenantId, tenantId));
       const chosenCsrBox = csrBoxRows.find(b => b.slug === selectedBox);
       let shiftBoxLocationId: number | null = null;
       const balanceByProductId = new Map<number, number>();
@@ -1278,7 +1327,7 @@ router.post(
           .from(inventoryLocationsTable)
           .where(
             and(
-              eq(inventoryLocationsTable.tenantId, houseTenantId),
+              eq(inventoryLocationsTable.tenantId, tenantId),
               eq(inventoryLocationsTable.csrBoxId, chosenCsrBox.id),
             )
           )
@@ -1290,7 +1339,7 @@ router.post(
             .from(inventoryBalancesTable)
             .where(
               and(
-                eq(inventoryBalancesTable.tenantId, houseTenantId),
+                eq(inventoryBalancesTable.tenantId, tenantId),
                 eq(inventoryBalancesTable.locationId, shiftBoxLocationId),
               )
             );
@@ -1344,26 +1393,13 @@ router.post(
       inventoryItemsInserted = legacyInserts.length;
     }
 
-    await createShiftReceiptPrintJob({
-      shiftId: shift.id,
-      tenantId: houseTenantId,
-      operatorUserId: tech.id,
-      jobType: "shift_start_receipt",
-      payload: {
-        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
-        box: selectedBox,
-        startingCashBank: cashBankStart ?? 0,
-        startingInventoryCount: inventoryItemsInserted,
-        timestamp: new Date().toISOString(),
-      },
-      renderedText: [`SHIFT START`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${shift.id}`, `Box: ${selectedBox}`, `Starting cash: ${cashBankStart ?? 0}`, `Inventory rows: ${inventoryItemsInserted}`, new Date().toISOString()].join("\n"),
-    });
+    await printShiftDocuments({ tenantId, shiftId: shift.id, operatorUserId: tech.id }, { kind: "clock_in" });
 
     try {
       res.status(201).json({
         shift: await buildActiveShiftPayload(shift, req),
         _debug: {
-          tenantId: houseTenantId,
+          tenantId,
           techId: tech.id,
           techClerkId: tech.clerkId,
           techRole: tech.role,
@@ -1397,7 +1433,7 @@ router.post(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
-          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
+          eq(labTechShiftsTable.tenantId, req.authorizedTenantId!),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1457,15 +1493,20 @@ router.post(
       }
     }
 
-    const cashBankStart = parseFloat(String(activeShift.cashBankStart ?? 0));
-    const reportedInventoryDifference = enriched.reduce((sum, item) => {
+    const cashBankStartCents = requiredNonNegativeMoneyCents(activeShift.cashBankStart ?? "0", "cashBankStart");
+    const reportedInventoryDifferenceRaw = enriched.reduce((sum, item) => {
       if (item.rowType !== "item" || item.discrepancy == null || item.discrepancy <= 0) return sum;
       return sum + (item.discrepancy * item.unitPrice);
     }, 0);
-    const expectedCashBank = cashBankStart + stats.cashSales;
-    const cashBankEndVal = cashBankEnd ?? null;
-    const cashDiscrepancy = cashBankEndVal != null ? expectedCashBank - cashBankEndVal : null;
-    const differenceAmount = Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100;
+    const reportedInventoryDifference = moneyNumber(requiredNonNegativeMoneyCents(Math.round(reportedInventoryDifferenceRaw * 100) / 100, "reportedInventoryDifference"));
+    const accountableCashCents = requiredMoneyCents(await computeShiftAccountableCash(activeShift.id, activeShift.tenantId), "accountableCash");
+    const expectedCashBankCents = cashBankStartCents + accountableCashCents;
+    const cashBankEndCents = cashBankEnd == null ? null : requiredNonNegativeMoneyCents(cashBankEnd, "cashBankEnd");
+    const cashBankStart = moneyNumber(cashBankStartCents);
+    const expectedCashBank = moneyNumber(expectedCashBankCents);
+    const cashBankEndVal = cashBankEndCents == null ? null : moneyNumber(cashBankEndCents);
+    const cashDiscrepancy = cashBankEndCents == null ? null : moneyNumber(expectedCashBankCents - cashBankEndCents);
+    const differenceAmount = moneyNumber(requiredNonNegativeMoneyCents(Math.round((stats.totalRevenue + reportedInventoryDifference) * 100) / 100, "differenceAmount"));
 
     const inventorySummary = enriched
       .filter(i => i.rowType !== "spacer")
@@ -1489,7 +1530,7 @@ router.post(
       cashBankEndReported: cashBankEndVal,
       expectedCashBank,
       cashDiscrepancy,
-      reportedInventoryDifference: Math.round(reportedInventoryDifference * 100) / 100,
+      reportedInventoryDifference,
       differenceAmount,
       clockedInAt: activeShift.clockedInAt,
       clockedOutAt: new Date().toISOString(),
@@ -1528,22 +1569,10 @@ router.post(
       ipAddress: getClientIp(req),
     });
 
-    await createShiftReceiptPrintJob({
-      shiftId: activeShift.id,
-      tenantId: activeShift.tenantId ?? null,
-      operatorUserId: tech.id,
-      jobType: "shift_end_receipt",
-      payload: {
-        csrName: `${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email,
-        endingInventory: inventorySummary,
-        salesSummary: stats,
-        cashTotals: { cashBankStart, cashBankEndReported: cashBankEndVal, expectedCashBank },
-        depositAmount: cashBankEndVal,
-        variance: cashDiscrepancy,
-        timestamp: summary.clockedOutAt,
-      },
-      renderedText: [`SHIFT END`, `CSR: ${`${tech.firstName ?? ""} ${tech.lastName ?? ""}`.trim() || tech.email}`, `Shift: ${activeShift.id}`, `Sales: ${stats.totalRevenue}`, `Cash expected: ${expectedCashBank}`, `Deposit: ${cashBankEndVal ?? ""}`, `Variance: ${cashDiscrepancy ?? ""}`, summary.clockedOutAt].join("\n"),
-    });
+    await printShiftDocuments(
+      { tenantId: activeShift.tenantId ?? null, shiftId: activeShift.id, operatorUserId: tech.id },
+      { kind: "clock_out", figures: { stats, expectedCash: expectedCashBank ?? null, countedCash: cashBankEndVal ?? null, variance: cashDiscrepancy ?? null } },
+    );
 
     res.json({ summary, shift: updatedShift });
   }
@@ -1565,7 +1594,7 @@ router.get(
       .where(
         and(
           eq(labTechShiftsTable.techId, tech.id),
-          eq(labTechShiftsTable.tenantId, tech.tenantId ?? await getHouseTenantId()),
+          eq(labTechShiftsTable.tenantId, req.authorizedTenantId!),
           eq(labTechShiftsTable.status, "active"),
         )
       )
@@ -1591,12 +1620,13 @@ router.get(
 // ─── GET /api/shifts/active-techs ────────────────────────────────────────────
 router.get(
   "/shifts/active-techs",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "active"))
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active")))
       .orderBy(desc(labTechShiftsTable.clockedInAt));
 
     const result = await Promise.all(
@@ -1622,6 +1652,49 @@ router.get(
   }
 );
 
+const ShiftReassignmentBody = z.object({ targetShiftId: z.number().int().positive(), reason: z.string().trim().min(3).max(240) }).strict();
+const ShiftTerminationBody = z.object({ cashBankEnd: z.number().finite().nonnegative(), reason: z.string().trim().min(3).max(240) }).strict();
+const TERMINAL_ORDER_STATUSES = ["cancelled", "refunded", "voided", "archived", "completed"] as const;
+
+// Supervisor/admin controls for recovering a CSR shift whose operator is no
+// longer available. Orders move first, then the shift may be terminated.
+router.post("/shifts/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const shiftId = Number(req.params.id);
+  const parsed = ShiftReassignmentBody.safeParse(req.body);
+  if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift reassignment request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const result = await db.transaction(async tx => {
+    const [source] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId))).for("update").limit(1);
+    const [target] = await tx.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, parsed.data.targetShiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
+    if (!source || source.status !== "active") return { error: "SOURCE_SHIFT_NOT_ACTIVE" as const };
+    if (!target) return { error: "TARGET_SHIFT_NOT_ACTIVE" as const };
+    const [targetUser] = await tx.select({ id: usersTable.id, role: usersTable.role }).from(usersTable).where(and(eq(usersTable.id, target.techId), eq(usersTable.tenantId, tenantId), eq(usersTable.isActive, true))).limit(1);
+    if (!targetUser || normalizeRole(targetUser.role) !== "csr") return { error: "TARGET_SHIFT_NOT_CSR" as const };
+    const moved = await tx.update(ordersTable).set({ assignedCsrUserId: target.techId, assignedShiftId: target.id, routeSource: "supervisor_override", routedTo: "csr_shift", updatedAt: new Date() }).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, source.id), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES]))).returning({ id: ordersTable.id });
+    await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "SHIFT_ORDERS_REASSIGNED", resourceType: "lab_tech_shift", resourceId: String(source.id), metadata: { sourceShiftId: source.id, targetShiftId: target.id, targetTechId: target.techId, orderIds: moved.map(order => order.id), reason: parsed.data.reason }, ipAddress: req.ip });
+    return { sourceShiftId: source.id, targetShiftId: target.id, movedOrderIds: moved.map(order => order.id) };
+  });
+  if ("error" in result) { res.status(409).json({ error: result.error }); return; }
+  res.json(result);
+});
+
+router.post("/shifts/:id/terminate", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const actor = req.dbUser!;
+  const shiftId = Number(req.params.id);
+  const parsed = ShiftTerminationBody.safeParse(req.body);
+  if (!Number.isInteger(shiftId) || !parsed.success) { res.status(422).json({ error: "Invalid shift termination request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).limit(1);
+  if (!shift) { res.status(409).json({ error: "Shift is not active in this tenant" }); return; }
+  const openOrders = await db.select({ id: ordersTable.id }).from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.assignedShiftId, shiftId), notInArray(ordersTable.status, [...TERMINAL_ORDER_STATUSES])));
+  if (openOrders.length > 0) { res.status(409).json({ error: "Reassign active orders before terminating this shift", orderIds: openOrders.map(order => order.id) }); return; }
+  const [updated] = await db.update(labTechShiftsTable).set({ status: "supervisor_pending", clockedOutAt: new Date(), cashBankEnd: String(parsed.data.cashBankEnd.toFixed(2)), cashBankEndReported: String(parsed.data.cashBankEnd.toFixed(2)), updatedAt: new Date() }).where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "active"))).returning();
+  if (!updated) { res.status(409).json({ error: "Shift changed before termination" }); return; }
+  await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "SHIFT_ADMIN_TERMINATED", resourceType: "lab_tech_shift", resourceId: String(shiftId), metadata: { cashBankEnd: parsed.data.cashBankEnd.toFixed(2), reason: parsed.data.reason }, ipAddress: req.ip });
+  res.json({ shift: updated });
+});
+
 // ─── GET /api/shifts/:id/summary ─────────────────────────────────────────────
 router.get(
   "/shifts/:id/summary",
@@ -1633,7 +1706,8 @@ router.get(
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, id))
+      // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
+      .where(and(eq(labTechShiftsTable.tenantId, req.authorizedTenantId!), eq(labTechShiftsTable.id, id)))
       .limit(1);
 
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
@@ -1656,11 +1730,14 @@ router.get(
 // GET /api/admin/inventory-template
 router.get(
   "/admin/inventory-template",
-  requireRole("global_admin", "admin"),
+  requirePermission("inventory.view"),
   async (req, res): Promise<void> => {
+    const tenantId = req.dbUser!.tenantId;
+    if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
     const rows = await db
       .select()
       .from(inventoryTemplatesTable)
+      .where(eq(inventoryTemplatesTable.tenantId, tenantId))
       .orderBy(asc(inventoryTemplatesTable.displayOrder));
 
     res.json({ template: rows });
@@ -1703,7 +1780,7 @@ router.patch(
       update.deductionQuantityPerSale = deductionQuantityPerSale != null ? String(deductionQuantityPerSale) : null;
     if (sectionName !== undefined) update.sectionName = sectionName;
     if (rowType !== undefined) update.rowType = rowType;
-    if (currentStock !== undefined) update.currentStock = currentStock != null ? String(currentStock) : null;
+    if (currentStock !== undefined) { res.status(409).json({ error: "Inventory template current stock is legacy; use a canonical inventory movement" }); return; }
     if (parLevel !== undefined) update.parLevel = parLevel != null ? String(parLevel) : "0";
 
     if (Object.keys(update).length === 0) {
@@ -1747,7 +1824,7 @@ router.post(
       deductionQuantityPerSale?: number;
     };
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [created] = await db
       .insert(inventoryTemplatesTable)
       .values({
@@ -1761,7 +1838,7 @@ router.post(
         isActive: true,
         catalogItemId: catalogItemId ?? null,
         deductionQuantityPerSale: String(deductionQuantityPerSale),
-        currentStock: String(startingQuantityDefault),
+        currentStock: null,
       })
       .returning();
 
@@ -1822,8 +1899,8 @@ const CSR_INVENTORY_SEED = [
 router.post(
   "/admin/inventory-template/seed",
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  async (req, res): Promise<void> => {
+    const houseTenantId = req.authorizedTenantId!;
 
     // Fetch existing by item name to avoid duplicates
     const existing = await db
@@ -1841,7 +1918,7 @@ router.post(
         rowType: "item",
         unitType: "#",
         startingQuantityDefault: String(item.startingQty),
-        currentStock: String(item.startingQty),
+        currentStock: null,
         menuPrice: String(item.menuPrice),
         payoutPrice: String(item.payoutPrice),
         displayOrder: (existing.length + idx) * 10,
@@ -1874,9 +1951,10 @@ router.post(
 // GET /api/admin/csr-boxes — list all boxes (admin sees all; CSR uses /shifts/inventory-template)
 router.get(
   "/admin/csr-boxes",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  requirePermission("inventory.view"),
+  async (req, res): Promise<void> => {
+    const houseTenantId = req.dbUser!.tenantId;
+    if (houseTenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
     const rows = await db
       .select()
       .from(csrBoxesTable)
@@ -1891,6 +1969,7 @@ router.post(
   "/admin/csr-boxes",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const { label, description, location, isActive = true, displayOrder = 0 } = req.body as {
       label?: string;
@@ -1903,7 +1982,7 @@ router.post(
       res.status(400).json({ error: "label is required" });
       return;
     }
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const slug = String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const [created] = await db
       .insert(csrBoxesTable)
@@ -1919,6 +1998,7 @@ router.patch(
   "/admin/csr-boxes/:id",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
@@ -1931,7 +2011,7 @@ router.patch(
       displayOrder?: number;
     };
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
     if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
 
@@ -1955,11 +2035,12 @@ router.delete(
   "/admin/csr-boxes/:id",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
+    res.status(410).json({ error: "CSR boxes are managed as inventory locations" }); return;
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
     const [existing] = await db.select().from(csrBoxesTable).where(and(eq(csrBoxesTable.id, id), eq(csrBoxesTable.tenantId, houseTenantId))).limit(1);
     if (!existing) { res.status(404).json({ error: "Box not found" }); return; }
 
@@ -1974,9 +2055,10 @@ router.delete(
 // GET /api/admin/inventory-locations
 router.get(
   "/admin/inventory-locations",
-  requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+  requirePermission("inventory.view"),
+  async (req, res): Promise<void> => {
+    const houseTenantId = req.dbUser!.tenantId;
+    if (houseTenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
     await ensureInventoryLocations(houseTenantId);
     const rows = await db
       .select()
@@ -1993,23 +2075,15 @@ router.post(
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const actor = req.dbUser!;
-    const { name, type, csrBoxId, isActive = true, displayOrder = 0 } = req.body as {
-      name?: string;
-      type?: string;
-      csrBoxId?: number | null;
-      isActive?: boolean;
-      displayOrder?: number;
-    };
-    if (!name || String(name).trim() === "") { res.status(400).json({ error: "name is required" }); return; }
-    if (!type || !["csr_box", "storefront", "backstock"].includes(type)) {
-      res.status(400).json({ error: "type must be csr_box | storefront | backstock" }); return;
-    }
-    const houseTenantId = await getHouseTenantId();
+    const parsed = z.object({ name: z.string().trim().min(1), type: z.enum(["csr_box", "storefront", "backstock"]), isActive: z.boolean().optional(), displayOrder: z.number().int().optional() }).strict().safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues.map(issue => issue.path.join(".") || "location").join(", ") + " is invalid" }); return; }
+    const { name, type, isActive = true, displayOrder = 0 } = parsed.data;
+    const houseTenantId = req.authorizedTenantId!;
     const [created] = await db.insert(inventoryLocationsTable).values({
       tenantId: houseTenantId,
-      name: String(name).trim(),
+      name,
       type,
-      csrBoxId: csrBoxId ?? null,
+      csrBoxId: null,
       isActive,
       displayOrder,
     }).returning();
@@ -2026,17 +2100,20 @@ router.patch(
     const actor = req.dbUser!;
     const id = parseInt(String(req.params.id), 10);
     if (isNaN(id)) { res.status(400).json({ error: "Invalid ID" }); return; }
-    const { name, isActive, displayOrder } = req.body as {
-      name?: string;
-      isActive?: boolean;
-      displayOrder?: number;
-    };
+    const parsed = z.object({ name: z.string().trim().min(1).optional(), isActive: z.boolean().optional(), displayOrder: z.number().int().optional() }).strict().safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid location fields" }); return; }
+    const { name, isActive, displayOrder } = parsed.data;
     const update: Record<string, unknown> = {};
-    if (name !== undefined) update.name = String(name).trim();
+    if (name !== undefined) update.name = name;
     if (isActive !== undefined) update.isActive = isActive;
     if (displayOrder !== undefined) update.displayOrder = displayOrder;
     if (Object.keys(update).length === 0) { res.status(400).json({ error: "No fields to update" }); return; }
-    const [updated] = await db.update(inventoryLocationsTable).set(update).where(eq(inventoryLocationsTable.id, id)).returning();
+    const tenantId = req.authorizedTenantId!;
+    if (isActive === false) {
+      const [stock] = await db.select({ quantity: sql<string>`COALESCE(SUM(${inventoryBalancesTable.quantityOnHand}),0)` }).from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.locationId, id)));
+      if (quantityUnits(stock?.quantity ?? "0") !== 0n) { res.status(409).json({ error: "Location must be empty before archive" }); return; }
+    }
+    const [updated] = await db.update(inventoryLocationsTable).set(update).where(and(eq(inventoryLocationsTable.id, id), eq(inventoryLocationsTable.tenantId, tenantId))).returning();
     if (!updated) { res.status(404).json({ error: "Location not found" }); return; }
     await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "INVENTORY_LOCATION_UPDATED", resourceType: "inventory_location", resourceId: String(id), metadata: update });
     res.json({ location: updated });
@@ -2049,9 +2126,10 @@ router.patch(
 // Optional ?locationId= filter
 router.get(
   "/admin/inventory-balances",
-  requireRole("global_admin", "admin"),
+  requirePermission("inventory.view"),
   async (req, res): Promise<void> => {
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.dbUser!.tenantId;
+    if (houseTenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
     await ensureInventoryLocations(houseTenantId);
     const locationId = req.query.locationId ? parseInt(String(req.query.locationId), 10) : null;
     const baseWhereClause = and(
@@ -2075,6 +2153,8 @@ router.get(
         updatedAt: inventoryBalancesTable.updatedAt,
         productName: catalogItemsTable.name,
         alavontName: catalogItemsTable.alavontName,
+        sku: catalogItemsTable.sku,
+        merchantSku: catalogItemsTable.merchantSku,
         locationName: inventoryLocationsTable.name,
         locationType: inventoryLocationsTable.type,
       })
@@ -2113,23 +2193,57 @@ router.patch(
 // GET /api/shifts/inventory-template — modified to support ?locationId= for per-box qty
 // (existing route below is updated in-place)
 
+const shiftPrintAssignmentBody = z.object({
+  locationId: z.number().int().positive(),
+  receiptPrinterId: z.number().int().positive().nullable().optional(),
+  expoPrinterId: z.number().int().positive().nullable().optional(),
+  printExpoTickets: z.boolean().default(false),
+}).strict();
+
+router.put("/shifts/:id/print-assignment", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser!.tenantId; const shiftId = Number(req.params.id);
+  if (!tenantId || !Number.isInteger(shiftId)) { res.status(400).json({ error: "Tenant and valid shift are required" }); return; }
+  const parsed = shiftPrintAssignmentBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid shift printer assignment", details: parsed.error.issues }); return; }
+  const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, shiftId))).limit(1);
+  const [location] = await db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.id, parsed.data.locationId), eq(inventoryLocationsTable.isActive, true))).limit(1);
+  if (!shift || !location) { res.status(404).json({ error: "Shift or location not found in this tenant" }); return; }
+  const selectedIds = [parsed.data.receiptPrinterId, parsed.data.expoPrinterId].filter((id): id is number => Boolean(id));
+  const printers = selectedIds.length ? await db.select().from(printPrintersTable).where(and(eq(printPrintersTable.tenantId, tenantId), inArray(printPrintersTable.id, selectedIds), eq(printPrintersTable.locationId, location.id), eq(printPrintersTable.routingScope, "location"), eq(printPrintersTable.isActive, true))) : [];
+  const byId = new Map(printers.map(printer => [printer.id, printer]));
+  if (parsed.data.receiptPrinterId && byId.get(parsed.data.receiptPrinterId)?.role !== "receipt") { res.status(400).json({ error: "Receipt printer must be an active receipt printer assigned to this location" }); return; }
+  if (parsed.data.printExpoTickets && (!parsed.data.expoPrinterId || byId.get(parsed.data.expoPrinterId)?.role !== "expo")) { res.status(400).json({ error: "Expo ON requires an active expo printer assigned to this location" }); return; }
+  const [assignment] = await db.insert(shiftPrintAssignmentsTable).values({ tenantId, shiftId, locationId: location.id, receiptPrinterId: parsed.data.receiptPrinterId ?? null, expoPrinterId: parsed.data.expoPrinterId ?? null, printExpoTickets: parsed.data.printExpoTickets, assignedByUserId: req.dbUser!.id }).onConflictDoUpdate({ target: [shiftPrintAssignmentsTable.tenantId, shiftPrintAssignmentsTable.shiftId], set: { locationId: location.id, receiptPrinterId: parsed.data.receiptPrinterId ?? null, expoPrinterId: parsed.data.expoPrinterId ?? null, printExpoTickets: parsed.data.printExpoTickets, assignedByUserId: req.dbUser!.id, updatedAt: new Date() } }).returning();
+  await db.insert(auditLogsTable).values({ tenantId, actorId: req.dbUser!.id, actorEmail: req.dbUser!.email ?? "", actorRole: req.dbUser!.role, action: "SHIFT_PRINT_ASSIGNMENT_UPDATED", resourceType: "shift_print_assignment", resourceId: String(assignment.id), metadata: { shiftId, locationId: location.id, receiptPrinterId: assignment.receiptPrinterId, expoPrinterId: assignment.expoPrinterId, printExpoTickets: assignment.printExpoTickets } });
+  res.json({ assignment });
+});
+
+router.get("/shifts/:id/print-assignment", requireRole("global_admin", "admin", "supervisor", "csr"), async (req, res): Promise<void> => {
+  const tenantId = req.dbUser!.tenantId; const shiftId = Number(req.params.id);
+  if (!tenantId || !Number.isInteger(shiftId)) { res.status(400).json({ error: "Tenant and valid shift are required" }); return; }
+  const [assignment] = await db.select().from(shiftPrintAssignmentsTable).where(and(eq(shiftPrintAssignmentsTable.tenantId, tenantId), eq(shiftPrintAssignmentsTable.shiftId, shiftId))).limit(1);
+  if (!assignment) { res.status(404).json({ error: "No printer assignment exists for this shift" }); return; }
+  res.json({ assignment });
+});
+
 // ─── POST /api/shifts/:id/supervisor-checkout ─────────────────────────────────
 // Supervisor confirms ending inventory, sets tip %, calculates final amounts.
 router.post(
   "/shifts/:id/supervisor-checkout",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
     if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
 
+    const tenantId = req.authorizedTenantId!;
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
+      .where(and(eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.tenantId, tenantId)))
       .limit(1);
 
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
-    if (shift.status !== "supervisor_pending") {
+    if (!["supervisor_pending", "finalized"].includes(shift.status)) {
       res.status(409).json({ error: `Shift is not pending supervisor review (status: ${shift.status})` });
       return;
     }
@@ -2141,78 +2255,66 @@ router.post(
     }
 
     const supervisor = req.dbUser!;
+    const idempotencyKey = `shift-closeout:${shift.tenantId}:${shiftId}`;
+    const outcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+      const [lockedShift] = await tx.select().from(labTechShiftsTable)
+        .where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId)))
+        .for("update").limit(1);
+      const [existingPackage] = await tx.select().from(shiftCloseoutPackagesTable)
+        .where(and(eq(shiftCloseoutPackagesTable.tenantId, shift.tenantId), eq(shiftCloseoutPackagesTable.shiftId, shiftId))).limit(1);
+      if (existingPackage) return { shift: lockedShift, checkout: existingPackage.snapshotJson, replayed: true };
+      if (!lockedShift || lockedShift.status !== "supervisor_pending") throw new Error("SHIFT_CLOSEOUT_STATE_CHANGED");
 
-    const stats = await computeShiftStats(shiftId, shift.tenantId ?? null, req);
-    const snapshotItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-    const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
-
-    // Commission is supervisor-selected (15–18%) and excludes comp/employee-discount sales.
-    // Sale/package exclusions are enforced at checkout/catalog pricing; the closeout keeps the
-    // auditable base as non-comp sales until richer discount metadata is attached to order rows.
-    const employeeDiscountSales = 0;
-    const eligibleSalesBase = Math.max(0, stats.totalRevenue - stats.compSales - employeeDiscountSales);
-    const tipAmount = Math.round(eligibleSalesBase * (tipPercent / 100) * 100) / 100;
-
-    // Inventory shortage: sum of flagged item discrepancies converted to monetary value
-    // Uses unit price from shift items
-    let differenceAmount = 0;
-    for (const item of inventory) {
-      if (item.isFlagged && item.discrepancy != null && item.discrepancy > 0) {
-        differenceAmount += item.discrepancy * item.unitPrice;
-      }
-    }
-    differenceAmount = Math.round(differenceAmount * 100) / 100;
-
-    const finalTip = Math.max(0, tipAmount - differenceAmount);
-
-    const cashBankStart = parseFloat(String(shift.cashBankStart ?? 0));
-    const cashBankEndReported = parseFloat(String(shift.cashBankEndReported ?? 0));
-    // Deposit = Cash Sales - commission - starting bank. This matches the cash-box closeout sheet.
-    const depositAmount = Math.max(0, stats.cashSales - finalTip - cashBankStart);
-    const newCashBalance = finalTip - differenceAmount;
-
-    const [finalized] = await db
-      .update(labTechShiftsTable)
-      .set({
-        status: "finalized",
-        tipPercentSelected: String(tipPercent),
-        tipAmount: String(finalTip),
-        differenceAmount: String(differenceAmount),
-        depositAmount: String(depositAmount),
-        supervisorId: supervisor.id,
-        supervisorConfirmedAt: new Date(),
-      })
-      .where(eq(labTechShiftsTable.id, shiftId))
-      .returning();
-
-    res.json({
-      shift: finalized,
-      checkout: {
-        eligibleSalesBase,
-        tipPercent,
-        tipAmount,
-        differenceAmount,
-        finalTip,
-        cashBankStart,
-        cashBankEndReported,
-        depositAmount,
-        newCashBalance,
-        cashAppSales: stats.paymentTotals.cashapp ?? 0,
-        venmoSales: stats.paymentTotals.venmo ?? 0,
-        applePaySales: stats.paymentTotals.apple_pay ?? 0,
-        zelleSales: stats.paymentTotals.zelle ?? 0,
-        paypalSales: stats.paymentTotals.paypal ?? 0,
-        employeeDiscountPercent: 20,
+      const stats = await computeShiftStats(shiftId, shift.tenantId, req, tx);
+      const snapshotItems = await tx.select().from(shiftInventoryItemsTable)
+        .where(eq(shiftInventoryItemsTable.shiftId, shiftId)).orderBy(asc(shiftInventoryItemsTable.displayOrder));
+      const inventory = enrichInventoryWithSales(snapshotItems, stats.byItem);
+      const employeeDiscountSales = 0;
+      let differenceAmount = 0;
+      for (const item of inventory) if (item.isFlagged && item.discrepancy != null && item.discrepancy > 0) differenceAmount += item.discrepancy * item.unitPrice;
+      differenceAmount = Math.round(differenceAmount * 100) / 100;
+      const financials = calculateCloseoutFinancials({
+        totalRevenue: stats.totalRevenue,
+        cashSales: stats.cashSales,
+        compSales: stats.compSales,
         employeeDiscountSales,
-        commissionRule: "Supervisor selects 15–18%; employee-discounted sales are excluded from commission.",
-        paymentTotals: stats.paymentTotals,
-        flaggedItems: inventory.filter(i => i.isFlagged),
-      },
+        cashBankStart: lockedShift.cashBankStart,
+        cashBankEndReported: lockedShift.cashBankEndReported,
+        differenceAmount,
+        tipPercent,
+      });
+      const checkout = {
+        shiftId, tenantId: shift.tenantId, csrUserId: lockedShift.techId,
+        eligibleSalesBase: financials.eligibleSalesBase, tipPercent, tipAmount: financials.tipAmount,
+        differenceAmount: financials.differenceAmount, finalTip: financials.finalTip,
+        cashBankStart: financials.cashBankStart, cashBankEndReported: financials.cashBankEndReported,
+        depositAmount: financials.depositAmount, newCashBalance: financials.newCashBalance,
+        paymentTotals: stats.paymentTotals, employeeDiscountSales,
+        commissionRule: { kind: "supervisor_selected_percentage", rate: tipPercent / 100, exclusions: ["comp", "employee_discount"], shortageDeduction: differenceAmount },
+        inventory, flaggedItems: inventory.filter(i => i.isFlagged), orderCount: stats.orderCount,
+      };
+      const [pkg] = await tx.insert(shiftCloseoutPackagesTable).values({
+        tenantId: shift.tenantId, shiftId, locationId: null, supervisorUserId: supervisor.id,
+        idempotencyKey, snapshotJson: checkout, sourceMaxUpdatedAt: new Date(),
+      }).returning();
+      await tx.insert(commissionSnapshotsTable).values({
+        tenantId: shift.tenantId, closeoutPackageId: pkg.id, shiftId, csrUserId: lockedShift.techId,
+        qualifyingSales: financials.persistence.qualifyingSales, commissionBasis: financials.persistence.commissionBasis,
+        commissionRate: financials.persistence.commissionRate, adjustments: financials.persistence.adjustments,
+        commissionAmount: financials.persistence.commissionAmount,
+        ruleSnapshot: checkout.commissionRule,
+      });
+      const [finalized] = await tx.update(labTechShiftsTable).set({
+        status: "finalized", tipPercentSelected: String(tipPercent), tipAmount: financials.persistence.tipAmount,
+        differenceAmount: financials.persistence.differenceAmount, depositAmount: financials.persistence.depositAmount,
+        supervisorId: supervisor.id, supervisorConfirmedAt: new Date(), summary: checkout,
+      }).where(and(eq(labTechShiftsTable.tenantId, shift.tenantId), eq(labTechShiftsTable.id, shiftId), eq(labTechShiftsTable.status, "supervisor_pending"))).returning();
+      if (!finalized) throw new Error("SHIFT_CLOSEOUT_STATE_CHANGED");
+      await tx.insert(auditLogsTable).values({ tenantId: shift.tenantId, actorId: supervisor.id, actorEmail: supervisor.email ?? "", actorRole: supervisor.role, action: "SHIFT_CLOSEOUT_PACKAGE_FINALIZED", resourceType: "shift_closeout_package", resourceId: String(pkg.id), metadata: { shiftId, idempotencyKey, commissionSnapshot: true } });
+      return { shift: finalized, checkout, replayed: false };
     });
+    res.json(outcome);
   }
 );
 
@@ -2229,7 +2331,8 @@ router.get(
     const [shift] = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
+      // Tenant-scoped: another tenant's shift id is indistinguishable from a missing one.
+      .where(and(eq(labTechShiftsTable.tenantId, req.authorizedTenantId!), eq(labTechShiftsTable.id, shiftId)))
       .limit(1);
     if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
 
@@ -2303,108 +2406,55 @@ router.get(
 );
 
 // ─── POST /api/shifts/:id/restock-slip/print ─────────────────────────────────
-// Generates and prints a restock slip for the shift via CUPS.
+// Prints the shift's restock list as a full-page INVENTORY_STOCK_LIST job on
+// the printer routed for the shift's location, through its authenticated
+// bridge. The shift must belong to the caller's tenant.
 router.post(
   "/shifts/:id/restock-slip/print",
   requireRole("global_admin", "admin"),
   async (req, res): Promise<void> => {
     const shiftId = parseInt(String(req.params.id), 10);
-    if (isNaN(shiftId)) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+    if (!Number.isInteger(shiftId) || shiftId <= 0) { res.status(400).json({ error: "Invalid shift ID" }); return; }
+    const tenantId = req.authorizedTenantId!;
 
-    const [shift] = await db
-      .select()
-      .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, shiftId))
-      .limit(1);
-    if (!shift) { res.status(404).json({ error: "Shift not found" }); return; }
+    const { loadShiftDocumentContext, loadShiftInventoryRows, queueRestockList } = await import("../lib/print/shiftDocuments");
+    const { restockQuantity } = await import("../lib/print/documents");
+    const ctx = await loadShiftDocumentContext(tenantId, shiftId);
+    if (!ctx) { res.status(404).json({ error: "Shift not found" }); return; }
 
-    const shiftItems = await db
-      .select()
-      .from(shiftInventoryItemsTable)
-      .where(eq(shiftInventoryItemsTable.shiftId, shiftId))
-      .orderBy(asc(shiftInventoryItemsTable.displayOrder));
-
-    const templateIds = shiftItems
-      .filter(i => i.templateItemId != null)
-      .map(i => i.templateItemId as number);
-
-    const templates = templateIds.length
-      ? await db
-          .select({ id: inventoryTemplatesTable.id, parLevel: inventoryTemplatesTable.parLevel })
-          .from(inventoryTemplatesTable)
-          .where(
-            templateIds.length === 1
-              ? eq(inventoryTemplatesTable.id, templateIds[0])
-              : sql`${inventoryTemplatesTable.id} = ANY(${sql.raw(`ARRAY[${templateIds.join(",")}]::int[]`)})`
-          )
-      : [];
-
-    const parMap = new Map(templates.map(t => [t.id, parseFloat(String(t.parLevel ?? 0))]));
-
-    const lines: string[] = [];
-    const W = 40;
-    const divider = "=".repeat(W);
-    const center = (s: string) => s.padStart(Math.floor((W + s.length) / 2)).padEnd(W);
-
-    lines.push(divider);
-    lines.push(center("RESTOCK SLIP"));
-    lines.push(divider);
-    lines.push(`Shift #: ${shiftId}`);
-    lines.push(`Printed: ${new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })}`);
-    lines.push(divider);
-
-    let needCount = 0;
-    let currentSection: string | null = null;
-
-    for (const item of shiftItems) {
-      if (item.rowType !== "item") continue;
-
-      const parLevel = item.templateItemId ? (parMap.get(item.templateItemId) ?? 0) : 0;
-      if (parLevel <= 0) continue;
-
-      const actualEnding = item.quantityEndActual != null
-        ? parseFloat(String(item.quantityEndActual))
-        : null;
-      if (actualEnding === null) continue;
-
-      const restockQty = Math.max(0, parLevel - actualEnding);
-      if (restockQty === 0) continue;
-
-      if (item.sectionName && item.sectionName !== currentSection) {
-        currentSection = item.sectionName;
-        lines.push("");
-        lines.push(`[ ${currentSection.toUpperCase()} ]`);
-      }
-
-      const name = item.itemName.length > 26 ? item.itemName.slice(0, 23) + "..." : item.itemName;
-      const qty = `+${Math.round(restockQty * 1000) / 1000}${item.unitType ?? ""}`;
-      lines.push(`  ${name.padEnd(W - qty.length - 2)}${qty}`);
-      lines.push(`    par:${parLevel} | end:${actualEnding}`);
-      needCount++;
-    }
-
-    lines.push("");
-    lines.push(divider);
-    lines.push(center(`TOTAL: ${needCount} items need restock`));
-    lines.push(divider);
-    lines.push("");
-
-    const body = lines.join("\n");
-
+    const needCount = (await loadShiftInventoryRows(shiftId)).filter((row) => restockQuantity(row) > 0).length;
     if (needCount === 0) {
       res.json({ ok: true, printed: false, message: "No items need restocking", shiftId });
       return;
     }
 
-    try {
-      const { printReceiptEscPos } = await import("../lib/escposPrinter");
-      const { jobRef } = await printReceiptEscPos(body);
-      res.json({ ok: true, printed: true, jobRef, itemCount: needCount, shiftId });
-    } catch (err) {
-      const msg = (err as Error).message;
-      req.log.warn({ shiftId, err: msg }, "Restock slip print failed");
-      res.status(500).json({ ok: false, printed: false, error: msg, shiftId });
+    const result = await queueRestockList(ctx, `${req.dbUser!.id}:${Date.now()}`);
+    if (result.status !== "queued") {
+      res.status(503).json({ ok: false, printed: false, error: result.status === "no-route" ? result.reason : "Duplicate print request", shiftId });
+      return;
     }
+    const { dispatchJob } = await import("../lib/printService");
+    await dispatchJob(result.job, result.printer).catch(() => {});
+    const [finalJob] = await db.select().from(printJobsTable)
+      .where(and(eq(printJobsTable.tenantId, tenantId), eq(printJobsTable.id, result.job.id))).limit(1);
+
+    await writeAuditLog({
+      actorId: req.dbUser!.id,
+      actorEmail: req.dbUser!.email,
+      actorRole: req.dbUser!.role,
+      action: "shift.restock_list_printed",
+      tenantId,
+      resourceType: "lab_tech_shift",
+      resourceId: String(shiftId),
+      metadata: { printJobId: result.job.id, printerId: result.printer.id, routeSource: result.source, itemCount: needCount },
+      ipAddress: getClientIp(req),
+    });
+
+    const printed = finalJob?.status === "printed";
+    res.status(printed ? 200 : 502).json({
+      ok: printed, printed, jobId: result.job.id, status: finalJob?.status ?? "unknown", itemCount: needCount, shiftId,
+      error: printed ? undefined : finalJob?.errorMessage ?? "Restock list did not print",
+    });
   }
 );
 
@@ -2412,12 +2462,13 @@ router.post(
 // Returns all shifts awaiting supervisor checkout.
 router.get(
   "/shifts/pending-supervisor",
-  requireRole("global_admin", "admin"),
+  requireRole("global_admin", "admin", "supervisor"),
   async (req, res): Promise<void> => {
+    const tenantId = req.authorizedTenantId!;
     const shifts = await db
       .select()
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.status, "supervisor_pending"))
+      .where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.status, "supervisor_pending")))
       .orderBy(desc(labTechShiftsTable.clockedOutAt));
 
     const result = await Promise.all(
@@ -2473,7 +2524,7 @@ async function buildShiftOperationsReceipt(tenantId: number, shiftId: number, ki
 
 // GET /api/shifts/:id/receipts/:kind — six required closeout/operations receipts as JSON payloads.
 router.get("/shifts/:id/receipts/:kind", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const shiftId = Number(req.params.id);
   const kind = ShiftReceiptKind.safeParse(req.params.kind);
   if (!Number.isInteger(shiftId) || shiftId <= 0 || !kind.success) { res.status(400).json({ error: "Invalid shift receipt request" }); return; }
