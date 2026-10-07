@@ -329,7 +329,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
     /VPS_HOST_FALLBACK|SELECTED_VPS_HOST=\$\{VPS_HOST\}/,
   );
   assert.doesNotMatch(workflow, /ssh-keyscan|StrictHostKeyChecking=accept-new/);
-  assert.match(workflow, /ssh-keygen -F "\$VPS_SSH_HOST_KEY_ALIAS"/);
+  assert.match(workflow, /ssh-keygen \\\s*-F "\$VPS_SSH_HOST_KEY_ALIAS"/);
   assert.match(workflow, /StrictHostKeyChecking=yes/);
   assert.match(workflow, /HostKeyAlias=\$VPS_SSH_HOST_KEY_ALIAS/);
   assert.match(
