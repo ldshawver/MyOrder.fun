@@ -628,6 +628,12 @@ export default function AdminEditCatalog() {
                     </td>
                     <td className="p-3">
                       <div className="flex items-center gap-1 justify-end">
+                        <a href={`/admin/catalogue-products?catalogItemId=${item.id}`}
+                          className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"
+                          title="Manage variants and location inventory"
+                          aria-label={`Manage variants and inventory for ${item.name}`}>
+                          <Package size={13} />
+                        </a>
                         <button
                           onClick={() => setEditItem(item)}
                           className="p-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-foreground transition-colors"

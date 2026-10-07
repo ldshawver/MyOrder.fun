@@ -3,8 +3,9 @@ import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { parseVariantAxes, generateVariantCombinations } from "@/lib/variantCombinations";
+import { useGetCurrentUser } from "@workspace/api-client-react";
 
-type Option = { id: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string };
+type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
@@ -53,6 +54,8 @@ function OptionEditor({ option, save, selectItem }: { option: Option; save: (val
 
 export default function AdminCatalogueProducts() {
   const { getToken } = useAuth();
+  const { data: currentUser } = useGetCurrentUser();
+  const isGlobalAdmin = currentUser?.role === "global_admin";
   const [products, setProducts] = useState<Product[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
@@ -64,6 +67,7 @@ export default function AdminCatalogueProducts() {
   const [editName, setEditName] = useState("");
   const [editBaseUnit, setEditBaseUnit] = useState("");
   const [message, setMessage] = useState("");
+  const [complianceReason, setComplianceReason] = useState("");
   const [busy, setBusy] = useState(false);
   const selected = products.find(product => product.id === selectedId);
   useEffect(() => { setEditName(selected?.name ?? ""); }, [selected?.name]);
@@ -88,6 +92,13 @@ export default function AdminCatalogueProducts() {
     setRecommendations(recs.items);
   }, [request]);
   useEffect(() => { void refresh().catch(error => setMessage(error.message)); }, [refresh]);
+  useEffect(() => {
+    const catalogItemId = Number(new URLSearchParams(window.location.search).get("catalogItemId"));
+    if (!Number.isSafeInteger(catalogItemId) || catalogItemId <= 0) return;
+    const product = products.find(candidate => candidate.options.some(option => option.catalogItemId === catalogItemId));
+    const option = product?.options.find(candidate => candidate.catalogItemId === catalogItemId);
+    if (product && option) { setSelectedId(product.id); setSelectedItemId(option.inventoryItemId); }
+  }, [products]);
   useEffect(() => {
     if (!selectedItemId) { setLocations([]); return; }
     void (request(`/api/admin/catalogue/inventory/${selectedItemId}/locations`) as Promise<{ locations: Location[] }>)
@@ -149,6 +160,24 @@ export default function AdminCatalogueProducts() {
               <option>PER_LOCATION</option><option>COMBINED_LOCATIONS</option></select></label>
           </div>
           <p className="text-xs text-muted-foreground">Changing an active inventory model with balances, reservations, orders or movements requires controlled reconciliation.</p>
+        </section>
+        <section className={`rounded-xl border p-4 space-y-3 ${selected.options.some(option => option.complianceHold) ? "border-orange-500/60 bg-orange-500/5" : ""}`} aria-label="Catalogue item compliance hold">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-semibold">Compliance Hold</h2>
+              {selected.options.some(option => option.complianceHold) ? <p className="text-sm text-orange-300">COMPLIANCE HOLD · {selected.options.find(option => option.complianceHold)?.complianceReason || "Reason recorded"}</p> : <p className="text-sm text-muted-foreground">No compliance hold is active on this item or its variants.</p>}
+            </div>
+            {isGlobalAdmin && <Button variant={selected.options.some(option => option.complianceHold) ? "destructive" : "outline"}
+              disabled={busy || !complianceReason.trim() || selected.options.length === 0}
+              onClick={() => void perform(async () => {
+                const held = selected.options.some(option => option.complianceHold);
+                const target = selected.options.find(option => held ? option.complianceHold : true)!;
+                await request(`/api/admin/product-master/${target.catalogItemId}/lifecycle`, { method: "PATCH", body: JSON.stringify({ complianceHold: !held, reason: complianceReason.trim() }) });
+                setComplianceReason("");
+              })}>{selected.options.some(option => option.complianceHold) ? "Release hold" : "Place hold"}</Button>}
+          </div>
+          {isGlobalAdmin && <label className="block max-w-xl text-sm">{selected.options.some(option => option.complianceHold) ? "Release / audit reason" : "Required hold reason"}<Input value={complianceReason} onChange={event => setComplianceReason(event.target.value)} maxLength={500} placeholder="Enter the reason for this compliance action" aria-label="Compliance action reason" /></label>}
+          {!isGlobalAdmin && selected.options.some(option => option.complianceHold) && <p className="text-xs text-muted-foreground">Only a Global Admin can change compliance hold status.</p>}
         </section>
         <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Options / variants</h2>
           {selected.options.map(option => <OptionEditor key={option.id} option={option} selectItem={setSelectedItemId}

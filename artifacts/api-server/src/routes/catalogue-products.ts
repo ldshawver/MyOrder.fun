@@ -48,7 +48,7 @@ function rows<T>(result: unknown): T[] {
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
 }
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
-type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean };
+type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
 
 type InventoryRelationship = { inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number };
 function trustedInventoryItem(model: ProductRow["inventoryModel"], options: InventoryRelationship[]): number {
@@ -80,7 +80,9 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
       co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
-      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable"
+      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
+      (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
+      ci.metadata->>'complianceReason' AS "complianceReason"
     FROM catalogue_options co
     JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
@@ -103,7 +105,9 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
       co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
-      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable"
+      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
+      (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
+      ci.metadata->>'complianceReason' AS "complianceReason"
     FROM catalogue_options co
     JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
