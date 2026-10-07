@@ -69,8 +69,11 @@ router.post("/webhooks/woocommerce", async (req, res): Promise<void> => {
     let event: unknown;
     try { event = JSON.parse(req.body.toString("utf8")); }
     catch { reject(res, "signed_body_invalid_json", 400); return; }
-    const productId = event && typeof event === "object" && "id" in event ? String((event as { id?: unknown }).id ?? "") : "";
+    const eventData = event && typeof event === "object" ? event as { id?: unknown; parent_id?: unknown } : null;
+    const productId = String(eventData?.id ?? "");
+    const parentWooProductId = eventData?.parent_id == null ? undefined : String(eventData.parent_id);
     if (!/^[1-9][0-9]{0,19}$/.test(productId)) { reject(res, "product_identity_invalid", 400); return; }
+    if (parentWooProductId !== undefined && !/^[1-9][0-9]{0,19}$/.test(parentWooProductId)) { reject(res, "parent_product_identity_invalid", 400); return; }
     if (!SUPPORTED_TOPICS.has(topic)) {
       // The sender may have unrelated webhook topics enabled. A validly signed
       // event is acknowledged without attempting an unsupported mutation.
@@ -102,7 +105,7 @@ router.post("/webhooks/woocommerce", async (req, res): Promise<void> => {
     }
 
     try {
-      await reconcileWooWebhookProduct(tenantId, productId, topic);
+      await reconcileWooWebhookProduct(tenantId, productId, topic, parentWooProductId);
       await db.execute(sql`UPDATE woocommerce_webhook_events SET status = 'processed', error_code = NULL,
         processed_at = now(), updated_at = now() WHERE tenant_id = ${tenantId} AND delivery_id = ${deliveryId} AND payload_sha256 = ${payloadHash}`);
       res.status(200).json({ ok: true });

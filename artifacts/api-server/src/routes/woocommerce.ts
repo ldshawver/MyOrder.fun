@@ -446,8 +446,11 @@ export async function syncHandler(req: import("express").Request, res: import("e
 }
 
 /** Internal verified-webhook reconciliation reuses the normal tenant-scoped importer. */
-export async function reconcileWooWebhookProduct(tenantId: number, wooProductId: string, topic: string): Promise<void> {
-  if (topic === "product.deleted") {
+export async function reconcileWooWebhookProduct(tenantId: number, wooProductId: string, topic: string, parentWooProductId?: string): Promise<void> {
+  const knownVariationParent = queryRows<{ wooProductId: string }>(await db.execute(sql`SELECT woo_product_id AS "wooProductId"
+    FROM catalog_items WHERE tenant_id = ${tenantId} AND woo_variation_id = ${wooProductId} AND woo_product_id IS NOT NULL LIMIT 1`))[0]?.wooProductId;
+  const parentId = parentWooProductId || knownVariationParent;
+  if (topic === "product.deleted" && !parentId) {
     await db.execute(sql`UPDATE catalogue_options co SET active = false, updated_at = now()
       FROM catalog_items ci WHERE ci.tenant_id = ${tenantId} AND ci.woo_product_id = ${wooProductId}
         AND ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id`);
@@ -461,7 +464,10 @@ export async function reconcileWooWebhookProduct(tenantId: number, wooProductId:
     status(code: number) { responseState.status = code; return this; },
     json(body: unknown) { responseState.body = body; return this; },
   } as unknown as import("express").Response;
-  await syncHandler(fakeReq, fakeRes, wooProductId);
+  // Woo can send a variation ID in a product topic. Reconcile its parent so
+  // the importer refreshes the complete variation set and deactivates deleted
+  // variations without flattening them into standalone products.
+  await syncHandler(fakeReq, fakeRes, parentId ?? wooProductId);
   const body = responseState.body as { errors?: unknown[]; skipped?: number } | null;
   if (responseState.status >= 400 || (body?.errors?.length ?? 0) > 0 || (body?.skipped ?? 0) > 0) {
     throw new Error("woo_product_reconciliation_failed");
