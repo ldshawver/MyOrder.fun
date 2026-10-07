@@ -263,9 +263,17 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain("oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}");
     expect(deploy).toContain("oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}");
     expect(deploy).toContain("nc -z -w 5 \"$VPS_TAILSCALE_HOST\" \"$VPS_PORT\"");
-    expect(deploy).toContain("ssh-keygen -F \"$VPS_SSH_HOST_KEY_ALIAS\"");
-    expect(deploy).not.toMatch(/ssh-keyscan|StrictHostKeyChecking=accept-new/);
-    expect(deploy).not.toMatch(/VPS_HOST_FALLBACK|Primary VPS_HOST failed|Trying fallback/);
+    expect(deploy).toMatch(/ssh-keygen\s*\\?\s*-F\s+"\$VPS_SSH_HOST_KEY_ALIAS"/);
+    for (const forbidden of [
+      "VPS_HOST_FALLBACK",
+      "StrictHostKeyChecking=accept-new",
+      "Primary VPS_HOST failed",
+      "Trying fallback",
+      "Select reachable VPS host",
+      "ssh-keyscan",
+    ]) {
+      expect(deploy).not.toContain(forbidden);
+    }
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
     expect(deploy).not.toContain("luxit.service");
