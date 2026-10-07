@@ -346,6 +346,59 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
 });
 
+test("SSH connectivity diagnostic is pinned, secret-backed, and read-only", () => {
+  const workflow = readFileSync(
+    new URL(
+      "../.github/workflows/ssh-connectivity-diagnostic.yml",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const joinTailscale = workflow.indexOf("uses: tailscale/github-action@v4");
+  const identityCheck = workflow.indexOf(
+    "Verify runner has Tailscale identity",
+  );
+  const routeCheck = workflow.indexOf(
+    "Verify only the pinned Tailscale SSH route",
+  );
+  const hostCheck = workflow.indexOf(
+    "Validate pinned SSH host identity and install key",
+  );
+  const readOnlySsh = workflow.indexOf("Run read-only SSH connectivity check");
+  assert.ok(
+    joinTailscale >= 0 &&
+      identityCheck > joinTailscale &&
+      routeCheck > identityCheck &&
+      hostCheck > routeCheck &&
+      readOnlySsh > hostCheck,
+  );
+  assert.match(workflow, /tags: tag:github-actions/);
+  assert.match(workflow, /VPS_TAILSCALE_HOST: 100\.85\.15\.43/);
+  assert.match(
+    workflow,
+    /TS_OAUTH_CLIENT_ID: \$\{\{ secrets\.TS_OAUTH_CLIENT_ID \}\}/,
+  );
+  assert.match(
+    workflow,
+    /TS_OAUTH_SECRET: \$\{\{ secrets\.TS_OAUTH_SECRET \}\}/,
+  );
+  assert.match(workflow, /tailscale ip -4/);
+  assert.match(workflow, /nc -z -w 5 "\$VPS_TAILSCALE_HOST" "\$VPS_PORT"/);
+  assert.match(workflow, /ssh-keygen -F "\$VPS_SSH_HOST_KEY_ALIAS"/);
+  assert.match(workflow, /StrictHostKeyChecking=yes/);
+  assert.match(workflow, /HostKeyAlias=\$VPS_SSH_HOST_KEY_ALIAS/);
+  assert.match(workflow, /CI SSH connectivity verified/);
+  assert.doesNotMatch(
+    workflow,
+    /ssh-keyscan|accept-new|scp |rsync |production-release\.mjs/,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /docker compose|migrate|pg_dump|psql|curl .*api/,
+  );
+  assert.match(workflow, /environment: production/);
+});
+
 test("migration runner holds one database advisory lock across validation and transactional migration", () => {
   const migrator = readFileSync(
     new URL("../lib/db/scripts/migrate-verified.ts", import.meta.url),

@@ -1,0 +1,97 @@
+name: Production SSH Connectivity Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - adi/myorder-staging-unified-20261006
+
+permissions:
+  contents: read
+
+jobs:
+  connectivity:
+    name: Tailscale and read-only SSH connectivity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      VPS_TAILSCALE_HOST: 100.85.15.43
+      VPS_PORT: "22"
+      VPS_SSH_HOST_KEY_ALIAS: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin' }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      VPS_PRIVATE_KEY: ${{ secrets.VPS_SSH_KEY || secrets.VPS_SECRET_KEY }}
+      TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+      TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+
+    steps:
+      - name: Validate required protected secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TS_OAUTH_CLIENT_ID:-}" || { echo "::error::Missing production secret TS_OAUTH_CLIENT_ID"; exit 1; }
+          test -n "${TS_OAUTH_SECRET:-}" || { echo "::error::Missing production secret TS_OAUTH_SECRET"; exit 1; }
+          test -n "${VPS_PRIVATE_KEY:-}" || { echo "::error::Missing production SSH key secret VPS_SSH_KEY or VPS_SECRET_KEY"; exit 1; }
+          test -n "${VPS_KNOWN_HOSTS:-}" || { echo "::error::Missing pre-pinned production secret VPS_KNOWN_HOSTS"; exit 1; }
+          test -n "${VPS_SSH_HOST_KEY_ALIAS:-}" || { echo "::error::Missing known-host identity alias production secret VPS_HOST"; exit 1; }
+          test -n "${VPS_USER:-}" || { echo "::error::Missing production SSH username secret"; exit 1; }
+
+      - name: Join Tailnet as tagged CI identity
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Verify runner has Tailscale identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          IDENTITY_IP="$(tailscale ip -4)"
+          test -n "$IDENTITY_IP"
+          printf 'Runner Tailscale identity: present (%s)\n' "$IDENTITY_IP"
+          tailscale status --json | jq -e '.Self.ID != "" and .Self.Online == true' >/dev/null
+          echo "Tailscale join: PASS"
+
+      - name: Verify only the pinned Tailscale SSH route
+        shell: bash
+        run: |
+          set -euo pipefail
+          if nc -z -w 5 "$VPS_TAILSCALE_HOST" "$VPS_PORT"; then
+            echo "TCP $VPS_TAILSCALE_HOST:$VPS_PORT: PASS"
+          else
+            echo "::error::TCP $VPS_TAILSCALE_HOST:$VPS_PORT is unreachable over the configured Tailnet"
+            exit 1
+          fi
+
+      - name: Validate pinned SSH host identity and install key
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$VPS_SSH_HOST_KEY_ALIAS" -f "$HOME/.ssh/known_hosts" >/dev/null || {
+            echo "::error::Pinned known_hosts does not contain the configured host identity"
+            exit 1
+          }
+          printf '%s\n' "$VPS_PRIVATE_KEY" > "$HOME/.ssh/connectivity_key"
+          chmod 600 "$HOME/.ssh/connectivity_key"
+          ssh-keygen -y -f "$HOME/.ssh/connectivity_key" >/dev/null
+          echo "Pinned SSH host verification material: PASS"
+
+      - name: Run read-only SSH connectivity check
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/connectivity_key" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o "HostKeyAlias=$VPS_SSH_HOST_KEY_ALIAS" \
+            -o ConnectTimeout=10 \
+            "$VPS_USER@$VPS_TAILSCALE_HOST" \
+            "printf 'CI SSH connectivity verified\\n'"
