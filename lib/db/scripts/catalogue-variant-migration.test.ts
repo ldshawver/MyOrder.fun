@@ -6,6 +6,7 @@ import test from "node:test";
 const root = resolve(import.meta.dirname, "../drizzle");
 const journal = JSON.parse(readFileSync(resolve(root, "meta/_journal.json"), "utf8"));
 const migration = readFileSync(resolve(root, "0075_catalogue_variant_attributes.sql"), "utf8");
+const validator = readFileSync(resolve(import.meta.dirname, "validate-migration-ledger.ts"), "utf8");
 
 test("variant support remains migration 0075 and 0076 is appended afterward", () => {
   assert.deepEqual(journal.entries.find((entry: { idx: number }) => entry.idx === 48), { idx: 48, version: "7", when: 1790985600001,
@@ -19,4 +20,5 @@ test("variant support remains migration 0075 and 0076 is appended afterward", ()
   assert.match(migration, /Duplicate tenant catalogue SKUs require controlled reconciliation/);
   assert.match(migration, /catalog_items_tenant_sku_ci_unique/);
   assert.match(migration, /catalog_items_tenant_woo_variation_unique/);
+  assert.match(validator, /indexname NOT IN \('catalogue_options_product_values_unique','catalog_items_tenant_woo_variation_unique','catalog_items_tenant_sku_ci_unique'\)/);
 });

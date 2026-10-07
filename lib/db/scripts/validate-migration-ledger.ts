@@ -289,7 +289,7 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
               AND (${appliedJournalIndices.has(49) ? "k.conname NOT IN ('catalogue_options_option_values_object','catalogue_options_product_values_unique')" : "true"})
           UNION ALL SELECT 'index', tablename||'.'||indexname, indexdef
             FROM pg_indexes WHERE schemaname='public' AND tablename IN (SELECT name FROM affected)
-              AND (${appliedJournalIndices.has(49) ? "indexname NOT IN ('catalog_items_tenant_woo_variation_unique','catalog_items_tenant_sku_ci_unique')" : "true"})
+              AND (${appliedJournalIndices.has(49) ? "indexname NOT IN ('catalogue_options_product_values_unique','catalog_items_tenant_woo_variation_unique','catalog_items_tenant_sku_ci_unique')" : "true"})
           UNION ALL SELECT 'trigger', c.relname||'.'||t.tgname, pg_get_triggerdef(t.oid,true)
             FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname='public' AND c.relname IN (SELECT name FROM affected) AND NOT t.tgisinternal
