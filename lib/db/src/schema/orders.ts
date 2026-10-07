@@ -115,6 +115,7 @@ export const orderItemsTable = pgTable("order_items", {
   catalogItemName: text("catalog_item_name").notNull(),
   optionId: integer("option_id"),
   optionLabelSnapshot: text("option_label_snapshot"),
+  variantSnapshot: jsonb("variant_snapshot"),
   skuSnapshot: text("sku_snapshot"),
   inventoryItemId: integer("inventory_item_id"),
   inventoryQuantitySnapshot: numeric("inventory_quantity_snapshot", { precision: 20, scale: 6 }),

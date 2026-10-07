@@ -2,8 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { parseVariantAxes, generateVariantCombinations } from "@/lib/variantCombinations";
 
-type Option = { id: number; label: string; sku: string | null; price: string; inventoryItemId: number; baseUnit: string; consumptionQuantity: string };
+type Option = { id: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
@@ -13,17 +14,39 @@ type ProductForm = { name: string; category: string; price: string; sku: string;
 const defaultProduct: ProductForm = { name: "", category: "", price: "0.00", sku: "", firstOptionLabel: "Standard",
   inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION",
   baseUnit: "each", consumptionQuantity: "1.000000" };
-const defaultOption = { label: "", sku: "", price: "0.00", consumptionQuantity: "1.000000" };
+const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000" };
 
-function OptionEditor({ option, save, selectItem }: { option: Option; save: (value: typeof defaultOption) => void; selectItem: (id: number) => void }) {
-  const [value, setValue] = useState({ label: option.label, sku: option.sku ?? "", price: option.price, consumptionQuantity: option.consumptionQuantity });
-  useEffect(() => { setValue({ label: option.label, sku: option.sku ?? "", price: option.price, consumptionQuantity: option.consumptionQuantity }); }, [option]);
-  return <div className="grid gap-2 border-b py-3 md:grid-cols-5 text-sm">
+function parseOptionValues(text: string): Record<string, string> {
+  if (!text.trim()) return {};
+  const entries = text.split(";").map(part => part.trim()).filter(Boolean).map(part => {
+    const separator = part.indexOf("=");
+    if (separator < 1) throw new Error("Enter option values as Color=Red; Size=Medium");
+    return [part.slice(0, separator).trim(), part.slice(separator + 1).trim()] as const;
+  });
+  const result: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (!key || !value || Object.hasOwn(result, key)) throw new Error("Option names and values must be non-empty and unique");
+    result[key] = value;
+  }
+  return result;
+}
+
+function OptionEditor({ option, save, selectItem }: { option: Option; save: (value: Record<string, unknown>) => void; selectItem: (id: number) => void }) {
+  const [value, setValue] = useState({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable });
+  useEffect(() => { setValue({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable }); }, [option]);
+  return <div className="grid gap-2 border-b py-3 md:grid-cols-4 text-sm">
     <label>Option<Input value={value.label} onChange={event => setValue({ ...value, label: event.target.value })} /></label>
+    <label>Options<Input placeholder="Color=Red; Size=Medium" value={value.optionValuesText} onChange={event => setValue({ ...value, optionValuesText: event.target.value })} /></label>
     <label>SKU<Input value={value.sku} onChange={event => setValue({ ...value, sku: event.target.value })} /></label>
+    <label>Barcode<Input value={value.barcode} onChange={event => setValue({ ...value, barcode: event.target.value })} /></label>
     <label>Price<Input value={value.price} onChange={event => setValue({ ...value, price: event.target.value })} /></label>
+    <label>Compare-at price<Input value={value.compareAtPrice} onChange={event => setValue({ ...value, compareAtPrice: event.target.value })} /></label>
     <label>Consumption ({option.baseUnit})<Input value={value.consumptionQuantity} onChange={event => setValue({ ...value, consumptionQuantity: event.target.value })} /></label>
-    <div className="flex flex-col gap-1 justify-end"><Button size="sm" onClick={() => save(value)}>Save option</Button>
+    <label className="flex items-center gap-2"><input type="checkbox" checked={value.isAvailable} onChange={event => setValue({ ...value, isAvailable: event.target.checked })} /> Sellable</label>
+    <div className="flex flex-col gap-1 justify-end"><Button size="sm" onClick={() => save({ ...value, compareAtPrice: value.compareAtPrice || null, optionValues: parseOptionValues(value.optionValuesText), active: option.active })}>Save option</Button>
+      <Button size="sm" variant="outline" onClick={() => save({ active: !option.active })}>
+        {option.active ? "Remove variant (keep history)" : "Enable variant"}
+      </Button>
       <button type="button" className="underline" onClick={() => selectItem(option.inventoryItemId)}>Inventory item #{option.inventoryItemId}</button></div>
   </div>;
 }
@@ -37,6 +60,7 @@ export default function AdminCatalogueProducts() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [create, setCreate] = useState(defaultProduct);
   const [newOption, setNewOption] = useState(defaultOption);
+  const [combinationText, setCombinationText] = useState("");
   const [editName, setEditName] = useState("");
   const [editBaseUnit, setEditBaseUnit] = useState("");
   const [message, setMessage] = useState("");
@@ -129,16 +153,36 @@ export default function AdminCatalogueProducts() {
         <section className="rounded-xl border p-4 space-y-3"><h2 className="font-semibold">Options / variants</h2>
           {selected.options.map(option => <OptionEditor key={option.id} option={option} selectItem={setSelectedItemId}
             save={value => void perform(async () => {
-              await request(`/api/admin/catalogue/options/${option.id}`, { method: "PATCH", body: JSON.stringify(value) });
+              const patch = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "optionValuesText"));
+              await request(`/api/admin/catalogue/options/${option.id}`, { method: "PATCH", body: JSON.stringify(patch) });
             })} />)}
+          <div className="grid gap-2 rounded border p-3 md:grid-cols-[1fr_auto]">
+            <label>Generate option combinations<Input placeholder="Color=Red,Blue; Size=S,M" value={combinationText} onChange={event => setCombinationText(event.target.value)} /></label>
+            <Button className="self-end" disabled={busy || !combinationText.trim()} onClick={() => void perform(async () => {
+              const combinations = generateVariantCombinations(parseVariantAxes(combinationText));
+              for (const optionValues of combinations) {
+                const label = Object.entries(optionValues).map(([key, value]) => `${key}: ${value}`).join(" / ");
+                await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({
+                  label, optionValues, sku: null, barcode: null, price: newOption.price,
+                  compareAtPrice: newOption.compareAtPrice || null, consumptionQuantity: newOption.consumptionQuantity,
+                }) });
+              }
+              setCombinationText("");
+            })}>Generate variants</Button>
+            <p className="text-xs text-muted-foreground md:col-span-2">Creates each purchasable combination with its own stable variant and inventory identity. Set SKU, barcode and price per variant below.</p>
+          </div>
           <div className="grid gap-2 md:grid-cols-4">
-            <label>Option label<Input value={newOption.label} onChange={event => setNewOption({ ...newOption, label: event.target.value })} /></label>
+            <label>Variant label<Input value={newOption.label} onChange={event => setNewOption({ ...newOption, label: event.target.value })} /></label>
+            <label>Options<Input placeholder="Color=Red; Size=Medium" value={newOption.optionValuesText} onChange={event => setNewOption({ ...newOption, optionValuesText: event.target.value })} /></label>
             <label>SKU<Input value={newOption.sku} onChange={event => setNewOption({ ...newOption, sku: event.target.value })} /></label>
+            <label>Barcode<Input value={newOption.barcode} onChange={event => setNewOption({ ...newOption, barcode: event.target.value })} /></label>
             <label>Price<Input value={newOption.price} onChange={event => setNewOption({ ...newOption, price: event.target.value })} /></label>
+            <label>Compare-at price<Input value={newOption.compareAtPrice} onChange={event => setNewOption({ ...newOption, compareAtPrice: event.target.value })} /></label>
             <label>Consumption ({selected.options[0]?.baseUnit ?? "unit"})<Input value={newOption.consumptionQuantity} onChange={event => setNewOption({ ...newOption, consumptionQuantity: event.target.value })} /></label>
           </div>
           <Button disabled={busy} onClick={() => void perform(async () => {
-            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify(newOption) });
+            const { optionValuesText, compareAtPrice, ...variant } = newOption;
+            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({ ...variant, optionValues: parseOptionValues(optionValuesText), compareAtPrice: compareAtPrice || null }) });
             setNewOption(defaultOption);
           })}>Add option</Button>
         </section>

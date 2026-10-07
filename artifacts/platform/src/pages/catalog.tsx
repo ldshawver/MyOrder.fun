@@ -16,7 +16,7 @@ import { CatalogNotice } from "@/components/CatalogNotice";
 import { Link } from "wouter";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { useAuth } from "@clerk/react";
-import { optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
+import { optionAxes, optionForValues, optionCartEntry, selectedSellableOption, showOptionSelector, type SellableProduct } from "@/lib/sellableOptions";
 
 type MenuMode = "alavont" | "lucifer";
 type CatalogPage = { items: ExtendedCatalogItem[]; total: number; page: number; limit: number };
@@ -160,8 +160,10 @@ function CatalogItemCard({
   const [imgError, setImgError] = useState(false);
   const [addedFeedback, setAddedFeedback] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState<number | null>(null);
+  const [selectedValues, setSelectedValues] = useState<Record<string, string>>({});
   const { addItem, cart } = useCart();
-  const selectedOption = selectedSellableOption(product, selectedOptionId);
+  const axes = optionAxes(product);
+  const selectedOption = axes.length ? optionForValues(product, selectedValues) : selectedSellableOption(product, selectedOptionId);
   const isInCart = !!selectedOption && cart.some(c => c.optionId === selectedOption.id);
   const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
@@ -259,7 +261,17 @@ function CatalogItemCard({
           )}
         </div>
 
-        {showOptionSelector(product) && product && (
+        {axes.length > 0 && product ? axes.map(axis => (
+          <label key={axis.name} className="text-xs font-semibold">
+            {axis.name}
+            <select className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm"
+              value={selectedValues[axis.name] ?? ""} onChange={event => setSelectedValues(current => ({ ...current, [axis.name]: event.target.value }))}
+              aria-label={`${product.name} ${axis.name}`}>
+              <option value="">Select {axis.name}</option>
+              {axis.values.map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+        )) : showOptionSelector(product) && product && (
           <label className="text-xs font-semibold" htmlFor={`catalog-option-${product.id}`}>
             Choose option
             <select id={`catalog-option-${product.id}`} className="mt-1 w-full rounded-lg border border-border bg-background p-2 text-sm"

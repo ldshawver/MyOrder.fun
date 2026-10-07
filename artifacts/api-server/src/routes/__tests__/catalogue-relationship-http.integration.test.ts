@@ -161,6 +161,32 @@ async function createProduct(identity: keyof typeof identities, name: string, in
     expect(relations.rows.filter(row => row.product_id === separateA.productId)).toHaveLength(2);
   });
 
+  it("creates Color/Size variants with independent SKU, price, and inventory identities and prevents duplicate combinations", async () => {
+    const product = await createProduct("a", "Variant axes " + suffix, "SEPARATE_VARIANTS");
+    const first = await as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
+      .send({ label: "Red / Small", optionValues: { Color: "Red", Size: "S" }, sku: "V-RS-" + suffix, price: "12.00", compareAtPrice: "15.00", consumptionQuantity: "1" });
+    const second = await as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
+      .send({ label: "Blue / Large", optionValues: { Color: "Blue", Size: "L" }, sku: "V-BL-" + suffix, price: "14.00", consumptionQuantity: "1" });
+    expect(first.status, first.text).toBe(201);
+    expect(second.status, second.text).toBe(201);
+    expect(second.body.inventoryItemId).not.toBe(first.body.inventoryItemId);
+    const duplicate = await rejectedWithoutMutation(as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
+      .send({ label: "Red Small duplicate", optionValues: { Color: "Red", Size: "S" }, sku: "V-DUP-" + suffix, price: "99.00", consumptionQuantity: "1" }), 409);
+    expect(duplicate.status).toBe(409);
+    const stored = await client.query("SELECT co.id AS option_id,co.option_values,co.active,ci.sku,ci.price::text,ci.compare_at_price::text,co.inventory_item_id FROM catalogue_options co JOIN catalog_items ci ON ci.tenant_id=co.tenant_id AND ci.id=co.catalog_item_id WHERE co.tenant_id=$1 AND co.product_id=$2 AND co.id=ANY($3::int[]) ORDER BY co.id",
+      [tenantA, product.productId, [first.body.optionId, second.body.optionId]]);
+    expect(stored.rows).toEqual([
+      { option_id: first.body.optionId, option_values: { Color: "Red", Size: "S" }, active: true,
+        sku: "V-RS-" + suffix, price: "12.00", compare_at_price: "15.00", inventory_item_id: first.body.inventoryItemId },
+      { option_id: second.body.optionId, option_values: { Color: "Blue", Size: "L" }, active: true,
+        sku: "V-BL-" + suffix, price: "14.00", compare_at_price: null, inventory_item_id: second.body.inventoryItemId },
+    ]);
+    const disabled = await as("a").patch("/api/admin/catalogue/options/" + second.body.optionId).send({ active: false, isAvailable: false });
+    expect(disabled.status, disabled.text).toBe(200);
+    const disabledRow = await client.query("SELECT co.active,ci.is_available FROM catalogue_options co JOIN catalog_items ci ON ci.id=co.catalog_item_id WHERE co.tenant_id=$1 AND co.id=$2", [tenantA, second.body.optionId]);
+    expect(disabledRow.rows[0]).toEqual({ active: false, is_available: false });
+  });
+
   it("exercises the installed recorded-activity trigger through the authenticated HTTP model update", async () => {
     const active = await createProduct("a", `Activity ${suffix}`, "SEPARATE_VARIANTS");
     const balance = await as("a").put(`/api/admin/catalogue/inventory/${active.inventoryItemId}/locations/${locationA}/balance`)

@@ -27,7 +27,7 @@ staging[33] = { ...staging[33], hash: historicalStaging0058.hash };
 test("exact historical staging lineage and ordered forward continuation", () => {
   const verified = validateAppliedLineage(local, staging);
   assert.equal(verified.historicalStagingInventoryRecognized, true);
-  assert.deepEqual([39, 40, 41, 42, 46, 47].filter((index) => !verified.appliedJournalIndices.has(index)), [39, 40, 41, 42, 46, 47]);
+  assert.deepEqual([39, 40, 41, 42, 46, 47, 48, 49].filter((index) => !verified.appliedJournalIndices.has(index)), [39, 40, 41, 42, 46, 47, 48, 49]);
   const continued = [...staging];
   for (const index of historicalStagingInventory.forwardIndices) {
     continued.push({ id: continued.length + 1, hash: local[index].hash, created_at: String(local[index].when) });

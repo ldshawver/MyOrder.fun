@@ -263,6 +263,7 @@ router.use(async (req, res, next) => {
       WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
         AND co.active = true AND cp.active = true AND ci.is_available = true
         AND ci.alavont_in_stock IS DISTINCT FROM false
+        AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
         AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
         AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
         AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
@@ -1230,8 +1231,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
-        const option = queryRows<{ optionId: number; productName: string; label: string; sku: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
-          SELECT co.id AS "optionId", cp.name AS "productName", co.label, ci.sku,
+        const option = queryRows<{ optionId: number; productName: string; label: string; optionValues: Record<string, string>; sku: string | null; barcode: string | null; wooProductId: string | null; wooVariationId: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
+          SELECT co.id AS "optionId", cp.name AS "productName", co.label, co.option_values AS "optionValues", ci.sku, ci.barcode,
+            ci.woo_product_id AS "wooProductId", ci.woo_variation_id AS "wooVariationId",
             co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
             co.consumption_quantity AS "consumptionQuantity", cp.location_evaluation AS "locationEvaluation"
           FROM catalogue_options co
@@ -1241,6 +1243,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
             AND co.active = true AND cp.active = true AND ci.is_available = true
             AND ci.alavont_in_stock IS DISTINCT FROM false
+            AND COALESCE((ci.metadata->>'isVisible')::boolean, true) = true
             AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
             AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
             AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
@@ -1250,6 +1253,11 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         if (selectedOptionId !== undefined && option?.optionId !== selectedOptionId) {
           throw new OptionSelectionError("Selected option changed or is no longer available");
         }
+        // Every catalog item is expected to have the inventory identity created
+        // by the catalogue trigger. Fail closed if it disappeared or became
+        // held/unavailable after cart normalization; legacy catalogItemId carts
+        // must not bypass the variant and compliance checks.
+        if (!option) throw new OptionSelectionError("Item is no longer available");
         const inventoryCatalogItemId = option?.inventoryCatalogItemId ?? line.catalog_item_id;
         const physicalQuantity = quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
@@ -1258,6 +1266,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           catalogItemName: option ? `${option.productName}${option.label === "Standard" ? "" : ` — ${option.label}`}` : line.catalog_display_name,
           optionId: option?.optionId ?? null,
           optionLabelSnapshot: option?.label ?? null,
+          variantSnapshot: option ? { variantId: option.optionId, sku: option.sku, barcode: option.barcode,
+            label: option.label, optionValues: option.optionValues ?? {}, wooProductId: option.wooProductId,
+            wooVariationId: option.wooVariationId } : null,
           skuSnapshot: option?.sku ?? line.merchant_sku,
           inventoryItemId: option?.inventoryItemId ?? null,
           inventoryQuantitySnapshot: physicalQuantity,

@@ -51,7 +51,7 @@ describe("customer product options", () => {
 
   it("queries tenant-scoped active, non-held options", () => {
     const customerQuery = readFileSync(new URL("../../lib/catalogueSellable.ts", import.meta.url), "utf8");
-    for (const predicate of ["co.tenant_id = ${tenantId}", "co.active = true", "ci.is_available = true", "alavont_in_stock IS DISTINCT FROM false", "archived", "safeOnlyDuplicate", "complianceHold"]) {
+    for (const predicate of ["co.tenant_id = ${tenantId}", "co.active = true", "option_values AS \"optionValues\"", "ci.is_available = true", "alavont_in_stock IS DISTINCT FROM false", "archived", "safeOnlyDuplicate", "complianceHold"]) {
       expect(customerQuery).toContain(predicate);
     }
   });
@@ -61,6 +61,7 @@ describe("customer product options", () => {
       [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
       [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 }],
+      [], [], [],
       [{ id: 184 }],
       [{ id: 181, productId: 181, inventoryItemId: 181 }],
       [], [],
@@ -68,10 +69,27 @@ describe("customer product options", () => {
     const response = await supertest(app).post("/api/admin/catalogue/products/179/options")
       .send({ label: "Large", sku: "TS-L", price: "24.00", consumptionQuantity: "1.000000" });
     expect(response.status, response.text).toBe(201);
-    expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181 });
-    expect(state.txQueries).toHaveLength(7);
+    expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181, optionValues: { Option: "Large" } });
+    expect(state.txQueries).toHaveLength(10);
     const source = readFileSync(new URL("../catalogue-products.ts", import.meta.url), "utf8");
     expect(source).toContain("UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label}");
+  });
+
+  it("accepts a structured variant combination and rejects malformed attribute data", async () => {
+    state.txResults = [
+      [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
+      [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
+      [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 }],
+      [], [], [], [], [],
+      [{ id: 184 }], [{ id: 181, productId: 181, inventoryItemId: 181 }], [], [],
+    ];
+    const valid = await supertest(app).post("/api/admin/catalogue/products/179/options")
+      .send({ label: "Red / Medium", optionValues: { Color: "Red", Size: "M" }, sku: "TS-R-M", barcode: "000111", price: "25.00", compareAtPrice: "30.00", consumptionQuantity: "1.000000" });
+    expect(valid.status, valid.text).toBe(201);
+    expect(valid.body.optionValues).toEqual({ Color: "Red", Size: "M" });
+    const malformed = await supertest(app).post("/api/admin/catalogue/products/179/options")
+      .send({ label: "Bad", optionValues: { Color: "" }, sku: "BAD", price: "1.00", consumptionQuantity: "1" });
+    expect(malformed.status).toBe(400);
   });
 
   it("rejects the operation that exposed an existing SHARED product with three inventory identities", async () => {
@@ -86,7 +104,7 @@ describe("customer product options", () => {
       .send({ label: "Large", price: "5.00", consumptionQuantity: "1.000000" });
     expect(response.status).toBe(409);
     expect(response.body.error).toMatch(/controlled reconciliation/);
-    expect(state.txQueries).toHaveLength(3); // no catalogue insert
+    expect(state.txQueries).toHaveLength(4); // no catalogue insert
   });
 
   it("reuses the trusted inventory item when adding an option to a SHARED product", async () => {
@@ -95,6 +113,7 @@ describe("customer product options", () => {
       [{ category: "Coffee", baseUnit: "g", inventoryItemId: 182 }],
       [{ inventoryItemId: 182, catalogItemId: 182, inventoryCatalogItemId: 182 },
         { inventoryItemId: 182, catalogItemId: 191, inventoryCatalogItemId: 182 }],
+      [],
       [{ id: 193 }],
       [{ id: 190, productId: 190, inventoryItemId: 190 }],
       [], [], [],
@@ -143,6 +162,6 @@ describe("customer product options", () => {
       .send({ label: "Large", price: "24.00", consumptionQuantity: "1.000000" });
     expect(response.status).toBe(409);
     expect(response.body.error).toMatch(/own catalogue inventory item/);
-    expect(state.txQueries).toHaveLength(3);
+    expect(state.txQueries).toHaveLength(4);
   });
 });

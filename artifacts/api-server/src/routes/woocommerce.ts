@@ -5,6 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
 import { requireTenantContext } from "../lib/tenantContext";
 import { getOrCreateSettings, getDecryptedWooCreds } from "./settings";
+import { wooVariationLabel, wooVariationMetadata, wooVariationOptionValues } from "../lib/wooVariants";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -67,8 +68,21 @@ interface WooProduct {
   stock_status?: string;
   catalog_visibility?: string;
   sku?: string;
+  type?: string;
   date_created?: string | null;
   date_modified?: string | null;
+}
+
+interface WooVariation {
+  id?: number | string;
+  sku?: string;
+  price?: string;
+  regular_price?: string;
+  sale_price?: string;
+  stock_status?: string;
+  attributes?: Array<{ name?: string; option?: string }>;
+  image?: { src?: string };
+  meta_data?: Array<{ key?: string; value?: unknown }>;
 }
 
 type WooFailureKind = "authentication" | "configuration" | "unavailable" | "timeout" | "malformed";
@@ -180,6 +194,101 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
   return allProducts;
 }
 
+async function fetchWooVariations(storeUrl: string, productId: string, consumerKey: string, consumerSecret: string): Promise<WooVariation[]> {
+  const all: WooVariation[] = [];
+  for (let page = 1; page <= WOO_MAX_PAGES; page++) {
+    const response = await fetchWoo(storeUrl.replace(/\/$/, ""), `/wp-json/wc/v3/products/${encodeURIComponent(productId)}/variations?per_page=100&page=${page}`, consumerKey, consumerSecret);
+    const values = await response.json().catch(() => { throw new WooCommerceUpstreamError("malformed"); }) as WooVariation[];
+    if (!Array.isArray(values)) throw new WooCommerceUpstreamError("malformed");
+    all.push(...values);
+    const pages = Number(response.headers.get("X-WP-TotalPages") ?? "1");
+    if (!Number.isSafeInteger(pages) || pages < 1 || pages > WOO_MAX_PAGES) throw new WooCommerceUpstreamError("malformed");
+    if (page >= pages || values.length === 0) return all;
+  }
+  throw new WooCommerceUpstreamError("malformed");
+}
+
+function queryRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return ((result as { rows?: T[] } | undefined)?.rows ?? []);
+}
+
+async function syncWooProductVariants(input: {
+  tenantId: number; parentProductId: number; parentCatalogItemId: number; wooProductId: string;
+  product: WooProduct; variations: WooVariation[];
+}): Promise<void> {
+  const { tenantId, parentProductId, parentCatalogItemId, wooProductId, product, variations } = input;
+  const parent = await db.select().from(catalogItemsTable)
+    .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, parentCatalogItemId))).limit(1);
+  if (!parent[0]) throw new Error("Woo variable parent is not tenant-owned");
+  const parentMetadata = parent[0].metadata && typeof parent[0].metadata === "object" && !Array.isArray(parent[0].metadata)
+    ? parent[0].metadata as Record<string, unknown> : {};
+  await db.execute(sql`UPDATE catalogue_options SET active = false WHERE tenant_id = ${tenantId}
+    AND product_id = ${parentProductId} AND catalog_item_id = ${parentCatalogItemId}`);
+  const seen = new Set<string>();
+  for (const variation of variations) {
+    if (!variation.id) continue;
+    const variationId = String(variation.id);
+    seen.add(variationId);
+    const values = wooVariationOptionValues(variation.attributes, variationId);
+    const label = wooVariationLabel(values);
+    const price = variation.regular_price || variation.price || product.regular_price || product.price || "0.00";
+    const sale = variation.sale_price || null;
+    const imageUrl = variation.image?.src?.trim() || parent[0].imageUrl;
+    const barcodeMeta = variation.meta_data?.find(meta => ["barcode", "gtin", "ean", "upc"].includes((meta.key ?? "").toLowerCase()));
+    const barcode = typeof barcodeMeta?.value === "string" ? barcodeMeta.value.trim() || null : null;
+    const isAvailable = variation.stock_status ? variation.stock_status === "instock" : true;
+    const existing = queryRows<{ id: number; metadata: unknown }>(await db.execute(sql`SELECT id, metadata FROM catalog_items
+      WHERE tenant_id = ${tenantId} AND woo_product_id = ${wooProductId} AND woo_variation_id = ${variationId} LIMIT 1`))[0];
+    let catalogItemId = existing?.id;
+    if (!catalogItemId) {
+      const created = await db.insert(catalogItemsTable).values({
+        tenantId, name: `${product.name ?? parent[0].name} — ${label}`, description: parent[0].description,
+        category: parent[0].category, price, compareAtPrice: sale, sku: variation.sku?.trim() || null, barcode,
+        isAvailable, isTaxable: parent[0].isTaxable, stockQuantity: "0", imageUrl,
+        metadata: wooVariationMetadata(parentMetadata, null, parentCatalogItemId),
+        alavontName: `${product.name ?? parent[0].name} — ${label}`, luciferCruzName: `${product.name ?? parent[0].name} — ${label}`,
+        customerSafeName: `${product.name ?? parent[0].name} — ${label}`, merchantName: `${product.name ?? parent[0].name} — ${label}`,
+        merchantBrand: parent[0].merchantBrand, merchantSku: variation.sku?.trim() || null,
+        isWooManaged: true, isLocalAlavont: false, merchantProcessingMode: "woo_native", merchantProductSource: "woo",
+        wooProductId, wooVariationId: variationId,
+      }).returning({ id: catalogItemsTable.id });
+      catalogItemId = created[0]?.id;
+    } else {
+      const currentMetadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+        ? existing.metadata as Record<string, unknown> : {};
+      const variantMetadata = { ...wooVariationMetadata(parentMetadata, currentMetadata, parentCatalogItemId),
+        isVisible: parentMetadata.isVisible !== false };
+      await db.update(catalogItemsTable).set({
+        name: `${product.name ?? parent[0].name} — ${label}`, price, compareAtPrice: sale,
+        sku: variation.sku?.trim() || null, barcode, isAvailable, imageUrl,
+        metadata: variantMetadata, updatedAt: new Date(),
+      }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, catalogItemId)));
+    }
+    if (!catalogItemId) throw new Error("Woo variation insert did not return an identity");
+    await db.transaction(async tx => {
+      const own = queryRows<{ optionId: number; generatedProductId: number }>(await tx.execute(sql`SELECT id AS "optionId", product_id AS "generatedProductId"
+        FROM catalogue_options WHERE tenant_id = ${tenantId} AND catalog_item_id = ${catalogItemId} LIMIT 1`))[0];
+      if (!own) throw new Error("Woo variation inventory identity was not created");
+      await tx.execute(sql`UPDATE catalogue_options SET product_id = ${parentProductId}, label = ${label},
+        option_values = ${JSON.stringify(values)}::jsonb, active = true, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${own.optionId}`);
+      if (own.generatedProductId !== parentProductId) await tx.execute(sql`DELETE FROM catalogue_products
+        WHERE tenant_id = ${tenantId} AND id = ${own.generatedProductId}`);
+    });
+  }
+  const previous = queryRows<{ id: number; wooVariationId: string }>(await db.execute(sql`SELECT ci.id, ci.woo_variation_id AS "wooVariationId"
+    FROM catalog_items ci JOIN catalogue_options co ON co.tenant_id = ci.tenant_id AND co.catalog_item_id = ci.id
+    WHERE ci.tenant_id = ${tenantId} AND ci.woo_product_id = ${wooProductId} AND ci.woo_variation_id IS NOT NULL
+      AND co.product_id = ${parentProductId}`));
+  for (const old of previous) if (!seen.has(old.wooVariationId)) {
+    await db.execute(sql`UPDATE catalogue_options SET active = false, updated_at = now()
+      WHERE tenant_id = ${tenantId} AND product_id = ${parentProductId} AND catalog_item_id = ${old.id}`);
+    await db.execute(sql`UPDATE catalog_items SET is_available = false, updated_at = now()
+      WHERE tenant_id = ${tenantId} AND id = ${old.id}`);
+  }
+}
+
 // Sync handler — credentials are always loaded (decrypted) from the DB
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
@@ -224,6 +333,8 @@ export async function syncHandler(req: import("express").Request, res: import("e
         if (!product.id || !product.name) { skipped++; continue; }
 
         const wcId = String(product.id);
+        const variations = product.type === "variable"
+          ? await fetchWooVariations(storeUrl, wcId, consumerKey, consumerSecret) : null;
         const lcName: string = product.name?.trim() || "";
         const salePrice = product.sale_price ? parseFloat(product.sale_price) : null;
         const regularPrice = parseFloat(product.regular_price || product.price || product.sale_price || "0") || 0;
@@ -247,7 +358,7 @@ export async function syncHandler(req: import("express").Request, res: import("e
           description: shortDesc || description || null,
           category,
           price: String(regularPrice.toFixed(2)),
-          isAvailable: inStock,
+          isAvailable: product.type === "variable" ? false : inStock,
           sku: wcSku,
           imageUrl,
           mediaGallery,
@@ -302,6 +413,16 @@ export async function syncHandler(req: import("express").Request, res: import("e
         } else {
           await db.insert(catalogItemsTable).values({ ...values, metadata: { isVisible: visibleInCatalog } });
           inserted++;
+        }
+        if (variations) {
+          const parent = queryRows<{ id: number }>(await db.execute(sql`SELECT id FROM catalog_items
+            WHERE tenant_id = ${houseTenantId} AND woo_product_id = ${wcId} AND woo_variation_id IS NULL
+            ORDER BY id LIMIT 1`))[0];
+          const catalogue = parent && queryRows<{ productId: number }>(await db.execute(sql`SELECT product_id AS "productId"
+            FROM catalogue_options WHERE tenant_id = ${houseTenantId} AND catalog_item_id = ${parent.id} LIMIT 1`))[0];
+          if (!parent || !catalogue) throw new Error("Woo variable product could not be mapped to its MyOrder parent");
+          await syncWooProductVariants({ tenantId: houseTenantId, parentProductId: catalogue.productId,
+            parentCatalogItemId: parent.id, wooProductId: wcId, product, variations });
         }
       } catch (err) {
         errors.push(`Product "${String(product.name ?? product.id)}": ${(err as Error)?.message ?? "DB error"}`);

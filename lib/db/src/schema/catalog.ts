@@ -18,6 +18,7 @@ export const catalogItemsTable = pgTable("catalog_items", {
   description: text("description"),
   category: text("category").notNull(),
   sku: text("sku"),
+  barcode: text("barcode"),
   // Internal/source-facing fields used by operations, custody, imports, and
   // supplier reconciliation. These must never be required for checkout copy.
   internalName: text("internal_name"),

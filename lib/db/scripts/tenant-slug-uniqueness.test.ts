@@ -17,9 +17,9 @@ const adminSettingsMigration = readFileSync(
 );
 
 test("tenant slug uniqueness follows the existing migration lineage", () => {
-  const previous = journal.entries.at(-2);
-  const current = journal.entries.at(-1);
-  assert.equal(previous.tag, "0073_admin_settings_tenant_uniqueness");
+  const current = journal.entries.find((entry: { idx: number }) => entry.idx === 48);
+  const appended = journal.entries.at(-1);
+  assert.equal(journal.entries.find((entry: { idx: number }) => entry.idx === 47).tag, "0073_admin_settings_tenant_uniqueness");
   assert.deepEqual(current, {
     idx: 48,
     version: "7",
@@ -27,6 +27,8 @@ test("tenant slug uniqueness follows the existing migration lineage", () => {
     tag: "0074_tenant_slug_case_insensitive_unique",
     breakpoints: true,
   });
+  assert.deepEqual(appended, { idx: 49, version: "7", when: 1790985600002,
+    tag: "0075_catalogue_variant_attributes", breakpoints: true });
 });
 
 test("tenant slug uniqueness normalizes case without touching admin settings or rows", () => {

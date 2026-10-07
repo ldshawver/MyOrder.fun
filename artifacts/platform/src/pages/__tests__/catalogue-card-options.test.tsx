@@ -21,7 +21,7 @@ import Catalog from "../catalog";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null };
+type Option = { id: number; catalogItemId: number; label: string; price: string; sku: string | null; optionValues?: Record<string, string> };
 const shirtOptions: Option[] = [
   { id: 179, catalogItemId: 182, label: "Small", price: "20.00", sku: "TS-S" },
   { id: 180, catalogItemId: 183, label: "Medium", price: "22.00", sku: "TS-M" },
@@ -99,5 +99,27 @@ describe("actual customer catalogue card", () => {
     expect(labels).toContain("Small · $20.00");
     expect(labels).toContain("Medium · $22.00");
     expect(labels).not.toContain("Large · $24.00");
+  });
+
+  it("requires Color and Size and adds the matching stable variant identity to cart", async () => {
+    const options: Option[] = [
+      { id: 301, catalogItemId: 401, label: "Red / Small", price: "18.00", sku: "RS", optionValues: { Color: "Red", Size: "S" } },
+      { id: 302, catalogItemId: 402, label: "Red / Large", price: "19.00", sku: "RL", optionValues: { Color: "Red", Size: "L" } },
+      { id: 303, catalogItemId: 403, label: "Blue / Small", price: "20.00", sku: "BS", optionValues: { Color: "Blue", Size: "S" } },
+    ];
+    const page = await renderCustomerCatalogue(options);
+    const color = page.querySelector('select[aria-label="T-Shirt Color"]') as HTMLSelectElement;
+    const size = page.querySelector('select[aria-label="T-Shirt Size"]') as HTMLSelectElement;
+    const add = page.querySelector('[data-testid="link-buy-now-401"]') as HTMLButtonElement;
+    expect(color).toBeTruthy();
+    expect(size).toBeTruthy();
+    expect(add.disabled).toBe(true);
+    await act(async () => { color.value = "Red"; color.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(add.disabled).toBe(true);
+    await act(async () => { size.value = "L"; size.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(add.disabled).toBe(false);
+    await act(async () => add.click());
+    expect(state.addItem).toHaveBeenCalledWith(expect.objectContaining({ id: 402, optionId: 302,
+      optionValues: { Color: "Red", Size: "L" }, price: 19 }));
   });
 });

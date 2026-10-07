@@ -17,6 +17,8 @@ const physical = z.string().refine(value => {
   try { quantityUnits(value); return true; } catch { return false; }
 }, "Use a nonnegative decimal with at most six places");
 const money = z.string().regex(/^\d{1,8}(?:\.\d{1,2})?$/);
+const optionValuesInput = z.record(z.string().trim().min(1).max(80), z.string().trim().min(1).max(120))
+  .refine(value => Object.keys(value).length <= 8, "A variant may have at most eight option axes");
 const productInput = z.object({
   name: z.string().trim().min(1).max(160),
   category: z.string().trim().min(1).max(120),
@@ -30,10 +32,15 @@ const productInput = z.object({
 }).strict();
 const optionInput = z.object({
   label: z.string().trim().min(1).max(80),
+  optionValues: optionValuesInput.default({}),
   sku: z.string().trim().max(120).nullable().optional(),
+  barcode: z.string().trim().max(120).nullable().optional(),
   price: money,
+  compareAtPrice: money.nullable().optional(),
   consumptionQuantity: physical,
   inventoryItemId: z.number().int().positive().optional(),
+  active: z.boolean().optional(),
+  isAvailable: z.boolean().optional(),
 }).strict();
 
 function rows<T>(result: unknown): T[] {
@@ -41,7 +48,7 @@ function rows<T>(result: unknown): T[] {
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
 }
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
-type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; consumptionQuantity: string; sku: string | null; price: string; baseUnit: string; active: boolean };
+type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean };
 
 type InventoryRelationship = { inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number };
 function trustedInventoryItem(model: ProductRow["inventoryModel"], options: InventoryRelationship[]): number {
@@ -72,8 +79,8 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
   return rows<OptionRow>(await executor.execute(sql`
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.price,
-      ii.base_unit AS "baseUnit", co.active
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable"
     FROM catalogue_options co
     JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
@@ -95,8 +102,8 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
   const options = rows<OptionRow>(await db.execute(sql`
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.price,
-      ii.base_unit AS "baseUnit", co.active
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable"
     FROM catalogue_options co
     JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
     JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
@@ -128,7 +135,7 @@ router.post("/admin/catalogue/products", admin, async (req, res): Promise<void> 
       await tx.execute(sql`UPDATE catalogue_products SET name = ${body.name}, inventory_model = ${body.inventoryModel},
         location_evaluation = ${body.locationEvaluation} WHERE tenant_id = ${tenantId} AND id = ${auto.productId}`);
       await tx.execute(sql`UPDATE catalogue_options SET label = ${body.firstOptionLabel},
-        consumption_quantity = ${quantityText(quantityUnits(body.consumptionQuantity))}
+        option_values = '{}'::jsonb, consumption_quantity = ${quantityText(quantityUnits(body.consumptionQuantity))}
         WHERE tenant_id = ${tenantId} AND id = ${auto.id}`);
       await tx.execute(sql`UPDATE inventory_items SET base_unit = ${body.baseUnit}
         WHERE tenant_id = ${tenantId} AND id = ${auto.inventoryItemId}`);
@@ -202,13 +209,51 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         WHERE co.tenant_id = ${tenantId} AND co.product_id = ${product.id} AND co.active = true
         ORDER BY co.id
       `));
+      const existingValues = rows<{ id: number; label: string; optionValues: Record<string, string> }>(await tx.execute(sql`
+        SELECT id, label, option_values AS "optionValues" FROM catalogue_options
+        WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND active = true ORDER BY id
+      `));
       const sharedInventoryItemId = trustedInventoryItem(product.inventoryModel, existingOptions);
       const name = `${product.name} ${body.label}`;
+      const suppliedValues = Object.fromEntries(Object.entries(body.optionValues).sort(([a], [b]) => a.localeCompare(b)));
+      if (Object.keys(suppliedValues).some(key => !key.trim())) throw new Error("Option names cannot be empty");
+      const existingAxes = existingValues.find(option => Object.keys(option.optionValues ?? {}).length)?.optionValues;
+      let normalizedValues: Record<string, string> = suppliedValues;
+      if (Object.keys(suppliedValues).length) {
+        if (existingAxes && JSON.stringify(Object.keys(existingAxes).sort()) !== JSON.stringify(Object.keys(suppliedValues).sort())) {
+          throw new Error("Every variant in a product must use the same option axes");
+        }
+      } else {
+        if (existingAxes && Object.keys(existingAxes).some(axis => axis !== "Option")) {
+          throw new Error("This product uses structured options; provide every required option value");
+        }
+        const baseline = existingValues.find(option => Object.keys(option.optionValues ?? {}).length === 0);
+        if (baseline) {
+          const baselineValues = { Option: baseline.label };
+          await tx.execute(sql`UPDATE catalogue_options SET option_values = ${JSON.stringify(baselineValues)}::jsonb
+            WHERE tenant_id = ${tenantId} AND id = ${baseline.id}`);
+        }
+        normalizedValues = { Option: body.label };
+      }
+      const explicitAxes = Object.keys(suppliedValues).some(axis => axis !== "Option");
+      if (explicitAxes) {
+        await tx.execute(sql`UPDATE catalogue_options SET active = false, updated_at = now()
+          WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND option_values = '{}'::jsonb`);
+        await tx.execute(sql`UPDATE catalog_items SET is_available = false, updated_at = now()
+          WHERE tenant_id = ${tenantId} AND id IN (SELECT catalog_item_id FROM catalogue_options
+            WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND option_values = '{}'::jsonb)`);
+      }
+      if (body.sku?.trim()) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 740015)`);
+        const duplicate = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM catalog_items
+          WHERE tenant_id = ${tenantId} AND lower(btrim(sku)) = lower(${body.sku.trim()}) LIMIT 1`))[0];
+        if (duplicate) throw new Error("SKU already exists in this tenant");
+      }
       const catalog = rows<{ id: number }>(await tx.execute(sql`
-        INSERT INTO catalog_items (tenant_id, name, category, price, sku, merchant_brand,
+        INSERT INTO catalog_items (tenant_id, name, category, price, compare_at_price, sku, barcode, is_available, merchant_brand,
           customer_safe_name, customer_safe_description, display_category,
           alavont_name, lucifer_cruz_name, merchant_name, stock_unit)
-        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.sku ?? null},
+        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.compareAtPrice ?? null}, ${body.sku?.trim() || null}, ${body.barcode?.trim() || null}, ${body.isAvailable ?? true},
           'lucifer_cruz', ${name}, ${name}, ${base.category}, ${name}, ${name}, ${name}, ${base.baseUnit})
         RETURNING id
       `))[0];
@@ -225,12 +270,13 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
       } else if (body.inventoryItemId !== undefined && body.inventoryItemId !== auto.inventoryItemId) {
         throw new Error("Separate variants require their own inventory item");
       }
-      await tx.execute(sql`UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label},
+      await tx.execute(sql`UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label}, option_values = ${JSON.stringify(normalizedValues)}::jsonb,
+        active = ${body.active ?? true},
         inventory_item_id = ${inventoryItemId}, consumption_quantity = ${quantityText(quantityUnits(body.consumptionQuantity))},
         updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${auto.id}`);
       if (inventoryItemId !== auto.inventoryItemId) await tx.execute(sql`DELETE FROM inventory_items WHERE tenant_id = ${tenantId} AND id = ${auto.inventoryItemId}`);
       await tx.execute(sql`DELETE FROM catalogue_products WHERE tenant_id = ${tenantId} AND id = ${auto.productId}`);
-      return { optionId: auto.id, catalogItemId: catalog.id, inventoryItemId };
+      return { optionId: auto.id, catalogItemId: catalog.id, inventoryItemId, optionValues: normalizedValues };
     });
     if (!result) { res.status(404).json({ error: "Product not found" }); return; }
     res.status(201).json(result);
@@ -250,11 +296,32 @@ router.patch("/admin/catalogue/options/:optionId", admin, async (req, res): Prom
   const quantity = parsed.data.consumptionQuantity ?? option.consumptionQuantity;
   try {
     await db.transaction(async tx => {
+      await tx.execute(sql`SELECT id FROM catalogue_products
+        WHERE tenant_id = ${tenantId} AND id = ${option.productId} FOR UPDATE`);
+      if (parsed.data.optionValues !== undefined) {
+        const siblingValues = rows<{ optionValues: Record<string, string> }>(await tx.execute(sql`SELECT option_values AS "optionValues"
+          FROM catalogue_options WHERE tenant_id = ${tenantId} AND product_id = ${option.productId}
+            AND id <> ${option.id} AND active = true`));
+        const siblingAxes = siblingValues.find(candidate => Object.keys(candidate.optionValues ?? {}).length)?.optionValues;
+        const nextAxes = Object.keys(parsed.data.optionValues);
+        if (siblingAxes && JSON.stringify(Object.keys(siblingAxes).sort()) !== JSON.stringify(nextAxes.sort())) {
+          throw new Error("Every variant in a product must use the same option axes");
+        }
+      }
+      if (parsed.data.sku?.trim()) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 740015)`);
+        const duplicate = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM catalog_items
+          WHERE tenant_id = ${tenantId} AND lower(btrim(sku)) = lower(${parsed.data.sku.trim()}) AND id <> ${option.catalogItemId} LIMIT 1`))[0];
+        if (duplicate) throw new Error("SKU already exists in this tenant");
+      }
       await tx.execute(sql`UPDATE catalogue_options SET label = ${parsed.data.label ?? option.label},
-        consumption_quantity = ${quantityText(quantityUnits(quantity))}, updated_at = now()
+        option_values = ${parsed.data.optionValues === undefined ? sql`option_values` : sql`${JSON.stringify(Object.fromEntries(Object.entries(parsed.data.optionValues).sort(([a], [b]) => a.localeCompare(b))))}::jsonb`},
+        active = ${parsed.data.active ?? option.active}, consumption_quantity = ${quantityText(quantityUnits(quantity))}, updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${option.id}`);
       await tx.execute(sql`UPDATE catalog_items SET sku = ${parsed.data.sku === undefined ? option.sku : parsed.data.sku},
-        price = ${parsed.data.price ?? option.price}, updated_at = now()
+        barcode = ${parsed.data.barcode === undefined ? option.barcode : parsed.data.barcode},
+        compare_at_price = ${parsed.data.compareAtPrice === undefined ? option.compareAtPrice : parsed.data.compareAtPrice},
+        is_available = ${parsed.data.isAvailable ?? option.isAvailable}, price = ${parsed.data.price ?? option.price}, updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${option.catalogItemId}`);
     });
     res.json({ option: await optionForTenant(db, tenantId, option.id) });

@@ -21,6 +21,11 @@ import { loadSellableProducts } from "../lib/catalogueSellable";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
+function rows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  return ((result as { rows?: T[] } | undefined)?.rows ?? []);
+}
+
 type CatalogMedia = { type: "image" | "video"; src: string; alt?: string | null };
 const optionalBlankText = z.preprocess(
   value => value == null || (typeof value === "string" && value.trim() === "") ? undefined : value,
@@ -74,7 +79,8 @@ export function getCatalogLifecycleStatus(row: { isAvailable: boolean; alavontIn
 }
 
 function activeProductRows<T extends { metadata?: unknown }>(rows: T[]): T[] {
-  return rows.filter(row => !isArchivedOrSafeDuplicateRow(row));
+  return rows.filter(row => !isArchivedOrSafeDuplicateRow(row) && !((row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata))
+    && (row.metadata as Record<string, unknown>).complianceHold === true));
 }
 
 async function archiveSafeDuplicateRows(tenantId: number, actor: { id: number; email: string; role: string } | null, reason = "safe_duplicate_cleanup") {
@@ -599,7 +605,7 @@ export async function applyCatalogLifecycleTransition(input: {
   const role = normalizeRole(actor.role);
   if (!["global_admin", "admin", "supervisor"].includes(role) || actor.isActive === false || actor.status === "rejected" || actor.status === "deactivated"
     || (role !== "global_admin" && actor.tenantId !== tenantId)) throw new Error("Unauthorized catalogue lifecycle actor");
-  if (change.complianceHold !== undefined && (!change.reason?.trim() || (change.complianceHold === false && role !== "global_admin"))) throw new Error("Compliance clearance requires Global Admin and an audit reason");
+  if (change.complianceHold !== undefined && (!change.reason?.trim() || role !== "global_admin")) throw new Error("Compliance hold changes require Global Admin and an audit reason");
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0 || !Number.isSafeInteger(id) || id <= 0) throw new Error("Explicit tenant and catalogue item IDs are required");
   return db.transaction(async tx => {
     const [existing] = await tx.select().from(catalogItemsTable)
@@ -607,23 +613,69 @@ export async function applyCatalogLifecycleTransition(input: {
     if (!existing) return null;
     const currentMetadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
       ? existing.metadata as Record<string, unknown> : {};
-    const metadata = { ...currentMetadata };
-    if (change.archived !== undefined) metadata.archived = change.archived;
-    if (change.complianceHold !== undefined) {
-      metadata.complianceHold = change.complianceHold;
-      metadata.complianceReason = change.complianceHold ? change.reason ?? currentMetadata.complianceReason ?? null : null;
-      metadata.complianceMatchedTerms = change.complianceHold ? currentMetadata.complianceMatchedTerms ?? [] : [];
+    const related = change.complianceHold === undefined ? [{ id, metadata: currentMetadata }] : rows<{ id: number; metadata: unknown }>(await tx.execute(sql`
+      SELECT ci.id, ci.metadata FROM catalog_items ci
+      WHERE ci.tenant_id = ${tenantId} AND ci.id IN (
+        SELECT co.catalog_item_id FROM catalogue_options co
+        WHERE co.tenant_id = ${tenantId} AND co.product_id = (
+          SELECT co0.product_id FROM catalogue_options co0
+          WHERE co0.tenant_id = ${tenantId} AND co0.catalog_item_id = ${id} LIMIT 1
+        )
+      ) FOR UPDATE
+    `)).map(row => ({ id: row.id, metadata: row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {} }));
+    const relatedRows = related.length ? related : [{ id, metadata: currentMetadata }];
+    let item = existing;
+    let changed = false;
+    for (const relatedRow of relatedRows) {
+      const metadata = { ...relatedRow.metadata };
+      if (change.archived !== undefined) metadata.archived = change.archived;
+      if (change.complianceHold !== undefined) {
+        const parentActionId = relatedRow.metadata.complianceProductHoldParentId;
+        if (change.complianceHold) {
+          if (parentActionId !== id) {
+            metadata.complianceProductHoldPrevious = {
+              complianceHold: relatedRow.metadata.complianceHold === true,
+              complianceReason: relatedRow.metadata.complianceReason ?? null,
+              complianceMatchedTerms: relatedRow.metadata.complianceMatchedTerms ?? [],
+            };
+          }
+          metadata.complianceProductHoldParentId = id;
+          metadata.complianceHold = true;
+          metadata.complianceReason = change.reason ?? relatedRow.metadata.complianceReason ?? null;
+          metadata.complianceMatchedTerms = relatedRow.metadata.complianceMatchedTerms ?? [];
+        } else if (parentActionId === id) {
+          const previous = relatedRow.metadata.complianceProductHoldPrevious && typeof relatedRow.metadata.complianceProductHoldPrevious === "object"
+            ? relatedRow.metadata.complianceProductHoldPrevious as Record<string, unknown> : {};
+          metadata.complianceHold = previous.complianceHold === true;
+          metadata.complianceReason = previous.complianceHold === true ? previous.complianceReason ?? null : null;
+          metadata.complianceMatchedTerms = previous.complianceHold === true ? previous.complianceMatchedTerms ?? [] : [];
+          delete metadata.complianceProductHoldParentId;
+          delete metadata.complianceProductHoldPrevious;
+        } else if (relatedRow.id === id) {
+          // A legacy/single-item hold can still be released without clearing
+          // independent holds on sibling variants.
+          metadata.complianceHold = false;
+          metadata.complianceReason = null;
+          metadata.complianceMatchedTerms = [];
+        }
+      }
+      if (change.reason !== undefined && change.complianceHold === undefined) metadata.lifecycleReason = change.reason;
+      const available = change.active ?? (relatedRow.id === id ? existing.isAvailable : undefined);
+      const metadataChanged = JSON.stringify(metadata) !== JSON.stringify(relatedRow.metadata);
+      if (!metadataChanged && (available === undefined || (relatedRow.id === id && available === existing.isAvailable))) continue;
+      changed = true;
+      const [updated] = await tx.update(catalogItemsTable).set({
+        ...(available !== undefined ? { isAvailable: available } : {}), metadata, updatedAt: new Date(),
+      }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, relatedRow.id))).returning();
+      if (relatedRow.id === id) item = updated;
     }
-    if (change.reason !== undefined && change.complianceHold === undefined) metadata.lifecycleReason = change.reason;
-    const available = change.active ?? existing.isAvailable;
-    if (available === existing.isAvailable && JSON.stringify(metadata) === JSON.stringify(currentMetadata)) return existing;
-    const [item] = await tx.update(catalogItemsTable).set({
-      ...(change.active !== undefined ? { isAvailable: available } : {}), metadata, updatedAt: new Date(),
-    }).where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.id, id))).returning();
+    if (!changed) return existing;
     await tx.insert(auditLogsTable).values({
       actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
-      action: "catalog.lifecycle_updated", tenantId, resourceType: "catalog_item", resourceId: String(id),
-      metadata: { ...change, previousComplianceHold: currentMetadata.complianceHold === true,
+      action: change.complianceHold === true ? "catalog.compliance_hold_placed"
+        : change.complianceHold === false ? "catalog.compliance_hold_released" : "catalog.lifecycle_updated",
+      tenantId, resourceType: "catalog_item", resourceId: String(id),
+      metadata: { ...change, affectedCatalogItemIds: relatedRows.map(row => row.id), previousComplianceHold: currentMetadata.complianceHold === true,
         source: input.source ?? "http" }, ipAddress: input.ipAddress ?? null,
     });
     return item;
@@ -631,7 +683,7 @@ export async function applyCatalogLifecycleTransition(input: {
 }
 
 // PATCH /api/admin/product-master/:id/lifecycle — independent lifecycle state changes.
-router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
+router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin"), async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) { res.status(400).json({ error: "Invalid product id" }); return; }
@@ -644,8 +696,8 @@ router.patch("/admin/product-master/:id/lifecycle", requireRole("global_admin", 
   if (!body.success || (body.data.active === undefined && body.data.archived === undefined && body.data.complianceHold === undefined)) {
     res.status(400).json({ error: body.success ? "A lifecycle state is required" : body.error.message }); return;
   }
-  if (body.data.complianceHold !== undefined && (!body.data.reason || (body.data.complianceHold === false && normalizeRole(req.dbUser!.role) !== "global_admin"))) {
-    res.status(403).json({ error: "Compliance action requires a reason; clearance requires Global Admin" }); return;
+  if (body.data.complianceHold !== undefined && (!body.data.reason || normalizeRole(req.dbUser!.role) !== "global_admin")) {
+    res.status(403).json({ error: "Compliance hold changes require Global Admin and an audit reason" }); return;
   }
   const updated = await applyCatalogLifecycleTransition({ tenantId, id, actor: req.dbUser!,
     change: body.data, ipAddress: req.ip, source: "http" });
@@ -797,7 +849,7 @@ router.get("/catalog/:id", async (req, res): Promise<void> => {
   const alavontOnly = actorRole !== "global_admin" && actorRole !== "admin";
   if (alavontOnly) {
     const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
-    if (row.isAvailable !== true || row.alavontInStock === false || metadata.archived === true || metadata.safeOnlyDuplicate === true || row.isWooManaged === true || row.isLocalAlavont === false) {
+    if (row.isAvailable !== true || row.alavontInStock === false || metadata.archived === true || metadata.complianceHold === true || metadata.safeOnlyDuplicate === true || row.isWooManaged === true || row.isLocalAlavont === false) {
       res.status(404).json({ error: "Not found" });
       return;
     }

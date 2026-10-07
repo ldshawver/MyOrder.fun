@@ -18,7 +18,8 @@ import productsRouter from "../catalogue-products";
 const { Client } = pg;
 const suffix = randomUUID().replaceAll("-", "").slice(0, 16);
 const identities = { adminA: `compliance_admin_a_${suffix}`, supervisorA: `compliance_supervisor_a_${suffix}`,
-  viewerA: `compliance_viewer_a_${suffix}`, adminB: `compliance_admin_b_${suffix}` };
+  viewerA: `compliance_viewer_a_${suffix}`, tenantAdminA: `compliance_tenant_admin_a_${suffix}`,
+  adminB: `compliance_admin_b_${suffix}` };
 let client: pg.Client;
 let tenantA: number;
 const fixtureIds: number[] = [];
@@ -72,7 +73,7 @@ async function relatedState(): Promise<string> {
 }
 
 async function auditCount(id: number) {
-  const result = await client.query("SELECT count(*)::int AS count FROM audit_logs WHERE tenant_id=$1 AND action='catalog.lifecycle_updated' AND resource_id=$2", [tenantA, String(id)]);
+  const result = await client.query("SELECT count(*)::int AS count FROM audit_logs WHERE tenant_id=$1 AND action IN ('catalog.lifecycle_updated','catalog.compliance_hold_placed','catalog.compliance_hold_released') AND resource_id=$2", [tenantA, String(id)]);
   return result.rows[0].count as number;
 }
 
@@ -89,10 +90,12 @@ async function auditCount(id: number) {
       VALUES($1,$2,$2,'global_admin',$3,'approved',true,'verified','active'),
       ($4,$5,$5,'supervisor',$3,'approved',true,'verified','active'),
       ($6,$7,$7,'user',$3,'approved',true,'verified','active'),
-      ($8,$9,$9,'admin',$10,'approved',true,'verified','active')`,
+      ($8,$9,$9,'admin',$3,'approved',true,'verified','active'),
+      ($10,$11,$11,'admin',$12,'approved',true,'verified','active')`,
     [identities.adminA, `${identities.adminA}@example.test`, tenantA,
       identities.supervisorA, `${identities.supervisorA}@example.test`,
       identities.viewerA, `${identities.viewerA}@example.test`,
+      identities.tenantAdminA, `${identities.tenantAdminA}@example.test`,
       identities.adminB, `${identities.adminB}@example.test`, tenantB]);
   }, 30_000);
   afterAll(async () => { if (client) await client.end(); });
@@ -145,11 +148,15 @@ async function auditCount(id: number) {
     const requests = [
       http.patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
       as("viewerA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("tenantAdminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("tenantAdminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: true, reason: "Not a Global Admin" }),
       as("adminB").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review" }),
+      as("supervisorA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: true, reason: "Supervisor cannot hold" }),
       as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", inventoryItemId: 999 }),
       as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", tenant_id: 999 }),
       as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", isAvailable: true }),
       as("adminA").patch(`/api/admin/product-master/${id}/lifecycle`).send({ complianceHold: false, reason: "Review", alavontInStock: true }),
+      as("adminA").patch(`/api/catalog/${id}`).send({ metadata: { complianceHold: false } }),
     ];
     for (const request of requests) {
       const response = await request;
@@ -157,6 +164,41 @@ async function auditCount(id: number) {
       expect(await row(id)).toEqual(before);
       expect(await auditCount(id)).toBe(audits);
     }
+  });
+
+  it("allows only Global Admin to place or release a product hold and propagates parent holds to every variant", async () => {
+    const parentId = await fixture("variant-parent-hold", { available: true, inStock: true });
+    const childId = await fixture("variant-child-hold", { available: true, inStock: true });
+    await client.query("UPDATE catalog_items SET metadata=metadata || '{\"complianceHold\":false,\"complianceReason\":null,\"complianceMatchedTerms\":[]}'::jsonb WHERE tenant_id=$1 AND id=$2", [tenantA, parentId]);
+    await client.query("UPDATE catalog_items SET metadata=metadata || '{\"complianceHold\":true,\"complianceReason\":\"Independent variant review\"}'::jsonb WHERE tenant_id=$1 AND id=$2", [tenantA, childId]);
+    const relation = await client.query("SELECT product_id FROM catalogue_options WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantA, parentId]);
+    const parentProductId = relation.rows[0].product_id as number;
+    await client.query("UPDATE catalogue_options SET product_id=$1,option_values=$2::jsonb,label='Color: Blue' WHERE tenant_id=$3 AND catalog_item_id=$4",
+      [parentProductId, JSON.stringify({ Color: "Blue" }), tenantA, childId]);
+    const childProduct = await client.query("SELECT product_id FROM catalogue_options WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantA, childId]);
+    await client.query("DELETE FROM catalogue_products WHERE tenant_id=$1 AND id=$2", [tenantA, childProduct.rows[0].product_id]);
+    const placed = await as("adminA").patch(`/api/admin/product-master/${parentId}/lifecycle`)
+      .send({ complianceHold: true, reason: "Safety review" });
+    expect(placed.status, placed.text).toBe(200);
+    const held = await client.query("SELECT id,metadata->>'complianceHold' AS held,metadata->>'complianceReason' AS reason FROM catalog_items WHERE tenant_id=$1 AND id=ANY($2::int[]) ORDER BY id", [tenantA, [parentId, childId]]);
+    expect(held.rows).toEqual([{ id: parentId, held: "true", reason: "Safety review" }, { id: childId, held: "true", reason: "Safety review" }]);
+    const placementAudit = await client.query("SELECT action,tenant_id,actor_id,resource_id,metadata->>'reason' AS reason FROM audit_logs WHERE tenant_id=$1 AND resource_id=$2 AND action='catalog.compliance_hold_placed' ORDER BY id DESC LIMIT 1", [tenantA, String(parentId)]);
+    expect(placementAudit.rows[0]).toMatchObject({ action: "catalog.compliance_hold_placed", tenant_id: tenantA,
+      actor_id: expect.any(Number), resource_id: String(parentId), reason: "Safety review" });
+    const visible = await as("adminA").get("/api/catalogue/products");
+    expect(visible.body.products.some((product: { options: Array<{ catalogItemId: number }> }) =>
+      product.options.some(option => option.catalogItemId === childId))).toBe(false);
+    const released = await as("adminA").patch(`/api/admin/product-master/${parentId}/lifecycle`)
+      .send({ complianceHold: false, reason: "Review cleared" });
+    expect(released.status).toBe(200);
+    const releaseAudit = await client.query("SELECT action,tenant_id,actor_id,resource_id,metadata->>'reason' AS reason FROM audit_logs WHERE tenant_id=$1 AND resource_id=$2 AND action='catalog.compliance_hold_released' ORDER BY id DESC LIMIT 1", [tenantA, String(parentId)]);
+    expect(releaseAudit.rows[0]).toMatchObject({ action: "catalog.compliance_hold_released", tenant_id: tenantA,
+      actor_id: expect.any(Number), resource_id: String(parentId), reason: "Review cleared" });
+    expect(await auditCount(parentId)).toBeGreaterThan(0);
+    const afterRelease = await client.query("SELECT id,metadata->>'complianceHold' AS held,is_available FROM catalog_items WHERE tenant_id=$1 AND id=ANY($2::int[]) ORDER BY id", [tenantA, [parentId, childId]]);
+    expect(afterRelease.rows).toEqual([{ id: parentId, held: "false", is_available: true }, { id: childId, held: "true", is_available: true }]);
+    const childAfter = await row(childId);
+    expect(childAfter.metadata.complianceReason).toBe("Independent variant review");
   });
 
   it("rejects malformed, nonexistent and invalid lifecycle requests without changing a held item or audit", async () => {
@@ -191,7 +233,7 @@ async function auditCount(id: number) {
     const audits = await auditCount(id);
     const trigger = `compliance_audit_fail_${suffix}`;
     await client.query(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-      IF NEW.action='catalog.lifecycle_updated' AND NEW.resource_id='${id}' THEN
+      IF NEW.action IN ('catalog.lifecycle_updated','catalog.compliance_hold_placed','catalog.compliance_hold_released') AND NEW.resource_id='${id}' THEN
         RAISE EXCEPTION 'isolated audit failure';
       END IF;
       RETURN NEW;

@@ -102,11 +102,15 @@ function EditDialog({
   onClose,
   onSave,
   isSaving,
+  canManageCompliance,
+  onManageCompliance,
 }: {
   item: Partial<CatalogProduct> | null;
   onClose: () => void;
   onSave: (data: Record<string, unknown>) => Promise<void>;
   isSaving: boolean;
+  canManageCompliance: boolean;
+  onManageCompliance: () => void;
 }) {
   const isNew = !item?.id;
   const isWoo = item?.isWooManaged === true;
@@ -212,6 +216,15 @@ function EditDialog({
         </DialogHeader>
 
         <div className="space-y-5 pt-1">
+          {!isNew && canManageCompliance && <section className="rounded-lg border border-orange-400/30 bg-orange-400/5 p-4 space-y-2" aria-label="Compliance">
+            <h3 className="font-semibold">Compliance</h3>
+            <p className="text-sm font-semibold">{item?.lifecycleStatus === "compliance_hold" ? "COMPLIANCE HOLD" : "No active compliance hold"}</p>
+            {item?.lifecycleStatus === "compliance_hold" && <p className="text-sm text-muted-foreground">{item.metadata?.complianceReason || "Reason not recorded"}</p>}
+            <p className="text-xs text-muted-foreground">Only Global Admin can change this audited server-side hold. Inventory is preserved.</p>
+            <Button type="button" variant={item?.lifecycleStatus === "compliance_hold" ? "destructive" : "outline"} onClick={onManageCompliance} disabled={requestPending}>
+              {item?.lifecycleStatus === "compliance_hold" ? "Release compliance hold" : "Place compliance hold"}
+            </Button>
+          </section>}
           {/* Alavont fields */}
           <div>
             <div className="text-xs font-bold uppercase tracking-widest text-blue-400 mb-3 flex items-center gap-1.5">
@@ -649,6 +662,8 @@ export default function AdminEditCatalog() {
           onClose={() => setEditItem(null)}
           onSave={async data => { await saveMutation.mutateAsync({ id: editItem.id, data }); }}
           isSaving={saveMutation.isPending}
+          canManageCompliance={isGlobalAdmin}
+          onManageCompliance={() => { if (editItem) { setComplianceItem(editItem as CatalogProduct); setComplianceReason(""); setComplianceError(null); } }}
         />
       )}
 
