@@ -29,6 +29,7 @@ vi.mock("@workspace/db", () => {
     wcStoreUrl: "wcStoreUrl",
     wcConsumerKey: "wcConsumerKey",
     wcConsumerSecret: "wcConsumerSecret",
+    wcWebhookSecret: "wcWebhookSecret",
     wcEnabled: "wcEnabled",
     _: { name: "admin_settings" },
   };
@@ -47,7 +48,7 @@ vi.mock("@workspace/db", () => {
   const insert = vi.fn(() => ({
     values: (vals: Record<string, unknown>) => ({
       onConflictDoNothing: () => {
-        if (!state.row) state.row = { id: nextId++, tenantId: vals.tenantId, wcStoreUrl: "https://lucifercruz.com", wcConsumerKey: null, wcConsumerSecret: null, wcEnabled: true };
+        if (!state.row) state.row = { id: nextId++, tenantId: vals.tenantId, wcStoreUrl: "", wcConsumerKey: null, wcConsumerSecret: null, wcWebhookSecret: null, wcEnabled: true };
         return { returning: () => Promise.resolve([state.row]) };
       },
       returning: () => {
@@ -67,9 +68,10 @@ vi.mock("@workspace/db", () => {
           keepAuditToken: true,
           keepFailedPaymentLogs: true,
           receiptLineNameMode: "lucifer_only",
-          wcStoreUrl: "https://lucifercruz.com",
+          wcStoreUrl: "",
           wcConsumerKey: null,
           wcConsumerSecret: null,
+          wcWebhookSecret: null,
           wcEnabled: true,
           updatedAt: new Date(),
           ...vals,
@@ -129,7 +131,7 @@ vi.mock("../../lib/singleTenant", () => ({
 }));
 
 import settingsRouter from "../settings";
-import woocommerceRouter from "../woocommerce";
+import woocommerceRouter, { pickWooCategory } from "../woocommerce";
 
 function makeApp() {
   const app = express();
@@ -180,6 +182,42 @@ describe("woocommerce settings save/load/sync", () => {
     expect(JSON.stringify(getRes.body)).not.toContain("cs_supersecret_secret");
   });
 
+  it("allows updating a tenant store URL while retaining its encrypted credentials", async () => {
+    const app = makeApp();
+    await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://first.example", wcConsumerKey: "ck_kept", wcConsumerSecret: "cs_kept" });
+    const priorKey = state.row?.wcConsumerKey;
+    const priorSecret = state.row?.wcConsumerSecret;
+
+    const updated = await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://shop.lucifercruz.com/", enabled: true });
+    expect(updated.status).toBe(200);
+    expect(updated.body.wcStoreUrl).toBe("https://shop.lucifercruz.com");
+    expect(state.row?.wcConsumerKey).toBe(priorKey);
+    expect(state.row?.wcConsumerSecret).toBe(priorSecret);
+    expect(JSON.stringify(updated.body)).not.toContain("ck_kept");
+    expect(JSON.stringify(updated.body)).not.toContain("cs_kept");
+  });
+
+  it("uses the most specific Woo category generically, including Apparel & Accessories", () => {
+    expect(pickWooCategory([{ name: "Clothing" }, { name: "Apparel & Accessories" }])).toBe("Apparel & Accessories");
+    expect(pickWooCategory([{ name: "Books" }, { name: "Fantasy" }])).toBe("Fantasy");
+    expect(pickWooCategory([])).toBe("Uncategorized");
+  });
+
+  it("stores the Woo webhook signing secret encrypted and returns only a configured flag", async () => {
+    const app = makeApp();
+    const response = await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://shop.example", wcConsumerKey: "ck_safe", wcConsumerSecret: "cs_safe", wcWebhookSecret: "webhook-secret-value" });
+    expect(response.status).toBe(200);
+    expect(state.row?.wcWebhookSecret).not.toBe("webhook-secret-value");
+    expect(JSON.stringify(response.body)).not.toContain("webhook-secret-value");
+    expect(response.body.wcWebhookSecretSet).toBe(true);
+    const loaded = await supertest(app).get("/api/admin/settings/woocommerce");
+    expect(loaded.body.hasWebhookSecret).toBe(true);
+    expect(JSON.stringify(loaded.body)).not.toContain("webhook-secret-value");
+  });
+
   it("test-connection returns 412 JSON when no creds are saved", async () => {
     const app = makeApp();
     const res = await supertest(app)
@@ -190,6 +228,17 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.status).toBe(412);
     expect(typeof res.body.message).toBe("string");
+  });
+
+  it("does not substitute a generic or environment Woo URL when tenant configuration is empty", async () => {
+    const app = makeApp();
+    const settings = await supertest(app).get("/api/admin/settings/woocommerce");
+    expect(settings.body.wcStoreUrl).toBe("");
+    await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcConsumerKey: "ck_saved", wcConsumerSecret: "cs_saved" });
+    const testConnection = await supertest(app).post("/api/admin/woocommerce/test").send({});
+    expect(testConnection.status).toBe(412);
+    expect(vi.mocked(fetchWooSafely)).not.toHaveBeenCalled();
   });
 
   it("rejects unknown configuration fields without persisting or echoing them", async () => {

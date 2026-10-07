@@ -117,16 +117,6 @@ export function wooFailureResponse(error: unknown): { status: number; body: { ok
   return { status: mapped.status, body: { ok: false, code: mapped.code, message: mapped.message, upstreamStatus: failure.upstreamStatus } };
 }
 
-const LC_MAIN_CATEGORIES = [
-  "Anal Play",
-  "Apparel & Accessories",
-  "Cock & Ball",
-  "Kink & Fetish",
-  "Self Care & Ambiance",
-  "Couples Play",
-  "Membership",
-];
-
 function stripHtml(html: string): string {
   return html
     .replace(/<[^>]+>/g, " ")
@@ -144,11 +134,13 @@ function decodeHtmlEntities(value: string): string {
   return stripHtml(value);
 }
 
-function pickWooCategory(categories: Array<{ name?: string }> | undefined): string {
+export function pickWooCategory(categories: Array<{ name?: string }> | undefined): string {
   const names = (categories ?? [])
     .map((cat) => decodeHtmlEntities(cat.name?.trim() || ""))
     .filter(Boolean);
-  return names.find((name) => LC_MAIN_CATEGORIES.includes(name)) || names[0] || "Uncategorized";
+  // Woo commonly returns ancestor categories before their children; preserve
+  // the most specific actual category without a merchant-specific allowlist.
+  return names.at(-1) || "Uncategorized";
 }
 
 import { fetchWooSafely } from "../lib/wooSafeHttp";
@@ -192,6 +184,13 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
   }
 
   return allProducts;
+}
+
+async function fetchWooProduct(storeUrl: string, productId: string, consumerKey: string, consumerSecret: string): Promise<WooProduct> {
+  const response = await fetchWoo(storeUrl.replace(/\/$/, ""), `/wp-json/wc/v3/products/${encodeURIComponent(productId)}`, consumerKey, consumerSecret);
+  const product = await response.json().catch(() => { throw new WooCommerceUpstreamError("malformed"); }) as WooProduct;
+  if (!product || String(product.id) !== productId || !product.name) throw new WooCommerceUpstreamError("malformed");
+  return product;
 }
 
 async function fetchWooVariations(storeUrl: string, productId: string, consumerKey: string, consumerSecret: string): Promise<WooVariation[]> {
@@ -292,7 +291,7 @@ async function syncWooProductVariants(input: {
 // Sync handler — credentials are always loaded (decrypted) from the DB
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
-export async function syncHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
+export async function syncHandler(req: import("express").Request, res: import("express").Response, targetWooProductId?: string): Promise<void> {
     try {
       await ensureWooCatalogSchema();
     } catch {
@@ -309,8 +308,12 @@ export async function syncHandler(req: import("express").Request, res: import("e
     const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";
-    const storeUrl = saved.storeUrl || "https://lucifercruz.com";
+    const storeUrl = saved.storeUrl.trim();
 
+    if (!storeUrl) {
+      res.status(412).json({ error: "No WooCommerce Store URL saved. Configure the tenant Store URL in Admin Settings → WooCommerce." });
+      return;
+    }
     if (!consumerKey || !consumerSecret) {
       res.status(412).json({ error: "No WooCommerce credentials saved. Go to Admin Settings → WooCommerce and save your API key and secret first." });
       return;
@@ -318,7 +321,9 @@ export async function syncHandler(req: import("express").Request, res: import("e
 
     let products: WooProduct[];
     try {
-      products = await fetchAllWooProducts(storeUrl, consumerKey, consumerSecret);
+      products = targetWooProductId
+        ? [await fetchWooProduct(storeUrl, targetWooProductId, consumerKey, consumerSecret)]
+        : await fetchAllWooProducts(storeUrl, consumerKey, consumerSecret);
     } catch (err) {
       const failure = wooFailureResponse(err);
       res.status(failure.status).json(failure.body);
@@ -440,11 +445,34 @@ export async function syncHandler(req: import("express").Request, res: import("e
     });
 }
 
+/** Internal verified-webhook reconciliation reuses the normal tenant-scoped importer. */
+export async function reconcileWooWebhookProduct(tenantId: number, wooProductId: string, topic: string): Promise<void> {
+  if (topic === "product.deleted") {
+    await db.execute(sql`UPDATE catalogue_options co SET active = false, updated_at = now()
+      FROM catalog_items ci WHERE ci.tenant_id = ${tenantId} AND ci.woo_product_id = ${wooProductId}
+        AND ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id`);
+    await db.update(catalogItemsTable).set({ isAvailable: false, updatedAt: new Date() })
+      .where(and(eq(catalogItemsTable.tenantId, tenantId), eq(catalogItemsTable.wooProductId, wooProductId)));
+    return;
+  }
+  const responseState: { status: number; body: unknown } = { status: 200, body: null };
+  const fakeReq = { authorizedTenantId: tenantId } as import("express").Request;
+  const fakeRes = {
+    status(code: number) { responseState.status = code; return this; },
+    json(body: unknown) { responseState.body = body; return this; },
+  } as unknown as import("express").Response;
+  await syncHandler(fakeReq, fakeRes, wooProductId);
+  const body = responseState.body as { errors?: unknown[]; skipped?: number } | null;
+  if (responseState.status >= 400 || (body?.errors?.length ?? 0) > 0 || (body?.skipped ?? 0) > 0) {
+    throw new Error("woo_product_reconciliation_failed");
+  }
+}
+
 // Both URLs are mounted on the SAME shared handler (no internal req.url
 // rewrites). The newer `/sync-products` name is preferred; `/sync` is kept
 // for back-compat with already-deployed clients.
-router.post("/admin/woocommerce/sync", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, syncHandler);
-router.post("/admin/woocommerce/sync-products", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, syncHandler);
+router.post("/admin/woocommerce/sync", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, (req, res) => syncHandler(req, res));
+router.post("/admin/woocommerce/sync-products", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, (req, res) => syncHandler(req, res));
 
 // GET /api/admin/woocommerce/status — check if WC credentials are configured
 router.get(
@@ -453,12 +481,12 @@ router.get(
   requireTenantAssignedOrGlobal,
   async (req, res): Promise<void> => {
     const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
-    const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
-    const hasSecret = !!(s.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET);
+    const hasKey = !!s.wcConsumerKey;
+    const hasSecret = !!s.wcConsumerSecret;
     res.json({
-      configured: hasKey && hasSecret,
+      configured: !!s.wcStoreUrl?.trim() && hasKey && hasSecret,
       enabled: s.wcEnabled ?? true,
-      storeUrl: s.wcStoreUrl ?? process.env.WC_STORE_URL ?? "https://lucifercruz.com",
+      storeUrl: s.wcStoreUrl ?? "",
     });
   }
 );
@@ -483,16 +511,21 @@ router.post(
     // not fall back to env vars (so missing persisted config surfaces
     // as a clear 412 instead of silently passing).
     const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
-    const storeUrl = saved.storeUrl ?? "https://lucifercruz.com";
+    const storeUrl = saved.storeUrl.trim();
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";
 
-    if (!consumerKey || !consumerSecret) {
+    if (!storeUrl) {
       res.status(412).json({
         ok: false,
         status: 412,
-        message: "No WooCommerce credentials saved.",
+        code: "woocommerce_store_url_missing",
+        message: "No WooCommerce Store URL saved.",
       });
+      return;
+    }
+    if (!consumerKey || !consumerSecret) {
+      res.status(412).json({ ok: false, status: 412, code: "woocommerce_credentials_missing", message: "No WooCommerce credentials saved." });
       return;
     }
 

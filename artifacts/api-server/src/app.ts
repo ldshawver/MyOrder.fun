@@ -91,6 +91,7 @@ app.use(cors({ credentials: true, origin: true }));
 app.use("/api/webhooks/clerk", express.raw({ type: "application/json" }));
 app.use("/api/webhooks/paypal", express.raw({ type: "application/json", limit: "256kb" }));
 app.use("/api/webhooks/uber-direct", express.raw({ type: "application/json", limit: "256kb" }));
+app.use("/api/webhooks/woocommerce", express.raw({ type: "application/json", limit: "1mb" }));
 
 // ── Body parsers ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "2mb" }));

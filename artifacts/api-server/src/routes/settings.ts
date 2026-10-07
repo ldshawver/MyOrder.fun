@@ -66,9 +66,10 @@ async function ensureAdminSettingsSchema(): Promise<void> {
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "keep_failed_payment_logs" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "petty_cash" numeric(10, 2) DEFAULT '0'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "receipt_line_name_mode" text NOT NULL DEFAULT 'lucifer_only'`,
-    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_store_url" text DEFAULT 'https://lucifercruz.com'`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_store_url" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_consumer_key" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_consumer_secret" text`,
+    sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_webhook_secret" text`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "wc_enabled" boolean NOT NULL DEFAULT true`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "order_routing_rule" text NOT NULL DEFAULT 'round_robin'`,
     sql`ALTER TABLE "admin_settings" ADD COLUMN IF NOT EXISTS "default_eta_minutes" integer NOT NULL DEFAULT 30`,
@@ -130,9 +131,10 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     catalogBannerImages: parseCatalogBannerImages(s.catalogBannerImages),
     // WooCommerce — secrets are returned as a boolean mask only,
     // never echoed back to the client in plaintext.
-    wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
+    wcStoreUrl: s.wcStoreUrl ?? "",
     wcConsumerKeySet: !!s.wcConsumerKey,
     wcConsumerSecretSet: !!s.wcConsumerSecret,
+    wcWebhookSecretSet: !!s.wcWebhookSecret,
     wcEnabled: s.wcEnabled ?? true,
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
     shiftLocationOptions: parseShiftLocations(csrSettings.shiftLocationOptions),
@@ -338,7 +340,7 @@ async function getDecryptedWooCreds(tenantId: number): Promise<{
 }> {
   const s = await getOrCreateSettings({ tenantId });
   return {
-    storeUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
+    storeUrl: s.wcStoreUrl ?? "",
     consumerKey: safeDecrypt(s.wcConsumerKey),
     consumerSecret: safeDecrypt(s.wcConsumerSecret),
     enabled: s.wcEnabled ?? true,
@@ -625,13 +627,15 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
 router.get("/admin/settings/woocommerce", requireRole("admin"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json({
-    wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
-    wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
+    wc_store_url: s.wcStoreUrl ?? "",
+    wcStoreUrl: s.wcStoreUrl ?? "",
     enabled: s.wcEnabled ?? true,
     hasConsumerKey: !!s.wcConsumerKey,
     hasConsumerSecret: !!s.wcConsumerSecret,
+    hasWebhookSecret: !!s.wcWebhookSecret,
     wcConsumerKeySet: !!s.wcConsumerKey,
     wcConsumerSecretSet: !!s.wcConsumerSecret,
+    wcWebhookSecretSet: !!s.wcWebhookSecret,
     wcEnabled: s.wcEnabled ?? true,
   });
 });
@@ -648,6 +652,8 @@ const WooCredentialsBody = z.object({
   wc_consumer_key: z.string().max(256).optional(),
   wcConsumerSecret: z.string().max(256).optional(),
   wc_consumer_secret: z.string().max(256).optional(),
+  wcWebhookSecret: z.string().max(4096).optional(),
+  wc_webhook_secret: z.string().max(4096).optional(),
   enabled: z.boolean().optional(),
   wcEnabled: z.boolean().optional(),
 }).strict();
@@ -661,6 +667,7 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAss
     const storeUrl = body.wcStoreUrl ?? body.wc_store_url;
     const consumerKey = body.wcConsumerKey ?? body.wc_consumer_key;
     const consumerSecret = body.wcConsumerSecret ?? body.wc_consumer_secret;
+    const webhookSecret = body.wcWebhookSecret ?? body.wc_webhook_secret;
     const enabled = body.enabled ?? body.wcEnabled;
 
     const update: Record<string, unknown> = {};
@@ -679,6 +686,13 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAss
       const trimmed = String(consumerSecret).trim();
       update["wcConsumerSecret"] = trimmed ? encrypt(trimmed) : null;
     }
+    if (webhookSecret !== undefined && webhookSecret.trim()) {
+      if (!hasConfiguredSettingsEncryptionKey()) {
+        res.status(503).json({ error: "Tenant secret storage is unavailable until the settings encryption key is configured." });
+        return;
+      }
+      update["wcWebhookSecret"] = encrypt(webhookSecret.trim());
+    }
     if (enabled !== undefined) {
       update["wcEnabled"] = !!enabled;
     }
@@ -694,7 +708,7 @@ router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAss
       .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, req.authorizedTenantId!)))
       .returning();
     if (!updated) { res.status(409).json({ error: "WooCommerce configuration could not be saved" }); return; }
-    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.woocommerce.credentials_changed", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { keyAction: consumerKey === undefined ? "unchanged" : consumerKey.trim() ? existing.wcConsumerKey ? "replaced" : "created" : "removed", secretAction: consumerSecret === undefined ? "unchanged" : consumerSecret.trim() ? existing.wcConsumerSecret ? "replaced" : "created" : "removed" }, ipAddress: req.ip });
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.woocommerce.credentials_changed", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { keyAction: consumerKey === undefined ? "unchanged" : consumerKey.trim() ? existing.wcConsumerKey ? "replaced" : "created" : "removed", secretAction: consumerSecret === undefined ? "unchanged" : consumerSecret.trim() ? existing.wcConsumerSecret ? "replaced" : "created" : "removed", webhookSecretUpdated: Boolean(webhookSecret?.trim()) }, ipAddress: req.ip });
     res.json(mapSettings(updated));
   } catch {
     res.status(500).json({ error: "Failed to save WooCommerce configuration" });

@@ -75,11 +75,11 @@ async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
     const [row] = await db.select({ enabled: adminSettingsTable.wcEnabled, storeUrl: adminSettingsTable.wcStoreUrl,
       consumerKey: adminSettingsTable.wcConsumerKey, consumerSecret: adminSettingsTable.wcConsumerSecret })
       .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
-    if (!row || row.enabled === false || !row.consumerKey || !row.consumerSecret) return "missing_config";
+    if (!row || row.enabled === false || !row.storeUrl?.trim() || !row.consumerKey || !row.consumerSecret) return "missing_config";
     const consumerKey = safeDecrypt(row.consumerKey);
     const consumerSecret = safeDecrypt(row.consumerSecret);
     if (!consumerKey || !consumerSecret) return "error";
-    const response = await fetchWooSafely(row.storeUrl ?? "https://lucifercruz.com", "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
+    const response = await fetchWooSafely(row.storeUrl, "/wp-json/wc/v3/system_status", consumerKey, consumerSecret);
     return response.ok ? "connected" : "error";
   } catch { return "error"; }
 }

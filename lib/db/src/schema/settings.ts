@@ -40,9 +40,11 @@ export const adminSettingsTable = pgTable("admin_settings", {
   receiptLineNameMode: text("receipt_line_name_mode").notNull().default("lucifer_only"),
   // WooCommerce integration credentials.
   // Consumer key/secret are stored as AES-256-GCM ciphertext (see api-server lib/crypto.ts).
-  wcStoreUrl: text("wc_store_url").default("https://lucifercruz.com"),
+  // Store origins are tenant-owned configuration. No merchant-specific default.
+  wcStoreUrl: text("wc_store_url"),
   wcConsumerKey: text("wc_consumer_key"),
   wcConsumerSecret: text("wc_consumer_secret"),
+  wcWebhookSecret: text("wc_webhook_secret"),
   wcEnabled: boolean("wc_enabled").notNull().default(true),
   // Task #12: Order routing rule
   //   round_robin | least_recent_order | supervisor_manual_assignment

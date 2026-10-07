@@ -18,7 +18,7 @@ const adminSettingsMigration = readFileSync(
 
 test("tenant slug uniqueness follows the existing migration lineage", () => {
   const current = journal.entries.find((entry: { idx: number }) => entry.idx === 48);
-  const appended = journal.entries.at(-1);
+  const appended = journal.entries.find((entry: { idx: number }) => entry.idx === 49);
   assert.equal(journal.entries.find((entry: { idx: number }) => entry.idx === 47).tag, "0073_admin_settings_tenant_uniqueness");
   assert.deepEqual(current, {
     idx: 48,

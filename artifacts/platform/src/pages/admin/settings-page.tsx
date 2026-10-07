@@ -86,6 +86,7 @@ type AdminSettings = {
   wcStoreUrl: string;
   wcConsumerKeySet: boolean;
   wcConsumerSecretSet: boolean;
+  wcWebhookSecretSet: boolean;
   wcEnabled: boolean;
   aiConciergePrompt: string | null;
   aiConciergePromptIsDefault: boolean;
@@ -121,9 +122,10 @@ const DEFAULTS: AdminSettings = {
   keepAuditToken: true,
   keepFailedPaymentLogs: true,
   receiptLineNameMode: "lucifer_only",
-  wcStoreUrl: "https://lucifercruz.com",
+  wcStoreUrl: "",
   wcConsumerKeySet: false,
   wcConsumerSecretSet: false,
+  wcWebhookSecretSet: false,
   wcEnabled: true,
   aiConciergePrompt: null,
   aiConciergePromptIsDefault: true,
@@ -147,9 +149,10 @@ export default function AdminSettingsPage() {
   const [error, setError] = useState<string | null>(null);
 
   // WooCommerce credential form state (separate from general settings)
-  const [wcStoreUrl, setWcStoreUrl] = useState("https://lucifercruz.com");
+  const [wcStoreUrl, setWcStoreUrl] = useState("");
   const [wcKey, setWcKey] = useState("");
   const [wcSecret, setWcSecret] = useState("");
+  const [wcWebhookSecret, setWcWebhookSecret] = useState("");
   const [showWcSecret, setShowWcSecret] = useState(false);
   const [wcSaving, setWcSaving] = useState(false);
   const [wcSaved, setWcSaved] = useState(false);
@@ -217,12 +220,13 @@ export default function AdminSettingsPage() {
           const wc = await wcRes.json();
           merged = {
             ...merged,
-            wcStoreUrl: wc.wcStoreUrl ?? wc.wc_store_url ?? "https://lucifercruz.com",
+            wcStoreUrl: wc.wcStoreUrl ?? wc.wc_store_url ?? "",
             wcConsumerKeySet: !!(wc.wcConsumerKeySet ?? wc.hasConsumerKey),
             wcConsumerSecretSet: !!(wc.wcConsumerSecretSet ?? wc.hasConsumerSecret),
+            wcWebhookSecretSet: !!(wc.wcWebhookSecretSet ?? wc.hasWebhookSecret),
             wcEnabled: wc.wcEnabled ?? wc.enabled ?? true,
           };
-          setWcStoreUrl(merged.wcStoreUrl ?? "https://lucifercruz.com");
+          setWcStoreUrl(merged.wcStoreUrl ?? "");
         }
         setSettings(s => ({
           ...s,
@@ -343,8 +347,16 @@ export default function AdminSettingsPage() {
   }
 
   async function saveWooCredentials() {
-    if (!wcKey || !wcSecret) {
+    if ((!settings.wcConsumerKeySet || !settings.wcConsumerSecretSet) && (!wcKey.trim() || !wcSecret.trim())) {
       setWcError("Both Consumer Key and Consumer Secret are required.");
+      return;
+    }
+    if (Boolean(wcKey.trim()) !== Boolean(wcSecret.trim())) {
+      setWcError("Enter both consumer credentials together, or leave both blank to keep the saved pair.");
+      return;
+    }
+    if (!wcStoreUrl.trim()) {
+      setWcError("Enter the WooCommerce Store URL.");
       return;
     }
     setWcSaving(true);
@@ -354,7 +366,7 @@ export default function AdminSettingsPage() {
       const res = await fetch("/api/admin/settings/woocommerce", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ wcStoreUrl, wcConsumerKey: wcKey, wcConsumerSecret: wcSecret, enabled: settings.wcEnabled }),
+        body: JSON.stringify({ wcStoreUrl, ...(wcKey.trim() && wcSecret.trim() ? { wcConsumerKey: wcKey, wcConsumerSecret: wcSecret } : {}), ...(wcWebhookSecret.trim() ? { wcWebhookSecret } : {}), enabled: settings.wcEnabled }),
       });
       const contentType = res.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) {
@@ -363,9 +375,11 @@ export default function AdminSettingsPage() {
       }
       const data = await res.json();
       if (!res.ok) { setWcError(data.error ?? "Save failed"); return; }
-      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet, wcEnabled: data.wcEnabled ?? s.wcEnabled }));
+      setSettings(s => ({ ...s, wcStoreUrl: data.wcStoreUrl, wcConsumerKeySet: data.wcConsumerKeySet, wcConsumerSecretSet: data.wcConsumerSecretSet, wcWebhookSecretSet: data.wcWebhookSecretSet, wcEnabled: data.wcEnabled ?? s.wcEnabled }));
+      setWcStoreUrl(data.wcStoreUrl ?? wcStoreUrl.trim());
       setWcKey("");
       setWcSecret("");
+      setWcWebhookSecret("");
       setWcSaved(true);
       setTimeout(() => setWcSaved(false), 3000);
     } catch (e) {
@@ -1018,7 +1032,7 @@ export default function AdminSettingsPage() {
                   <Input
                     value={wcStoreUrl}
                     onChange={e => setWcStoreUrl(e.target.value)}
-                    placeholder="https://lucifercruz.com"
+                    placeholder="https://your-store.example"
                     className="h-9 text-sm rounded-xl bg-background/50"
                   />
                 </div>
@@ -1057,15 +1071,30 @@ export default function AdminSettingsPage() {
                   </div>
                 </div>
 
+                <div>
+                  <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1 block">
+                    WooCommerce Webhook Secret {settings.wcWebhookSecretSet && <span className="text-green-400 normal-case font-normal">(saved — leave blank to retain)</span>}
+                  </label>
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={wcWebhookSecret}
+                    onChange={e => setWcWebhookSecret(e.target.value)}
+                    placeholder={settings.wcWebhookSecretSet ? "••••••••••••••••" : "Enter the secret configured on the Woo webhook"}
+                    className="h-9 text-sm rounded-xl bg-background/50 font-mono text-xs"
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">The signing secret is encrypted for this tenant and never displayed after saving.</p>
+                </div>
+
                 <div className="text-[11px] text-muted-foreground leading-relaxed bg-muted/20 rounded-xl p-3 border border-border/30">
                   <strong>How to get your keys:</strong> WooCommerce → Settings → Advanced → REST API → Add Key. Set Permissions to <strong>Read</strong>.{" "}
                   <a
-                    href="https://lucifercruz.com/wp-admin/admin.php?page=wc-settings&tab=advanced&section=keys"
+                    href={(() => { try { return new URL("/wp-admin/admin.php?page=wc-settings&tab=advanced&section=keys", wcStoreUrl).toString(); } catch { return undefined; } })()}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="underline text-primary"
                   >
-                    Open WooCommerce settings ↗
+                    Open this store’s WooCommerce settings ↗
                   </a>
                 </div>
 
@@ -1082,7 +1111,7 @@ export default function AdminSettingsPage() {
                 <div className="flex flex-wrap gap-2 items-center">
                   <Button
                     onClick={saveWooCredentials}
-                    disabled={wcSaving || !wcKey || !wcSecret}
+                    disabled={wcSaving || !wcStoreUrl.trim() || ((!settings.wcConsumerKeySet || !settings.wcConsumerSecretSet) && (!wcKey.trim() || !wcSecret.trim())) || (Boolean(wcKey.trim()) !== Boolean(wcSecret.trim()))}
                     className="gap-2 rounded-xl"
                   >
                     {wcSaving ? <RefreshCw size={14} className="animate-spin" /> : wcSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
