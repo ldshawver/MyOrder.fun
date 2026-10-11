@@ -1,9 +1,9 @@
 /** Runs only against an explicitly named disposable, migrated PostgreSQL clone. */
 import type { Server } from "node:http";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import supertest from "supertest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 const people = vi.hoisted(() => ({
   customer: { clerkId: "tax_e2e_customer", email: "customer@tax-e2e.test", role: "user" },
@@ -28,9 +28,9 @@ vi.mock("@clerk/express", () => ({
 }));
 
 import app from "../app";
-import { adminSettingsTable, auditLogsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerCreditAccountsTable, customerCreditLedgerTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentWebhookEventsTable, pool, taxConfigurationsTable, tenantSettingsTable, tenantsTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, uberDirectSettingsTable, usersTable } from "@workspace/db";
+import { adminSettingsTable, auditLogsTable, catalogItemsTable, cashLedgerEntriesTable, csrBoxesTable, customerCreditAccountsTable, customerCreditLedgerTable, customerDisclaimerAcceptancesTable, db, inventoryBalancesTable, inventoryLocationsTable, labTechShiftsTable, orderItemsTable, ordersTable, paymentAttemptsTable, paymentCapturesTable, paymentWebhookEventsTable, pool, taxConfigurationsTable, tenantSettingsTable, tenantsTable, uberDeliveryFulfillmentsTable, uberDeliveryQuotesTable, uberDirectSettingsTable, usersTable } from "@workspace/db";
 import { PaymentService } from "../payments/service";
-import { PayPalProvider } from "../payments/paypal";
+import { PayPalProvider, PayPalProviderError } from "../payments/paypal";
 import { encrypt } from "../lib/crypto";
 import { normalizeUberAddress } from "../lib/uberDirect";
 import { dispatchPendingUberDelivery, reconcileUberDelivery, requestUberCancellation } from "../lib/uberFulfillment";
@@ -52,10 +52,10 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
   });
 
   beforeAll(async () => {
-    if (!/^postgresql:\/\/[^@]+@(?:127\.0\.0\.1|localhost):\d{4,5}\/myorder_tax_production_like$/.test(process.env.DATABASE_URL ?? "")
+    if (!/^postgresql:\/\/[^@]+@(?:127\.0\.0\.1|localhost):55432\/myorder_tax_final$/.test(process.env.DATABASE_URL ?? "")
       || process.env.TEST_DISPOSABLE_CLONE !== "I_UNDERSTAND_THIS_CLONE_IS_TRUNCATED") throw new Error("Explicit disposable tax clone required");
     const target = await db.execute(sql`SELECT current_database() AS name`);
-    if (target.rows[0]?.name !== "myorder_tax_production_like") throw new Error("Disposable tax clone required");
+    if (target.rows[0]?.name !== "myorder_tax_final") throw new Error("Disposable tax clone required");
     await db.execute(sql`TRUNCATE TABLE ${tenantsTable} RESTART IDENTITY CASCADE`);
     const [tenant] = await db.insert(tenantsTable).values({ name: "Tax E2E Tenant", slug: "tax-e2e-tenant", status: "active" }).returning();
     tenantId = tenant.id;
@@ -76,9 +76,9 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const [box] = await db.insert(csrBoxesTable).values({ tenantId: tenant.id, slug: "sales-box-1", label: "CSR Sales Box 1", displayOrder: 1 }).returning();
     const [location] = await db.insert(inventoryLocationsTable).values({ tenantId: tenant.id, type: "csr_box", csrBoxId: box.id, name: "CSR Sales Box 1", displayOrder: 1 }).returning();
     await db.insert(labTechShiftsTable).values({ tenantId: tenant.id, techId: csr.id, status: "active", boxAssignmentId: box.slug, cashBankStart: "100.00", setupJson: { boxAssignmentId: box.slug, inventoryConfirmed: true, parLevelsConfirmed: true, printerAssigned: true } });
-    const [item] = await db.insert(catalogItemsTable).values({ tenantId: tenant.id, name: "Taxable $100 Fixture", description: "Neutral test product", category: "Fixtures", sku: "TAX-E2E-100", price: "100.00", isTaxable: true, stockQuantity: "10", inventoryAmount: "10", isAvailable: true, alavontName: "Taxable $100 Fixture", alavontDescription: "Neutral test product", alavontCategory: "Fixtures", alavontId: "TAX-E2E-100", alavontInStock: true, luciferCruzName: "Taxable $100 Fixture", luciferCruzDescription: "Neutral test product", luciferCruzCategory: "Fixtures", displayName: "Taxable $100 Fixture", displayDescription: "Neutral test product", displayCategory: "Fixtures", merchantBrandName: "Lucifer Cruz", customerSafeName: "Taxable $100 Fixture", customerSafeDescription: "Neutral test product", merchantName: "Taxable $100 Fixture", merchantDescription: "Neutral test product", merchantCategory: "Fixtures", merchantSku: "TAX-E2E-100", merchantBrand: "alavont", merchantProductSource: "local_mapped", merchantProcessingMode: "mapped_lucifer", receiptName: "Taxable $100 Fixture", labelName: "Taxable $100 Fixture", labName: "Taxable $100 Fixture" }).returning();
+    const [item] = await db.insert(catalogItemsTable).values({ tenantId: tenant.id, name: "Taxable $100 Fixture", description: "Neutral test product", category: "Fixtures", sku: "TAX-E2E-100", price: "100.00", isTaxable: true, stockQuantity: "1000", inventoryAmount: "1000", isAvailable: true, alavontName: "Taxable $100 Fixture", alavontDescription: "Neutral test product", alavontCategory: "Fixtures", alavontId: "TAX-E2E-100", alavontInStock: true, luciferCruzName: "Taxable $100 Fixture", luciferCruzDescription: "Neutral test product", luciferCruzCategory: "Fixtures", displayName: "Taxable $100 Fixture", displayDescription: "Neutral test product", displayCategory: "Fixtures", merchantBrandName: "Lucifer Cruz", customerSafeName: "Taxable $100 Fixture", customerSafeDescription: "Neutral test product", merchantName: "Taxable $100 Fixture", merchantDescription: "Neutral test product", merchantCategory: "Fixtures", merchantSku: "TAX-E2E-100", merchantBrand: "alavont", merchantProductSource: "local_mapped", merchantProcessingMode: "mapped_lucifer", receiptName: "Taxable $100 Fixture", labelName: "Taxable $100 Fixture", labName: "Taxable $100 Fixture" }).returning();
     catalogItemId = item.id;
-    await db.insert(inventoryBalancesTable).values({ tenantId: tenant.id, productId: item.id, locationId: location.id, quantityOnHand: "10", parLevel: "2" });
+    await db.insert(inventoryBalancesTable).values({ tenantId: tenant.id, productId: item.id, locationId: location.id, quantityOnHand: "1000", parLevel: "2" });
     server = app.listen(0);
     request = supertest(server);
   }, 60_000);
@@ -232,16 +232,16 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
       expect(storedQuote.expiresAt.getTime()).toBeGreaterThan(Date.now());
       const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "uber_direct", shippingAddress: address, deliveryQuote: { provider: "uber_direct", quoteId: quote.body.quoteId, feeCents: 1, fee: 0.01 } });
       expect(created.status, created.text).toBe(201);
-      expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 105 });
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 113.75 });
       const orderId = Number(created.body.id);
       const beforePaid = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
       expect(beforePaid).toHaveLength(1);
       expect(beforePaid[0].requestState).toBe("payment_pending");
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
-      const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
+      const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "113.75", idempotencyKey: `uber-cash-${orderId}` });
       expect(closed.status, closed.text).toBe(200);
-      expect(closed.body).toMatchObject({ tax: 0, total: 105, status: "confirmed", fulfillmentStatus: "submitted" });
-      const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "105.00", idempotencyKey: `uber-cash-${orderId}` });
+      expect(closed.body).toMatchObject({ tax: 8.75, total: 113.75, status: "confirmed", fulfillmentStatus: "submitted" });
+      const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "113.75", idempotencyKey: `uber-cash-${orderId}` });
       expect(replay.status, replay.text).toBe(200);
       expect(providerCalls.filter(call => call.url.endsWith("/deliveries"))).toHaveLength(0);
       const [fulfillment] = await db.select().from(uberDeliveryFulfillmentsTable).where(eq(uberDeliveryFulfillmentsTable.orderId, orderId));
@@ -394,7 +394,7 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     } finally { fetchSpy.mockRestore(); }
   }, 60_000);
 
-  it("settles a taxable $100 Cash order for exactly $100 once", async () => {
+  it("settles a taxable $100 Cash order with tax calculated once", async () => {
     const items = [{ catalogItemId, quantity: 1 }];
     const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
     const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
@@ -403,38 +403,78 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     expect(hostile.status).toBeGreaterThanOrEqual(400);
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
-    expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 100 });
+    expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75 });
     const orderId = Number(created.body.id);
     const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
-    expect(order).toMatchObject({ subtotal: "100.00", tax: "0.00", total: "100.00", remainingTenderAmount: "100.00" });
+    expect(order).toMatchObject({ subtotal: "100.00", tax: "8.75", total: "108.75", remainingTenderAmount: "108.75" });
     const initialSnapshot = await db.execute(sql`SELECT tax_collected, tender, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
     expect(initialSnapshot.rows).toHaveLength(1);
-    expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "0.00", tender: "cash" });
-    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "100.00", idempotencyKey: `tax-e2e-${orderId}` });
+    expect(initialSnapshot.rows[0]).toMatchObject({ tax_collected: "8.75", tender: "cash" });
+    const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "108.75", idempotencyKey: `tax-e2e-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
-    expect(closed.body).toMatchObject({ subtotal: 100, tax: 0, total: 100 });
+    expect(closed.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75 });
     const ledger = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.orderId, orderId), eq(cashLedgerEntriesTable.tenantId, order.tenantId)));
     expect(ledger).toHaveLength(1);
-    expect(ledger[0].amount).toBe("100.00");
-    const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "100.00", idempotencyKey: `tax-e2e-${orderId}` });
+    expect(ledger[0].amount).toBe("108.75");
+    const replay = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "108.75", idempotencyKey: `tax-e2e-${orderId}` });
     expect(replay.status, replay.text).toBe(200);
     expect(await db.select().from(cashLedgerEntriesTable).where(eq(cashLedgerEntriesTable.orderId, orderId))).toHaveLength(1);
     const finalSnapshot = await db.execute(sql`SELECT tax_collected, tender, snapshot_json FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
     expect(finalSnapshot.rows).toEqual(initialSnapshot.rows);
+    const [orderLine] = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, orderId)).limit(1);
+    const returned = await as("admin").post(`/api/orders/${orderId}/returns`).send({ lines: [{ orderItemId: orderLine.id, quantity: 1, disposition: "DO_NOT_RESTOCK" }], reason: "Tax refund validation", idempotencyKey: `return:cash-tax-${orderId}` });
+    expect(returned.status, returned.text).toBe(200);
+    expect(returned.body).toMatchObject({ status: "completed", refundAmount: "108.75", taxAmount: "8.75", tenderType: "cash" });
+    const refundedSnapshot = await db.execute(sql`SELECT tax_collected, tax_refunded FROM order_tax_snapshots WHERE tenant_id = ${tenantId} AND order_id = ${orderId}`);
+    expect(refundedSnapshot.rows[0]).toMatchObject({ tax_collected: "8.75", tax_refunded: "0.00" });
+    const refundTax = await db.execute(sql`SELECT tax_amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status = 'completed'`);
+    expect(refundTax.rows[0]).toMatchObject({ tax_amount: "8.75" });
     const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND movement_type = 'sale'`);
     expect(sales.rows).toHaveLength(1);
   }, 60_000);
 
-  it("pays a taxable $100 cart entirely with Customer Credit and adds no tax", async () => {
-    await db.transaction(tx => adjustCustomerCredit(tx, { tenantId, customerId, actorUserId: csrId, amountCents: 10000, reason: "Disposable tax test fixture", idempotencyKey: "tax-e2e-credit-funding" }));
+  it("applies the configured cash discount before calculating tax", async () => {
+    await db.update(adminSettingsTable).set({ cashDiscountEnabled: true, cashDiscountType: "fixed", cashDiscountValue: "5.00" }).where(eq(adminSettingsTable.tenantId, tenantId));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      expect(created.body).toMatchObject({ subtotal: 95, tax: 8.31, total: 103.31 });
+      const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
+      expect(stored.taxSnapshot).toMatchObject({ taxableSubtotal: 95, discounts: 5, taxCollected: 8.31, exemptionReason: null });
+    } finally {
+      await db.update(adminSettingsTable).set({ cashDiscountEnabled: false, cashDiscountValue: "0.00" }).where(eq(adminSettingsTable.tenantId, tenantId));
+    }
+  }, 60_000);
+
+  it("exempts non-taxable merchandise regardless of cash tender", async () => {
+    await db.update(catalogItemsTable).set({ isTaxable: false }).where(eq(catalogItemsTable.id, catalogItemId));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 0, total: 100 });
+      const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
+      expect(stored.taxSnapshot).toMatchObject({ taxableSubtotal: 0, taxCollected: 0, exemptionReason: "no_taxable_merchandise" });
+    } finally {
+      await db.update(catalogItemsTable).set({ isTaxable: true }).where(eq(catalogItemsTable.id, catalogItemId));
+    }
+  }, 60_000);
+
+  it("pays a taxable $100 cart with Customer Credit including transaction tax", async () => {
+    await db.transaction(tx => adjustCustomerCredit(tx, { tenantId, customerId, actorUserId: csrId, amountCents: 10875, reason: "Disposable tax test fixture", idempotencyKey: "tax-e2e-credit-funding" }));
     const items = [{ catalogItemId, quantity: 1 }];
-    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "customer_credit", customerCreditAmount: 100 };
+    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "customer_credit", customerCreditAmount: 108.75 };
     const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
     expect(converted.status, converted.text).toBe(200);
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
     const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id))).limit(1);
-    expect(stored).toMatchObject({ subtotal: "100.00", tax: "0.00", total: "100.00", customerCreditApplied: "100.00", remainingTenderAmount: "0.00", paymentStatus: "paid" });
+    expect(stored).toMatchObject({ subtotal: "100.00", tax: "8.75", total: "108.75", customerCreditApplied: "108.75", remainingTenderAmount: "0.00", paymentStatus: "paid" });
     const sales = await db.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_id = ${stored.id} AND movement_type = 'sale'`);
     expect(sales.rows).toHaveLength(1);
   }, 60_000);
@@ -448,8 +488,8 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
     const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
-    expect(stored).toMatchObject({ subtotal: "100.00", tax: "5.25", total: "105.25", customerCreditApplied: "40.00", remainingTenderAmount: "65.25", paymentStatus: "unpaid" });
-    expect(created.body).toMatchObject({ subtotal: 100, tax: 5.25, total: 105.25, customerCreditApplied: 40, remainingTenderAmount: 65.25, paymentStatus: "unpaid" });
+    expect(stored).toMatchObject({ subtotal: "100.00", tax: "8.75", total: "108.75", customerCreditApplied: "40.00", remainingTenderAmount: "68.75", paymentStatus: "unpaid" });
+    expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75, customerCreditApplied: 40, remainingTenderAmount: 68.75, paymentStatus: "unpaid" });
     const cancelled = await as("admin").post(`/api/orders/${created.body.id}/cancel`).send({ reason: "Disposable split cancellation" });
     expect(cancelled.status, cancelled.text).toBe(200);
     expect(cancelled.body).toMatchObject({ status: "cancelled", customerCreditApplied: 0 });
@@ -543,12 +583,12 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
   it("authoritatively allocates PayPal tax after Customer Credit and replays without a second provider order", async () => {
     const provider = { createOrder: vi.fn(async ({ amount }: { amount: { value: string; currency: string } }) => ({ id: `TEST-PAYPAL-${amount.value}`, amount, approvalUrl: "https://example.test/approval" })) };
     const service = new PaymentService({ enabled: true, environment: "sandbox" } as never, provider as never);
-    for (const [credit, expectedTax, expectedDue] of [["0.00", "8.75", "108.75"], ["40.00", "5.25", "65.25"]]) {
+    for (const [credit, expectedTax, expectedDue] of [["0.00", "8.75", "108.75"], ["40.00", "8.75", "68.75"]]) {
       const [order] = await db.insert(ordersTable).values({ tenantId, customerId, subtotal: "100.00", grossSubtotal: "100.00", taxableSubtotal: "100.00", tax: "0.00", total: "100.00", customerCreditApplied: credit, remainingTenderAmount: credit === "0.00" ? "100.00" : "60.00", selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3, pendingTender: true }, checkoutConversionSnapshot: { pricingSnapshot: { subtotal: 100, tax: 0, total: 100 } }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date() }).returning();
       const first = await service.create({ tenantId, customerId, orderId: order.id, idempotencyKey: `tax-e2e-paypal-${order.id}` });
       expect(first.replayed).toBe(false);
       const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, order.id)).limit(1);
-      expect(stored).toMatchObject({ tax: expectedTax, total: credit === "0.00" ? "108.75" : "105.25", remainingTenderAmount: expectedDue });
+      expect(stored).toMatchObject({ tax: expectedTax, total: "108.75", remainingTenderAmount: expectedDue });
       expect(stored.taxSnapshot).toMatchObject({ schemaVersion: 3, taxRate: 0.0875, customerTaxCollected: Number(expectedTax), pendingTender: false });
       expect((stored.checkoutConversionSnapshot as { pricingSnapshot?: { tax?: number; total?: number } })?.pricingSnapshot).toMatchObject({ tax: Number(expectedTax), total: Number(stored.total) });
       const [attempt] = await db.select().from(paymentAttemptsTable).where(eq(paymentAttemptsTable.orderId, order.id)).limit(1);
@@ -630,22 +670,217 @@ integrationDescribe("Cash tender tax via conversion, order, and closeout routes"
     }
   }, 60_000);
 
-  it("persists and returns a $108.00 Cash settlement without an eight-cent discrepancy", async () => {
-    await db.update(catalogItemsTable).set({ price: "108.00" }).where(eq(catalogItemsTable.id, catalogItemId));
+  it("settles cash-first then card, recovers after a declined card, and never marks partial payment paid", async () => {
+    const prior = Object.fromEntries(["PAYMENT_MODE", "PAYPAL_ENVIRONMENT", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID"].map(key => [key, process.env[key]]));
+    Object.assign(process.env, { PAYMENT_MODE: "sandbox", PAYPAL_ENVIRONMENT: "sandbox", PAYPAL_CLIENT_ID: "synthetic-client-id", PAYPAL_CLIENT_SECRET: "synthetic-client-secret", PAYPAL_WEBHOOK_ID: "synthetic-webhook-id" });
+    const amounts = new Map<string, string>();
+    let sequence = 0;
+    const createSpy = vi.spyOn(PayPalProvider.prototype, "createOrder").mockImplementation(async ({ amount }) => {
+      const id = `TEST-SPLIT-CASH-FIRST-${++sequence}`; amounts.set(id, amount.value);
+      return { id, status: "CREATED", amount, approvalUrl: "https://example.test/approve" };
+    });
+    const captureSpy = vi.spyOn(PayPalProvider.prototype, "captureOrder")
+      .mockRejectedValueOnce(new PayPalProviderError("declined", "sandbox decline"))
+      .mockImplementation(async providerOrderId => ({ orderId: providerOrderId, captureId: `CAP-${providerOrderId}`, status: "COMPLETED", amount: { value: amounts.get(providerOrderId)!, currency: "USD" }, fundingSource: "card" }));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "split_tender" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(converted.status, converted.text).toBe(200);
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      const orderId = Number(created.body.id);
+      expect(created.body).toMatchObject({ subtotal: 100, tax: 8.75, total: 108.75, selectedPaymentMethod: "split_tender", remainingTenderAmount: 108.75 });
+      const claimed = await as("csr").post(`/api/orders/${orderId}/accept`).send({});
+      expect(claimed.status, claimed.text).toBe(200);
+      const cash = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "40.00", idempotencyKey: `split-cash-first-${orderId}` });
+      expect(cash.status, cash.text).toBe(200);
+      expect(cash.body).toMatchObject({ paymentStatus: "unpaid", remainingTenderAmount: 68.75 });
+      const [afterCash] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(afterCash).toMatchObject({ paymentStatus: "unpaid", remainingTenderAmount: "68.75", tax: "8.75", total: "108.75" });
+
+      const priorStock = await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`);
+      const stockBefore = Number(priorStock.rows[0]?.quantity_on_hand ?? 0);
+      const payment = await as("customer").post(`/api/payments/paypal/orders/${orderId}`).set("Idempotency-Key", `split-create-failed-${orderId}`).send({});
+      expect(payment.status, payment.text).toBe(201);
+      expect(amounts.get(payment.body.providerOrderId)).toBe("68.75");
+      const declined = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `split-capture-failed-${orderId}`).send({ attemptId: payment.body.attemptId });
+      expect(declined.status).toBe(502);
+      const [afterDecline] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(afterDecline).toMatchObject({ paymentStatus: "unpaid", remainingTenderAmount: "68.75" });
+      expect(Number((await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`)).rows[0]?.quantity_on_hand ?? 0)).toBe(stockBefore);
+
+      const retry = await as("customer").post(`/api/payments/paypal/orders/${orderId}`).set("Idempotency-Key", `split-create-retry-${orderId}`).send({});
+      expect(retry.status, retry.text).toBe(201);
+      const captured = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `split-capture-retry-${orderId}`).send({ attemptId: retry.body.attemptId });
+      expect(captured.status, captured.text).toBe(200);
+      expect(captured.body).toMatchObject({ status: "captured", remainingBalance: "0.00" });
+      const replay = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `split-capture-retry-${orderId}`).send({ attemptId: retry.body.attemptId });
+      expect(replay.status, replay.text).toBe(200);
+      expect(replay.body.replayed).toBe(true);
+      const [paid] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(paid).toMatchObject({ paymentStatus: "paid", paymentMethod: "cash+paypal_card", selectedPaymentMethod: "split_tender", remainingTenderAmount: "0.00" });
+      expect(Number((await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`)).rows[0]?.quantity_on_hand ?? 0)).toBe(stockBefore - 1);
+      const cashLedger = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, orderId)));
+      expect(cashLedger).toHaveLength(1);
+      expect(cashLedger[0]?.amount).toBe("40.00");
+      expect(await db.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, retry.body.attemptId))).toHaveLength(1);
+    } finally {
+      createSpy.mockRestore(); captureSpy.mockRestore();
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 60_000);
+
+  it("supports card-first partial settlement followed by exact cash balance", async () => {
+    const prior = Object.fromEntries(["PAYMENT_MODE", "PAYPAL_ENVIRONMENT", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID"].map(key => [key, process.env[key]]));
+    Object.assign(process.env, { PAYMENT_MODE: "sandbox", PAYPAL_ENVIRONMENT: "sandbox", PAYPAL_CLIENT_ID: "synthetic-client-id", PAYPAL_CLIENT_SECRET: "synthetic-client-secret", PAYPAL_WEBHOOK_ID: "synthetic-webhook-id" });
+    const amounts = new Map<string, string>();
+    const createSpy = vi.spyOn(PayPalProvider.prototype, "createOrder").mockImplementation(async ({ amount }) => {
+      const id = `TEST-SPLIT-CARD-FIRST-${randomUUID()}`; amounts.set(id, amount.value);
+      return { id, status: "CREATED", amount, approvalUrl: "https://example.test/approve" };
+    });
+    const captureSpy = vi.spyOn(PayPalProvider.prototype, "captureOrder").mockImplementation(async providerOrderId => ({ orderId: providerOrderId, captureId: `CAP-${providerOrderId}`, status: "COMPLETED", amount: { value: amounts.get(providerOrderId)!, currency: "USD" }, fundingSource: "card" }));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "split_tender" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(converted.status, converted.text).toBe(200);
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      const orderId = Number(created.body.id);
+      const claimed = await as("csr").post(`/api/orders/${orderId}/accept`).send({});
+      expect(claimed.status, claimed.text).toBe(200);
+      const priorStock = await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`);
+      const stockBefore = Number(priorStock.rows[0]?.quantity_on_hand ?? 0);
+      const payment = await as("customer").post(`/api/payments/paypal/orders/${orderId}`).set("Idempotency-Key", `split-card-first-create-${orderId}`).send({ amount: "50.00" });
+      expect(payment.status, payment.text).toBe(201);
+      expect(amounts.get(payment.body.providerOrderId)).toBe("50.00");
+      const card = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `split-card-first-capture-${orderId}`).send({ attemptId: payment.body.attemptId });
+      expect(card.status, card.text).toBe(200);
+      expect(card.body).toMatchObject({ status: "partially_captured", remainingBalance: "58.75" });
+      const [partial] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(partial).toMatchObject({ paymentStatus: "unpaid", paymentMethod: "split_tender", remainingTenderAmount: "58.75" });
+      expect(Number((await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`)).rows[0]?.quantity_on_hand ?? 0)).toBe(stockBefore);
+      const replay = await as("customer").post(`/api/payments/paypal/orders/${orderId}/capture`).set("Idempotency-Key", `split-card-first-capture-${orderId}`).send({ attemptId: payment.body.attemptId });
+      expect(replay.status, replay.text).toBe(200);
+      expect(replay.body).toMatchObject({ status: "partially_captured", replayed: true, remainingBalance: "58.75" });
+
+      const cash = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "58.75", idempotencyKey: `split-card-first-cash-${orderId}` });
+      expect(cash.status, cash.text).toBe(200);
+      const [paid] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
+      expect(paid).toMatchObject({ paymentStatus: "paid", paymentMethod: "cash+paypal_card", remainingTenderAmount: "0.00" });
+      expect(await db.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, payment.body.attemptId))).toHaveLength(1);
+      const cashLedger = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, orderId)));
+      expect(cashLedger).toHaveLength(1);
+      expect(cashLedger[0]?.amount).toBe("58.75");
+      expect(Number((await db.execute(sql`SELECT quantity_on_hand FROM inventory_balances WHERE tenant_id=${tenantId} AND product_id=${catalogItemId} ORDER BY location_id LIMIT 1`)).rows[0]?.quantity_on_hand ?? 0)).toBe(stockBefore - 1);
+    } finally {
+      createSpy.mockRestore(); captureSpy.mockRestore();
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 60_000);
+
+  it("uses the server's configured tax rate for cash and preserves its snapshot", async () => {
+    await db.update(taxConfigurationsTable).set({ rate: "0.08000000" }).where(eq(taxConfigurationsTable.tenantId, tenantId));
     const items = [{ catalogItemId, quantity: 1 }];
     const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
     const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
     expect(converted.status, converted.text).toBe(200);
     const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
     expect(created.status, created.text).toBe(201);
-    expect(created.body).toMatchObject({ subtotal: 108, tax: 0, total: 108 });
+    expect(created.body).toMatchObject({ subtotal: 100, tax: 8, total: 108 });
     const orderId = Number(created.body.id);
     const closed = await as("csr").post(`/api/orders/${orderId}/closeout`).send({ paymentMethod: "cash", amountTendered: "108.00", idempotencyKey: `tax-e2e-108-${orderId}` });
     expect(closed.status, closed.text).toBe(200);
-    expect(closed.body).toMatchObject({ subtotal: 108, tax: 0, total: 108, cash: { amountDue: "108.00", amountTendered: "108.00", changeGiven: "0.00" } });
+    expect(closed.body).toMatchObject({ subtotal: 100, tax: 8, total: 108, cash: { amountDue: "108.00", amountTendered: "108.00", changeGiven: "0.00" } });
     const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId));
     const [ledger] = await db.select().from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, orderId)));
-    expect(stored).toMatchObject({ subtotal: "108.00", tax: "0.00", total: "108.00", remainingTenderAmount: "108.00", paymentStatus: "paid" });
+    expect(stored).toMatchObject({ subtotal: "100.00", tax: "8.00", total: "108.00", remainingTenderAmount: "0.00", paymentStatus: "paid" });
     expect(ledger).toMatchObject({ amount: "108.00", amountTendered: "108.00", changeGiven: "0.00" });
+  }, 60_000);
+
+  it("shows tax-inclusive cash price but keeps taxable base and tax in the immutable snapshot", async () => {
+    await db.update(adminSettingsTable).set({ cashTaxInclusive: true }).where(eq(adminSettingsTable.tenantId, tenantId));
+    await db.update(taxConfigurationsTable).set({ rate: "0.08000000" }).where(eq(taxConfigurationsTable.tenantId, tenantId));
+    try {
+      const items = [{ catalogItemId, quantity: 1 }];
+      const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+      const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+      expect(converted.status, converted.text).toBe(200);
+      const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body, checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+      expect(created.status, created.text).toBe(201);
+      expect(created.body).toMatchObject({ subtotal: 92.59, tax: 7.41, total: 100 });
+      const [stored] = await db.select().from(ordersTable).where(eq(ordersTable.id, Number(created.body.id)));
+      expect(stored.taxSnapshot).toMatchObject({ taxMode: "included", taxableSubtotal: 92.59, customerTaxableTenderBase: 92.59, customerTaxCollected: 7.41, tender: "cash", exemptionReason: null });
+      const closeout = await as("csr").post(`/api/orders/${stored.id}/closeout`).send({ paymentMethod: "cash", amountTendered: "100.00", idempotencyKey: `included-cash-closeout-${stored.id}` });
+      expect(closeout.status, closeout.text).toBe(200);
+      const [includedLine] = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, stored.id));
+      const returned = await as("admin").post(`/api/orders/${stored.id}/returns`).send({ lines: [{ orderItemId: includedLine.id, quantity: 1, disposition: "DO_NOT_RESTOCK" }], reason: "Inclusive cash tax return", idempotencyKey: `return:inclusive-cash-${stored.id}` });
+      expect(returned.status, returned.text).toBe(200);
+      expect(returned.body).toMatchObject({ refundAmount: "100.00", taxAmount: "7.41", tenderType: "cash" });
+      await db.update(adminSettingsTable).set({ cashTaxInclusive: false }).where(eq(adminSettingsTable.tenantId, tenantId));
+      const cardConfirmation = { ...confirmation, paymentMethod: "paypal" };
+      const cardConverted = await as("customer").post("/api/cart/convert").send({ items, confirmation: cardConfirmation });
+      const cardOrder = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items, checkoutConversionToken: cardConverted.body.checkoutConversionToken, checkoutConversionSnapshot: cardConverted.body, checkoutConfirmation: cardConfirmation, deliveryMethod: "pickup" });
+      expect(cardOrder.status, cardOrder.text).toBe(201);
+      expect(cardOrder.body).toMatchObject({ subtotal: 100, tax: 8, total: 108 });
+    } finally {
+      await db.update(adminSettingsTable).set({ cashTaxInclusive: false }).where(eq(adminSettingsTable.tenantId, tenantId));
+      await db.update(taxConfigurationsTable).set({ rate: "0.08750000" }).where(eq(taxConfigurationsTable.tenantId, tenantId));
+    }
+  }, 60_000);
+  it("checks out the exact selected 4 oz variant and decrements only its separate inventory", async () => {
+    const suffix = `VAR-${tenantId}-${Date.now()}`;
+    const product = await as("admin").post("/api/admin/catalogue/products").send({
+      name: `Variant Oil ${suffix}`, category: "Fixtures", price: "12.00", sku: `${suffix}-2OZ`,
+      inventoryModel: "SEPARATE_VARIANTS", baseUnit: "each", consumptionQuantity: "1.000000", firstOptionLabel: "2 oz",
+    });
+    expect(product.status, product.text).toBe(201);
+    await db.execute(sql`UPDATE catalogue_options SET label='2 oz', option_values='{"Size":"2 oz"}'::jsonb WHERE tenant_id=${tenantId} AND id=${product.body.optionId}`);
+    const fourOz = await as("admin").post(`/api/admin/catalogue/products/${product.body.productId}/options`).send({
+      label: "4 oz", optionValues: { Size: "4 oz" }, price: "19.50", sku: `${suffix}-4OZ`, consumptionQuantity: "1.000000",
+    });
+    expect(fourOz.status, fourOz.text).toBe(201);
+    const options = await db.execute(sql`SELECT co.id AS "optionId",co.catalog_item_id AS "catalogItemId",co.inventory_item_id AS "inventoryItemId",
+      ii.catalog_item_id AS "inventoryCatalogItemId",ci.sku FROM catalogue_options co
+      JOIN inventory_items ii ON ii.tenant_id=co.tenant_id AND ii.id=co.inventory_item_id
+      JOIN catalog_items ci ON ci.tenant_id=co.tenant_id AND ci.id=co.catalog_item_id
+      WHERE co.tenant_id=${tenantId} AND co.product_id=${product.body.productId} ORDER BY co.id`);
+    expect(options.rows).toHaveLength(2);
+    const two = options.rows[0] as { optionId: number; inventoryCatalogItemId: number };
+    const four = options.rows[1] as { optionId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; sku: string };
+    expect(four).toMatchObject({ optionId: fourOz.body.optionId, catalogItemId: fourOz.body.catalogItemId, sku: `${suffix}-4OZ` });
+    expect(four.inventoryCatalogItemId).not.toBe(two.inventoryCatalogItemId);
+    const [box] = await db.select().from(csrBoxesTable).where(eq(csrBoxesTable.tenantId, tenantId)).limit(1);
+    const [location] = await db.select().from(inventoryLocationsTable).where(and(eq(inventoryLocationsTable.tenantId, tenantId), eq(inventoryLocationsTable.csrBoxId, box.id))).limit(1);
+    await db.insert(inventoryBalancesTable).values([
+      { tenantId, productId: two.inventoryCatalogItemId, locationId: location.id, quantityOnHand: "3", parLevel: "1" },
+      { tenantId, productId: four.inventoryCatalogItemId, locationId: location.id, quantityOnHand: "7", parLevel: "1" },
+    ]).onConflictDoUpdate({ target: [inventoryBalancesTable.tenantId, inventoryBalancesTable.productId, inventoryBalancesTable.locationId], set: { quantityOnHand: sql`excluded.quantity_on_hand`, parLevel: "1" } });
+    const items = [{ optionId: four.optionId, quantity: 1 }];
+    const confirmation = { acceptedAllSalesFinal: true, confirmedAt: new Date().toISOString(), legalDisclaimerText: "All sales are final. Confirm before checkout.", paymentMethod: "cash" };
+    const converted = await as("customer").post("/api/cart/convert").send({ items, confirmation });
+    expect(converted.status, converted.text).toBe(200);
+    const created = await as("customer").post("/api/orders").send({ orderType: "WALK_IN", items,
+      checkoutConversionToken: converted.body.checkoutConversionToken, checkoutConversionSnapshot: converted.body,
+      checkoutConfirmation: confirmation, deliveryMethod: "pickup" });
+    expect(created.status, created.text).toBe(201);
+    const [line] = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, created.body.id)).limit(1);
+    expect(line).toMatchObject({ optionId: four.optionId, catalogItemId: four.catalogItemId, inventoryItemId: four.inventoryItemId,
+      skuSnapshot: `${suffix}-4OZ`, unitPrice: "19.50", variantSnapshot: { variantId: four.optionId, sku: `${suffix}-4OZ`, optionValues: { Size: "4 oz" } } });
+    const closeout = await as("csr").post(`/api/orders/${created.body.id}/closeout`).send({ paymentMethod: "cash",
+      amountTendered: String(created.body.remainingTenderAmount), idempotencyKey: `variant-checkout-${created.body.id}` });
+    expect(closeout.status, closeout.text).toBe(200);
+    const after = await db.select().from(inventoryBalancesTable).where(and(eq(inventoryBalancesTable.tenantId, tenantId), eq(inventoryBalancesTable.locationId, location.id), inArray(inventoryBalancesTable.productId, [two.inventoryCatalogItemId, four.inventoryCatalogItemId])));
+    expect(after.find(row => row.productId === two.inventoryCatalogItemId)?.quantityOnHand).toBe("3.000000");
+    expect(after.find(row => row.productId === four.inventoryCatalogItemId)?.quantityOnHand).toBe("6.000000");
+    const movement = await db.execute(sql`SELECT catalog_item_id,order_item_id,quantity_delta FROM inventory_movements WHERE tenant_id=${tenantId} AND order_id=${created.body.id} AND movement_type='sale'`);
+    expect(movement.rows).toEqual([expect.objectContaining({ catalog_item_id: four.inventoryCatalogItemId, order_item_id: line.id, quantity_delta: "-1.000000000000" })]);
   }, 60_000);
 });

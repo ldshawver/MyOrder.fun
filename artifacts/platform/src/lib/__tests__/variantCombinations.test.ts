@@ -8,7 +8,12 @@ describe("variant option combinations", () => {
       { Color: "Blue", Size: "S" }, { Color: "Blue", Size: "M" },
     ]);
   });
-  it.each(["Color=Red,Red", "Color=Red; color=Blue", "Color=", "=Red"])("rejects malformed option combinations: %s", input => {
+  it("accepts a simple comma-separated single axis", () => {
+    expect(generateVariantCombinations(parseVariantAxes("Small, Medium, Large"))).toEqual([
+      { Option: "Small" }, { Option: "Medium" }, { Option: "Large" },
+    ]);
+  });
+  it.each(["Color=Red,Red", "Color=Red; color=Blue", "Color=", "=Red", "Small,,Large", "Small,Small"])("rejects malformed option combinations: %s", input => {
     expect(() => parseVariantAxes(input)).toThrow();
   });
   it("caps generated combinations to prevent accidental cartesian explosion", () => {

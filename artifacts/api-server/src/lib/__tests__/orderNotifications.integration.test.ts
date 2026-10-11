@@ -4,8 +4,9 @@ import pg from "pg";
 import { sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { db } from "@workspace/db";
+import { _resetKeyCacheForTests, encrypt } from "../crypto";
 import { chooseStaffRecipient, enqueueOrderCreated, NotificationFailure, processDueLightOff,
-  processOneNotificationJob, type NotificationProviders } from "../orderNotifications";
+  processOneNotificationJob, processOneOrderPushJob, type NotificationProviders } from "../orderNotifications";
 
 const enabled = process.env.RUN_ORDER_NOTIFICATION_INTEGRATION === "1";
 const { Pool } = pg;
@@ -37,6 +38,8 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
 (enabled ? describe : describe.skip)("durable order-created notifications on migrated clone", () => {
   beforeAll(async () => {
     expect(process.env.DATABASE_URL).toMatch(/(?:127\.0\.0\.1|localhost):\d+\//);
+    process.env.SETTINGS_ENC_KEY = "notification-integration-synthetic-encryption-key";
+    _resetKeyCacheForTests();
     pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4, ssl: false });
     const tenants = await pool.query<{ id: number }>("INSERT INTO tenants(name,slug,status) VALUES($1,$2,'active'),($3,$4,'active') RETURNING id",
       [`Notification A ${suffix}`, `notification-a-${suffix}`, `Notification B ${suffix}`, `notification-b-${suffix}`]);
@@ -51,7 +54,10 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
         `notify-admin-${suffix}`,`admin-${suffix}@example.test`,phones.admin,
         `notify-supervisor-${suffix}`,`supervisor-${suffix}@example.test`,phones.supervisor]);
     [customer, csr, admin, supervisor] = users.rows.map(row => row.id);
-    await pool.query("INSERT INTO order_notification_settings(tenant_id,light_enabled,sms_enabled,alert_duration_seconds,general_assignee_user_id,general_fallback_user_id) VALUES($1,true,true,60,$2,$3)", [tenantA, admin, supervisor]);
+    await pool.query(`INSERT INTO order_notification_settings(tenant_id,light_enabled,sms_enabled,alert_duration_seconds,general_assignee_user_id,general_fallback_user_id,
+      tuya_region,tuya_device_id,tuya_credentials_ciphertext)
+      VALUES($1,true,true,60,$2,$3,'us','synthetic-device',$4)`,
+    [tenantA, admin, supervisor, encrypt(JSON.stringify({ clientId: "synthetic-tuya-id", clientSecret: "synthetic-tuya-secret" }))]);
     process.env.TUYA_TENANT_ID = String(tenantA);
   });
   afterAll(async () => { if (pool) await pool.end(); });
@@ -103,7 +109,7 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
     const light = vi.fn(async (_on: boolean) => {});
     const providers: NotificationProviders = { light, sms: vi.fn(async () => "SM_TEST") };
     for (let i = 0; i < 4; i++) await processOneNotificationJob(pool, providers, tenantA);
-    expect(light).toHaveBeenCalledWith(true);
+    expect(light).toHaveBeenCalledWith(true, tenantA);
     expect(light.mock.calls.filter(call => call[0] === true)).toHaveLength(1);
     const deadline = (await pool.query<{ off_at: Date; generation: string }>("SELECT off_at,generation FROM order_light_alerts WHERE tenant_id=$1", [tenantA])).rows[0]!;
     expect(deadline.off_at.getTime()).toBeGreaterThan(Date.now() + 50_000);
@@ -168,5 +174,29 @@ const config = { light_enabled: true, sms_enabled: true, alert_duration_seconds:
       "SELECT off_at,generation FROM order_light_alerts WHERE tenant_id=$1", [tenantA])).rows[0]!;
     expect(alert.off_at.getTime()).toBeGreaterThanOrEqual(times[5]!.getTime() + 60_000);
     for (const order of orders) expect(await count(order.id)).toEqual({ events: 1, jobs: 2 });
+  });
+
+  it("queues one tenant-scoped push per enabled subscribed staff user and sends a safe order link once", async () => {
+    await pool.query("UPDATE users SET web_push_order_alerts_enabled=true WHERE tenant_id=$1 AND id=$2", [tenantA, admin]);
+    await pool.query(`INSERT INTO pwa_push_subscriptions(user_id,tenant_id,device_id,endpoint,subscription)
+      VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(endpoint) DO UPDATE SET is_active=true`,
+    [admin, tenantA, `notify-${suffix}`, `https://push.example.test/${suffix}`, JSON.stringify({ endpoint: `https://push.example.test/${suffix}`, keys: { p256dh: "fixture", auth: "fixture" } })]);
+    const order = await createOrder();
+    await db.transaction(async tx => enqueueOrderCreated(tx, tenantA, order.id, order.created_at));
+    const queued = await pool.query<{ recipient_user_id: number; state: string }>(
+      "SELECT recipient_user_id,state FROM order_push_notification_jobs WHERE tenant_id=$1 AND order_id=$2", [tenantA, order.id]);
+    expect(queued.rows).toEqual([{ recipient_user_id: admin, state: "queued" }]);
+    const deliveries: Array<{ tenantId: number; userId: number; payload: Record<string, unknown> }> = [];
+    const send = vi.fn(async (input: { tenantId: number; userId: number; payload: Record<string, unknown> }) => {
+      deliveries.push(input); return { attempted: 1, sent: 1, failed: 0, retryable: 0, uncertain: 0, skipped: false };
+    });
+    expect(await processOneOrderPushJob(pool, send as never, tenantA)).toBe(true);
+    expect(await processOneOrderPushJob(pool, send as never, tenantA)).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(deliveries[0]).toMatchObject({ tenantId: tenantA, userId: admin, payload: {
+      title: `New order #${order.id}`, url: `/orders/${order.id}`, tag: `myorder-order-${tenantA}-${order.id}`,
+    } });
+    expect(JSON.stringify(deliveries[0])).not.toMatch(/customer|payment|email|phone/i);
+    expect((await pool.query<{ state: string }>("SELECT state FROM order_push_notification_jobs WHERE tenant_id=$1 AND order_id=$2", [tenantA, order.id])).rows[0]!.state).toBe("succeeded");
   });
 });

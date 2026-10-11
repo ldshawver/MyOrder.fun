@@ -1,23 +1,32 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
 import pg from "pg";
 import { sql, type SQL } from "drizzle-orm";
 import { logger } from "./logger";
 import { defaultHasPermission } from "./roles";
+import { sendPwaPushToUser, type PwaPushDeliveryResult } from "./pwaPushSender";
+import { decrypt } from "./crypto";
+import { NotificationProviderError, sendTwilioSms, setTuyaDeviceSwitch, type SmsCredentials, type TuyaCredentials, type TuyaRegion } from "./notificationProviders";
 
 const { Pool } = pg;
 const DEVICE_ALIAS = "MyOrder.fun";
 const MAX_ATTEMPTS = 5;
 const POLL_MS = 2_000;
-const IO_TIMEOUT_MS = 8_000;
 
 type SqlExecutor = { execute: (query: SQL) => Promise<unknown> };
 export async function enqueueOrderCreated(tx: SqlExecutor, tenantId: number, orderId: number, createdAt: Date): Promise<void> {
+  await tx.execute(sql`INSERT INTO order_print_outbox (tenant_id,order_id,state)
+    VALUES (${tenantId},${orderId},'pending') ON CONFLICT (tenant_id,order_id) DO NOTHING`);
   const inserted = await tx.execute(sql`INSERT INTO order_notification_events (tenant_id,order_id,event_type)
     VALUES (${tenantId},${orderId},'ORDER_CREATED') ON CONFLICT DO NOTHING RETURNING id`);
   const event = (Array.isArray(inserted) ? inserted : (inserted as { rows?: Array<{ id: string }> }).rows ?? [])[0] as { id: string } | undefined;
   if (!event) return;
   await tx.execute(sql`INSERT INTO order_notification_jobs (tenant_id,event_id,order_id,notification_type)
     SELECT ${tenantId},${event.id},${orderId},kind FROM (VALUES ('tuya_on'),('staff_sms')) AS kinds(kind)
+    ON CONFLICT DO NOTHING`);
+  await tx.execute(sql`INSERT INTO order_push_notification_jobs (tenant_id,event_id,order_id,recipient_user_id)
+    SELECT ${tenantId},${event.id},${orderId},u.id FROM users u
+    WHERE u.tenant_id=${tenantId} AND u.is_active=true AND u.status='approved'
+      AND u.role IN ('global_admin','admin','supervisor','csr') AND u.web_push_order_alerts_enabled=true
+      AND EXISTS (SELECT 1 FROM pwa_push_subscriptions s WHERE s.tenant_id=u.tenant_id AND s.user_id=u.id AND s.is_active=true)
     ON CONFLICT DO NOTHING`);
   await tx.execute(sql`INSERT INTO order_light_alerts (tenant_id,off_at,generation)
     SELECT ${tenantId},${createdAt}::timestamptz + (s.alert_duration_seconds * interval '1 second'),1
@@ -28,9 +37,10 @@ export async function enqueueOrderCreated(tx: SqlExecutor, tenantId: number, ord
 }
 
 type Job = { id: string; tenant_id: number; order_id: number; event_id: string; notification_type: "tuya_on" | "staff_sms"; attempts: number };
+type PushJob = { id: string; tenant_id: number; order_id: number; event_id: string; recipient_user_id: number; attempts: number };
 type Recipient = { id: number; tenant_id: number | null; role: string; status: string | null; is_active: boolean | null; contact_phone: string | null; notification_preferences: unknown };
 type Config = { light_enabled: boolean; sms_enabled: boolean; alert_duration_seconds: number; general_assignee_user_id: number | null; general_fallback_user_id: number | null };
-export type NotificationProviders = { light: (on: boolean) => Promise<void>; sms: (phone: string, body: string) => Promise<string> };
+export type NotificationProviders = { light: (on: boolean, tenantId?: number) => Promise<void>; sms: (phone: string, body: string, tenantId?: number) => Promise<string> };
 
 export class NotificationFailure extends Error {
   constructor(readonly classification: "configuration" | "permanent" | "transient" | "uncertain") { super(classification); }
@@ -45,63 +55,41 @@ const eligible = (user: Recipient | undefined | null, tenantId: number, role: "c
   !(user.notification_preferences && typeof user.notification_preferences === "object" &&
     (user.notification_preferences as Record<string, unknown>).smsTexts === false);
 
-// The only device identity used by this client is the server-managed ID; IPs
-// and customer-supplied values never enter this path.
-export async function sendTuyaSwitch(on: boolean): Promise<void> {
-  const clientId = process.env.TUYA_CLIENT_ID;
-  const secret = process.env.TUYA_CLIENT_SECRET;
-  const deviceId = process.env.TUYA_DEVICE_ID;
-  const regionUrl = process.env.TUYA_API_BASE_URL;
-  const code = process.env.TUYA_SWITCH_CODE || "switch_1";
-  if (!clientId || !secret || !deviceId || !regionUrl) throw new NotificationFailure("configuration");
-  const base = new URL(regionUrl);
-  if (base.protocol !== "https:" || base.pathname !== "/" || base.search || base.hash ||
-      !["openapi.tuyaus.com", "openapi.tuyaeu.com", "openapi.tuyain.com", "openapi.tuyacn.com", "openapi-ueaz.tuyaus.com", "openapi-weaz.tuyaeu.com"].includes(base.hostname)) {
-    throw new NotificationFailure("configuration");
-  }
-  const signedRequest = async (method: "GET" | "POST", path: string, token?: string, body?: string) => {
-    const timestamp = String(Date.now());
-    const nonce = randomUUID().replaceAll("-", "");
-    const contentHash = createHash("sha256").update(body ?? "").digest("hex");
-    const stringToSign = `${method}\n${contentHash}\n\n${path}`;
-    const signature = createHmac("sha256", secret).update(`${clientId}${token ?? ""}${timestamp}${nonce}${stringToSign}`).digest("hex").toUpperCase();
-    let response: Response;
-    try {
-      response = await fetch(new URL(path, base), { method, body, signal: AbortSignal.timeout(IO_TIMEOUT_MS), headers: {
-        client_id: clientId, t: timestamp, nonce, sign: signature, sign_method: "HMAC-SHA256",
-        ...(token ? { access_token: token } : {}), ...(body ? { "Content-Type": "application/json" } : {}),
-      } });
-    } catch { throw new NotificationFailure("transient"); }
-    if (!response.ok) throw new NotificationFailure(response.status >= 500 || response.status === 429 ? "transient" : "permanent");
-    const data = await response.json() as { success?: boolean; result?: unknown };
-    if (data.success !== true) throw new NotificationFailure("permanent");
-    return data;
-  };
-  const auth = await signedRequest("GET", "/v1.0/token?grant_type=1");
-  const token = (auth.result as { access_token?: string } | null)?.access_token;
-  if (!token) throw new NotificationFailure("permanent");
-  const body = JSON.stringify({ commands: [{ code, value: on }] });
-  const result = await signedRequest("POST", `/v1.0/iot-03/devices/${encodeURIComponent(deviceId)}/commands`, token, body);
-  if (result.result !== true) throw new NotificationFailure("permanent");
+async function storedSmsConfig(pool: pg.Pool, tenantId: number): Promise<SmsCredentials> {
+  const row = (await pool.query<{ sms_credentials_ciphertext: string | null; sms_sender: string | null }>(
+    "SELECT sms_credentials_ciphertext,sms_sender FROM order_notification_settings WHERE tenant_id=$1", [tenantId])).rows[0];
+  if (!row?.sms_credentials_ciphertext || !row.sms_sender) throw new NotificationFailure("configuration");
+  try { return { ...(JSON.parse(decrypt(row.sms_credentials_ciphertext)) as Omit<SmsCredentials, "sender">), sender: row.sms_sender }; }
+  catch { throw new NotificationFailure("configuration"); }
 }
 
-export async function sendStaffSms(phone: string, body: string): Promise<string> {
-  const account = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_NUMBER;
-  if (!account || !token || !from) throw new NotificationFailure("configuration");
-  const form = new URLSearchParams({ To: phone, From: from, Body: body });
-  let response: Response;
+async function storedTuyaConfig(pool: pg.Pool, tenantId: number): Promise<{ credentials: TuyaCredentials; deviceId: string; code: string }> {
+  const row = (await pool.query<{ tuya_credentials_ciphertext: string | null; tuya_region: string | null; tuya_device_id: string | null; tuya_switch_code: string | null }>(
+    "SELECT tuya_credentials_ciphertext,tuya_region,tuya_device_id,tuya_switch_code FROM order_notification_settings WHERE tenant_id=$1", [tenantId])).rows[0];
+  if (!row?.tuya_credentials_ciphertext || !row.tuya_region || !row.tuya_device_id || !["us","eu","in","cn","ueaz","weaz"].includes(row.tuya_region)) throw new NotificationFailure("configuration");
   try {
-    response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(account)}/Messages.json`, {
-      method: "POST", body: form, signal: AbortSignal.timeout(IO_TIMEOUT_MS),
-      headers: { Authorization: `Basic ${Buffer.from(`${account}:${token}`).toString("base64")}`, "Content-Type": "application/x-www-form-urlencoded" },
-    });
-  } catch { throw new NotificationFailure("uncertain"); }
-  if (!response.ok) throw new NotificationFailure(response.status === 429 ? "transient" : response.status >= 500 ? "uncertain" : "permanent");
-  const data = await response.json() as { sid?: string };
-  if (!data.sid) throw new NotificationFailure("uncertain");
-  return data.sid;
+    const value = JSON.parse(decrypt(row.tuya_credentials_ciphertext)) as { clientId?: string; clientSecret?: string };
+    if (!value.clientId || !value.clientSecret) throw new Error("invalid");
+    return { credentials: { clientId: value.clientId, clientSecret: value.clientSecret, region: row.tuya_region as TuyaRegion }, deviceId: row.tuya_device_id, code: row.tuya_switch_code || "switch_1" };
+  } catch { throw new NotificationFailure("configuration"); }
+}
+
+function providerFailure(error: unknown): NotificationFailure {
+  return new NotificationFailure(error instanceof NotificationProviderError ? error.failure : "transient");
+}
+
+export async function sendTuyaSwitch(on: boolean, tenantId?: number, configPool?: pg.Pool): Promise<void> {
+  if (!tenantId) throw new NotificationFailure("configuration");
+  if (!configPool) throw new NotificationFailure("configuration");
+  try { const config = await storedTuyaConfig(configPool, tenantId); await setTuyaDeviceSwitch(config.credentials, config.deviceId, config.code, on); }
+  catch (error) { throw providerFailure(error); }
+}
+
+export async function sendStaffSms(phone: string, body: string, tenantId?: number, configPool?: pg.Pool): Promise<string> {
+  if (!tenantId) throw new NotificationFailure("configuration");
+  if (!configPool) throw new NotificationFailure("configuration");
+  try { return await sendTwilioSms(await storedSmsConfig(configPool, tenantId), phone, body); }
+  catch (error) { throw providerFailure(error); }
 }
 
 export async function chooseStaffRecipient(pool: pg.Pool, tenantId: number, orderId: number, config: Config): Promise<Recipient | null> {
@@ -142,7 +130,7 @@ async function processLight(pool: pg.Pool, job: Job, providers: NotificationProv
     if (!config.rows[0]?.light_enabled) {
       await client.query("COMMIT"); await finishJob(pool, job, "skipped", "disabled"); return;
     }
-    if (Number(process.env.TUYA_TENANT_ID) !== job.tenant_id) throw new NotificationFailure("configuration");
+    await storedTuyaConfig(pool, job.tenant_id);
     await client.query("INSERT INTO order_light_alerts(tenant_id) VALUES($1) ON CONFLICT DO NOTHING", [job.tenant_id]);
     const current = await client.query<{ is_on: boolean; on_result: string | null }>("SELECT is_on,on_result FROM order_light_alerts WHERE tenant_id=$1 FOR UPDATE", [job.tenant_id]);
     needsOn = !current.rows[0]?.is_on || current.rows[0]?.on_result !== "succeeded";
@@ -155,7 +143,7 @@ async function processLight(pool: pg.Pool, job: Job, providers: NotificationProv
       FROM order_notification_events e WHERE l.tenant_id=$1 AND e.tenant_id=l.tenant_id AND e.id=$3`,
       [job.tenant_id, config.rows[0].alert_duration_seconds, job.event_id]);
     await client.query("COMMIT");
-    if (needsOn) await providers.light(true);
+    if (needsOn) await providers.light(true, job.tenant_id);
     await pool.query("UPDATE order_light_alerts SET on_result='succeeded',updated_at=now() WHERE tenant_id=$1", [job.tenant_id]);
     await finishJob(pool, job, "succeeded");
   } catch (error) {
@@ -174,7 +162,7 @@ async function processSms(pool: pg.Pool, job: Job, providers: NotificationProvid
   const queueLabel = queue === "csr_shift" && recipient.role === "csr" ? "your queue" : "General Queue";
   const text = `New MyOrder.fun order #${job.order_id} is waiting in ${queueLabel}. Open MyOrder to review and claim it.`;
   try {
-    const reference = await providers.sms(recipient.contact_phone, text);
+    const reference = await providers.sms(recipient.contact_phone, text, job.tenant_id);
     await finishJob(pool, job, "succeeded", undefined, recipient, reference);
   } catch (error) {
     const kind = error instanceof NotificationFailure ? error.classification : "uncertain";
@@ -186,20 +174,19 @@ async function processSms(pool: pg.Pool, job: Job, providers: NotificationProvid
 }
 
 export async function processDueLightOff(pool: pg.Pool, providers: NotificationProviders): Promise<boolean> {
-  const configuredTenantId = Number(process.env.TUYA_TENANT_ID);
-  if (!Number.isSafeInteger(configuredTenantId) || configuredTenantId <= 0) return false;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const due = await client.query<{ tenant_id: number; generation: string; off_at: Date }>(`SELECT tenant_id,generation,off_at FROM order_light_alerts
-      WHERE tenant_id=$1 AND is_on=true AND off_at<=now() AND (off_next_attempt_at IS NULL OR off_next_attempt_at<=now())
-      ORDER BY off_at FOR UPDATE SKIP LOCKED LIMIT 1`, [configuredTenantId]);
+      WHERE is_on=true AND off_at<=now() AND (off_next_attempt_at IS NULL OR off_next_attempt_at<=now())
+        AND EXISTS (SELECT 1 FROM order_notification_settings s WHERE s.tenant_id=order_light_alerts.tenant_id AND s.light_enabled=true AND s.tuya_credentials_ciphertext IS NOT NULL)
+      ORDER BY off_at FOR UPDATE SKIP LOCKED LIMIT 1`);
     const current = due.rows[0];
     if (!current) { await client.query("COMMIT"); return false; }
     const again = await client.query<{ generation: string; due: boolean }>("SELECT generation,off_at<=now() AS due FROM order_light_alerts WHERE tenant_id=$1", [current.tenant_id]);
     if (again.rows[0]?.generation !== current.generation || !again.rows[0]?.due) { await client.query("COMMIT"); return true; }
     try {
-      await providers.light(false);
+      await providers.light(false, current.tenant_id);
       await client.query("UPDATE order_light_alerts SET is_on=false,on_result='off',off_at=NULL,off_result='succeeded',off_attempts=0,off_next_attempt_at=NULL,updated_at=now() WHERE tenant_id=$1", [current.tenant_id]);
     } catch {
       await client.query(`UPDATE order_light_alerts SET off_result='failed',off_attempts=off_attempts+1,
@@ -229,17 +216,56 @@ export async function processOneNotificationJob(pool: pg.Pool, providers: Notifi
   return true;
 }
 
+export async function processOneOrderPushJob(pool: pg.Pool, send: typeof sendPwaPushToUser = sendPwaPushToUser, tenantFilter: number | null = null): Promise<boolean> {
+  // A push-service request may have reached the endpoint before the worker
+  // crashed. Mark expired leases uncertain instead of resending blindly.
+  await pool.query("UPDATE order_push_notification_jobs SET state='uncertain',failure_class='worker_restart_after_dispatch',lease_until=NULL,completed_at=now(),updated_at=now() WHERE state='processing' AND lease_until<now()");
+  const claimed = await pool.query<PushJob>(`UPDATE order_push_notification_jobs SET state='processing',attempts=attempts+1,lease_until=now()+interval '30 seconds',updated_at=now()
+    WHERE id=(SELECT id FROM order_push_notification_jobs WHERE state='queued' AND next_attempt_at<=now()
+      AND ($1::integer IS NULL OR tenant_id=$1) ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`, [tenantFilter]);
+  const job = claimed.rows[0]; if (!job) return false;
+  const order = await pool.query<{ status: string }>("SELECT status FROM orders WHERE tenant_id=$1 AND id=$2", [job.tenant_id, job.order_id]);
+  const status = order.rows[0]?.status;
+  if (!status) {
+    await pool.query("UPDATE order_push_notification_jobs SET state='failed',failure_class='order_missing',completed_at=now(),lease_until=NULL,updated_at=now() WHERE id=$1", [job.id]);
+    return true;
+  }
+  try {
+    const result: PwaPushDeliveryResult = await send({ tenantId: job.tenant_id, userId: job.recipient_user_id, payload: {
+      type: "order", title: `New order #${job.order_id}`, body: `Order #${job.order_id} ${status === "submitted" || status === "confirmed" ? "awaits processing" : `is ${status}`}.`,
+      url: `/orders/${job.order_id}`, tag: `myorder-order-${job.tenant_id}-${job.order_id}`, vibrate: false,
+    } });
+    let state: string; let failure: string | null = null;
+    if (result.skipped || result.attempted === 0) { state = "skipped"; failure = "recipient_disabled_or_subscription_missing"; }
+    else if (result.sent > 0) { state = "succeeded"; }
+    else if (result.retryable > 0 && job.attempts < MAX_ATTEMPTS) { state = "queued"; failure = "push_service_rate_limited"; }
+    else { state = result.uncertain > 0 ? "uncertain" : "failed"; failure = result.uncertain > 0 ? "push_delivery_uncertain" : "push_delivery_failed"; }
+    await pool.query(`UPDATE order_push_notification_jobs SET state=$2,failure_class=$3,lease_until=NULL,
+      next_attempt_at=CASE WHEN $2='queued' THEN now()+($4::integer*interval '1 millisecond') ELSE next_attempt_at END,
+      completed_at=CASE WHEN $2 IN ('queued','processing') THEN NULL ELSE now() END,updated_at=now() WHERE id=$1`,
+    [job.id,state,failure,retryDelay(job.attempts)]);
+  } catch {
+    await pool.query("UPDATE order_push_notification_jobs SET state='uncertain',failure_class='push_delivery_uncertain',lease_until=NULL,completed_at=now(),updated_at=now() WHERE id=$1", [job.id]);
+  }
+  return true;
+}
+
 let timer: NodeJS.Timeout | null = null;
-export function startOrderNotificationWorker(providers: NotificationProviders = { light: sendTuyaSwitch, sms: sendStaffSms }) {
+export function startOrderNotificationWorker(providers?: NotificationProviders) {
   if (process.env.ORDER_NOTIFICATION_WORKER_ENABLED !== "1" || timer) return;
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2, ...(process.env.DB_SSL === "false" ? { ssl: false } : {}) });
+  const activeProviders: NotificationProviders = providers ?? {
+    light: (on, tenantId) => sendTuyaSwitch(on, tenantId, pool),
+    sms: (phone, body, tenantId) => sendStaffSms(phone, body, tenantId, pool),
+  };
   let running = false;
   timer = setInterval(async () => {
     if (running) return;
     running = true;
     try {
-      await processDueLightOff(pool, providers);
-      for (let i = 0; i < 5; i++) if (!(await processOneNotificationJob(pool, providers))) break;
+      await processDueLightOff(pool, activeProviders);
+      for (let i = 0; i < 5; i++) if (!(await processOneNotificationJob(pool, activeProviders))) break;
+      for (let i = 0; i < 10; i++) if (!(await processOneOrderPushJob(pool))) break;
     } catch { logger.warn({ event: "order_notification_worker_failure", failureClass: "database_or_worker" }, "Order notification worker will retry"); }
     finally { running = false; }
   }, POLL_MS);

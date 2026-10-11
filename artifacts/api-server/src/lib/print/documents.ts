@@ -126,6 +126,7 @@ export function buildExpoTicket(data: ReceiptData): ReceiptLine[] {
   for (const item of data.items) {
     lines.push({ kind: "text", text: `${item.quantity} x ${item.displayName}`, align: "left", bold: true, size: "tall" });
     if (item.optionLabel) lines.push({ kind: "text", text: item.optionLabel, align: "left", bold: false, size: "normal", indent: 4 });
+    if (item.sku) lines.push({ kind: "text", text: `SKU: ${item.sku}`, align: "left", bold: false, size: "normal", indent: 4 });
     if (item.note) lines.push({ kind: "text", text: `* ${item.note}`, align: "left", bold: false, size: "normal", indent: 4 });
   }
   if (data.order.note) lines.push(rule("dashed"), left(`NOTE: ${data.order.note}`, true));

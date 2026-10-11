@@ -30,6 +30,7 @@ export const usersTable = pgTable("users", {
     orderAlerts: "sound",
     platformUpdates: "in_app",
   }),
+  webPushOrderAlertsEnabled: boolean("web_push_order_alerts_enabled").notNull().default(false),
   status: text("status").notNull().default("pending"),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),

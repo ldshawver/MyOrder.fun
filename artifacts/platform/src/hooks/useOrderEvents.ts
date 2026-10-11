@@ -51,6 +51,8 @@ type Options = {
   fallbackPollMs?: number;
   /** Optional callback invoked when SSE drops and we switch to polling. */
   onFallback?: () => void;
+  /** Called after an SSE connection is re-established so consumers can reconcile a full snapshot. */
+  onReconnect?: () => void;
 };
 
 /**
@@ -68,7 +70,7 @@ export function useOrderEvents(
   enabled = true,
   options: Options = {},
 ): void {
-  const { fallbackPollMs = 10_000, onFallback } = options;
+  const { fallbackPollMs = 10_000, onFallback, onReconnect } = options;
   const handlerRef = useRef(onEvent);
   handlerRef.current = onEvent;
 
@@ -77,6 +79,7 @@ export function useOrderEvents(
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let lastSeenAt = new Date().toISOString();
     let reconnectAttempts = 0;
+    let hasConnected = false;
     const seen = new Set<string>();
     const deliver = (ev: OrderEvent) => {
       const key = ev.eventId ?? `${ev.type}:${ev.orderId}:${"status" in ev ? `${ev.status}:${ev.fulfillmentStatus}:${ev.reason}` : "readyAt" in ev ? ev.readyAt : ""}`;
@@ -123,6 +126,8 @@ export function useOrderEvents(
       es.onopen = () => {
         reconnectAttempts = 0;
         stopPolling();
+        if (hasConnected) onReconnect?.();
+        hasConnected = true;
       };
       es.onerror = () => {
         // Browser will auto-reconnect; if it keeps failing we switch to poll fallback
@@ -140,5 +145,5 @@ export function useOrderEvents(
       for (const { type, fn } of listeners) es.removeEventListener(type, fn);
       es.close();
     };
-  }, [enabled, fallbackPollMs, onFallback]);
+  }, [enabled, fallbackPollMs, onFallback, onReconnect]);
 }

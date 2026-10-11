@@ -627,15 +627,7 @@ async function ensureShiftSchema(tenantId: number): Promise<void> {
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "inventory_kind" text NOT NULL DEFAULT 'sellable_catalog'`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_status" text NOT NULL DEFAULT 'active'`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
-    sql`DO $$ BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique'
-      ) THEN
-        ALTER TABLE "inventory_balances"
-          ADD CONSTRAINT "inventory_balances_unique"
-          UNIQUE ("tenant_id", "product_id", "location_id");
-      END IF;
-    END $$`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS "inventory_balances_unique" ON "inventory_balances" ("tenant_id", "product_id", "location_id")`,
   ];
   for (const statement of statements) {
     await db.execute(statement);

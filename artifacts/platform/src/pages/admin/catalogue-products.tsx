@@ -5,9 +5,10 @@ import { Input } from "@/components/ui/input";
 import { parseVariantAxes, generateVariantCombinations } from "@/lib/variantCombinations";
 import { useGetCurrentUser } from "@workspace/api-client-react";
 
-type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null };
+type Option = { id: number; catalogItemId: number; label: string; optionValues: Record<string, string>; sku: string | null; barcode?: string | null; imageUrl?: string | null; price: string; compareAtPrice?: string | null; active: boolean; isAvailable: boolean; inventoryItemId: number; baseUnit: string; consumptionQuantity: string; complianceHold: boolean; complianceReason: string | null };
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
+type FulfillmentLocation = { locationId: number; name: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
 
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
@@ -15,7 +16,7 @@ type ProductForm = { name: string; category: string; price: string; sku: string;
 const defaultProduct: ProductForm = { name: "", category: "", price: "0.00", sku: "", firstOptionLabel: "Standard",
   inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION",
   baseUnit: "each", consumptionQuantity: "1.000000" };
-const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000" };
+const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", imageUrl: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000" };
 
 function parseOptionValues(text: string): Record<string, string> {
   if (!text.trim()) return {};
@@ -33,13 +34,14 @@ function parseOptionValues(text: string): Record<string, string> {
 }
 
 function OptionEditor({ option, save, selectItem }: { option: Option; save: (value: Record<string, unknown>) => void; selectItem: (id: number) => void }) {
-  const [value, setValue] = useState({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable });
-  useEffect(() => { setValue({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable }); }, [option]);
+  const [value, setValue] = useState({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", imageUrl: option.imageUrl ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable });
+  useEffect(() => { setValue({ label: option.label, optionValuesText: Object.entries(option.optionValues ?? {}).map(([k, v]) => `${k}=${v}`).join("; "), sku: option.sku ?? "", barcode: option.barcode ?? "", imageUrl: option.imageUrl ?? "", price: option.price, compareAtPrice: option.compareAtPrice ?? "", consumptionQuantity: option.consumptionQuantity, isAvailable: option.isAvailable }); }, [option]);
   return <div className="grid gap-2 border-b py-3 md:grid-cols-4 text-sm">
     <label>Option<Input value={value.label} onChange={event => setValue({ ...value, label: event.target.value })} /></label>
     <label>Options<Input placeholder="Color=Red; Size=Medium" value={value.optionValuesText} onChange={event => setValue({ ...value, optionValuesText: event.target.value })} /></label>
     <label>SKU<Input value={value.sku} onChange={event => setValue({ ...value, sku: event.target.value })} /></label>
     <label>Barcode<Input value={value.barcode} onChange={event => setValue({ ...value, barcode: event.target.value })} /></label>
+    <label>Option image URL<Input value={value.imageUrl} onChange={event => setValue({ ...value, imageUrl: event.target.value })} /></label>
     <label>Price<Input value={value.price} onChange={event => setValue({ ...value, price: event.target.value })} /></label>
     <label>Compare-at price<Input value={value.compareAtPrice} onChange={event => setValue({ ...value, compareAtPrice: event.target.value })} /></label>
     <label>Consumption ({option.baseUnit})<Input value={value.consumptionQuantity} onChange={event => setValue({ ...value, consumptionQuantity: event.target.value })} /></label>
@@ -56,10 +58,13 @@ export default function AdminCatalogueProducts() {
   const { getToken } = useAuth();
   const { data: currentUser } = useGetCurrentUser();
   const isGlobalAdmin = currentUser?.role === "global_admin";
+  const isTenantAdmin = currentUser?.role === "global_admin" || currentUser?.role === "admin";
   const [products, setProducts] = useState<Product[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [fulfillmentLocations, setFulfillmentLocations] = useState<FulfillmentLocation[]>([]);
+  const [defaultLocationId, setDefaultLocationId] = useState("");
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [create, setCreate] = useState(defaultProduct);
   const [newOption, setNewOption] = useState(defaultOption);
@@ -84,12 +89,15 @@ export default function AdminCatalogueProducts() {
     return body;
   }, [getToken]);
   const refresh = useCallback(async () => {
-    const [catalogue, recs] = await Promise.all([
+    const [catalogue, recs, defaultLocation] = await Promise.all([
       request("/api/admin/catalogue/products") as Promise<{ products: Product[] }>,
       request("/api/admin/catalogue/recommendations") as Promise<{ items: Recommendation[] }>,
+      request("/api/admin/catalogue/default-location") as Promise<{ defaultLocationId: number | null; locations: FulfillmentLocation[] }>,
     ]);
     setProducts(catalogue.products);
     setRecommendations(recs.items);
+    setFulfillmentLocations(defaultLocation?.locations ?? []);
+    setDefaultLocationId(defaultLocation?.defaultLocationId == null ? "" : String(defaultLocation.defaultLocationId));
   }, [request]);
   useEffect(() => { void refresh().catch(error => setMessage(error.message)); }, [refresh]);
   useEffect(() => {
@@ -118,6 +126,18 @@ export default function AdminCatalogueProducts() {
     <header><h1 className="text-2xl font-bold">Products, options and reorder</h1>
       <p className="text-sm text-muted-foreground">Set physical quantities by location. Replenishment suggestions do not place purchases.</p></header>
     {message && <div role="status" className="rounded-lg border p-3 text-sm">{message}</div>}
+    <section className="rounded-xl border p-4 space-y-3">
+      <h2 className="font-semibold">Default fulfillment inventory location</h2>
+      <p className="text-xs text-muted-foreground">Server-side fallback for orders without an authorized active CSR shift. PER_LOCATION checkout requires this location; COMBINED_LOCATIONS checks this location first, then allocates by order-type priority, display order, and location ID.</p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label>Default location<select className="block min-w-64 rounded border bg-background p-2" value={defaultLocationId} onChange={event => setDefaultLocationId(event.target.value)} disabled={!isTenantAdmin}>
+          <option value="">Not configured</option>{fulfillmentLocations.map(location => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+        </select></label>
+        {isTenantAdmin && <Button disabled={busy} onClick={() => void perform(async () => {
+          await request("/api/admin/catalogue/default-location", { method: "PUT", body: JSON.stringify({ locationId: defaultLocationId ? Number(defaultLocationId) : null }) });
+        })}>Save default location</Button>}
+      </div>
+    </section>
     <section className="rounded-xl border p-4 space-y-3">
       <h2 className="font-semibold">Create product</h2>
       <div className="grid gap-2 md:grid-cols-4">
@@ -186,7 +206,7 @@ export default function AdminCatalogueProducts() {
               await request(`/api/admin/catalogue/options/${option.id}`, { method: "PATCH", body: JSON.stringify(patch) });
             })} />)}
           <div className="grid gap-2 rounded border p-3 md:grid-cols-[1fr_auto]">
-            <label>Generate option combinations<Input placeholder="Color=Red,Blue; Size=S,M" value={combinationText} onChange={event => setCombinationText(event.target.value)} /></label>
+            <label>Generate option combinations<Input placeholder="Color=Red,Blue; Size=S,M or Small,Medium,Large" value={combinationText} onChange={event => setCombinationText(event.target.value)} /></label>
             <Button className="self-end" disabled={busy || !combinationText.trim()} onClick={() => void perform(async () => {
               const combinations = generateVariantCombinations(parseVariantAxes(combinationText));
               for (const optionValues of combinations) {
@@ -194,24 +214,26 @@ export default function AdminCatalogueProducts() {
                 await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({
                   label, optionValues, sku: null, barcode: null, price: newOption.price,
                   compareAtPrice: newOption.compareAtPrice || null, consumptionQuantity: newOption.consumptionQuantity,
+                  imageUrl: newOption.imageUrl || null,
                 }) });
               }
               setCombinationText("");
             })}>Generate variants</Button>
-            <p className="text-xs text-muted-foreground md:col-span-2">Creates each purchasable combination with its own stable variant and inventory identity. Set SKU, barcode and price per variant below.</p>
+            <p className="text-xs text-muted-foreground md:col-span-2">Use structured axes or a comma-separated single axis. Repeating generation preserves existing variant identity and edits.</p>
           </div>
           <div className="grid gap-2 md:grid-cols-4">
             <label>Variant label<Input value={newOption.label} onChange={event => setNewOption({ ...newOption, label: event.target.value })} /></label>
             <label>Options<Input placeholder="Color=Red; Size=Medium" value={newOption.optionValuesText} onChange={event => setNewOption({ ...newOption, optionValuesText: event.target.value })} /></label>
             <label>SKU<Input value={newOption.sku} onChange={event => setNewOption({ ...newOption, sku: event.target.value })} /></label>
             <label>Barcode<Input value={newOption.barcode} onChange={event => setNewOption({ ...newOption, barcode: event.target.value })} /></label>
+            <label>Option image URL<Input value={newOption.imageUrl} onChange={event => setNewOption({ ...newOption, imageUrl: event.target.value })} /></label>
             <label>Price<Input value={newOption.price} onChange={event => setNewOption({ ...newOption, price: event.target.value })} /></label>
             <label>Compare-at price<Input value={newOption.compareAtPrice} onChange={event => setNewOption({ ...newOption, compareAtPrice: event.target.value })} /></label>
             <label>Consumption ({selected.options[0]?.baseUnit ?? "unit"})<Input value={newOption.consumptionQuantity} onChange={event => setNewOption({ ...newOption, consumptionQuantity: event.target.value })} /></label>
           </div>
           <Button disabled={busy} onClick={() => void perform(async () => {
-            const { optionValuesText, compareAtPrice, ...variant } = newOption;
-            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({ ...variant, optionValues: parseOptionValues(optionValuesText), compareAtPrice: compareAtPrice || null }) });
+            const { optionValuesText, compareAtPrice, imageUrl, ...variant } = newOption;
+            await request(`/api/admin/catalogue/products/${selected.id}/options`, { method: "POST", body: JSON.stringify({ ...variant, imageUrl: imageUrl || null, optionValues: parseOptionValues(optionValuesText), compareAtPrice: compareAtPrice || null }) });
             setNewOption(defaultOption);
           })}>Add option</Button>
         </section>

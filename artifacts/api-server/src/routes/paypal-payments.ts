@@ -21,7 +21,7 @@ const router: IRouter = Router();
 const limiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Payment requests rate-limited" } });
 const auth = [limiter, requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext] as const;
 const Id = z.coerce.number().int().positive();
-const Empty = z.object({}).strict();
+const CreatePayment = z.object({ amount: z.union([z.string().regex(/^\d{1,7}(?:\.\d{1,2})?$/), z.number().finite().positive()]).optional() }).strict();
 const Capture = z.object({ attemptId: z.number().int().positive() }).strict();
 const Refund = z.object({ amount: z.string().regex(/^\d+\.\d{2}$/).optional(), reason: z.string().trim().min(3).max(500) }).strict();
 
@@ -63,13 +63,13 @@ router.get("/payments/config", ...auth, async (req, res) => {
 });
 
 router.post("/payments/paypal/orders/:orderId", ...auth, async (req, res) => {
-  try { Empty.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
+  try { const body = CreatePayment.parse(req.body); const orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).create({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, amount: body.amount, idempotencyKey: key(req.get("Idempotency-Key")) }); res.status(result.replayed ? 200 : 201).json(result); }
   catch (error) { fail(res, error); }
 });
 
 router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res) => {
   let body: z.infer<typeof Capture> | undefined; let orderId: number | undefined;
-  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).capture({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed }, ipAddress: req.ip }); res.json(result); }
+  try { body = Capture.parse(req.body); orderId = Id.parse(req.params.orderId); const actor = req.dbUser!; const result = await (await service(req.authorizedTenantId!)).capture({ tenantId: req.authorizedTenantId!, customerId: actor.id, orderId, attemptId: body.attemptId, idempotencyKey: key(req.get("Idempotency-Key")), finalize: (order, tx) => deductPaidOrderInventory(order, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx) }); if (result.status === "captured") await queueUberDeliveryForPaidOrder(req.authorizedTenantId!, orderId).catch(error => logger.warn({ tenantId: req.authorizedTenantId!, orderId, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery")); await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, action: "PAYPAL_CAPTURE_VERIFIED", tenantId: req.authorizedTenantId!, resourceType: "order", resourceId: String(orderId), metadata: { replayed: result.replayed, paymentStatus: result.status }, ipAddress: req.ip }); res.json(result); }
   catch (error) {
     const actor = req.dbUser!;
     // Release only on a definitive decline. Unknown outcomes retain the
@@ -79,7 +79,7 @@ router.post("/payments/paypal/orders/:orderId/capture", ...auth, async (req, res
         const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId!), eq(ordersTable.customerId, actor.id))).limit(1);
         if (order && order.paymentStatus !== "paid") {
           await tx.update(paymentAttemptsTable).set({ state: "failed", failureClass: "declined", reconciliationState: "not_required" }).where(and(eq(paymentAttemptsTable.tenantId, req.authorizedTenantId!), eq(paymentAttemptsTable.id, body!.attemptId), eq(paymentAttemptsTable.orderId, order.id)));
-          await releaseInventoryReservationsForOrder(tx, req.authorizedTenantId!, order.id);
+          if (order.selectedPaymentMethod !== "split_tender") await releaseInventoryReservationsForOrder(tx, req.authorizedTenantId!, order.id);
         }
         const amountCents = Math.round(Number(order?.customerCreditApplied ?? 0) * 100);
         if (order && amountCents > 0) {

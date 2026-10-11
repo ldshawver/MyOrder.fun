@@ -39,4 +39,13 @@ describe("replenishment recommendations", () => {
     expect(plan[1].internalTransfers).toEqual([]);
     expect(plan[1].externalPurchaseQuantity).toBe("0.000000");
   });
+
+  it("uses one aggregate reorder threshold for combined locations and reports a deterministic destination", () => {
+    const plan = recommendReplenishment([
+      { locationId: 2, name: "Backstock", available: "3.250000", par: "5", reorderPoint: "4", preferredReorderQuantity: "2", moq: "1", eligible: true },
+      { locationId: 1, name: "Storefront", available: "2.250000", par: "5", reorderPoint: "4", preferredReorderQuantity: "1", moq: "2", eligible: true },
+      { locationId: 3, name: "Inactive", available: "99", par: "99", reorderPoint: "99", preferredReorderQuantity: "99", moq: "99", eligible: false },
+    ], "COMBINED_LOCATIONS", 1);
+    expect(plan).toEqual([{ locationId: 1, locationName: "Storefront", available: "5.500000", internalTransfers: [], externalPurchaseQuantity: "4.500000" }]);
+  });
 });

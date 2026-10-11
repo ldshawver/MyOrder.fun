@@ -10,6 +10,8 @@ import express from "express";
 import supertest from "supertest";
 import { fetchWooSafely } from "../../lib/wooSafeHttp";
 
+const syncJobMocks = vi.hoisted(() => ({ enqueue: vi.fn(), get: vi.fn(), actorRole: "admin" }));
+
 process.env.SETTINGS_ENC_KEY = "0".repeat(64);
 
 vi.mock("@clerk/express", () => ({
@@ -117,7 +119,7 @@ vi.mock("../../lib/wooSafeHttp", async importOriginal => ({
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _res: unknown, next: () => void) => {
-    req.dbUser = { id: 1, role: "admin", status: "approved", tenantId: 1 };
+    req.dbUser = { id: 1, role: syncJobMocks.actorRole, status: "approved", tenantId: 1 };
     next();
   },
   requireDbUser: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -128,6 +130,11 @@ vi.mock("../../lib/auth", () => ({
 
 vi.mock("../../lib/singleTenant", () => ({
   getHouseTenantId: vi.fn(async () => 1),
+}));
+
+vi.mock("../../lib/wooSyncJobs", () => ({
+  enqueueWooSync: syncJobMocks.enqueue,
+  getTenantWooSyncJob: syncJobMocks.get,
 }));
 
 import settingsRouter from "../settings";
@@ -143,9 +150,13 @@ function makeApp() {
 
 describe("woocommerce settings save/load/sync", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(fetchWooSafely).mockClear();
     state.row = null;
     nextId = 1;
-    vi.restoreAllMocks();
+    syncJobMocks.actorRole = "admin";
+    syncJobMocks.enqueue.mockReset();
+    syncJobMocks.get.mockReset();
   });
 
   it("PUT then GET round-trips, secrets are MASKED on read", async () => {
@@ -158,7 +169,7 @@ describe("woocommerce settings save/load/sync", () => {
         wcConsumerSecret: "cs_supersecret_secret",
         enabled: true,
       });
-    expect(putRes.status).toBe(200);
+    expect(putRes.status, JSON.stringify(putRes.body)).toBe(200);
     expect(putRes.body.wcStoreUrl).toBe("https://example.com");
     expect(putRes.body.wcConsumerKeySet).toBe(true);
     expect(putRes.body.wcConsumerSecretSet).toBe(true);
@@ -295,5 +306,41 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.body.upstreamStatus).toBe(401);
     expect(res.body.code).toBe("woocommerce_auth_failed");
     expect(typeof res.body.message).toBe("string");
+  });
+
+  it("durably enqueues a tenant sync and returns HTTP 202 with a job identifier", async () => {
+    const app = makeApp();
+    await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_saved", wcConsumerSecret: "cs_saved" });
+    syncJobMocks.enqueue.mockResolvedValue({ id: "e125c5c4-3c1e-46bc-9f57-ff2d56434512", reused: false });
+
+    const response = await supertest(app).post("/api/admin/woocommerce/sync").send({});
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({ jobId: "e125c5c4-3c1e-46bc-9f57-ff2d56434512", state: "queued", reused: false });
+    expect(syncJobMocks.enqueue).toHaveBeenCalledWith(1, 1);
+    expect(vi.mocked(fetchWooSafely)).not.toHaveBeenCalled();
+    expect(JSON.stringify(response.body)).not.toContain("ck_saved");
+    expect(JSON.stringify(response.body)).not.toContain("cs_saved");
+  });
+
+  it("requires tenant-admin permission and retrieves job state only through the tenant-scoped lookup", async () => {
+    const app = makeApp();
+    await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://shop.test", wcConsumerKey: "ck_saved", wcConsumerSecret: "cs_saved" });
+    syncJobMocks.actorRole = "user";
+    const forbidden = await supertest(app).post("/api/admin/woocommerce/sync").send({});
+    expect(forbidden.status).toBe(403);
+    expect(syncJobMocks.enqueue).not.toHaveBeenCalled();
+
+    syncJobMocks.actorRole = "admin";
+    syncJobMocks.get.mockResolvedValue({ id: "e125c5c4-3c1e-46bc-9f57-ff2d56434512", state: "running", processedParents: 12, totalParents: 245 });
+    const status = await supertest(app).get("/api/admin/woocommerce/sync/jobs/e125c5c4-3c1e-46bc-9f57-ff2d56434512");
+    expect(status.status).toBe(200);
+    expect(status.body.job).toMatchObject({ state: "running", processedParents: 12, totalParents: 245 });
+    expect(syncJobMocks.get).toHaveBeenCalledWith(1, "e125c5c4-3c1e-46bc-9f57-ff2d56434512");
+
+    syncJobMocks.get.mockResolvedValue(null);
+    const otherTenant = await supertest(app).get("/api/admin/woocommerce/sync/jobs/e125c5c4-3c1e-46bc-9f57-ff2d56434512");
+    expect(otherTenant.status).toBe(404);
   });
 });

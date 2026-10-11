@@ -20,8 +20,25 @@ export type ReplenishmentRecommendation = {
 };
 
 /** Plan transfers first. Balances are never combined or mutated here. */
-export function recommendReplenishment(locations: LocationPolicyInput[]): ReplenishmentRecommendation[] {
+export function recommendReplenishment(locations: LocationPolicyInput[], mode: "PER_LOCATION" | "COMBINED_LOCATIONS" = "PER_LOCATION", preferredLocationId?: number | null): ReplenishmentRecommendation[] {
   const eligible = locations.filter(location => location.eligible);
+  if (mode === "COMBINED_LOCATIONS") {
+    if (!eligible.length) return [];
+    const total = (key: "available" | "par" | "reorderPoint" | "preferredReorderQuantity" | "moq") => eligible.reduce((sum, location) => sum + quantityUnits(location[key]), 0n);
+    const available = total("available");
+    const par = total("par");
+    const point = total("reorderPoint");
+    let external = 0n;
+    if (available <= point) {
+      const deficit = par > available ? par - available : 0n;
+      external = total("preferredReorderQuantity");
+      if (external < deficit) external = deficit;
+      const moq = total("moq");
+      if (external < moq) external = moq;
+    }
+    const destination = eligible.find(location => location.locationId === preferredLocationId) ?? eligible[0];
+    return [{ locationId: destination.locationId, locationName: destination.name, available: quantityText(available), internalTransfers: [], externalPurchaseQuantity: quantityText(external) }];
+  }
   const surplus = new Map(eligible.map(location => [location.locationId,
     quantityUnits(location.available) > quantityUnits(location.par)
       ? quantityUnits(location.available) - quantityUnits(location.par) : 0n]));

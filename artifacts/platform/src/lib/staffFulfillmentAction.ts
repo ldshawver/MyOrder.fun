@@ -1,9 +1,9 @@
-export const STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"] as const;
+export const STAFF_FULFILLMENT_STATUSES = ["in_progress", "packaging", "ready", "completed"] as const;
 export function staffVisibleFulfillmentState(state: string | null | undefined): string | null | undefined {
   return state === "preparing" ? "in_progress" : state;
 }
 
-export function staffFulfillmentAction(orderId: number, status: "in_progress" | "preparing" | "ready" | "completed", isAdmin: boolean): {
+export function staffFulfillmentAction(orderId: number, status: "in_progress" | "preparing" | "packaging" | "ready" | "completed", isAdmin: boolean): {
   endpoint: string;
   body?: { fulfillmentStatus?: string };
 } {
@@ -13,6 +13,7 @@ export function staffFulfillmentAction(orderId: number, status: "in_progress" | 
       : { endpoint: `/api/orders/${orderId}/claim`, body: {} };
   }
   if (status === "completed") return { endpoint: `/api/orders/${orderId}/complete` };
+  if (status === "packaging") return { endpoint: `/api/orders/${orderId}/packaging`, body: {} };
   return {
     endpoint: `/api/orders/${orderId}/${status === "preparing" ? "prepare" : "ready"}`,
     body: { fulfillmentStatus: status },

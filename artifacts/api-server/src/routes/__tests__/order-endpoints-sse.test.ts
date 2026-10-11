@@ -20,6 +20,7 @@ const dbState: {
   shifts: Array<Record<string, unknown>>;
   settings: Array<Record<string, unknown>>;
   tenants: Array<Record<string, unknown>>;
+  tenantSettings: Array<Record<string, unknown>>;
   catalog: Array<Record<string, unknown>>;
   inventoryLocations: Array<Record<string, unknown>>;
   inventoryBalances: Array<Record<string, unknown>>;
@@ -27,7 +28,7 @@ const dbState: {
   uberQuotes: Array<Record<string, unknown>>;
   disclaimerAcceptances: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
-} = { orders: [], users: [], shifts: [], settings: [], tenants: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
+} = { orders: [], users: [], shifts: [], settings: [], tenants: [], tenantSettings: [], catalog: [], inventoryLocations: [], inventoryBalances: [], taxSnapshots: [], uberQuotes: [], disclaimerAcceptances: [], auditLogs: [] };
 
 let mockActor: Record<string, unknown> = {};
 
@@ -72,6 +73,14 @@ vi.mock("../../lib/auth", () => ({
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
+vi.mock("../../lib/inventoryReservations", () => ({
+  ensureInventoryReservationsTable: vi.fn(async () => {}),
+  reserveCheckoutInventoryByOrderType: vi.fn(async (_tx: unknown, _tenantId: number, _orderId: number, _productId: number, quantity: string | number) => [
+    { locationId: 1, locationName: "Storefront", quantity: Number(quantity), remainingStock: 10 },
+  ]),
+  confirmInventoryReservationsForOrder: vi.fn(async () => []),
+  releaseInventoryReservationsForOrder: vi.fn(async () => 0),
+}));
 const uberQuoteCalls: Array<{ manifestItems: unknown[] }> = [];
 vi.mock("../../lib/uberDirect", () => {
   class UberDirectConfigError extends Error {}
@@ -187,6 +196,7 @@ vi.mock("@workspace/db", () => {
   const adminSettingsTable = { __t: "admin_settings", tenantId: "tenantId", enabledProcessors: "enabledProcessors", cashDiscountEnabled: "cashDiscountEnabled", cashDiscountType: "cashDiscountType", cashDiscountValue: "cashDiscountValue", shiftLocationOptions: "shiftLocationOptions" };
   const customerDisclaimerAcceptancesTable = { __t: "customer_disclaimer_acceptances", tenantId: "tenantId", userId: "userId", disclaimerVersion: "disclaimerVersion" };
   const tenantsTable = { __t: "tenants", id: "id", name: "name", settings: "settings" };
+  const tenantSettingsTable = { __t: "tenant_settings", tenantId: "tenantId", publicBusinessName: "publicBusinessName", businessAddressJson: "businessAddressJson" };
   const orderItemsTable = { __t: "order_items", orderId: "orderId" };
   const catalogItemsTable = { __t: "catalog", id: "id", tenantId: "tenantId" };
   const inventoryLocationsTable = { __t: "inventory_locations", id: "id", tenantId: "tenantId", type: "type", csrBoxId: "csrBoxId" };
@@ -203,6 +213,7 @@ vi.mock("@workspace/db", () => {
     if (t.__t === "shifts") return dbState.shifts;
     if (t.__t === "admin_settings") return dbState.settings;
     if (t.__t === "tenants") return dbState.tenants;
+    if (t.__t === "tenant_settings") return dbState.tenantSettings;
     if (t.__t === "order_items") return orderItems;
     if (t.__t === "catalog") return dbState.catalog;
     if (t.__t === "inventory_locations") return dbState.inventoryLocations;
@@ -322,7 +333,7 @@ vi.mock("@workspace/db", () => {
 
   return {
     db: { execute: vi.fn(() => Promise.resolve()), select, insert, update, delete: vi.fn(), transaction: vi.fn(async (fn) => fn({ select, insert, update, execute: vi.fn(() => Promise.resolve({ rows: [{ id: "test-event" }] })) })) },
-    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
+    ordersTable, usersTable, labTechShiftsTable, adminSettingsTable, tenantsTable, tenantSettingsTable, orderItemsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, customerDisclaimerAcceptancesTable, orderTaxSnapshotsTable, uberDeliveryQuotesTable, auditLogsTable,
     orderNotesTable: { __t: "order_notes" },
   };
 });
@@ -424,6 +435,7 @@ beforeEach(() => {
     id: 1, tenantId: 1, orderRoutingRule: "round_robin", defaultEtaMinutes: 30, customerDisclaimerVersion: 1, enabledProcessors: ["cash", "paypal"],
   }];
   dbState.tenants = [{ id: 1, name: "Test Tenant" }];
+  dbState.tenantSettings = [{ tenantId: 1, publicBusinessName: "Test Tenant Market", businessAddressJson: { line1: "50 Test Ave", city: "Testville", region: "CA", postalCode: "90000", country: "US" } }];
   dbState.catalog = [{ id: 1, name: "Alavont Internal", price: "10.00", isAvailable: true, tenantId: 1 }];
   dbState.inventoryLocations = [{ id: 50, tenantId: 1, type: "storefront", csrBoxId: null }];
   dbState.inventoryBalances = [{ id: 60, tenantId: 1, productId: 1, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null }];
@@ -669,7 +681,7 @@ describe("SSE event emission via the live route handlers", () => {
     const updated = adminCapture.received.find(e => e.type === "order.updated");
     expect(updated).toBeDefined();
     expect((updated as { reason: string }).reason).toBe("accepted");
-    expect((updated as { fulfillmentStatus: string }).fulfillmentStatus).toBe("in_progress");
+    expect((updated as { fulfillmentStatus: string }).fulfillmentStatus).toBe("preparing");
   });
 
   it("POST /api/orders/:id/mark-ready emits an order.ready SSE event", async () => {
@@ -771,14 +783,21 @@ describe("default-queue Admin start and CSR claim", () => {
     mockActor = dbState.users[2]!;
     const response = await supertest(buildApp()).post("/api/orders/48/fulfillment").send({ fulfillmentStatus: "in_progress" });
     expect(response.status).toBe(200);
-    expect(dbState.orders[0]).toMatchObject({ status: "in_progress", fulfillmentStatus: "in_progress", assignedCsrUserId: null, assignedShiftId: null, routedTo: "default_queue" });
+    expect(dbState.orders[0]).toMatchObject({ status: "preparing", fulfillmentStatus: "preparing", assignedCsrUserId: null, assignedShiftId: null, routedTo: "default_queue", promisedMinutes: 10 });
+    expect(new Date(dbState.orders[0]!.estimatedReadyAt).getTime() - new Date(dbState.orders[0]!.acceptedAt).getTime()).toBe(10 * 60_000);
     expect(dbState.auditLogs).toContainEqual(expect.objectContaining({ action: "ORDER_STARTED_BY_ADMIN", actorId: 9, actorRole: "admin", tenantId: 1, resourceId: "48" }));
   });
 
   it("also accepts the prior Admin claim-button request without inventing a CSR shift", async () => {
     dbState.orders.push(unowned());
     mockActor = dbState.users[2]!;
-    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    const claimed = await supertest(buildApp()).post("/api/orders/48/claim").send({});
+    expect(claimed.status).toBe(200);
+    expect(claimed.body.pickupDetails).toEqual({
+      businessName: "Test Tenant Market",
+      address: "50 Test Ave, Testville, CA, 90000, US",
+      instruction: "Please wait until your order is marked Ready before collecting it.",
+    });
     expect(dbState.orders[0]!.assignedShiftId).toBeNull();
   });
 
@@ -789,6 +808,11 @@ describe("default-queue Admin start and CSR claim", () => {
     dbState.shifts.push({ id: 77, tenantId: 1, techId: 7, status: "active", clockedInAt: new Date(), clockedOutAt: null, boxAssignmentId: "sales-box-1", setupJson: {} });
     expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
     expect(dbState.orders[0]!.assignedCsrUserId).toBe(7);
+    expect(dbState.orders[0]!.promisedMinutes).toBe(10);
+    expect(new Date(dbState.orders[0]!.estimatedReadyAt).getTime() - new Date(dbState.orders[0]!.acceptedAt).getTime()).toBe(10 * 60_000);
+    const target = dbState.orders[0]!.estimatedReadyAt;
+    expect((await supertest(buildApp()).post("/api/orders/48/claim").send({})).status).toBe(200);
+    expect(dbState.orders[0]!.estimatedReadyAt).toEqual(target);
   });
 
   it("does not expose another tenant's order or allow a customer to start", async () => {

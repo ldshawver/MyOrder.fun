@@ -204,7 +204,8 @@ describe("authenticated CSR claim client contract", () => {
     expect(staff).toContain("if (loading !== null) return;");
     expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
     expect(fulfillmentActions).toContain('endpoint: `/api/orders/${orderId}/claim`, body: {}');
-    expect(fulfillmentActions).toContain('STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"]');
+    expect(fulfillmentActions).toContain('STAFF_FULFILLMENT_STATUSES = ["in_progress", "packaging", "ready", "completed"]');
+    expect(fulfillmentActions).toContain('endpoint: `/api/orders/${orderId}/packaging`');
     expect(staff).toContain("body?.error ?? `Request failed with HTTP ${res.status}`");
     expect(staff).toContain('data-testid={`claim-message-${order.id}`}');
     for (const key of ["shiftQueueOrders", "generalQueueOrders", "csrAssignedOrders", "queueCounts", "activeAssignment", "getCurrentShift", "getOrder"]) {

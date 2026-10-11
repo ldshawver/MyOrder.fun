@@ -4,6 +4,7 @@ import express, { type ErrorRequestHandler } from "express";
 import pg from "pg";
 import supertest from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { _resetKeyCacheForTests, decrypt } from "../../lib/crypto";
 
 const enabled = process.env.RUN_ORDER_NOTIFICATION_INTEGRATION === "1";
 const header = "x-notification-test-user";
@@ -16,6 +17,7 @@ import router from "../order-notification-settings";
 
 const { Client } = pg;
 const suffix = randomUUID().slice(0, 10);
+const priorEncryptionKey = process.env.SETTINGS_ENC_KEY;
 const identities = { admin: `notification_admin_${suffix}`, supervisor: `notification_supervisor_${suffix}`,
   viewer: `notification_viewer_${suffix}`, foreignAdmin: `notification_foreign_${suffix}` };
 let client: pg.Client;
@@ -36,6 +38,8 @@ const put = (user: keyof typeof identities, body: unknown) =>
 
 (enabled ? describe : describe.skip)("notification settings authorization on migrated clone", () => {
   beforeAll(async () => {
+    process.env.SETTINGS_ENC_KEY = "notification-test-encryption-key-32-bytes";
+    _resetKeyCacheForTests();
     expect(process.env.DATABASE_URL).toMatch(/(?:127\.0\.0\.1|localhost):\d+\//);
     client = new Client({ connectionString: process.env.DATABASE_URL, ssl: false });
     await client.connect();
@@ -54,7 +58,7 @@ const put = (user: keyof typeof identities, body: unknown) =>
     adminId = users.rows[0]!.id;
     foreignId = users.rows[3]!.id;
   });
-  afterAll(async () => { if (client) await client.end(); });
+  afterAll(async () => { if (client) await client.end(); if (priorEncryptionKey === undefined) delete process.env.SETTINGS_ENC_KEY; else process.env.SETTINGS_ENC_KEY = priorEncryptionKey; _resetKeyCacheForTests(); });
 
   it("rejects unauthenticated, ordinary, Supervisor and foreign-recipient mutations without settings or audit changes", async () => {
     const attempts = [
@@ -84,4 +88,31 @@ const put = (user: keyof typeof identities, body: unknown) =>
     expect(get.status).toBe(200);
     expect(JSON.stringify(get.body)).not.toMatch(/\+1555|TWILIO_AUTH_TOKEN|TUYA_CLIENT_SECRET/);
   });
+
+  it("stores SMS and Tuya credentials encrypted, masks them in settings, and scopes changes to tenant Admin", async () => {
+    const accountSid = `AC${"a".repeat(32)}`;
+    const authToken = "unit-test-twilio-secret-token";
+    const clientSecret = "unit-test-tuya-client-secret";
+    const forbidden = await http.put("/api/admin/order-notifications/providers/sms").set(header, identities.supervisor).send({ accountSid, authToken, sender: "+15551234567" });
+    expect(forbidden.status).toBe(403);
+
+    const sms = await http.put("/api/admin/order-notifications/providers/sms").set(header, identities.admin).send({ accountSid, authToken, sender: "+15551234567" });
+    expect(sms.status, sms.text).toBe(200);
+    expect(JSON.stringify(sms.body)).not.toContain(authToken);
+    const tuya = await http.put("/api/admin/order-notifications/providers/tuya").set(header, identities.admin).send({ clientId: "unit-test-tuya-client", clientSecret, region: "us", deviceId: "device-a" });
+    expect(tuya.status, tuya.text).toBe(200);
+    expect(JSON.stringify(tuya.body)).not.toContain(clientSecret);
+
+    const saved = await client.query<{ sms_credentials_ciphertext: string; tuya_credentials_ciphertext: string }>("SELECT sms_credentials_ciphertext,tuya_credentials_ciphertext FROM order_notification_settings WHERE tenant_id=$1", [tenantA]);
+    expect(saved.rows[0]!.sms_credentials_ciphertext).not.toContain(authToken);
+    expect(saved.rows[0]!.tuya_credentials_ciphertext).not.toContain(clientSecret);
+    expect(JSON.parse(decrypt(saved.rows[0]!.sms_credentials_ciphertext))).toMatchObject({ accountSid, authToken });
+    expect(JSON.parse(decrypt(saved.rows[0]!.tuya_credentials_ciphertext))).toMatchObject({ clientSecret });
+    const own = await http.get("/api/admin/order-notifications").set(header, identities.admin);
+    const foreign = await http.get("/api/admin/order-notifications").set(header, identities.foreignAdmin);
+    expect(JSON.stringify(own.body)).not.toContain(authToken);
+    expect(JSON.stringify(own.body)).not.toContain(clientSecret);
+    expect(foreign.body.smsProvider.configured).toBe(false);
+    expect(foreign.body.tuyaProvider.configured).toBe(false);
+  }, 30_000);
 });

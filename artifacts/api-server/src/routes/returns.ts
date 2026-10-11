@@ -10,6 +10,8 @@ import { requireOnlinePayments } from "../payments/config";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
+import { physicalQuantityForReturnedUnits, planReturnRestoration } from "../lib/returnInventory";
+import { quantityText, quantityUnits } from "../lib/exactQuantity";
 
 const router = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
@@ -24,12 +26,55 @@ const bodySchema = z.object({
   reason: z.string().trim().min(3).max(500),
   idempotencyKey: z.string().regex(/^return:[A-Za-z0-9._:-]{8,120}$/),
   preview: z.boolean().optional().default(false),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const seen = new Set<number>();
+  value.lines.forEach((line, index) => {
+    if (seen.has(line.orderItemId)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["lines", index, "orderItemId"], message: "Each order item may appear once per return" });
+    seen.add(line.orderItemId);
+  });
+});
 
 type Row = Record<string, unknown>;
 const rows = <T extends Row>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] } | null | undefined)?.rows ?? []);
 const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
 const money = (n: number) => (n / 100).toFixed(2);
+
+async function restoreReturnLineInventory(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: {
+  tenantId: number; orderId: number; returnId: number; orderItemId: number; purchasedUnits: number;
+  returnUnits: number; snapshotPhysicalQuantity: string | null; actor: { id: number; email: string | null; role: string };
+  ipAddress?: string; reason: string;
+}): Promise<void> {
+  const sales = rows<Row>(await tx.execute(sql`SELECT id AS "movementId", catalog_item_id AS "catalogItemId", location_id AS "locationId",
+    abs(quantity_delta)::text AS quantity FROM inventory_movements
+    WHERE tenant_id = ${input.tenantId} AND order_id = ${input.orderId} AND order_item_id = ${input.orderItemId} AND movement_type = 'sale'
+    ORDER BY id`)).map(row => ({ movementId: Number(row.movementId), catalogItemId: Number(row.catalogItemId), locationId: Number(row.locationId), quantity: String(row.quantity) }));
+  if (!sales.length) throw new Error("Original inventory sale movements are unavailable; restock requires reconciliation");
+  const priorUnitsRow = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rl.quantity), 0)::int AS quantity
+    FROM return_lines rl JOIN return_transactions rt ON rt.id = rl.return_transaction_id
+    WHERE rt.tenant_id = ${input.tenantId} AND rt.order_id = ${input.orderId} AND rt.id <> ${input.returnId}
+      AND rt.status IN ('completed','pending') AND rl.order_item_id = ${input.orderItemId} AND rl.disposition = 'RESTOCK'`))[0];
+  const cumulativeRestockUnits = Number(priorUnitsRow?.quantity ?? 0) + input.returnUnits;
+  if (cumulativeRestockUnits > input.purchasedUnits) throw new Error("Return quantity exceeds purchased variation units");
+  const totalPhysical = input.snapshotPhysicalQuantity ?? quantityText(sales.reduce((sum, sale) => sum + quantityUnits(sale.quantity), 0n));
+  const target = physicalQuantityForReturnedUnits(totalPhysical, input.purchasedUnits, cumulativeRestockUnits);
+  const saleIds = sales.map(sale => String(sale.movementId));
+  const restored = rows<Row>(await tx.execute(sql`SELECT source_id AS "saleMovementId", SUM(quantity_delta)::text AS quantity
+    FROM inventory_movements WHERE tenant_id = ${input.tenantId} AND order_id = ${input.orderId}
+      AND order_item_id = ${input.orderItemId} AND movement_type = 'customer_return' AND source_type = 'return'
+      AND source_id = ANY(ARRAY[${sql.join(saleIds.map(value => sql`${value}`), sql`, `)}]::text[])
+    GROUP BY source_id`)).map(row => ({ saleMovementId: Number(row.saleMovementId), quantity: String(row.quantity) }));
+  const allocations = planReturnRestoration(target, sales, restored);
+  for (const allocation of allocations) {
+    await postInventoryMovement(tx as never, {
+      tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress },
+      entityType: "catalog", itemId: allocation.catalogItemId, locationId: allocation.locationId,
+      movementType: "customer_return", quantity: allocation.restoreQuantity, sourceType: "return",
+      sourceId: String(allocation.movementId), orderId: input.orderId, orderItemId: input.orderItemId,
+      reasonCode: "customer_return_restock", reasonText: input.reason,
+      idempotencyKey: `return-movement:${input.returnId}:${input.orderItemId}:${allocation.movementId}`,
+    });
+  }
+}
 
 /** Local effects for a PayPal return happen only after the provider identity
  * has been committed.  This function is repeat-safe via the return status and
@@ -38,16 +83,19 @@ const finalizePayPalReturn = async (input: { returnId: number; tenantId: number;
   await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
   const ret = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE id=${input.returnId} AND tenant_id=${input.tenantId} FOR UPDATE`))[0];
   if (!ret) throw new Error("Return transaction not found");
+    if (Number(ret.order_id) !== input.orderId) throw new Error("Return transaction does not belong to the authorized order");
   if (ret.status === "completed") return { idempotent: true };
   if (ret.status !== "pending") throw new Error("Return transaction is not pending provider finalization");
   const order = rows<Row>(await tx.execute(sql`SELECT * FROM orders WHERE tenant_id=${input.tenantId} AND id=${input.orderId} FOR UPDATE`))[0];
   if (!order) throw new Error("Order not found");
-  const lines = rows<Row>(await tx.execute(sql`SELECT rl.*, oi.catalog_item_id FROM return_lines rl JOIN order_items oi ON oi.id=rl.order_item_id WHERE rl.return_transaction_id=${input.returnId} ORDER BY rl.id`));
+  const lines = rows<Row>(await tx.execute(sql`SELECT rl.*, oi.catalog_item_id, oi.quantity AS purchased_units, oi.inventory_quantity_snapshot
+    FROM return_lines rl JOIN order_items oi ON oi.id=rl.order_item_id WHERE rl.return_transaction_id=${input.returnId} ORDER BY rl.id`));
   for (const line of lines) {
     if (line.disposition !== "RESTOCK") continue;
-    const sale = rows<Row>(await tx.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id=${input.tenantId} AND order_item_id=${Number(line.order_item_id)} AND movement_type='sale' ORDER BY id LIMIT 1`))[0];
-    const valuation = rows<Row>(await tx.execute(sql`SELECT COALESCE(average_unit_cost, last_purchase_unit_cost) AS cost FROM inventory_valuation_states WHERE tenant_id=${input.tenantId} AND catalog_item_id=${Number(line.catalog_item_id)} LIMIT 1`))[0];
-    await postInventoryMovement(tx as never, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
+    await restoreReturnLineInventory(tx, { tenantId: input.tenantId, orderId: input.orderId, returnId: input.returnId,
+      orderItemId: Number(line.order_item_id), purchasedUnits: Number(line.purchased_units), returnUnits: Number(line.quantity),
+      snapshotPhysicalQuantity: line.inventory_quantity_snapshot == null ? null : String(line.inventory_quantity_snapshot),
+      actor: input.actor, ipAddress: input.ipAddress, reason: String(ret.reason) });
   }
   await tx.execute(sql`UPDATE return_transactions SET status='completed', updated_at=now() WHERE id=${input.returnId}`);
   await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId: input.tenantId, actorId: input.actor.id, actorEmail: input.actor.email ?? "", actorRole: input.actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(input.returnId), metadata: { orderId: input.orderId, refundAmount: String(ret.refund_amount), taxAmount: String(ret.tax_amount), tenderType: "paypal", providerFinalized: true }, ipAddress: input.ipAddress ?? null });
@@ -78,6 +126,7 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
   const outcome = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const existing = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE tenant_id = ${tenantId} AND idempotency_key = ${parsed.data.idempotencyKey} LIMIT 1`))[0];
+    if (existing && Number(existing.order_id) !== orderId) return { status: 409, error: "Return idempotency key is already assigned to another order" };
     if (existing && existing.status === "completed") return { status: 200, result: { id: Number(existing.id), status: existing.status, refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), idempotent: true } };
     if (existing && existing.status === "pending" && existing.tender_type === "paypal") return { status: 202, paypalPending: { returnId: Number(existing.id), refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), reason: String(existing.reason) } };
     const order = rows<Row>(await tx.execute(sql`
@@ -93,25 +142,39 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     if (role === "csr" && Number(order.assigned_csr_user_id ?? 0) !== actor.id) return { status: 403, error: "Order is outside the CSR location assignment" };
     if (!["paid", "partially_refunded"].includes(String(order.payment_status))) return { status: 409, error: "Only settled orders may be refunded" };
     const tender = String(order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
+    if (tender === "split_tender" || (tender.includes("cash") && (tender.includes("paypal") || tender.includes("card")))) {
+      return { status: 409, error: "Mixed cash/card refunds are disabled until an authorized original-tender allocation is available. No refund or inventory restoration was recorded." };
+    }
     const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender.startsWith("paypal") ? "paypal" : null;
     if (!tenderType) return { status: 409, error: "Unsupported refund tender" };
     const paypalConfig = tenderType === "paypal" ? requireOnlinePayments(await loadTenantPaymentConfig(tenantId)) : null;
     const paypalService = paypalConfig ? new PaymentService(paypalConfig, new PayPalProvider(paypalConfig)) : undefined;
     const paidCents = tenderType === "customer_credit" ? cents(order.customer_credit_applied) : cents(order.total);
-    const prior = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(refund_amount),0) AS amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status = 'completed'`))[0];
+    const prior = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(refund_amount),0) AS amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status IN ('completed','pending')`))[0];
     const remainingPaid = paidCents - cents(prior?.amount);
     if (remainingPaid <= 0) return { status: 409, error: "Order is already fully refunded" };
     const itemMap = new Map<number, Row>();
     for (const line of rows<Row>(await tx.execute(sql`SELECT * FROM order_items WHERE order_id = ${orderId} FOR SHARE`))) itemMap.set(Number(line.id), line);
     let total = 0; let taxTotal = 0; const computed: Array<{ line: z.infer<typeof lineSchema>; item: Row; amount: number; tax: number; remaining: number }> = [];
+    const orderTaxSnapshot = order.tax_snapshot && typeof order.tax_snapshot === "object" ? order.tax_snapshot as Record<string, unknown> : {};
+    const taxIncludedInCashPrice = orderTaxSnapshot.taxMode === "included";
+    const includedTaxRate = Number(orderTaxSnapshot.taxRate ?? 0);
+    const ratioTax = (grossCents: number) => {
+      const rate = BigInt(Math.round(includedTaxRate * 1_000_000));
+      return Number((BigInt(grossCents) * rate + (1_000_000n + rate) / 2n) / (1_000_000n + rate));
+    };
     for (const line of parsed.data.lines) {
       const item = itemMap.get(line.orderItemId);
       if (!item) return { status: 422, error: "Return line is not part of this order" };
-      const already = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rl.quantity),0) AS quantity FROM return_lines rl JOIN return_transactions rt ON rt.id = rl.return_transaction_id WHERE rt.tenant_id = ${tenantId} AND rt.order_id = ${orderId} AND rt.status = 'completed' AND rl.order_item_id = ${line.orderItemId}`))[0];
+      const already = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rl.quantity),0) AS quantity FROM return_lines rl JOIN return_transactions rt ON rt.id = rl.return_transaction_id WHERE rt.tenant_id = ${tenantId} AND rt.order_id = ${orderId} AND rt.status IN ('completed','pending') AND rl.order_item_id = ${line.orderItemId}`))[0];
       const remaining = Number(item.quantity) - Number(already?.quantity ?? 0);
       if (line.quantity > remaining) return { status: 409, error: "Return quantity exceeds the remaining refundable quantity" };
-      const amount = cents(item.unit_price) * line.quantity;
-      const tax = cents(order.subtotal) > 0 ? Math.round(cents(order.tax) * amount / cents(order.subtotal)) : 0;
+      const grossLineCents = cents(item.unit_price) * line.quantity;
+      const lineTaxable = (item.variant_snapshot as { isTaxable?: unknown } | null)?.isTaxable === true;
+      const tax = taxIncludedInCashPrice
+        ? lineTaxable ? ratioTax(grossLineCents) : 0
+        : cents(order.subtotal) > 0 ? Math.round(cents(order.tax) * grossLineCents / cents(order.subtotal)) : 0;
+      const amount = taxIncludedInCashPrice ? grossLineCents - tax : grossLineCents;
       total += amount + tax; taxTotal += tax; computed.push({ line, item, amount, tax, remaining });
     }
     if (total <= 0) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
@@ -155,13 +218,16 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     for (const c of computed) {
       const [line] = rows<Row>(await tx.execute(sql`INSERT INTO return_lines (return_transaction_id, order_item_id, quantity, unit_value, tax_value, disposition) VALUES (${returnId}, ${c.line.orderItemId}, ${c.line.quantity}, ${money(c.amount)}, ${money(c.tax)}, ${c.line.disposition}) RETURNING id`));
       if (c.line.disposition === "RESTOCK") {
-        const sale = rows<Row>(await tx.execute(sql`SELECT id FROM inventory_movements WHERE tenant_id = ${tenantId} AND order_item_id = ${c.line.orderItemId} AND movement_type = 'sale' ORDER BY id LIMIT 1`))[0];
-        const valuation = rows<Row>(await tx.execute(sql`SELECT COALESCE(average_unit_cost, last_purchase_unit_cost) AS cost FROM inventory_valuation_states WHERE tenant_id = ${tenantId} AND catalog_item_id = ${Number(c.item.catalog_item_id)} LIMIT 1`))[0];
-        await postInventoryMovement(tx as never, { tenantId, actor: { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip }, entityType: "catalog", itemId: Number(c.item.catalog_item_id), locationId: Number(order.locationId), movementType: "customer_return", quantity: String(c.line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${c.line.orderItemId}`, orderId, orderItemId: c.line.orderItemId, reasonCode: "customer_return_restock", reasonText: parsed.data.reason, idempotencyKey: `return-movement:${returnId}:${c.line.orderItemId}` });
+        await restoreReturnLineInventory(tx, { tenantId, orderId, returnId, orderItemId: c.line.orderItemId,
+          purchasedUnits: Number(c.item.quantity), returnUnits: c.line.quantity,
+          snapshotPhysicalQuantity: c.item.inventory_quantity_snapshot == null ? null : String(c.item.inventory_quantity_snapshot),
+          actor: { id: actor.id, email: actor.email, role: actor.role }, ipAddress: req.ip, reason: parsed.data.reason });
       }
       await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_LINE_COMPLETED", resourceType: "return_line", resourceId: String(line.id), metadata: { orderId, orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition, returnId }, ipAddress: req.ip ?? null });
     }
     const full = total >= remainingPaid;
+    // The snapshot records the original sale and is database-enforced
+    // immutable. Refund tax is recorded on the completed return transaction.
     await tx.execute(sql`UPDATE orders SET payment_status = ${full ? "refunded" : "partially_refunded"}, status = CASE WHEN ${full} THEN 'refunded' ELSE status END, updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${orderId}`);
     await tx.execute(sql`UPDATE return_transactions SET status = 'completed', updated_at = now() WHERE id = ${returnId}`);
     await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(returnId), metadata: { orderId, refundAmount: money(total), taxAmount: money(taxTotal), tenderType, reason: parsed.data.reason }, ipAddress: req.ip ?? null });

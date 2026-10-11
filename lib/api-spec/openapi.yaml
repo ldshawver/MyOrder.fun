@@ -1515,6 +1515,15 @@ components:
                   sku:
                     type: string
                     nullable: true
+                  optionValues:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  imageUrl:
+                    type: string
+                    nullable: true
+                  stockAvailable:
+                    type: boolean
                 required: [id, catalogItemId, label, price]
           required: [id, name, options]
         id:
@@ -2042,6 +2051,21 @@ components:
           type: string
         customerEmail:
           type: string
+        assignedCsrDisplayName:
+          type: string
+          nullable: true
+        pickupDetails:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            businessName:
+              type: string
+            address:
+              type: string
+              nullable: true
+            instruction:
+              type: string
         status:
           type: string
           enum: [pending, submitted, confirmed, accepted, processing, preparing, ready, shipped, delivered, completed, cancelled, voided, archived, refunded]
@@ -2115,7 +2139,7 @@ components:
               minLength: 1
             paymentMethod:
               type: string
-              enum: [cash, paypal, paypal_card, customer_credit]
+              enum: [cash, paypal, paypal_card, customer_credit, split_tender]
           required: [acceptedAllSalesFinal, legalDisclaimerText]
         items:
           type: array
@@ -2151,7 +2175,7 @@ components:
           type: boolean
         fulfillmentStatus:
           type: string
-          enum: [submitted, accepted, preparing, ready, completed, cancelled]
+          enum: [submitted, accepted, preparing, packaging, ready, completed, cancelled]
           nullable: true
         trackingUrl:
           type: string
@@ -2210,10 +2234,10 @@ components:
           additionalProperties: true
         selectedPaymentMethod:
           type: string
-          enum: [cash, paypal, paypal_card, customer_credit]
+          enum: [cash, paypal, paypal_card, customer_credit, split_tender]
         paymentMethod:
           type: string
-          enum: [cash, paypal, paypal_card, customer_credit]
+          enum: [cash, paypal, paypal_card, customer_credit, split_tender]
         csrDeliveryDistanceMiles:
           type: number
           nullable: true
@@ -2245,10 +2269,13 @@ components:
               minLength: 1
             paymentMethod:
               type: string
-              enum: [cash, paypal, paypal_card, customer_credit]
+              enum: [cash, paypal, paypal_card, customer_credit, split_tender]
             tipAmount:
               type: number
               nullable: true
+            customerCreditAmount:
+              type: number
+              minimum: 0
             tipPercent:
               type: number
               nullable: true

@@ -18,9 +18,9 @@ export interface ReceiptItem {
   readonly displayName: string;
   /** Second name for dual-brand ("both") mode; null otherwise. */
   readonly secondaryName: string | null;
-  /** Selected option/variant label; null until orders snapshot options. */
+  /** Selected option/variant label snapshotted on the order line. */
   readonly optionLabel: string | null;
-  /** Merchant SKU when snapshotted on the order line; null otherwise. */
+  /** Merchant SKU snapshotted on the order line. */
   readonly sku: string | null;
   readonly quantity: number;
   readonly unitPriceCents: number;
@@ -165,6 +165,7 @@ export interface ReceiptSnapshotInput {
     id: number;
     createdAt: Date | string;
     orderType?: string | null;
+    deliveryMethod?: string | null;
     notes?: string | null;
     paymentStatus?: string | null;
     paymentMethod?: string | null;
@@ -231,7 +232,7 @@ export function buildReceiptData(input: ReceiptSnapshotInput): ReceiptData {
       number: String(order.id),
       placedAt: new Date(order.createdAt).toISOString(),
       timezone: sanitizeReceiptText(input.business.timezone, 64) || "America/Los_Angeles",
-      fulfillment: optionalText(order.orderType, 40),
+      fulfillment: optionalText(order.deliveryMethod === "uber_direct" ? "Uber Direct delivery" : order.deliveryMethod === "pickup" ? "Pickup" : order.deliveryMethod ? "Delivery" : order.orderType, 40),
       note: optionalText(order.notes, 300),
     },
     employeeName: employee,

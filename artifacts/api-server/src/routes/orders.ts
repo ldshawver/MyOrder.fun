@@ -7,6 +7,7 @@ import {
   db,
   ordersTable,
   orderItemsTable,
+  tenantSettingsTable,
   orderNotesTable,
   usersTable,
   notificationsTable,
@@ -409,7 +410,7 @@ const DeliveryQuoteBody = z.object({
 
 const CheckoutQuoteBody = z.object({
   items: z.array(DeliveryQuoteCartLineInput).min(1),
-  paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
+  paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit", "split_tender"]),
   customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
   tipAmount: z.number().finite().nonnegative().optional(),
   deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct"]).default("pickup"),
@@ -566,22 +567,26 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
       cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
       cashDiscountType: adminSettingsTable.cashDiscountType,
       cashDiscountValue: adminSettingsTable.cashDiscountValue,
+      cashTaxInclusive: adminSettingsTable.cashTaxInclusive,
       enabledProcessors: adminSettingsTable.enabledProcessors,
     }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
     const tender = parsed.data.paymentMethod;
     const processor = tender === "paypal_card" ? "paypal" : tender;
+    if (tender === "split_tender" && (!settings?.enabledProcessors?.includes("cash") || !settings?.enabledProcessors?.includes("paypal"))) {
+      res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
+    }
     if ((processor === "cash" || processor === "paypal") && !settings?.enabledProcessors?.includes(processor)) {
       res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
     }
-    if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
-    const taxSettings = processor === "paypal" ? await getCheckoutTaxSettings(tenantId) : null;
+    if ((processor === "paypal" || tender === "split_tender") && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
+    const taxSettings = await getCheckoutTaxSettings(tenantId);
     const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
-    const preliminary = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, cashDiscount });
-    const merchandiseCents = dollarsToCents(preliminary.taxableSubtotal) + dollarsToCents(preliminary.nonTaxableSubtotal);
-    const creditCents = dollarsToCents(parsed.data.customerCreditAmount ?? (tender === "customer_credit" ? Number(centsToDollars(merchandiseCents)) : 0));
+    const creditAmountCents = parsed.data.customerCreditAmount === undefined ? null : dollarsToCents(parsed.data.customerCreditAmount);
+    if (tender === "split_tender" && (creditAmountCents ?? 0) > 0) { res.status(422).json({ error: "SPLIT_TENDER_CANNOT_COMBINE_CUSTOMER_CREDIT" }); return; }
     const available = await db.transaction(tx => getCustomerCreditBalance(tx, tenantId, actor.id));
-    if (creditCents > merchandiseCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
-    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, nonTaxableFundingCents: creditCents, cashDiscount });
+    const taxMode = tender === "cash" && settings?.cashTaxInclusive ? "included" : "added";
+    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings.taxRate, taxMode, taxJurisdiction: taxSettings.taxJurisdiction, taxConfigurationId: taxSettings.taxConfigurationId, tender, cashDiscount });
+    const merchandiseCents = dollarsToCents(financial.taxableSubtotal) + dollarsToCents(financial.nonTaxableSubtotal);
     let deliveryFeeCents = 0;
     if (parsed.data.deliveryMethod === "csr_delivery") {
       deliveryFeeCents = 600 + Number((BigInt(merchandiseCents) * 3n + 50n) / 100n);
@@ -599,10 +604,12 @@ router.post("/checkout/quote", async (req, res): Promise<void> => {
     const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
     const taxCents = dollarsToCents(financial.taxCollected);
     const totalCents = merchandiseCents + taxCents + deliveryFeeCents + tipCents;
+    const creditCents = creditAmountCents ?? (tender === "customer_credit" ? totalCents : 0);
+    if (creditCents > totalCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
     const dueCents = totalCents - creditCents;
     if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
     const amount = (cents: number) => Number(centsToDollars(cents));
-    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(merchandiseCents - creditCents), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings?.taxRate ?? 0, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), [tender]: amount(dueCents) } });
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(Math.max(0, merchandiseCents - creditCents)), taxableMerchandiseBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings.taxRate, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), [tender]: amount(dueCents) } });
   } catch (error) {
     res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
   }
@@ -729,11 +736,29 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
   const customer = await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
     .from(usersTable).where(eq(usersTable.id, order.customerId)).limit(1);
   const c = customer[0];
+  const assignedCsr = order.assignedCsrUserId == null ? null : (await db.select({ firstName: usersTable.firstName, lastName: usersTable.lastName })
+    .from(usersTable).where(and(eq(usersTable.id, order.assignedCsrUserId), eq(usersTable.tenantId, order.tenantId))).limit(1))[0] ?? null;
+  const pickupSettings = order.deliveryMethod === "pickup"
+    ? (await db.select({ publicBusinessName: tenantSettingsTable.publicBusinessName, businessAddressJson: tenantSettingsTable.businessAddressJson })
+      .from(tenantSettingsTable).where(eq(tenantSettingsTable.tenantId, order.tenantId)).limit(1))[0]
+    : undefined;
+  const rawPickupAddress = pickupSettings?.businessAddressJson && typeof pickupSettings.businessAddressJson === "object"
+    ? pickupSettings.businessAddressJson as Record<string, unknown>
+    : {};
+  const pickupAddress = [rawPickupAddress.line1, rawPickupAddress.line2, rawPickupAddress.city, rawPickupAddress.region, rawPickupAddress.postalCode, rawPickupAddress.country]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(", ");
   return {
     id: order.id,
     tenantId: order.tenantId,
     customerId: order.customerId,
-    customerName: c ? `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim() : "",
+    customerName: order.customerNameSnapshot || (c ? `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim() : ""),
+    assignedCsrDisplayName: assignedCsr ? `${assignedCsr.firstName ?? ""} ${assignedCsr.lastName ?? ""}`.trim() || null : null,
+    pickupDetails: order.deliveryMethod === "pickup" ? {
+      businessName: pickupSettings?.publicBusinessName?.trim() || "Store pickup",
+      address: pickupAddress || null,
+      instruction: "Please wait until your order is marked Ready before collecting it.",
+    } : null,
     customerEmail: c?.email ?? "",
     status: order.status,
     paymentStatus: order.paymentStatus,
@@ -822,6 +847,11 @@ router.get("/orders", async (req, res): Promise<void> => {
 // POST /api/orders
 router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
+  const clientFinancialFields = ["subtotal", "tax", "total", "grossSubtotal", "taxableSubtotal", "nonTaxableSubtotal", "discountTotal", "remainingTenderAmount", "taxSnapshot"];
+  if (req.body && typeof req.body === "object" && clientFinancialFields.some((field) => Object.prototype.hasOwnProperty.call(req.body, field))) {
+    res.status(400).json({ error: "Order financial totals are calculated by the server" });
+    return;
+  }
   const body = CreateOrderBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -911,14 +941,19 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
     cashDiscountType: adminSettingsTable.cashDiscountType,
     cashDiscountValue: adminSettingsTable.cashDiscountValue,
+    cashTaxInclusive: adminSettingsTable.cashTaxInclusive,
     enabledProcessors: adminSettingsTable.enabledProcessors,
   }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
-  const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
-  if (tender !== "cash" && tender !== "paypal" && tender !== "paypal_card" && tender !== "customer_credit") {
+  const tender: string = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
+  if (tender !== "cash" && tender !== "paypal" && tender !== "paypal_card" && tender !== "customer_credit" && tender !== "split_tender") {
     res.status(422).json({ error: "Select an available payment method from checkout" });
     return;
   }
-  const processor = tender === "paypal_card" ? "paypal" : tender;
+  const processor = tender === "paypal_card" || tender === "split_tender" ? "paypal" : tender;
+  if (tender === "split_tender" && !financialSettings?.enabledProcessors?.includes("cash")) {
+    res.status(422).json({ error: "Cash is not enabled for this tenant" });
+    return;
+  }
   if ((processor === "cash" || processor === "paypal") && !financialSettings?.enabledProcessors?.includes(processor)) {
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
     return;
@@ -928,14 +963,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
   const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
-  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? trustedTotals.subtotal : 0));
-  const merchandiseCents = dollarsToCents(trustedTotals.subtotal);
-  if (requestedCreditCents > merchandiseCents) {
-    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+  if (tender === "split_tender" && (requestedCreditAmount ?? 0) > 0) {
+    res.status(422).json({ error: "Split cash/card checkout cannot combine Customer Credit" });
     return;
   }
-  const paypalTaxSettings = processor === "paypal" ? await getCheckoutTaxSettings(houseTenantId) : null;
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: paypalTaxSettings?.taxRate ?? trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const checkoutTaxSettings = await getCheckoutTaxSettings(houseTenantId);
+  const taxMode = tender === "cash" && financialSettings?.cashTaxInclusive ? "included" : "added";
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: checkoutTaxSettings.taxRate, taxMode, taxJurisdiction: checkoutTaxSettings.taxJurisdiction, taxConfigurationId: checkoutTaxSettings.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
   const subtotal = financial.taxableSubtotal + financial.nonTaxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
@@ -992,13 +1026,13 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(400).json({ error: (err as Error).message });
     return;
   }
-  const merchandiseAfterDiscountCents = dollarsToCents(subtotal);
-  if (requestedCreditCents > merchandiseAfterDiscountCents) {
+  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
+  const finalTotal = Number(centsToDollars(finalTotalCents));
+  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? finalTotal : 0));
+  if (requestedCreditCents > finalTotalCents) {
     res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
     return;
   }
-  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
-  const finalTotal = Number(centsToDollars(finalTotalCents));
   if (tender === "customer_credit" && requestedCreditCents !== finalTotalCents) {
     res.status(422).json({ error: "Customer Credit must cover the full amount when it is the only tender" });
     return;
@@ -1047,7 +1081,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     const [activeShift] = await db
       .select({ boxAssignmentId: labTechShiftsTable.boxAssignmentId })
       .from(labTechShiftsTable)
-      .where(eq(labTechShiftsTable.id, assignedShiftId))
+      .where(and(eq(labTechShiftsTable.id, assignedShiftId), eq(labTechShiftsTable.tenantId, houseTenantId),
+        eq(labTechShiftsTable.techId, assignedTechId!), eq(labTechShiftsTable.status, "active"), isNull(labTechShiftsTable.clockedOutAt)))
       .limit(1);
 
     const locationName = inventoryLocationNameForBoxAssignment(activeShift?.boxAssignmentId);
@@ -1058,6 +1093,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         .where(and(
           eq(inventoryLocationsTable.tenantId, houseTenantId),
           eq(inventoryLocationsTable.name, locationName),
+          eq(inventoryLocationsTable.isActive, true),
         ))
         .limit(1);
 
@@ -1065,10 +1101,27 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     }
   }
 
+  // Online and external orders use the tenant's server-configured default.
+  // A client-submitted location is never used as inventory authority.
+  if (targetLocationId == null) {
+    const [tenantSettings] = await db.select({ defaultInventoryLocationId: tenantSettingsTable.defaultInventoryLocationId })
+      .from(tenantSettingsTable).where(eq(tenantSettingsTable.tenantId, houseTenantId)).limit(1);
+    if (tenantSettings?.defaultInventoryLocationId != null) {
+      const [defaultLocation] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable).where(and(
+        eq(inventoryLocationsTable.tenantId, houseTenantId),
+        eq(inventoryLocationsTable.id, tenantSettings.defaultInventoryLocationId),
+        eq(inventoryLocationsTable.isActive, true),
+      )).limit(1);
+      targetLocationId = defaultLocation?.id ?? null;
+    }
+  }
+
   await ensureInventoryReservationsTable();
 
-  const shouldReserveInventory =
-    routing.routeSource === "active_csr" && targetLocationId != null;
+  // Every checkout holds its exact inventory source before payment. Combined
+  // products may resolve a deterministic allocation without a preferred site;
+  // PER_LOCATION products fail closed if shift/default context is unavailable.
+  const shouldReserveInventory = true;
 
   // Reservations represent availability holds.  They may only become an
   // authoritative sale after the payment/tender transaction has settled.
@@ -1116,6 +1169,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       const [createdOrder] = await tx.insert(ordersTable).values({
         tenantId: houseTenantId,
         customerId: actor.id,
+        customerNameSnapshot: [actor.firstName, actor.lastName].filter(Boolean).join(" ").trim() || "Customer",
         status: "submitted",
         paymentStatus: "unpaid",
         paymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
@@ -1161,10 +1215,10 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       }).returning();
 
       await tx.insert(orderTaxSnapshotsTable).values({
-        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
-        locationId: targetLocationId, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: checkoutTaxSettings.taxJurisdiction,
+        locationId: targetLocationId, taxConfigurationId: checkoutTaxSettings.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
-        taxRate: String(paypalTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        taxRate: String(checkoutTaxSettings.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
         taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
         snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
@@ -1267,7 +1321,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           optionId: option?.optionId ?? null,
           optionLabelSnapshot: option?.label ?? null,
           variantSnapshot: option ? { variantId: option.optionId, sku: option.sku, barcode: option.barcode,
-            label: option.label, optionValues: option.optionValues ?? {}, wooProductId: option.wooProductId,
+            label: option.label, optionValues: option.optionValues ?? {}, isTaxable: line.is_taxable, wooProductId: option.wooProductId,
             wooVariationId: option.wooVariationId } : null,
           skuSnapshot: option?.sku ?? line.merchant_sku,
           inventoryItemId: option?.inventoryItemId ?? null,
@@ -1287,7 +1341,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         if (shouldReserveInventory) {
           const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
             inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
-            option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
+            option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS", targetLocationId);
           if (!reservations) {
             throw new InsufficientInventoryError(line.catalog_item_id);
           }
@@ -1554,13 +1608,18 @@ async function startDefaultQueueOrder(req: Request, res: Response, order: typeof
   }
 
   const now = new Date();
+  const preparationTarget = new Date(now.getTime() + 10 * 60_000);
   const updated = await db.transaction(async tx => {
     // The ownership predicates protect against a concurrent CSR claim or
     // supervisor reassignment between the read and this transition.
     const [row] = await tx.update(ordersTable).set({
       acceptedAt: now,
-      status: "in_progress",
-      fulfillmentStatus: "in_progress",
+      promisedMinutes: 10,
+      estimatedReadyAt: preparationTarget,
+      status: "preparing",
+      fulfillmentStatus: "preparing",
+      preparedAt: now,
+      preparedByUserId: actor.id,
       routeSource: "supervisor_override",
       routedTo: "default_queue",
       updatedAt: now,
@@ -1645,6 +1704,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   }
 
   const now = new Date();
+  const preparationTarget = new Date(now.getTime() + 10 * 60_000);
   // Atomic claim: include accepted_at IS NULL and fulfillment_status =
   // submitted in the WHERE clause so two CSRs racing on a general-queue
   // order cannot both win. The loser's UPDATE returns zero rows and we
@@ -1652,8 +1712,12 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
   const updatedRows = await db.update(ordersTable)
     .set({
       acceptedAt: now,
-      status: "in_progress",
-      fulfillmentStatus: "in_progress",
+      promisedMinutes: 10,
+      estimatedReadyAt: preparationTarget,
+      status: "preparing",
+      fulfillmentStatus: "preparing",
+      preparedAt: now,
+      preparedByUserId: actor.id,
       assignedCsrUserId: actor.id,
       assignedShiftId: shift.id,
       routeSource: "active_csr",
@@ -1830,14 +1894,17 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
     if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
+    const splitTender = order.selectedPaymentMethod === "split_tender";
     if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
-      && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
+      && order.selectedPaymentMethod !== "cash" && !splitTender) return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
     if (dueCents == null || tenderedCents == null) return { status: 422, error: "Invalid authoritative order balance or tender" } as const;
-    if (tenderedCents < dueCents) return { status: 422, error: "Amount tendered is insufficient" } as const;
-    const changeCents = tenderedCents - dueCents;
+    if (tenderedCents <= 0 || (tenderedCents < dueCents && !splitTender)) return { status: 422, error: "Amount tendered is insufficient" } as const;
+    const appliedCents = Math.min(tenderedCents, dueCents);
+    const remainingCents = dueCents - appliedCents;
+    const changeCents = Math.max(0, tenderedCents - dueCents);
 
     let shift: typeof labTechShiftsTable.$inferSelect | null = null;
     let session: typeof generalQueueCashSessionsTable.$inferSelect | null = null;
@@ -1892,44 +1959,52 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     const now = new Date();
     const creditCents = moneyToCents(order.customerCreditApplied) ?? 0;
     if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId, customerId: order.customerId, actorUserId: actor.id, orderId, amountCents: creditCents, idempotencyKey: `consume:cash:${parsed.data.idempotencyKey}` });
+    const fullySettled = remainingCents === 0;
+    const [priorCardCapture] = splitTender && fullySettled ? await tx.select({ id: paymentCapturesTable.id }).from(paymentCapturesTable)
+      .innerJoin(paymentAttemptsTable, and(eq(paymentAttemptsTable.id, paymentCapturesTable.paymentAttemptId), eq(paymentAttemptsTable.tenantId, paymentCapturesTable.tenantId)))
+      .where(and(eq(paymentAttemptsTable.tenantId, tenantId), eq(paymentAttemptsTable.orderId, orderId), eq(paymentCapturesTable.state, "completed"))).limit(1) : [];
     const [updated] = await tx.update(ordersTable).set({
-      paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
-      amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
+      paymentStatus: fullySettled ? "paid" : "unpaid",
+      paymentMethod: !fullySettled ? "split_tender" : splitTender && priorCardCapture ? "cash+paypal_card" : creditCents > 0 ? "customer_credit+cash" : "cash",
+      selectedPaymentMethod: splitTender ? "split_tender" : "cash",
+      amountTendered: (appliedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (remainingCents / 100).toFixed(2),
       paymentToken: null,
-      status: order.deliveryMethod === "uber_direct" ? "confirmed" : "completed",
-      fulfillmentStatus: order.deliveryMethod === "uber_direct" ? "submitted" : "completed",
-      completedAt: order.deliveryMethod === "uber_direct" ? null : now,
-      completedByUserId: order.deliveryMethod === "uber_direct" ? null : actor.id,
-      routingStatus: "closed",
+      ...(fullySettled ? {
+        status: order.deliveryMethod === "uber_direct" ? "confirmed" : "completed",
+        fulfillmentStatus: order.deliveryMethod === "uber_direct" ? "submitted" : "completed",
+        completedAt: order.deliveryMethod === "uber_direct" ? null : now,
+        completedByUserId: order.deliveryMethod === "uber_direct" ? null : actor.id,
+        routingStatus: "closed",
+      } : {}),
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
     if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
     // Consume the reservation only after the authoritative cash payment has
     // been committed in this same transaction.  This keeps payment,
     // inventory, and the cash ledger atomic and prevents unpaid orders from
     // creating sale movements.
-    await deductPaidOrderInventory(updated, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
+    if (fullySettled) await deductPaidOrderInventory(updated, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
     const [ledger] = await tx.insert(cashLedgerEntriesTable).values({
       tenantId, orderId, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null,
       csrUserId: actor.id, actorUserId: actor.id, locationId, boxAssignmentId: boxSlug,
-      amount: (dueCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2),
+      amount: (appliedCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2),
       changeGiven: (changeCents / 100).toFixed(2), internalNote: parsed.data.internalNote || null,
       entryType: "cash_sale_closeout", idempotencyKey: parsed.data.idempotencyKey,
     }).returning();
     if (shift) {
-      await tx.update(labTechShiftsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${labTechShiftsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${labTechShiftsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(dueCents / 100).toFixed(2)}::numeric))::json` }).where(eq(labTechShiftsTable.id, shift.id));
+      await tx.update(labTechShiftsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${labTechShiftsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${labTechShiftsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(appliedCents / 100).toFixed(2)}::numeric))::json` }).where(eq(labTechShiftsTable.id, shift.id));
     } else if (session) {
-      await tx.update(generalQueueCashSessionsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${generalQueueCashSessionsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${generalQueueCashSessionsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(dueCents / 100).toFixed(2)}::numeric))::json` }).where(eq(generalQueueCashSessionsTable.id, session.id));
+      await tx.update(generalQueueCashSessionsTable).set({ paymentTotalsJson: sql`jsonb_set(coalesce(${generalQueueCashSessionsTable.paymentTotalsJson}::jsonb, '{}'::jsonb), '{cash}', to_jsonb(coalesce((${generalQueueCashSessionsTable.paymentTotalsJson}->>'cash')::numeric, 0) + ${(appliedCents / 100).toFixed(2)}::numeric))::json` }).where(eq(generalQueueCashSessionsTable.id, session.id));
     }
     await tx.insert(auditLogsTable).values({
       tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
       action: "CASH_CLOSEOUT_COMPLETED", resourceType: "order", resourceId: String(orderId),
-      metadata: { paymentMethod: "cash", amount: (dueCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), cashLedgerId: ledger.id, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null, locationId, register: boxSlug, supervisorOverride: parsed.data.supervisorOverride },
+      metadata: { paymentMethod: splitTender ? "split_tender" : "cash", amount: (appliedCents / 100).toFixed(2), remainingBalance: (remainingCents / 100).toFixed(2), amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), cashLedgerId: ledger.id, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null, locationId, register: boxSlug, supervisorOverride: parsed.data.supervisorOverride },
       ipAddress: req.ip ?? null,
     });
     if (parsed.data.supervisorOverride) {
       await tx.insert(auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "CASH_CLOSEOUT_SUPERVISOR_OVERRIDE", resourceType: "order", resourceId: String(orderId), metadata: { cashLedgerId: ledger.id, shiftId: shift?.id ?? null, generalQueueSessionId: session?.id ?? null }, ipAddress: req.ip ?? null });
     }
-    return { status: 200, updated, ledger, idempotent: false } as const;
+    return { status: 200, updated, ledger, idempotent: false, remainingCents } as const;
   });
 
   if (!("updated" in outcome) || !outcome.updated || !outcome.ledger) {
@@ -1941,11 +2016,11 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     res.status(outcome.status).json({ error: outcome.error, ...("action" in outcome && outcome.action ? { action: outcome.action } : {}) });
     return;
   }
-  emitUpdated(outcome.updated, "cash_closeout_completed");
-  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
+  emitUpdated(outcome.updated, outcome.updated.paymentStatus === "paid" ? "cash_closeout_completed" : "split_cash_tender_recorded");
+  if (outcome.updated.paymentStatus === "paid") await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
     logger.warn({ tenantId, orderId: outcome.updated.id, failure: "handoff_unavailable" }, "Uber Direct handoff will require recovery");
   });
-  res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, idempotent: outcome.idempotent } });
+  res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, remainingBalance: outcome.updated.remainingTenderAmount, idempotent: outcome.idempotent } });
 });
 
 // POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
@@ -2287,7 +2362,10 @@ async function paymentReadyForCompletion(tenantId: number, order: typeof ordersT
       eq(paymentCapturesTable.state, "completed"),
       eq(paymentCapturesTable.currency, "USD"),
     ));
-  return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: settled?.amount ?? "0" });
+  const [cashSettled] = (order.paymentMethod ?? "").startsWith("cash+") ? await db.select({ amount: sql<string>`coalesce(sum(${cashLedgerEntriesTable.amount}), 0)` }).from(cashLedgerEntriesTable)
+    .where(and(eq(cashLedgerEntriesTable.tenantId, tenantId), eq(cashLedgerEntriesTable.orderId, order.id), eq(cashLedgerEntriesTable.entryType, "cash_sale_closeout"))) : [];
+  const completedAmount = (Number(settled?.amount ?? 0) + Number(cashSettled?.amount ?? 0)).toFixed(2);
+  return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: completedAmount });
 }
 
 async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
@@ -2640,7 +2718,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     courier_arrived: "ready",
     ready_behind_gate: "ready",
   };
-  const VALID = ["draft", "submitted", "in_progress", "preparing", "ready", "completed", "cancelled", "refunded", "reconciliation_required"] as const;
+  const VALID = ["draft", "submitted", "in_progress", "preparing", "packaging", "ready", "completed", "cancelled", "refunded", "reconciliation_required"] as const;
   const fulfillmentStatus = rawFulfillment ? (LEGACY_MAP[rawFulfillment] ?? rawFulfillment) : undefined;
   if (!fulfillmentStatus || !(VALID as readonly string[]).includes(fulfillmentStatus)) {
     res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
@@ -2670,6 +2748,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   const action: OrderLifecycleAction =
     fulfillmentStatus === "in_progress" ? "claim" :
     fulfillmentStatus === "preparing" ? "prepare" :
+    fulfillmentStatus === "packaging" ? "package" :
     fulfillmentStatus === "ready" ? "ready" :
     fulfillmentStatus === "completed" ? "complete" :
     fulfillmentStatus === "refunded" ? "refund" :
@@ -2703,6 +2782,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
   const update: Partial<typeof ordersTable.$inferInsert> = { fulfillmentStatus, status: fulfillmentStatus, updatedAt: now };
   if (fulfillmentStatus === "in_progress") update.status = "in_progress";
   if (fulfillmentStatus === "preparing") { update.status = "preparing"; update.preparedAt = now; update.preparedByUserId = actor.id; }
+  if (fulfillmentStatus === "packaging") update.status = "packaging";
   if (fulfillmentStatus === "ready") { update.status = "ready"; update.readyAt = now; }
   if (fulfillmentStatus === "completed") { update.status = "completed"; update.completedAt = now; update.completedByUserId = actor.id; }
   if (fulfillmentStatus === "cancelled") { update.status = "cancelled"; update.cancelledAt = now; update.cancelledByUserId = actor.id; }
@@ -2737,6 +2817,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
 
 router.post("/orders/:id/fulfillment", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res); });
 router.post("/orders/:id/prepare", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "preparing"); });
+router.post("/orders/:id/packaging", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "packaging"); });
 router.post("/orders/:id/ready", requireRole("global_admin", "admin", "csr"), (req, res) => { void updateOrderFulfillment(req, res, "ready"); });
 
 // POST /api/orders/:id/purge — purge order data (admin only)

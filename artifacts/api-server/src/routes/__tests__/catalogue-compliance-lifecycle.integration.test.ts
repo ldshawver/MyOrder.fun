@@ -173,9 +173,9 @@ async function auditCount(id: number) {
     await client.query("UPDATE catalog_items SET metadata=metadata || '{\"complianceHold\":true,\"complianceReason\":\"Independent variant review\"}'::jsonb WHERE tenant_id=$1 AND id=$2", [tenantA, childId]);
     const relation = await client.query("SELECT product_id FROM catalogue_options WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantA, parentId]);
     const parentProductId = relation.rows[0].product_id as number;
+    const childProduct = await client.query("SELECT product_id FROM catalogue_options WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantA, childId]);
     await client.query("UPDATE catalogue_options SET product_id=$1,option_values=$2::jsonb,label='Color: Blue' WHERE tenant_id=$3 AND catalog_item_id=$4",
       [parentProductId, JSON.stringify({ Color: "Blue" }), tenantA, childId]);
-    const childProduct = await client.query("SELECT product_id FROM catalogue_options WHERE tenant_id=$1 AND catalog_item_id=$2", [tenantA, childId]);
     await client.query("DELETE FROM catalogue_products WHERE tenant_id=$1 AND id=$2", [tenantA, childProduct.rows[0].product_id]);
     const placed = await as("adminA").patch(`/api/admin/product-master/${parentId}/lifecycle`)
       .send({ complianceHold: true, reason: "Safety review" });

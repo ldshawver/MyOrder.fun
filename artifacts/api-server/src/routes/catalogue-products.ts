@@ -1,8 +1,8 @@
 import { Router, type IRouter } from "express";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
+import { db, inventoryLocationsTable, tenantSettingsTable } from "@workspace/db";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole, writeAuditLog } from "../lib/auth";
 import { requireTenantContext } from "../lib/tenantContext";
 import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { recommendReplenishment, type LocationPolicyInput } from "../lib/cataloguePolicy";
@@ -12,6 +12,7 @@ import { loadSellableProducts } from "../lib/catalogueSellable";
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 const admin = requireRole("global_admin", "admin", "supervisor");
+const tenantAdmin = requireRole("global_admin", "admin");
 const id = z.coerce.number().int().positive();
 const physical = z.string().refine(value => {
   try { quantityUnits(value); return true; } catch { return false; }
@@ -35,6 +36,7 @@ const optionInput = z.object({
   optionValues: optionValuesInput.default({}),
   sku: z.string().trim().max(120).nullable().optional(),
   barcode: z.string().trim().max(120).nullable().optional(),
+  imageUrl: z.string().trim().url().refine(value => value.startsWith("https://") || value.startsWith("http://"), "Expected HTTP(S) image URL").nullable().optional(),
   price: money,
   compareAtPrice: money.nullable().optional(),
   consumptionQuantity: physical,
@@ -43,12 +45,39 @@ const optionInput = z.object({
   isAvailable: z.boolean().optional(),
 }).strict();
 
+router.get("/admin/catalogue/default-location", admin, async (req, res): Promise<void> => {
+  const tenantId = req.authorizedTenantId!;
+  const [settings, locations] = await Promise.all([
+    db.select({ locationId: tenantSettingsTable.defaultInventoryLocationId }).from(tenantSettingsTable).where(sql`${tenantSettingsTable.tenantId} = ${tenantId}`).limit(1),
+    db.select({ locationId: inventoryLocationsTable.id, name: inventoryLocationsTable.name }).from(inventoryLocationsTable)
+      .where(sql`${inventoryLocationsTable.tenantId} = ${tenantId} AND ${inventoryLocationsTable.isActive} = true`).orderBy(inventoryLocationsTable.displayOrder, inventoryLocationsTable.id),
+  ]);
+  res.json({ defaultLocationId: settings[0]?.locationId ?? null, locations });
+});
+
+router.put("/admin/catalogue/default-location", tenantAdmin, async (req, res): Promise<void> => {
+  const parsed = z.object({ locationId: z.number().int().positive().nullable() }).strict().safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid default inventory location" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  if (parsed.data.locationId != null) {
+    const [location] = await db.select({ id: inventoryLocationsTable.id }).from(inventoryLocationsTable)
+      .where(sql`${inventoryLocationsTable.tenantId} = ${tenantId} AND ${inventoryLocationsTable.id} = ${parsed.data.locationId} AND ${inventoryLocationsTable.isActive} = true`).limit(1);
+    if (!location) { res.status(404).json({ error: "Active inventory location not found in this tenant" }); return; }
+  }
+  await db.insert(tenantSettingsTable).values({ tenantId, defaultInventoryLocationId: parsed.data.locationId })
+    .onConflictDoUpdate({ target: tenantSettingsTable.tenantId, set: { defaultInventoryLocationId: parsed.data.locationId, updatedAt: new Date() } });
+  await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role,
+    tenantId, action: "inventory.default_location_updated", resourceType: "tenant_settings", resourceId: String(tenantId),
+    metadata: { locationId: parsed.data.locationId }, ipAddress: req.ip });
+  res.json({ ok: true, defaultLocationId: parsed.data.locationId });
+});
+
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
 }
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
-type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
+type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; imageUrl: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
 
 type InventoryRelationship = { inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number };
 function trustedInventoryItem(model: ProductRow["inventoryModel"], options: InventoryRelationship[]): number {
@@ -79,7 +108,7 @@ async function optionForTenant(executor: typeof db, tenantId: number, optionId: 
   return rows<OptionRow>(await executor.execute(sql`
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.image_url AS "imageUrl", ci.price, ci.compare_at_price AS "compareAtPrice",
       ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
       (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
       ci.metadata->>'complianceReason' AS "complianceReason"
@@ -104,7 +133,7 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
   const options = rows<OptionRow>(await db.execute(sql`
     SELECT co.id, co.product_id AS "productId", co.catalog_item_id AS "catalogItemId",
       co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
-      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.price, ci.compare_at_price AS "compareAtPrice",
+      co.label, co.option_values AS "optionValues", co.consumption_quantity AS "consumptionQuantity", ci.sku, ci.barcode, ci.image_url AS "imageUrl", ci.price, ci.compare_at_price AS "compareAtPrice",
       ii.base_unit AS "baseUnit", co.active, ci.is_available AS "isAvailable",
       (ci.metadata->>'complianceHold' = 'true') AS "complianceHold",
       ci.metadata->>'complianceReason' AS "complianceReason"
@@ -247,6 +276,32 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
           WHERE tenant_id = ${tenantId} AND id IN (SELECT catalog_item_id FROM catalogue_options
             WHERE tenant_id = ${tenantId} AND product_id = ${product.id} AND option_values = '{}'::jsonb)`);
       }
+      const existingVariant = rows<{ id: number; catalogItemId: number; inventoryItemId: number; label: string; active: boolean;
+        consumptionQuantity: string; sku: string | null; barcode: string | null; imageUrl: string | null; price: string;
+        compareAtPrice: string | null; isAvailable: boolean }>(await tx.execute(sql`
+        SELECT co.id, co.catalog_item_id AS "catalogItemId", co.inventory_item_id AS "inventoryItemId",
+          co.label, co.active, co.consumption_quantity::text AS "consumptionQuantity", ci.sku, ci.barcode,
+          ci.image_url AS "imageUrl", ci.price::text AS price, ci.compare_at_price::text AS "compareAtPrice",
+          ci.is_available AS "isAvailable"
+        FROM catalogue_options co JOIN catalog_items ci ON ci.tenant_id=co.tenant_id AND ci.id=co.catalog_item_id
+        WHERE co.tenant_id = ${tenantId} AND co.product_id = ${product.id}
+          AND co.option_values = ${JSON.stringify(normalizedValues)}::jsonb FOR UPDATE OF co, ci
+      `))[0];
+      // Preserve the existing option, catalog and stock identities for an
+      // exact replay, but never interpret a conflicting edit as a retry.
+      if (existingVariant) {
+        const sameMoney = (left: string | null | undefined, right: string | null | undefined) =>
+          left == null && right == null || left != null && right != null && Number(left).toFixed(2) === Number(right).toFixed(2);
+        const sameNullable = (left: string | null | undefined, right: string | null | undefined) =>
+          left === undefined || (left ?? null) === (right ?? null);
+        const exactReplay = existingVariant.label === body.label && existingVariant.active === (body.active ?? true) &&
+          existingVariant.consumptionQuantity === quantityText(quantityUnits(body.consumptionQuantity)) &&
+          sameNullable(body.sku?.trim(), existingVariant.sku) && sameNullable(body.barcode?.trim(), existingVariant.barcode) &&
+          sameNullable(body.imageUrl, existingVariant.imageUrl) && sameMoney(body.price, existingVariant.price) &&
+          sameMoney(body.compareAtPrice, existingVariant.compareAtPrice) && existingVariant.isAvailable === (body.isAvailable ?? true);
+        if (!exactReplay) throw new Error("Option values already exist with conflicting variant details");
+        return { ...existingVariant, optionId: existingVariant.id, optionValues: normalizedValues, idempotent: true };
+      }
       if (body.sku?.trim()) {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 740015)`);
         const duplicate = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM catalog_items
@@ -254,10 +309,10 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         if (duplicate) throw new Error("SKU already exists in this tenant");
       }
       const catalog = rows<{ id: number }>(await tx.execute(sql`
-        INSERT INTO catalog_items (tenant_id, name, category, price, compare_at_price, sku, barcode, is_available, merchant_brand,
+        INSERT INTO catalog_items (tenant_id, name, category, price, compare_at_price, sku, barcode, image_url, is_available, merchant_brand,
           customer_safe_name, customer_safe_description, display_category,
           alavont_name, lucifer_cruz_name, merchant_name, stock_unit)
-        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.compareAtPrice ?? null}, ${body.sku?.trim() || null}, ${body.barcode?.trim() || null}, ${body.isAvailable ?? true},
+        VALUES (${tenantId}, ${name}, ${base.category}, ${body.price}, ${body.compareAtPrice ?? null}, ${body.sku?.trim() || null}, ${body.barcode?.trim() || null}, ${body.imageUrl ?? null}, ${body.isAvailable ?? true},
           'lucifer_cruz', ${name}, ${name}, ${base.category}, ${name}, ${name}, ${name}, ${base.baseUnit})
         RETURNING id
       `))[0];
@@ -280,10 +335,10 @@ router.post("/admin/catalogue/products/:productId/options", admin, async (req, r
         updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${auto.id}`);
       if (inventoryItemId !== auto.inventoryItemId) await tx.execute(sql`DELETE FROM inventory_items WHERE tenant_id = ${tenantId} AND id = ${auto.inventoryItemId}`);
       await tx.execute(sql`DELETE FROM catalogue_products WHERE tenant_id = ${tenantId} AND id = ${auto.productId}`);
-      return { optionId: auto.id, catalogItemId: catalog.id, inventoryItemId, optionValues: normalizedValues };
+      return { optionId: auto.id, catalogItemId: catalog.id, inventoryItemId, optionValues: normalizedValues, idempotent: false };
     });
     if (!result) { res.status(404).json({ error: "Product not found" }); return; }
-    res.status(201).json(result);
+    res.status(result.idempotent ? 200 : 201).json(result);
   } catch (error) { res.status(409).json({ error: (error as Error).message }); }
 });
 
@@ -324,6 +379,7 @@ router.patch("/admin/catalogue/options/:optionId", admin, async (req, res): Prom
         WHERE tenant_id = ${tenantId} AND id = ${option.id}`);
       await tx.execute(sql`UPDATE catalog_items SET sku = ${parsed.data.sku === undefined ? option.sku : parsed.data.sku},
         barcode = ${parsed.data.barcode === undefined ? option.barcode : parsed.data.barcode},
+        image_url = ${parsed.data.imageUrl === undefined ? option.imageUrl : parsed.data.imageUrl},
         compare_at_price = ${parsed.data.compareAtPrice === undefined ? option.compareAtPrice : parsed.data.compareAtPrice},
         is_available = ${parsed.data.isAvailable ?? option.isAvailable}, price = ${parsed.data.price ?? option.price}, updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${option.catalogItemId}`);
@@ -442,6 +498,7 @@ router.put("/admin/catalogue/inventory/:inventoryItemId/locations/:locationId/ba
 
 router.get("/admin/catalogue/recommendations", admin, async (req, res): Promise<void> => {
   const tenantId = req.authorizedTenantId!;
+  const defaultLocation = rows<{ id: number | null }>(await db.execute(sql`SELECT default_inventory_location_id AS id FROM tenant_settings WHERE tenant_id = ${tenantId} LIMIT 1`))[0];
   const items = rows<{ inventoryItemId: number; productId: number; productName: string; locationEvaluation: string; baseUnit: string }>(await db.execute(sql`
     SELECT DISTINCT ii.id AS "inventoryItemId", cp.id AS "productId", cp.name AS "productName",
       cp.location_evaluation AS "locationEvaluation", ii.base_unit AS "baseUnit"
@@ -470,7 +527,8 @@ router.get("/admin/catalogue/recommendations", admin, async (req, res): Promise<
       LEFT JOIN inventory_reorder_policies p ON p.tenant_id = il.tenant_id AND p.location_id = il.id AND p.inventory_item_id = ii.id
       WHERE il.tenant_id = ${tenantId} ORDER BY il.display_order, il.id
     `));
-    data.push({ ...item, recommendations: recommendReplenishment(locations as LocationPolicyInput[]) });
+    data.push({ ...item, recommendations: recommendReplenishment(locations as LocationPolicyInput[],
+      item.locationEvaluation === "COMBINED_LOCATIONS" ? "COMBINED_LOCATIONS" : "PER_LOCATION", defaultLocation?.id) });
   }
   res.json({ items: data });
 });

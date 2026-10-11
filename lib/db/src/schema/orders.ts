@@ -21,6 +21,7 @@ export const ordersTable = pgTable("orders", {
   id: serial("id").primaryKey(),
   tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   customerId: integer("customer_id").notNull().references(() => usersTable.id),
+  customerNameSnapshot: text("customer_name_snapshot"),
   status: text("status").notNull().default("pending"),
   paymentStatus: text("payment_status").notNull().default("unpaid"),
   paymentMethod: text("payment_method").default("cash"), // "cash" | "card" | "comp"

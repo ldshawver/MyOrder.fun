@@ -5,6 +5,8 @@ const route = readFileSync(new URL("../pwa-push.ts", import.meta.url), "utf8");
 const repair = readFileSync(new URL("../../../../platform/src/lib/pwaPushRepair.ts", import.meta.url), "utf8");
 const account = readFileSync(new URL("../../../../platform/src/pages/account.tsx", import.meta.url), "utf8");
 const pushSender = readFileSync(new URL("../../lib/pwaPushSender.ts", import.meta.url), "utf8");
+const orderAlertsPage = readFileSync(new URL("../../../../platform/src/pages/admin/order-notifications.tsx", import.meta.url), "utf8");
+const orderNotificationWorker = readFileSync(new URL("../../lib/orderNotifications.ts", import.meta.url), "utf8");
 const smsRoute = readFileSync(new URL("../twilio-sms.ts", import.meta.url), "utf8");
 const sw = readFileSync(new URL("../../../../platform/public/myorder-push-sw.js", import.meta.url), "utf8");
 
@@ -43,7 +45,7 @@ describe("PWA push repair implementation", () => {
     expect(sw).toContain('self.addEventListener("push"');
     expect(sw).toContain('self.registration.showNotification');
     expect(sw).toContain('silent: false');
-    expect(sw).toContain('renotify: true');
+    expect(sw).toContain('data.type === "order" ? false : true');
     expect(sw).toContain('badge:');
     expect(sw).toContain('vibrate:');
   });
@@ -52,10 +54,26 @@ describe("PWA push repair implementation", () => {
 
 describe("PWA push schema migration", () => {
   const migration = readFileSync(new URL("../../../../../lib/db/migrations/202607080001_pwa_push_subscriptions.sql", import.meta.url), "utf8");
+  const journaledMigration = readFileSync(new URL("../../../../../lib/db/drizzle/0081_pwa_push_subscriptions.sql", import.meta.url), "utf8");
 
   it("creates the push subscription schema with device_id instead of legacy device_key", () => {
     expect(migration).toContain("CREATE TABLE IF NOT EXISTS pwa_push_subscriptions");
     expect(migration).toContain("device_id text NOT NULL");
     expect(migration).not.toContain("device_key");
+    expect(journaledMigration).toContain("CREATE TABLE IF NOT EXISTS pwa_push_subscriptions");
+    expect(journaledMigration).toContain("device_id text NOT NULL");
+    expect(journaledMigration).not.toContain("device_key");
+  });
+
+  it("wires user-controlled order alerts to durable jobs and the real push delivery action", () => {
+    expect(route).toContain('router.get("/pwa/push/order-alerts"');
+    expect(route).toContain('router.put("/pwa/push/order-alerts"');
+    expect(route).toContain('router.post("/pwa/push/order-alerts/test"');
+    expect(route).toContain("sendPwaPushToUser");
+    expect(orderAlertsPage).toContain('>Send Test Notification</button>');
+    expect(orderAlertsPage).toContain(': "Enable"');
+    expect(orderNotificationWorker).toContain("INSERT INTO order_push_notification_jobs");
+    expect(orderNotificationWorker).toContain("processOneOrderPushJob");
+    expect(orderNotificationWorker).toContain("myorder-order-${job.tenant_id}-${job.order_id}");
   });
 });

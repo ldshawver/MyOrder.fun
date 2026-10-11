@@ -19,8 +19,10 @@ describe("canonical order state machine", () => {
   });
 
   it.each([
-    ["submitted", "claim", "in_progress"],
+    ["submitted", "claim", "preparing"],
     ["in_progress", "prepare", "preparing"],
+    ["preparing", "package", "packaging"],
+    ["packaging", "ready", "ready"],
     ["preparing", "ready", "ready"],
     ["ready", "complete", "completed"],
     ["completed", "refund", "refunded"],
@@ -41,7 +43,7 @@ describe("canonical order state machine", () => {
   });
 
   it.each([
-    ["in_progress", "claim", "in_progress"],
+    ["preparing", "claim", "preparing"],
     ["preparing", "prepare", "preparing"],
     ["ready", "ready", "ready"],
     ["completed", "complete", "completed"],

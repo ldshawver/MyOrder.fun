@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link } from "wouter";
 import {
   useGetOrder,
@@ -31,11 +31,13 @@ import { customerTracker } from "@/lib/orderTracker";
 
 type OrderWithTracking = Order & {
   serverNow?: string;
+  assignedCsrDisplayName?: string | null;
   trackingUrl?: string | null;
   trackingSubmittedAt?: string | null;
   handoffChecklist?: Record<string, boolean> | null;
   handoffCompletedAt?: string | null;
   handoffCompletedByUserId?: number | null;
+  selectedPaymentMethod?: string | null;
 };
 type CreditSummary = { balance: number };
 
@@ -48,6 +50,7 @@ function RefundReturnPanel({ order, getToken, onDone }: { order: Order; getToken
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const items = (order.items ?? []) as Array<{ id: number; catalogItemName: string; quantity: number; unitPrice: number }>;
+  const mixedTender = String(order.paymentMethod ?? "").toLowerCase().includes("cash+") || String(order.selectedPaymentMethod ?? "").toLowerCase() === "split_tender";
   const selected = items.find((item) => item.id === itemId) ?? items[0];
   useEffect(() => { if (selected && itemId == null) setItemId(selected.id); }, [selected, itemId]);
   async function submit(preview: boolean) {
@@ -65,13 +68,14 @@ function RefundReturnPanel({ order, getToken, onDone }: { order: Order; getToken
   }
   return <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="refund-return-panel">
     <div className="flex items-center gap-2 font-semibold text-sm"><RotateCcw size={15} /> Return / Refund</div>
+    {mixedTender && <p role="alert" className="text-xs text-amber-200">This order used cash and card. Refunds are paused until an authorized allocation to the original payment methods is supported. No refund or stock change will be recorded.</p>}
     <div className="grid gap-2 sm:grid-cols-3">
       <Select value={String(selected?.id ?? "")} onValueChange={(v) => setItemId(Number(v))}><SelectTrigger className="text-xs"><SelectValue placeholder="Item" /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={String(item.id)}>{item.catalogItemName} ({item.quantity})</SelectItem>)}</SelectContent></Select>
       <Input type="number" min={1} max={selected?.quantity ?? 1} value={quantity} onChange={(e) => setQuantity(Math.max(1, Number(e.target.value) || 1))} className="text-xs" aria-label="Return quantity" />
       <Select value={disposition} onValueChange={(v) => setDisposition(v as "RESTOCK" | "DO_NOT_RESTOCK")}><SelectTrigger className="text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="RESTOCK">Restock</SelectItem><SelectItem value="DO_NOT_RESTOCK">Do not restock</SelectItem></SelectContent></Select>
     </div>
     <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} className="text-xs" aria-label="Return reason" />
-    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={busy || !selected}>Calculate refund</Button>{quote && <><span className="text-xs">Authoritative refund: <strong>${Number(quote.refundAmount).toFixed(2)}</strong></span><Button size="sm" onClick={() => void submit(false)} disabled={busy}>Confirm refund</Button></>}</div>
+    <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={() => void submit(true)} disabled={busy || !selected}>Calculate refund</Button>{quote && <><span className="text-xs">Authoritative refund: <strong>${Number(quote.refundAmount).toFixed(2)}</strong></span><Button size="sm" onClick={() => void submit(false)} disabled={busy || mixedTender}>Confirm refund</Button></>}</div>
     {message && <div className="text-xs text-muted-foreground">{message}</div>}
   </div>;
 }
@@ -109,12 +113,25 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
     return () => { cancelled = true; clearInterval(t); };
   }, [getToken, order.id, order.deliveryMethod]);
 
-  useOrderEvents((ev) => {
-    if (ev.orderId !== order.id) return;
-    if (ev.type === "order.updated" || ev.type === "order.ready" || ev.type === "order.assigned") {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(order.id) });
-    }
-  });
+  const reconcileOrder = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(order.id) });
+  }, [order.id, queryClient]);
+  const handleOrderEvent = useCallback((ev: Parameters<Parameters<typeof useOrderEvents>[0]>[0]) => {
+    if (ev.orderId === order.id) reconcileOrder();
+  }, [order.id, reconcileOrder]);
+  useOrderEvents(handleOrderEvent, true, { onReconnect: reconcileOrder });
+
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") reconcileOrder(); };
+    const timer = window.setInterval(refresh, 15_000);
+    window.addEventListener("online", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [reconcileOrder]);
 
   const serverNow = Date.parse(order.serverNow ?? "");
   const tracker = customerTracker(order, Number.isFinite(serverNow) ? serverNow + elapsed : NaN);
@@ -174,6 +191,15 @@ function CustomerHourglassPanel({ order }: { order: OrderWithTracking }) {
       <p className="text-sm text-muted-foreground mt-4 max-w-sm" data-testid="customer-stage-message" role="status" aria-live="polite">
         {tracker.label}. We'll notify you when staff marks it ready.
       </p>
+      {order.assignedCsrDisplayName && <p className="text-xs text-muted-foreground" data-testid="assigned-csr-name">Your order is being handled by {order.assignedCsrDisplayName}.</p>}
+      {tracker.remainingMs !== null && <p className="text-[11px] text-muted-foreground">Estimated preparation progress from the time your order was claimed.</p>}
+      {order.deliveryMethod === "pickup" && order.pickupDetails && (
+        <div className="mt-4 w-full max-w-sm rounded-xl border border-border/50 bg-background/50 p-4 text-left" data-testid="customer-pickup-instructions">
+          <div className="text-xs font-semibold">Pickup at {order.pickupDetails.businessName}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{order.pickupDetails.address ?? "Pickup address has not been configured by the store."}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{order.pickupDetails.instruction}</div>
+        </div>
+      )}
       {order.deliveryMethod === "uber_direct" && (
         <div className="mt-5 w-full max-w-md rounded-xl border border-primary/20 bg-background/70 p-4 text-left" data-testid="customer-uber-info">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
@@ -413,7 +439,7 @@ const FULFILLMENT_STAGE_MESSAGES: Record<string, string> = {
   submitted: "Order received — waiting for a customer service rep to pick it up.",
   in_progress: "Claimed — a customer service rep has accepted your order.",
   accepted: "Claimed — a customer service rep has accepted your order.",
-  preparing: "Your order is being packaged discreetly for pickup.",
+  preparing: "Your order is being prepared. Packaging will be confirmed when staff updates its status.",
   ready: "Your order is ready for pickup or delivery.",
   completed: "Your order has been completed. Thanks for shopping with us!",
   cancelled: "This order has been cancelled.",
@@ -448,6 +474,7 @@ export default function OrderDetail() {
   const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
   const [showCashCloseout, setShowCashCloseout] = useState(false);
   const [amountTendered, setAmountTendered] = useState("");
+  const [splitCardAmount, setSplitCardAmount] = useState("");
   const [cashInternalNote, setCashInternalNote] = useState("");
 
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
@@ -899,7 +926,7 @@ export default function OrderDetail() {
                 )}
                 {order.deliveryQuote?.dropoffEta && (
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">Courier ETA</span>
+                    <span className="text-muted-foreground">Uber quoted ETA</span>
                     <span className="font-mono">{formatCourierEta(order.deliveryQuote.dropoffEta)}</span>
                   </div>
                 )}
@@ -1065,23 +1092,23 @@ export default function OrderDetail() {
                     </div>
                   )}
 
-                  <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
-                    <Banknote size={14} className="mr-2" /> Close as Cash Paid
-                  </Button>
-                  {showCashCloseout && (
+                  {canEditStatus && <Button className="w-full rounded-xl font-semibold text-xs h-10" onClick={() => { setAmountTendered(Number(unpaidBalance).toFixed(2)); setShowCashCloseout(true); }} disabled={closeoutBusy !== null} data-testid="button-closeout-cash">
+                    <Banknote size={14} className="mr-2" /> {order.selectedPaymentMethod === "split_tender" ? "Record Cash Payment" : "Close as Cash Paid"}
+                  </Button>}
+                  {canEditStatus && showCashCloseout && (
                     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3" data-testid="cash-closeout-dialog">
                       <div className="font-semibold text-sm">Confirm cash payment for order #{order.id}</div>
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <div>Trusted amount due<br /><strong className="text-base">${Number(unpaidBalance).toFixed(2)}</strong></div>
-                        <div>Calculated change<br /><strong className="text-base">${Math.max(0, Number(amountTendered || 0) - Number(unpaidBalance)).toFixed(2)}</strong></div>
+                        <div>Calculated change<br /><strong className="text-base">${Number(amountTendered || 0) >= Number(unpaidBalance) ? Math.max(0, Number(amountTendered || 0) - Number(unpaidBalance)).toFixed(2) : "0.00"}</strong></div>
                       </div>
                       <Label htmlFor="cash-tendered">Amount tendered</Label>
                       <Input id="cash-tendered" inputMode="decimal" value={amountTendered} onChange={(event) => setAmountTendered(event.target.value)} data-testid="input-cash-tendered" />
                       <Label htmlFor="cash-note">Internal note (optional)</Label>
                       <Textarea id="cash-note" maxLength={500} value={cashInternalNote} onChange={(event) => setCashInternalNote(event.target.value)} data-testid="input-cash-note" />
-                      <p className="text-xs text-amber-300">Confirm only after physically receiving the tendered cash. This creates an audited cash-ledger entry and cannot be undone here.</p>
+                      <p className="text-xs text-amber-300">Confirm only after physically receiving the tendered cash. Split orders may accept a partial cash payment; the order remains unpaid until the full balance is settled. This creates an audited cash-ledger entry.</p>
                       <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) < Number(unpaidBalance)} data-testid="button-confirm-cash-closeout">Confirm Cash Paid</Button>
+                        <Button onClick={() => void closeOutCash()} disabled={closeoutBusy !== null || Number(amountTendered) <= 0 || (order.selectedPaymentMethod !== "split_tender" && Number(amountTendered) < Number(unpaidBalance))} data-testid="button-confirm-cash-closeout">{order.selectedPaymentMethod === "split_tender" && Number(amountTendered) < Number(unpaidBalance) ? "Record Partial Cash" : "Confirm Cash Paid"}</Button>
                         <Button variant="outline" onClick={() => setShowCashCloseout(false)}>Cancel</Button>
                         {closeoutMessage?.includes("General Queue cash session") && canManageRouting && (
                           <Link href={`/staff?openGeneralQueue=1&returnOrder=${order.id}`} className="inline-flex items-center rounded-lg border px-3 py-2 text-xs font-semibold" data-testid="button-open-general-queue-session">
@@ -1094,7 +1121,12 @@ export default function OrderDetail() {
                   {closeoutMessage && <div className="text-[11px] text-muted-foreground">{closeoutMessage}</div>}
 
                   {/* Provider-verified PayPal checkout */}
-                  <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />
+                  {isCustomer && order.selectedPaymentMethod === "split_tender" && <div className="space-y-1">
+                    <Label htmlFor="split-card-amount">Card payment amount</Label>
+                    <Input id="split-card-amount" inputMode="decimal" type="number" min="0.01" max={Number(unpaidBalance)} step="0.01" value={splitCardAmount} onChange={event => setSplitCardAmount(event.target.value)} placeholder={`Up to $${Number(unpaidBalance).toFixed(2)}`} data-testid="input-split-card-amount" />
+                    <p className="text-xs text-muted-foreground">Leave blank to pay the full remaining balance by card.</p>
+                  </div>}
+                  {isCustomer && <PayPalCheckoutButton orderId={order.id} eligibilityAmount={Number(order.remainingTenderAmount ?? order.total)} amount={order.selectedPaymentMethod === "split_tender" && splitCardAmount.trim() ? Number(splitCardAmount) : undefined} getToken={getToken} onCaptured={() => { void queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(id) }); }} />}
 
                 </div>
               )}

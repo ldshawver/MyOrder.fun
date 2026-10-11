@@ -14,4 +14,5 @@ export const OrderCheckoutConfirmationPaymentMethod = {
   paypal: 'paypal',
   paypal_card: 'paypal_card',
   customer_credit: 'customer_credit',
+  split_tender: 'split_tender',
 } as const;

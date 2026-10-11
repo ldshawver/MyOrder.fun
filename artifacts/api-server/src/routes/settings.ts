@@ -117,6 +117,7 @@ function mapSettings(s: typeof adminSettingsTable.$inferSelect) {
     cashDiscountEnabled: s.cashDiscountEnabled,
     cashDiscountType: s.cashDiscountType,
     cashDiscountValue: Number(s.cashDiscountValue ?? 0),
+    cashTaxInclusive: s.cashTaxInclusive ?? false,
     merchantImageEnabled: s.merchantImageEnabled,
     autoPrintOnPayment: s.autoPrintOnPayment,
     receiptTemplateStyle: s.receiptTemplateStyle,
@@ -519,7 +520,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     "checkoutConversionPreview", "merchantImageEnabled", "autoPrintOnPayment",
     "receiptTemplateStyle", "labelTemplateStyle", "purgeMode",
     "purgeDelayHours", "keepAuditToken", "keepFailedPaymentLogs",
-    "receiptLineNameMode", "salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue",
+    "receiptLineNameMode", "salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue", "cashTaxInclusive",
     "privacyModeEnabled", "sensitiveScreensProtectionEnabled", "watermarkSensitiveScreens",
     "privacyBlurOnBackground", "privacyPrintBlockingEnabled", "privacyProtectedRoles",
   ];
@@ -560,6 +561,10 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
   }
   if (body.cashDiscountType !== undefined && body.cashDiscountType !== "percentage" && body.cashDiscountType !== "fixed") {
     res.status(400).json({ error: "cashDiscountType must be percentage or fixed" }); return;
+  }
+  if (body.cashTaxInclusive !== undefined) {
+    if (typeof body.cashTaxInclusive !== "boolean") { res.status(400).json({ error: "cashTaxInclusive must be boolean" }); return; }
+    update.cashTaxInclusive = body.cashTaxInclusive;
   }
   if (body.cashDiscountValue !== undefined) {
     const value = Number(body.cashDiscountValue);
@@ -614,7 +619,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     .set(update)
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))
     .returning();
-  const financialFields = Object.keys(update).filter(key => ["salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue"].includes(key));
+  const financialFields = Object.keys(update).filter(key => ["salesTaxMode", "salesTaxRate", "cashDiscountEnabled", "cashDiscountType", "cashDiscountValue", "cashTaxInclusive"].includes(key));
   if (financialFields.length) await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: updated.tenantId, action: "settings.financial_rules.updated", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { fields: financialFields }, ipAddress: req.ip });
   res.json(mapSettings(updated));
 });

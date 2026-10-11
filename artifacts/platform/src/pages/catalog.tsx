@@ -168,8 +168,8 @@ function CatalogItemCard({
   const displayName = product?.name ?? (isLC ? (item.luciferCruzName || item.name) : (item.alavontName || item.name));
   const media = (item.mediaGallery ?? []).filter((entry) => entry.src?.trim());
   const primaryImage = isLC
-    ? (item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
-    : (item.imageUrl?.trim() || item.alavontImageUrl?.trim() || media[0]?.src?.trim() || null);
+    ? (selectedOption?.imageUrl?.trim() || item.luciferCruzImageUrl?.trim() || media[0]?.src?.trim() || item.imageUrl?.trim() || null)
+    : (selectedOption?.imageUrl?.trim() || item.imageUrl?.trim() || item.alavontImageUrl?.trim() || media[0]?.src?.trim() || null);
   const hasSale = item.isSaleFeatured || (item.compareAtPrice && Number(item.compareAtPrice) > Number(item.price));
 
   return (
@@ -279,7 +279,7 @@ function CatalogItemCard({
               onChange={event => setSelectedOptionId(event.target.value ? Number(event.target.value) : null)}
               aria-label={`${product.name} option`}>
               <option value="">Select an option</option>
-              {product.options.map(option => <option key={option.id} value={option.id}>{option.label} · ${Number(option.price).toFixed(2)}</option>)}
+              {product.options.map(option => <option key={option.id} value={option.id} disabled={option.stockAvailable === false}>{option.label}{option.stockAvailable === false ? " · Unavailable" : ""} · ${Number(option.price).toFixed(2)}</option>)}
             </select>
           </label>
         )}
@@ -302,13 +302,14 @@ function CatalogItemCard({
         </div>
 
         {selectedOption?.sku && <div className="text-[10px] text-muted-foreground">SKU: {selectedOption.sku}</div>}
+        {selectedOption?.stockAvailable === false && <div className="text-xs text-destructive" role="status">This option is currently unavailable.</div>}
         <div className="grid grid-cols-2 gap-2 mt-1">
           <button
             type="button"
-            disabled={!selectedOption || optionsLoading}
+            disabled={!selectedOption || selectedOption.stockAvailable === false || optionsLoading}
             onClick={() => {
               if (!product || !selectedOption) return;
-              addItem(optionCartEntry(product, selectedOption, item.imageUrl ?? null));
+              addItem(optionCartEntry(product, selectedOption, selectedOption.imageUrl ?? item.imageUrl ?? null));
               setAddedFeedback(true);
               setTimeout(() => setAddedFeedback(false), 1800);
             }}

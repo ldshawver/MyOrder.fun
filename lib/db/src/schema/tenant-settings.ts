@@ -7,10 +7,12 @@ import {
   jsonb,
   check,
   uniqueIndex,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { tenantsTable } from "./tenants";
 import { usersTable } from "./users";
+import { inventoryLocationsTable } from "./shifts";
 
 export const tenantSettingsTable = pgTable("tenant_settings", {
   id: serial("id").primaryKey(),
@@ -25,6 +27,7 @@ export const tenantSettingsTable = pgTable("tenant_settings", {
   businessAddressJson: jsonb("business_address_json").notNull().default({}),
   timezone: text("timezone").notNull().default("America/Los_Angeles"),
   defaultCurrency: text("default_currency").notNull().default("USD"),
+  defaultInventoryLocationId: integer("default_inventory_location_id"),
   businessDescription: text("business_description"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
@@ -34,6 +37,7 @@ export const tenantSettingsTable = pgTable("tenant_settings", {
   tenantSettingsTenantUnique: uniqueIndex("tenant_settings_tenant_unique").on(table.tenantId),
   tenantSettingsVersionPositive: check("tenant_settings_version_positive", sql`${table.version} > 0`),
   tenantSettingsCurrencyFormat: check("tenant_settings_currency_format", sql`${table.defaultCurrency} ~ '^[A-Z]{3}$'`),
+  defaultInventoryLocationTenantFk: foreignKey({ name: "tenant_settings_default_inventory_location_fk", columns: [table.tenantId, table.defaultInventoryLocationId], foreignColumns: [inventoryLocationsTable.tenantId, inventoryLocationsTable.id] }),
 }));
 
 export type TenantSettings = typeof tenantSettingsTable.$inferSelect;

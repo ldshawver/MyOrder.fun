@@ -6,6 +6,8 @@ export type SellableOption = {
   sku?: string | null;
   optionValues?: Record<string, string>;
   barcode?: string | null;
+  imageUrl?: string | null;
+  stockAvailable?: boolean;
 };
 
 export type SellableProduct = {

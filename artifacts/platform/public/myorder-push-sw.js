@@ -23,7 +23,9 @@ function notificationOptions(data) {
     tag: data.tag || `myorder-${data.type || "push"}`,
     data: { url: data.url || "/notifications", badgeCount: Number.isFinite(data.badgeCount) ? data.badgeCount : undefined, ...data },
     silent: false,
-    renotify: true,
+    // An order event has one stable tag for its tenant/order pair. If a
+    // retried push reaches the browser twice, replace it silently.
+    renotify: data.type === "order" ? false : true,
     vibrate: vibrateEnabled ? (Array.isArray(data.vibrate) ? data.vibrate : [120, 60, 120]) : undefined,
   };
 }

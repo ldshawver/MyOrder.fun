@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import supertest from "supertest";
 import { sql } from "drizzle-orm";
+import { getCheckoutTaxSettings } from "../lib/checkoutNormalizer";
 
 const identities = vi.hoisted(() => ({
   customer: { clerkId: "e2e_customer", email: "customer@pos-e2e.test", role: "user" },
@@ -67,6 +68,7 @@ import {
   printPrintersTable,
   printRoutesTable,
   tenantPrintControlsTable,
+  taxConfigurationsTable,
   tenantsTable,
   usersTable,
 } from "@workspace/db";
@@ -77,6 +79,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
   let server: Server | undefined;
   let request: ReturnType<typeof supertest>;
   let catalogItemId: number;
+  let inventoryLocationId: number;
+  const priorSignupTenantId = process.env.MYORDER_SIGNUP_TENANT_ID;
 
   const as = (identity: keyof typeof identities) => ({
     get: (path: string) => request.get(path).set("x-pos-e2e-user", identity),
@@ -91,6 +95,9 @@ operationalDescribe("POS opening-manager operational flow", () => {
       slug: "pos-e2e-house",
       status: "active",
     }).returning();
+    // The E2E includes a second tenant to verify isolation. New-user signup
+    // must therefore use the same explicit tenant selection as production.
+    process.env.MYORDER_SIGNUP_TENANT_ID = String(tenant.id);
 
     await db.insert(adminSettingsTable).values({
       tenantId: tenant.id,
@@ -174,6 +181,19 @@ operationalDescribe("POS opening-manager operational flow", () => {
         provisioningStatus: "active",
       },
     ]);
+    const [taxVerifier] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.csr.clerkId}`).limit(1);
+    await db.insert(taxConfigurationsTable).values({
+      tenantId: tenant.id,
+      locationId: null,
+      jurisdiction: "POS E2E",
+      rate: "0.08000000",
+      sourcingRule: "tenant",
+      effectiveFrom: "2020-01-01",
+      sourceName: "Synthetic POS fixture",
+      sourceUrl: "https://example.test/pos-tax",
+      verifiedAt: new Date(),
+      verifiedByUserId: taxVerifier!.id,
+    });
     const [otherTenant] = await db.insert(tenantsTable).values({ name: "Other E2E Tenant", slug: "other-e2e-tenant", status: "active" }).returning();
     await db.insert(usersTable).values({
       clerkId: identities.outsider.clerkId,
@@ -240,6 +260,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
       name: "CSR Sales Box 1",
       displayOrder: 1,
     }).returning();
+    inventoryLocationId = location.id;
     await db.insert(inventoryBalancesTable).values({
       tenantId: tenant.id,
       productId: item.id,
@@ -269,6 +290,8 @@ operationalDescribe("POS opening-manager operational flow", () => {
     if (server) {
       await new Promise<void>((resolve, reject) => server?.close(error => error ? reject(error) : resolve()));
     }
+    if (priorSignupTenantId === undefined) delete process.env.MYORDER_SIGNUP_TENANT_ID;
+    else process.env.MYORDER_SIGNUP_TENANT_ID = priorSignupTenantId;
     await pool.end();
   });
 
@@ -313,6 +336,9 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect(tenantUsers.status, tenantUsers.text).toBe(200);
     expect(tenantUsers.body.users.every((candidate: { tenantId?: number }) => candidate.tenantId === tenantUsers.body.users[0]?.tenantId)).toBe(true);
 
+    const provisioned = await as("customer").post("/api/users/sync").send({});
+    expect(provisioned.status, provisioned.text).toBe(200);
+    expect(provisioned.body).toMatchObject({ email: identities.customer.email, role: "user", status: "approved" });
     const login = await as("customer").get("/api/users/me");
     expect(login.status, login.text).toBe(200);
     expect(login.body).toMatchObject({ email: identities.customer.email, role: "user", status: "approved" });
@@ -339,6 +365,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     expect(clockIn.status, clockIn.text).toBe(201);
     expect(Number(clockIn.body.shift.cashBankStart)).toBe(100);
     const tenantId = Number(clockIn.body.shift.tenantId);
+    expect(await getCheckoutTaxSettings(tenantId)).toMatchObject({ taxRate: 0.08, taxJurisdiction: "POS E2E" });
     const csrId = Number(clockIn.body.shift.techId);
     const duplicateBoxCheckout = await as("csr2").post("/api/shifts/clock-in").send({
       boxAssignmentId: "sales-box-1",
@@ -398,6 +425,13 @@ operationalDescribe("POS opening-manager operational flow", () => {
     });
     expect(converted.status, converted.text).toBe(200);
     expect(converted.body.converted.items[0].customerSafeName).toBe("Merchant E2E Item");
+
+    const [stockBeforeSettlement] = await db.select().from(inventoryBalancesTable).where(sql`
+      ${inventoryBalancesTable.tenantId} = ${tenantId}
+      AND ${inventoryBalancesTable.productId} = ${catalogItemId}
+      AND ${inventoryBalancesTable.locationId} = ${inventoryLocationId}
+    `).limit(1);
+    expect(stockBeforeSettlement).toBeTruthy();
 
     const orderCreated = await as("customer").post("/api/orders").send({
       orderType: "WALK_IN",
@@ -489,7 +523,7 @@ operationalDescribe("POS opening-manager operational flow", () => {
     });
     expect(shiftClose.status, shiftClose.text).toBe(200);
     expect(shiftClose.body.shift.status).toBe("supervisor_pending");
-    expect(shiftClose.body.summary).toMatchObject({ orderCount: 1, cashSales: 20 });
+    expect(shiftClose.body.summary).toMatchObject({ orderCount: 1, cashSales: 21.6 });
     expect(shiftClose.body.summary.inventorySummary[0]).toMatchObject({ quantityStart: 10, quantitySold: 1, quantityEndActual: 9 });
     const [closedOrderRow] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${orderId}`).limit(1);
     const [returnedBoxOrder] = await db.insert(ordersTable).values({
@@ -511,14 +545,14 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const finalized = await as("admin").post(`/api/shifts/${shiftId}/supervisor-checkout`).send({ tipPercent: 15 });
     expect(finalized.status, finalized.text).toBe(200);
     expect(finalized.body.shift.status).toBe("finalized");
-    expect(finalized.body.checkout).toMatchObject({ eligibleSalesBase: 20, tipPercent: 15 });
+    expect(finalized.body.checkout).toMatchObject({ eligibleSalesBase: 21.6, tipPercent: 15 });
 
     const persisted = await db.execute(sql`
       SELECT o.status, o.payment_status, s.status AS shift_status,
              ib.quantity_on_hand, COUNT(cle.id)::int AS cash_ledger_entries
       FROM orders o
       JOIN lab_tech_shifts s ON s.id = o.assigned_shift_id
-      JOIN inventory_balances ib ON ib.product_id = ${catalogItemId}
+      JOIN inventory_balances ib ON ib.product_id = ${catalogItemId} AND ib.location_id = ${inventoryLocationId}
       LEFT JOIN cash_ledger_entries cle ON cle.order_id = o.id
       WHERE o.id = ${orderId}
       GROUP BY o.status, o.payment_status, s.status, ib.quantity_on_hand
@@ -527,26 +561,26 @@ operationalDescribe("POS opening-manager operational flow", () => {
       status: "completed",
       payment_status: "paid",
       shift_status: "finalized",
-      quantity_on_hand: "9.000000",
       cash_ledger_entries: 1,
     });
+    expect(Number(persisted.rows[0]?.quantity_on_hand)).toBe(Number(stockBeforeSettlement!.quantityOnHand) - 1);
     const [shiftLedger] = await db.select().from(cashLedgerEntriesTable).where(sql`${cashLedgerEntriesTable.orderId} = ${orderId}`);
     expect(shiftLedger).toMatchObject({ shiftId, generalQueueSessionId: null, actorUserId: expect.any(Number) });
   }, 60_000);
 
-  it("claims General Queue orders through the authenticated application-user shift relationship", async () => {
+  it("claims General Queue orders through CSR shifts and keeps admin queue-start separate", async () => {
     const [tenant] = await db.select().from(tenantsTable).where(sql`${tenantsTable.slug} = 'pos-e2e-house'`).limit(1);
-    const [admin] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.admin.clerkId}`).limit(1);
+    const [csr] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.csr.clerkId}`).limit(1);
     const [csr2] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.csr2.clerkId}`).limit(1);
     const [customer] = await db.select().from(usersTable).where(sql`${usersTable.clerkId} = ${identities.customer.clerkId}`).limit(1);
     const [box] = await db.select().from(csrBoxesTable).where(sql`${csrBoxesTable.tenantId} = ${tenant.id}`).limit(1);
     const setupJson = { boxAssignmentId: box.slug, inventoryConfirmed: true, startingInventoryConfirmed: true, parLevelsConfirmed: true, printerReady: true, printerAssigned: true };
-    const [adminShift, csr2Shift] = await db.insert(labTechShiftsTable).values([
-      { tenantId: tenant.id, techId: admin.id, status: "active", boxAssignmentId: box.slug, setupJson },
+    const [csrShift, csr2Shift] = await db.insert(labTechShiftsTable).values([
+      { tenantId: tenant.id, techId: csr.id, status: "active", boxAssignmentId: box.slug, setupJson },
       { tenantId: tenant.id, techId: csr2.id, status: "active", boxAssignmentId: box.slug, setupJson },
     ]).returning();
     const [order] = await db.insert(ordersTable).values({
-      tenantId: tenant.id, customerId: admin.id, status: "submitted", fulfillmentStatus: "submitted",
+      tenantId: tenant.id, customerId: customer.id, status: "submitted", fulfillmentStatus: "submitted",
       paymentStatus: "unpaid", subtotal: "10.00", tax: "0.80", total: "10.80",
       routeSource: "general_account", routedTo: "default_queue", routingStatus: "queued",
     }).returning();
@@ -554,31 +588,48 @@ operationalDescribe("POS opening-manager operational flow", () => {
     const eligible = await as("supervisor").get("/api/orders/active-csrs");
     expect(eligible.status, eligible.text).toBe(200);
     expect(eligible.body.csrs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ userId: admin.id, shiftId: adminShift.id, label: expect.stringContaining(box.label) }),
+      expect.objectContaining({ userId: csr.id, shiftId: csrShift.id, label: expect.stringContaining(box.label) }),
       expect.objectContaining({ userId: csr2.id, shiftId: csr2Shift.id }),
     ]));
 
-    const claimed = await as("admin").post(`/api/orders/${order.id}/claim`).send({});
+    const claimed = await as("csr").post(`/api/orders/${order.id}/claim`).send({});
     expect(claimed.status, claimed.text).toBe(200);
     expect(claimed.body).toMatchObject({
       id: order.id,
-      assignedCsrUserId: admin.id,
-      status: "in_progress",
-      fulfillmentStatus: "in_progress",
+      customerName: "Pat E2E",
+      assignedCsrUserId: csr.id,
+      assignedCsrDisplayName: "Casey E2E",
+      status: "preparing",
+      fulfillmentStatus: "preparing",
       routeSource: "active_csr",
     });
     const [persistedClaim] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${order.id}`).limit(1);
-    expect(persistedClaim).toMatchObject({ assignedCsrUserId: admin.id, assignedShiftId: adminShift.id });
-    expect((await as("admin").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(200);
+    expect(persistedClaim).toMatchObject({ assignedCsrUserId: csr.id, assignedShiftId: csrShift.id, promisedMinutes: 10 });
+    expect(persistedClaim!.estimatedReadyAt!.getTime() - persistedClaim!.acceptedAt!.getTime()).toBe(10 * 60_000);
+    expect((await as("csr").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(200);
     expect((await as("csr2").post(`/api/orders/${order.id}/claim`).send({})).status).toBe(409);
     expect((await as("csr2").post(`/api/orders/${order.id}/reassign`).send({ assignedCsrUserId: csr2.id })).status).toBe(403);
+
+    const customerTracking = await as("customer").get(`/api/orders/${order.id}`);
+    expect(customerTracking.status, customerTracking.text).toBe(200);
+    expect(customerTracking.body).toMatchObject({ assignedCsrDisplayName: "Casey E2E", acceptedAt: persistedClaim!.acceptedAt.toISOString(), estimatedReadyAt: persistedClaim!.estimatedReadyAt!.toISOString() });
+    expect((await as("outsider").get(`/api/orders/${order.id}`)).status).toBe(404);
 
     const general = await as("admin").get("/api/shift-queue/general");
     expect(general.body.orders).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: order.id })]));
     const assigned = await as("admin").get("/api/shift-queue/orders");
     expect(assigned.body.orders).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: order.id, assignedCsrUserId: admin.id, assignedShiftId: adminShift.id }),
+      expect.objectContaining({ id: order.id, assignedCsrUserId: csr.id, assignedShiftId: csrShift.id }),
     ]));
+
+    const [adminStartedOrder] = await db.insert(ordersTable).values({
+      tenantId: tenant.id, customerId: customer.id, status: "submitted", fulfillmentStatus: "submitted",
+      paymentStatus: "unpaid", subtotal: "3.00", tax: "0.24", total: "3.24",
+      routeSource: "general_account", routedTo: "default_queue", routingStatus: "queued",
+    }).returning();
+    const adminStarted = await as("admin").post(`/api/orders/${adminStartedOrder.id}/claim`).send({});
+    expect(adminStarted.status, adminStarted.text).toBe(200);
+    expect(adminStarted.body).toMatchObject({ assignedCsrUserId: null, routeSource: "supervisor_override", fulfillmentStatus: "preparing" });
 
     const [terminal] = await db.insert(ordersTable).values({
       tenantId: tenant.id, customerId: customer.id, status: "completed", fulfillmentStatus: "completed",
@@ -594,13 +645,31 @@ operationalDescribe("POS opening-manager operational flow", () => {
       routeSource: "general_account", routedTo: "default_queue",
     }).returning();
     const race = await Promise.all([
-      as("admin").post(`/api/orders/${raceOrder.id}/claim`).send({}),
+      as("csr").post(`/api/orders/${raceOrder.id}/claim`).send({}),
       as("csr2").post(`/api/orders/${raceOrder.id}/claim`).send({}),
     ]);
     expect(race.filter(response => response.status === 200)).toHaveLength(1);
     expect(race.filter(response => response.status === 409)).toHaveLength(1);
+    const winnerIndex = race.findIndex(response => response.status === 200);
+    const winnerIdentity = winnerIndex === 0 ? "csr" : "csr2";
+    const loserIdentity = winnerIndex === 0 ? "csr2" : "csr";
+    const winnerUserId = winnerIndex === 0 ? csr.id : csr2.id;
+    const [persistedRaceClaim] = await db.select().from(ordersTable).where(sql`${ordersTable.id} = ${raceOrder.id}`).limit(1);
+    expect(persistedRaceClaim).toMatchObject({ assignedCsrUserId: winnerUserId, promisedMinutes: 10 });
+    expect(persistedRaceClaim!.acceptedAt).toBeInstanceOf(Date);
+    expect(persistedRaceClaim!.estimatedReadyAt!.getTime() - persistedRaceClaim!.acceptedAt!.getTime()).toBe(10 * 60_000);
+    expect((await as(winnerIdentity).post(`/api/orders/${raceOrder.id}/claim`).send({})).status).toBe(200);
+    expect((await as(loserIdentity).post(`/api/orders/${raceOrder.id}/claim`).send({})).status).toBe(409);
+    const raceTracking = await as("customer").get(`/api/orders/${raceOrder.id}`);
+    expect(raceTracking.status, raceTracking.text).toBe(200);
+    expect(raceTracking.body).toMatchObject({
+      assignedCsrDisplayName: winnerIndex === 0 ? "Casey E2E" : "Jordan E2E",
+      acceptedAt: persistedRaceClaim!.acceptedAt!.toISOString(),
+      estimatedReadyAt: persistedRaceClaim!.estimatedReadyAt!.toISOString(),
+    });
+    expect((await as("outsider").get(`/api/orders/${raceOrder.id}`)).status).toBe(404);
 
-    await db.execute(sql`UPDATE lab_tech_shifts SET status = 'clocked_out', clocked_out_at = now() WHERE id IN (${adminShift.id}, ${csr2Shift.id})`);
+    await db.execute(sql`UPDATE lab_tech_shifts SET status = 'clocked_out', clocked_out_at = now() WHERE id IN (${csrShift.id}, ${csr2Shift.id})`);
   }, 60_000);
 
   it("manages a tenant-isolated General Queue cash session with atomic claims and closeout", async () => {

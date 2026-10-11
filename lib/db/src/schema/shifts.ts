@@ -78,7 +78,9 @@ export const inventoryBalancesTable = pgTable("inventory_balances", {
   quarantinedByUserId: integer("quarantined_by_user_id").references(() => usersTable.id),
   quarantineReason: text("quarantine_reason"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantProductLocationUnique: uniqueIndex("inventory_balances_unique").on(table.tenantId, table.productId, table.locationId),
+}));
 
 export type InventoryBalance = typeof inventoryBalancesTable.$inferSelect;
 export type InsertInventoryBalance = typeof inventoryBalancesTable.$inferInsert;

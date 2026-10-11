@@ -1,16 +1,15 @@
-export const CHECKOUT_TENDERS = ["cash", "paypal", "paypal_card", "customer_credit"] as const;
+export const CHECKOUT_TENDERS = ["cash", "paypal", "paypal_card", "customer_credit", "split_tender"] as const;
 export type CheckoutTender = typeof CHECKOUT_TENDERS[number];
 
-export type CustomerTaxTreatment = "non_tax_added" | "tax_added_digital" | "unsupported";
+export type CustomerTaxTreatment = "transaction_taxed" | "unsupported";
 
 export function customerTaxTreatment(tender: string): CustomerTaxTreatment {
-  if (tender === "cash" || tender === "customer_credit" || tender === "gift_card") return "non_tax_added";
-  if (tender === "paypal" || tender === "paypal_card" || tender === "venmo" || tender === "cash_app" || tender === "apple_pay") return "tax_added_digital";
+  if (["cash", "customer_credit", "gift_card", "paypal", "paypal_card", "venmo", "cash_app", "apple_pay", "split_tender"].includes(tender)) return "transaction_taxed";
   return "unsupported";
 }
 
-export function isTaxableDigitalTender(tender: string): tender is "paypal" | "paypal_card" {
-  return (tender === "paypal" || tender === "paypal_card") && customerTaxTreatment(tender) === "tax_added_digital";
+export function isTransactionTaxedTender(tender: string): boolean {
+  return customerTaxTreatment(tender) === "transaction_taxed";
 }
 
 /** Convert a canonical decimal dollar value to integer cents. */
@@ -31,17 +30,17 @@ export function centsToDollars(cents: number): string {
 
 export function computeTenderTaxCents(input: {
   taxableMerchandiseCents: number;
-  nonTaxableFundingCents: number;
   taxRate: number;
 }): { taxableBaseCents: number; taxCents: number } {
   const taxableMerchandiseCents = input.taxableMerchandiseCents;
-  const nonTaxableFundingCents = input.nonTaxableFundingCents;
-  if (![taxableMerchandiseCents, nonTaxableFundingCents].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("Invalid cent allocation");
+  if (!Number.isSafeInteger(taxableMerchandiseCents) || taxableMerchandiseCents < 0) throw new Error("Invalid taxable merchandise amount");
   if (!Number.isFinite(input.taxRate) || input.taxRate < 0 || input.taxRate > 1) throw new Error("Invalid authoritative tax rate");
   const rateText = input.taxRate.toFixed(8);
   const [whole, fraction] = rateText.split(".");
   const rateUnits = BigInt(whole) * 100000000n + BigInt(fraction);
-  const taxableBaseCents = Math.max(0, taxableMerchandiseCents - nonTaxableFundingCents);
+  // Tax follows the taxable sale after discounts. Tender only allocates payment;
+  // it cannot reduce the transaction's taxable base.
+  const taxableBaseCents = taxableMerchandiseCents;
   const taxCents = Number((BigInt(taxableBaseCents) * rateUnits + 50000000n) / 100000000n);
   if (!Number.isSafeInteger(taxCents)) throw new Error("Tax exceeds safe cent range");
   return { taxableBaseCents, taxCents };

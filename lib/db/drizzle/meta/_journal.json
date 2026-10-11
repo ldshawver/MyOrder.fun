@@ -358,6 +358,48 @@
       "when": 1791358517378,
       "tag": "0076_tenant_woo_store_url_no_default",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791358517379,
+      "tag": "0077_woocommerce_sync_jobs_and_stock_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1791358517380,
+      "tag": "0078_order_web_push_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1791460800000,
+      "tag": "0079_order_notification_provider_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1791460800001,
+      "tag": "0080_order_print_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791460800002,
+      "tag": "0081_pwa_push_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1791534849736,
+      "tag": "0082_default_inventory_location",
+      "breakpoints": true
     }
   ]
 }

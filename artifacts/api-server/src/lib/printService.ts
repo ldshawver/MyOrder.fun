@@ -509,6 +509,9 @@ export async function enqueueOrderPrintJobs(order: {
   items: {
     quantity: number;
     catalogItemName: string;
+    optionLabelSnapshot?: string | null;
+    skuSnapshot?: string | null;
+    variantSnapshot?: Record<string, unknown> | null;
     unitPrice: string;
     totalPrice: string;
     notes?: string | null;
@@ -571,9 +574,9 @@ export async function enqueueOrderPrintJobs(order: {
     receiptTemplateStyle: (settings.receiptTemplateStyle as "clean" | "classic" | "compact" | null) ?? "clean",
     items: order.items.map(i => ({
       quantity: i.quantity,
-      name: i.catalogItemName,
-      alavontName: i.alavontName ?? i.catalogItemName,
-      luciferCruzName: i.luciferCruzName ?? i.catalogItemName,
+      name: i.optionLabelSnapshot ? `${i.catalogItemName} (${i.optionLabelSnapshot})` : i.catalogItemName,
+      alavontName: i.alavontName ?? (i.optionLabelSnapshot ? `${i.catalogItemName} (${i.optionLabelSnapshot})` : i.catalogItemName),
+      luciferCruzName: i.luciferCruzName ?? (i.optionLabelSnapshot ? `${i.catalogItemName} (${i.optionLabelSnapshot})` : i.catalogItemName),
       notes: i.notes ?? undefined,
       unitPrice: parseFloat(i.unitPrice as string),
       totalPrice: parseFloat(i.totalPrice as string),
@@ -639,7 +642,6 @@ export async function enqueueOrderPrintJobs(order: {
         idempotencyKey: `${ticket.jobType}:${tenantId}:${order.id}`,
         render: { kind: "thermal", lines: () => ticket.build(ticketData!) },
         legacyFallback: ticket.legacyFallback,
-        recordNoRoute: false,
       });
       if (result.status === "queued") dispatchJob(result.job, result.printer).catch(() => {});
     }

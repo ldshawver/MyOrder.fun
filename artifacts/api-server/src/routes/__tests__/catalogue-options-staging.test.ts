@@ -61,7 +61,7 @@ describe("customer product options", () => {
       [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
       [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 }],
-      [], [], [],
+      [], [], [], [],
       [{ id: 184 }],
       [{ id: 181, productId: 181, inventoryItemId: 181 }],
       [], [],
@@ -69,8 +69,8 @@ describe("customer product options", () => {
     const response = await supertest(app).post("/api/admin/catalogue/products/179/options")
       .send({ label: "Large", sku: "TS-L", price: "24.00", consumptionQuantity: "1.000000" });
     expect(response.status, response.text).toBe(201);
-    expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181, optionValues: { Option: "Large" } });
-    expect(state.txQueries).toHaveLength(10);
+    expect(response.body).toEqual({ optionId: 181, catalogItemId: 184, inventoryItemId: 181, optionValues: { Option: "Large" }, idempotent: false });
+    expect(state.txQueries).toHaveLength(11);
     const source = readFileSync(new URL("../catalogue-products.ts", import.meta.url), "utf8");
     expect(source).toContain("UPDATE catalogue_options SET product_id = ${product.id}, label = ${body.label}");
   });
@@ -80,7 +80,7 @@ describe("customer product options", () => {
       [{ id: 179, name: "T-Shirt", inventoryModel: "SEPARATE_VARIANTS" }],
       [{ category: "Apparel", baseUnit: "each", inventoryItemId: 179 }],
       [{ inventoryItemId: 179, catalogItemId: 182, inventoryCatalogItemId: 182 }],
-      [], [], [], [], [],
+      [], [], [], [], [], [],
       [{ id: 184 }], [{ id: 181, productId: 181, inventoryItemId: 181 }], [], [],
     ];
     const valid = await supertest(app).post("/api/admin/catalogue/products/179/options")
@@ -113,6 +113,7 @@ describe("customer product options", () => {
       [{ category: "Coffee", baseUnit: "g", inventoryItemId: 182 }],
       [{ inventoryItemId: 182, catalogItemId: 182, inventoryCatalogItemId: 182 },
         { inventoryItemId: 182, catalogItemId: 191, inventoryCatalogItemId: 182 }],
+      [],
       [],
       [{ id: 193 }],
       [{ id: 190, productId: 190, inventoryItemId: 190 }],

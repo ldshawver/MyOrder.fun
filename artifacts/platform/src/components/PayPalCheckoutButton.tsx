@@ -60,6 +60,8 @@ type Props = {
   createOrder?: () => Promise<number>;
   /** Server-generated quote amount used only for provider eligibility messaging. */
   eligibilityAmount?: number;
+  /** Optional partial amount for an explicitly selected split-tender order. */
+  amount?: number;
   getToken: () => Promise<string | null>;
   onCaptured: (orderId: number) => void;
   onAbandoned?: (orderId: number) => void;
@@ -74,7 +76,7 @@ const pendingKey = "myorder-paypal-v6-pending";
  * publishable client ID.  Advanced Card Fields deliberately stay hidden until
  * the merchant's v6 eligibility and hosted-fields integration are confirmed.
  */
-export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, getToken, onCaptured, onAbandoned, disabled = false }: Props) {
+export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, amount, getToken, onCaptured, onAbandoned, disabled = false }: Props) {
   const walletContainer = useRef<HTMLDivElement>(null);
   const internalOrderId = useRef<number | undefined>(orderId);
   const sessions = useRef<Partial<Record<Method, WalletSession>>>({}); const attempt = useRef<{ id: number; providerOrderId: string } | undefined>(undefined);
@@ -93,29 +95,35 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
   const createProviderOrder = useCallback(async () => {
     if (attempt.current) return attempt.current;
     const checkoutOrderId = await resolveInternalOrder();
-    const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey(`paypal-create-${checkoutOrderId}`), ...await authHeaders() }, body: "{}" });
+    const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey(`paypal-create-${checkoutOrderId}`), ...await authHeaders() }, body: JSON.stringify(amount == null ? {} : { amount: amount.toFixed(2) }) });
     const body = await response.json() as { attemptId?: number; providerOrderId?: string; error?: string };
     if (!response.ok || !body.attemptId || !body.providerOrderId) throw new Error(body.error ?? "Could not create PayPal order");
     attempt.current = { id: body.attemptId, providerOrderId: body.providerOrderId };
     sessionStorage.setItem(pendingKey, JSON.stringify({ orderId: checkoutOrderId, ...attempt.current }));
     return attempt.current;
-  }, [authHeaders, resolveInternalOrder]);
+  }, [amount, authHeaders, resolveInternalOrder]);
   const capture = useCallback(async (providerOrderId: string) => {
     const current = attempt.current; const checkoutOrderId = await resolveInternalOrder();
     if (!current || current.providerOrderId !== providerOrderId) throw new Error("Payment attempt mismatch");
     const response = await fetch(`/api/payments/paypal/orders/${checkoutOrderId}/capture`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": `paypal-capture-${checkoutOrderId}-${providerOrderId}`, ...await authHeaders() }, body: JSON.stringify({ attemptId: current.id }) });
-    const body = await response.json() as { error?: string };
+    const body = await response.json() as { error?: string; status?: string; remainingBalance?: string };
     if (!response.ok) throw new Error(body.error ?? "PayPal capture requires reconciliation");
     sessionStorage.removeItem(pendingKey);
-    setMessage("PayPal payment captured and verified."); onCaptured(checkoutOrderId);
+    if (body.status === "partially_captured") {
+      attempt.current = undefined;
+      setMessage(`Card payment received. Remaining balance: $${Number(body.remainingBalance ?? 0).toFixed(2)}.`);
+    } else setMessage("PayPal payment captured and verified.");
+    onCaptured(checkoutOrderId);
   }, [authHeaders, onCaptured, resolveInternalOrder]);
   const readWalletOrderInfo = useCallback(async (): Promise<WalletOrderInfo> => {
     const id = await resolveInternalOrder();
     const response = await fetch(`/api/orders/${id}`, { headers: await authHeaders(), credentials: "same-origin", cache: "no-store" });
     const order = await response.json() as { total?: number | string; remainingTenderAmount?: number | string; currency?: string };
     if (!response.ok || order.remainingTenderAmount == null || !Number.isFinite(Number(order.remainingTenderAmount)) || Number(order.remainingTenderAmount) <= 0) throw new Error("Server order amount is unavailable");
-    return { amount: Number(order.remainingTenderAmount).toFixed(2), currency: order.currency ?? "USD", countryCode: "US" };
-  }, [authHeaders, resolveInternalOrder]);
+    const amountCents = amount == null ? Math.round(Number(order.remainingTenderAmount) * 100) : Math.round(amount * 100);
+    if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > Math.round(Number(order.remainingTenderAmount) * 100)) throw new Error("Card amount must be within the outstanding balance");
+    return { amount: (amountCents / 100).toFixed(2), currency: order.currency ?? "USD", countryCode: "US" };
+  }, [amount, authHeaders, resolveInternalOrder]);
   const cancelAfterBuyerCancellation = useCallback(async () => {
     const checkoutOrderId = internalOrderId.current;
     if (!checkoutOrderId) return;
@@ -215,12 +223,15 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         setMessage("PayPal checkout is unavailable because live payment configuration is incomplete.");
         return;
       }
-      let script = document.querySelector<HTMLScriptElement>('script[data-myorder-paypal-sdk="v6"]');
-      if (!script) { script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; script.src = config.mode === "sandbox" ? "https://www.sandbox.paypal.com/web-sdk/v6/core" : "https://www.paypal.com/web-sdk/v6/core"; script.async = true; document.head.appendChild(script); }
-      if (!window.paypal) await new Promise<void>((resolve, reject) => { script!.addEventListener("load", () => resolve(), { once: true }); script!.addEventListener("error", () => reject(new Error("PayPal SDK unavailable")), { once: true }); });
+      if (!window.paypal) {
+        let script = document.querySelector<HTMLScriptElement>('script[data-myorder-paypal-sdk="v6"]');
+        if (!script) { script = document.createElement("script"); script.dataset.myorderPaypalSdk = "v6"; script.src = config.mode === "sandbox" ? "https://www.sandbox.paypal.com/web-sdk/v6/core" : "https://www.paypal.com/web-sdk/v6/core"; script.async = true; document.head.appendChild(script); }
+        await new Promise<void>((resolve, reject) => { script!.addEventListener("load", () => resolve(), { once: true }); script!.addEventListener("error", () => reject(new Error("PayPal SDK unavailable")), { once: true }); });
+      }
       if (disposed || !window.paypal) return;
       const sdk = await window.paypal.createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" });
-      const methods = await sdk.findEligibleMethods({ currencyCode: config.currency ?? "USD", countryCode: config.countryCode ?? "US", ...(Number.isFinite(eligibilityAmount) ? { amount: Number(eligibilityAmount).toFixed(2) } : {}) });
+      const paymentEligibilityAmount = amount ?? eligibilityAmount;
+      const methods = await sdk.findEligibleMethods({ currencyCode: config.currency ?? "USD", countryCode: config.countryCode ?? "US", ...(Number.isFinite(paymentEligibilityAmount) ? { amount: Number(paymentEligibilityAmount).toFixed(2) } : {}) });
       if (disposed) return;
       const options = { onApprove: (data: { orderId: string }) => capture(data.orderId), onCancel: () => { void cancelAfterBuyerCancellation(); }, onError: () => setMessage("PayPal reported an error. Checkout remains pending for safe recovery; do not retry automatically.") };
       const supported: Array<{ method: Method; tag: string; label: string; create: () => WalletSession | Promise<WalletSession> | undefined }> = [
@@ -253,9 +264,11 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
         eligibleCount++;
       }
       if (container && methods.isEligible("applepay") && sdk.createApplePayOneTimePaymentSession) {
-        let appleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-apple-pay="v1"]');
-        if (!appleScript) { appleScript = document.createElement("script"); appleScript.dataset.myorderApplePay = "v1"; appleScript.src = "https://applepay.cdn-apple.com/jsapi/1.latest/apple-pay-sdk.js"; appleScript.async = true; document.head.appendChild(appleScript); }
-        if (!window.ApplePaySession) await new Promise<void>((resolve, reject) => { appleScript!.addEventListener("load", () => resolve(), { once: true }); appleScript!.addEventListener("error", () => reject(new Error("Apple Pay SDK unavailable")), { once: true }); });
+        if (!window.ApplePaySession) {
+          let appleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-apple-pay="v1"]');
+          if (!appleScript) { appleScript = document.createElement("script"); appleScript.dataset.myorderApplePay = "v1"; appleScript.src = "https://applepay.cdn-apple.com/jsapi/1.latest/apple-pay-sdk.js"; appleScript.async = true; document.head.appendChild(appleScript); }
+          await new Promise<void>((resolve, reject) => { appleScript!.addEventListener("load", () => resolve(), { once: true }); appleScript!.addEventListener("error", () => reject(new Error("Apple Pay SDK unavailable")), { once: true }); });
+        }
       }
       if (container && methods.isEligible("applepay") && window.ApplePaySession?.canMakePayments() && sdk.createApplePayOneTimePaymentSession) {
         const session = await sdk.createApplePayOneTimePaymentSession();
@@ -268,9 +281,11 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
       if (container && methods.isEligible("googlepay") && sdk.createGooglePayOneTimePaymentSession) {
         const details = methods.getDetails?.("googlepay");
         if (details?.config) {
-          let googleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-google-pay="v1"]');
-          if (!googleScript) { googleScript = document.createElement("script"); googleScript.dataset.myorderGooglePay = "v1"; googleScript.src = "https://pay.google.com/gp/p/js/pay.js"; googleScript.async = true; document.head.appendChild(googleScript); }
-          if (!window.google?.payments?.api?.PaymentsClient) await new Promise<void>((resolve, reject) => { googleScript!.addEventListener("load", () => resolve(), { once: true }); googleScript!.addEventListener("error", () => reject(new Error("Google Pay SDK unavailable")), { once: true }); });
+          if (!window.google?.payments?.api?.PaymentsClient) {
+            let googleScript = document.querySelector<HTMLScriptElement>('script[data-myorder-google-pay="v1"]');
+            if (!googleScript) { googleScript = document.createElement("script"); googleScript.dataset.myorderGooglePay = "v1"; googleScript.src = "https://pay.google.com/gp/p/js/pay.js"; googleScript.async = true; document.head.appendChild(googleScript); }
+            await new Promise<void>((resolve, reject) => { googleScript!.addEventListener("load", () => resolve(), { once: true }); googleScript!.addEventListener("error", () => reject(new Error("Google Pay SDK unavailable")), { once: true }); });
+          }
           const GooglePaymentsClient = window.google?.payments?.api?.PaymentsClient;
           if (GooglePaymentsClient && !disposed) {
             const session = sdk.createGooglePayOneTimePaymentSession();
@@ -311,7 +326,7 @@ export function PayPalCheckoutButton({ orderId, createOrder, eligibilityAmount, 
     }
     start().catch(() => { if (!disposed) { setWalletEligible(false); setMessage("Online PayPal checkout is unavailable."); } });
     return () => { disposed = true; };
-  }, [authHeaders, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, startApplePay, startGooglePay, startWallet]);
+  }, [authHeaders, amount, cancelAfterBuyerCancellation, capture, createProviderOrder, eligibilityAmount, startApplePay, startGooglePay, startWallet]);
 
   return <div className="space-y-3" aria-busy={busy}>
     <div ref={walletContainer} data-testid="paypal-wallet-container" aria-label="PayPal Wallet" />

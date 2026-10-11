@@ -3,6 +3,7 @@ export const ORDER_LIFECYCLE_STATES = [
   "submitted",
   "in_progress",
   "preparing",
+  "packaging",
   "ready",
   "completed",
   "cancelled",
@@ -12,7 +13,7 @@ export const ORDER_LIFECYCLE_STATES = [
 
 export type OrderLifecycleState = typeof ORDER_LIFECYCLE_STATES[number];
 
-export type OrderLifecycleAction = "claim" | "prepare" | "ready" | "complete" | "cancel" | "refund" | "reconcile";
+export type OrderLifecycleAction = "claim" | "prepare" | "package" | "ready" | "complete" | "cancel" | "refund" | "reconcile";
 
 export class IllegalOrderTransitionError extends Error {
   readonly status = 409;
@@ -31,6 +32,7 @@ const LEGACY_STATUS_MAP: Record<string, OrderLifecycleState> = {
   accepted: "in_progress",
   processing: "preparing",
   preparing: "preparing",
+  packaging: "packaging",
   ready_behind_gate: "ready",
   courier_arrived: "ready",
   delivered: "completed",
@@ -42,8 +44,9 @@ const LEGACY_STATUS_MAP: Record<string, OrderLifecycleState> = {
 };
 
 const ACTION_TARGET: Record<OrderLifecycleAction, OrderLifecycleState> = {
-  claim: "in_progress",
+  claim: "preparing",
   prepare: "preparing",
+  package: "packaging",
   ready: "ready",
   complete: "completed",
   cancel: "cancelled",
@@ -53,9 +56,10 @@ const ACTION_TARGET: Record<OrderLifecycleAction, OrderLifecycleState> = {
 
 const LEGAL_TRANSITIONS: Record<OrderLifecycleState, readonly OrderLifecycleState[]> = {
   draft: ["submitted", "cancelled"],
-  submitted: ["in_progress", "cancelled", "reconciliation_required"],
-  in_progress: ["preparing", "ready", "cancelled", "reconciliation_required"],
-  preparing: ["ready", "cancelled", "reconciliation_required"],
+  submitted: ["in_progress", "preparing", "cancelled", "reconciliation_required"],
+  in_progress: ["preparing", "packaging", "ready", "cancelled", "reconciliation_required"],
+  preparing: ["packaging", "ready", "cancelled", "reconciliation_required"],
+  packaging: ["ready", "cancelled", "reconciliation_required"],
   ready: ["completed", "cancelled", "reconciliation_required"],
   completed: ["refunded", "reconciliation_required"],
   cancelled: ["reconciliation_required"],

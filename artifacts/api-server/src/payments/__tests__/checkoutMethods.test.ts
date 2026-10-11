@@ -12,4 +12,10 @@ describe("checkout payment availability", () => {
     expect(checkoutPaymentMethods(["paypal"], false).find(method => method.id === "paypal")?.available).toBe(false);
     expect(checkoutPaymentMethods(["cash"], true).some(method => method.id === "paypal")).toBe(false);
   });
+
+  it("offers split tender only when cash and configured PayPal are both enabled", () => {
+    expect(checkoutPaymentMethods(["cash", "paypal"], true).map(method => method.id)).toContain("split_tender");
+    expect(checkoutPaymentMethods(["cash", "paypal"], false).map(method => method.id)).not.toContain("split_tender");
+    expect(checkoutPaymentMethods(["cash"], true).map(method => method.id)).not.toContain("split_tender");
+  });
 });

@@ -7,6 +7,7 @@ import {
   numeric,
   boolean,
   jsonb,
+  unique,
 } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
@@ -111,7 +112,9 @@ export const catalogItemsTable = pgTable("catalog_items", {
   merchantBrand: text("merchant_brand").notNull().default("alavont"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (table) => ({
+  tenantIdIdUnique: unique("catalog_items_tenant_id_id_unique").on(table.tenantId, table.id),
+}));
 
 export type CatalogItem = typeof catalogItemsTable.$inferSelect;
 export type InsertCatalogItem = typeof catalogItemsTable.$inferInsert;

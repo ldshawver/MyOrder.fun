@@ -2,6 +2,8 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startFeedbackArchiveScheduler } from "./lib/feedbackArchiveScheduler";
 import { startOrderNotificationWorker } from "./lib/orderNotifications";
+import { startWooSyncWorker } from "./lib/wooSyncJobs";
+import { startOrderPrintOutboxWorker } from "./lib/orderPrintOutbox";
 
 const rawPort = process.env["PORT"];
 
@@ -25,5 +27,7 @@ app.listen(port, (err) => {
 
   startFeedbackArchiveScheduler();
   startOrderNotificationWorker();
+  startWooSyncWorker();
+  startOrderPrintOutboxWorker();
   logger.info({ port }, "Server listening");
 });

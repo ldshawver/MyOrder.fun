@@ -1,5 +1,5 @@
 export type CheckoutPaymentMethod = {
-  id: "cash" | "paypal" | "customer_credit";
+  id: "cash" | "paypal" | "customer_credit" | "split_tender";
   label: string;
   promoted?: boolean;
   available?: boolean;
@@ -16,6 +16,13 @@ export function checkoutPaymentMethods(enabledProcessors: readonly string[], pay
       promoted: false,
       available: paypalConfigured,
       ...(!paypalConfigured ? { message: "PayPal is unavailable until live payment configuration is completed." } : {}),
+    }] : []),
+    ...(enabled.has("cash") && enabled.has("paypal") && paypalConfigured ? [{
+      id: "split_tender" as const,
+      label: "Cash + Card",
+      promoted: false,
+      available: true,
+      message: "Pay in separate cash and PayPal card payments. The remaining balance stays due until both are settled.",
     }] : []),
     { id: "customer_credit" as const, label: "Customer Credit", promoted: false },
   ];

@@ -99,6 +99,7 @@ type AdminSettings = {
   privacyProtectedRoles: string[];
   customerDisclaimerText: string;
   customerDisclaimerVersion: number;
+  cashTaxInclusive: boolean;
 };
 
 const AI_PROMPT_MAX_CHARS = 8000;
@@ -138,6 +139,7 @@ const DEFAULTS: AdminSettings = {
   privacyProtectedRoles: ["user", "csr", "supervisor", "admin", "global_admin"],
   customerDisclaimerText: "Before using MyOrder.fun, you confirm that you are authorized to access this customer account, that the information you provide is accurate, and that you agree to follow all applicable terms, privacy, ordering, pickup, and payment policies.",
   customerDisclaimerVersion: 1,
+  cashTaxInclusive: false,
 };
 
 export default function AdminSettingsPage() {
@@ -797,6 +799,9 @@ export default function AdminSettingsPage() {
                 <p><strong className="text-foreground">Enabled:</strong> {settings.enabledProcessors.includes("cash") ? "Yes" : "No"}</p>
                 <p>Cash acceptance requires the employee to be authorized and assigned to the active accountable cash session/shift. Closeout is reconciled through General Queue or the assigned CSR shift.</p>
               </div>
+              <SettingRow label="Cash prices include sales tax" description="Shows one tax-inclusive price for cash purchases while retaining the taxable base and tax amount in the order record. This does not make taxable items tax exempt; card and split payments keep the configured tax presentation.">
+                <Switch checked={settings.cashTaxInclusive} onCheckedChange={v => set("cashTaxInclusive", v)} />
+              </SettingRow>
 
               <div className="pt-3">
                 <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">PayPal</div>

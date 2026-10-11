@@ -249,7 +249,10 @@ export const ListCatalogItemsResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -394,7 +397,10 @@ export const GetCatalogItemResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -542,7 +548,10 @@ export const UpdateCatalogItemResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -636,6 +645,12 @@ export const ListOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -684,7 +699,7 @@ export const ListOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -703,7 +718,7 @@ export const ListOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -732,6 +747,8 @@ export const ListOrdersResponse = zod.object({
 
 
 
+export const createOrderBodyCheckoutConfirmationCustomerCreditAmountMin = 0;
+
 
 
 
@@ -740,8 +757,8 @@ export const CreateOrderBody = zod.object({
   "notes": zod.string().optional(),
   "checkoutConversionToken": zod.string().optional(),
   "checkoutConversionSnapshot": zod.record(zod.string(), zod.unknown()).optional(),
-  "selectedPaymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional(),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional(),
+  "selectedPaymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional(),
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional(),
   "csrDeliveryDistanceMiles": zod.number().nullish(),
   "items": zod.array(zod.object({
   "catalogItemId": zod.number().min(1),
@@ -751,11 +768,11 @@ export const CreateOrderBody = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional(),
-  "customerCreditAmount": zod.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional(),
   "tipAmount": zod.number().nullish(),
+  "customerCreditAmount": zod.number().min(createOrderBodyCheckoutConfirmationCustomerCreditAmountMin).optional(),
   "tipPercent": zod.number().nullish()
-}).strict().optional(),
+}).optional(),
   "deliveryQuote": zod.object({
   "provider": zod.enum(['uber_direct']),
   "quoteId": zod.string().min(1),
@@ -779,7 +796,7 @@ export const CreateOrderBody = zod.object({
 }).optional(),
   "deliveryMethod": zod.enum(['pickup', 'manual_delivery', 'uber_direct', 'uber_courier', 'csr_delivery']).nullish(),
   "orderType": zod.enum(['WALK_IN', 'CSR', 'ONLINE']).nullish()
-}).strict()
+})
 
 
 /**
@@ -843,6 +860,12 @@ export const GetOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -891,7 +914,7 @@ export const GetOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -910,7 +933,7 @@ export const GetOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -950,6 +973,12 @@ export const UpdateOrderStatusResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -998,7 +1027,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1017,7 +1046,7 @@ export const UpdateOrderStatusResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1068,6 +1097,12 @@ export const AcceptOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1116,7 +1151,7 @@ export const AcceptOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1135,7 +1170,7 @@ export const AcceptOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1182,6 +1217,12 @@ export const AdjustOrderEtaResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1230,7 +1271,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1249,7 +1290,7 @@ export const AdjustOrderEtaResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1284,6 +1325,12 @@ export const MarkOrderReadyResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1332,7 +1379,7 @@ export const MarkOrderReadyResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1351,7 +1398,7 @@ export const MarkOrderReadyResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1390,6 +1437,12 @@ export const ReassignOrderResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1438,7 +1491,7 @@ export const ReassignOrderResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1457,7 +1510,7 @@ export const ReassignOrderResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1521,6 +1574,12 @@ export const ListDelayedOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1569,7 +1628,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1588,7 +1647,7 @@ export const ListDelayedOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -1628,6 +1687,12 @@ export const GetRecentOrdersResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -1676,7 +1741,7 @@ export const GetRecentOrdersResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -1695,7 +1760,7 @@ export const GetRecentOrdersResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({
@@ -2091,7 +2156,10 @@ export const AiConciergeChatResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2179,7 +2247,10 @@ export const AiCatalogSearchResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2261,7 +2332,10 @@ export const AiUpsellSuggestionsResponse = zod.object({
   "catalogItemId": zod.number(),
   "label": zod.string(),
   "price": zod.string(),
-  "sku": zod.string().nullish()
+  "sku": zod.string().nullish(),
+  "optionValues": zod.record(zod.string(), zod.string()).optional(),
+  "imageUrl": zod.string().nullish(),
+  "stockAvailable": zod.boolean().optional()
 }))
 }).optional(),
   "id": zod.number(),
@@ -2502,6 +2576,12 @@ export const ConfirmPaymentResponse = zod.object({
   "customerId": zod.number(),
   "customerName": zod.string().optional(),
   "customerEmail": zod.string().optional(),
+  "assignedCsrDisplayName": zod.string().nullish(),
+  "pickupDetails": zod.object({
+  "businessName": zod.string().optional(),
+  "address": zod.string().nullish(),
+  "instruction": zod.string().optional()
+}).nullish(),
   "status": zod.enum(['pending', 'submitted', 'confirmed', 'accepted', 'processing', 'preparing', 'ready', 'shipped', 'delivered', 'completed', 'cancelled', 'voided', 'archived', 'refunded']),
   "paymentStatus": zod.enum(['unpaid', 'pending', 'paid', 'partially_refunded', 'refunded', 'failed']),
   "paymentToken": zod.string().optional(),
@@ -2550,7 +2630,7 @@ export const ConfirmPaymentResponse = zod.object({
   "acceptedAllSalesFinal": zod.boolean(),
   "confirmedAt": zod.coerce.date().optional(),
   "legalDisclaimerText": zod.string().min(1),
-  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional()
+  "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit', 'split_tender']).optional()
 }).optional(),
   "items": zod.array(zod.object({
   "id": zod.number(),
@@ -2569,7 +2649,7 @@ export const ConfirmPaymentResponse = zod.object({
   "estimatedReadyAt": zod.coerce.date().nullish(),
   "readyAt": zod.coerce.date().nullish(),
   "etaAdjustedBySupervisor": zod.boolean().optional(),
-  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'ready', 'completed', 'cancelled']).nullish(),
+  "fulfillmentStatus": zod.enum(['submitted', 'accepted', 'preparing', 'packaging', 'ready', 'completed', 'cancelled']).nullish(),
   "trackingUrl": zod.string().nullish(),
   "trackingSubmittedAt": zod.coerce.date().nullish(),
   "handoffChecklist": zod.object({

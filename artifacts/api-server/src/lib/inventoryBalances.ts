@@ -76,12 +76,7 @@ async function ensureInventoryTablesExist(): Promise<void> {
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_at" timestamptz`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantined_by_user_id" integer`,
     sql`ALTER TABLE "inventory_balances" ADD COLUMN IF NOT EXISTS "quarantine_reason" text`,
-    sql`DO $$ BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inventory_balances_unique') THEN
-        ALTER TABLE "inventory_balances" ADD CONSTRAINT "inventory_balances_unique"
-          UNIQUE ("tenant_id", "product_id", "location_id");
-      END IF;
-    END $$`,
+    sql`CREATE UNIQUE INDEX IF NOT EXISTS "inventory_balances_unique" ON "inventory_balances" ("tenant_id", "product_id", "location_id")`,
   ];
   for (const stmt of stmts) await db.execute(stmt);
   await ensureInventoryBalanceClassificationSchema();

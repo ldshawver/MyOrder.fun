@@ -6,7 +6,7 @@ export const nonCatalogInventorySectionsTable = pgTable("non_catalog_inventory_s
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id),
   name: text("name").notNull(), displayOrder: integer("display_order").notNull().default(0), isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => ({ tenantName: unique("non_catalog_sections_tenant_name").on(t.tenantId, t.name) }));
+}, (t) => ({ tenantName: unique("non_catalog_sections_tenant_name").on(t.tenantId, t.name), tenantIdentity: unique("non_catalog_sections_tenant_id_unique").on(t.tenantId, t.id) }));
 
 export const nonCatalogInventoryItemsTable = pgTable("non_catalog_inventory_items", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), sectionId: integer("section_id").references(() => nonCatalogInventorySectionsTable.id),
@@ -14,7 +14,7 @@ export const nonCatalogInventoryItemsTable = pgTable("non_catalog_inventory_item
   parLevel: numeric("par_level", { precision: 10, scale: 3 }).notNull().default("0"), moq: numeric("moq", { precision: 10, scale: 3 }).notNull().default("0"), preferredReorderQuantity: numeric("preferred_reorder_quantity", { precision: 10, scale: 3 }).notNull().default("0"),
   unitCost: numeric("unit_cost", { precision: 10, scale: 2 }), supplier: text("supplier"), supplierSku: text("supplier_sku"), notes: text("notes"), imageUrl: text("image_url"), isActive: boolean("is_active").notNull().default(true),
   createdByUserId: integer("created_by_user_id"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => ({ tenantName: unique("non_catalog_items_tenant_name").on(t.tenantId, t.name), sectionTenant: foreignKey({ columns: [t.tenantId, t.sectionId], foreignColumns: [nonCatalogInventorySectionsTable.tenantId, nonCatalogInventorySectionsTable.id] }) }));
+}, (t) => ({ tenantName: unique("non_catalog_items_tenant_name").on(t.tenantId, t.name), tenantIdentity: unique("non_catalog_items_tenant_id_unique").on(t.tenantId, t.id), sectionTenant: foreignKey({ columns: [t.tenantId, t.sectionId], foreignColumns: [nonCatalogInventorySectionsTable.tenantId, nonCatalogInventorySectionsTable.id] }) }));
 
 export const nonCatalogInventoryBalancesTable = pgTable("non_catalog_inventory_balances", {
   id: serial("id").primaryKey(), tenantId: integer("tenant_id").notNull().references(() => tenantsTable.id), itemId: integer("item_id").notNull().references(() => nonCatalogInventoryItemsTable.id), locationId: integer("location_id").notNull().references(() => inventoryLocationsTable.id), quantityOnHand: numeric("quantity_on_hand", { precision: 10, scale: 3 }).notNull().default("0"), updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

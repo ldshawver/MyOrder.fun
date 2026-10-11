@@ -140,12 +140,17 @@ export interface TenantSummary {
   topProducts: TenantSummaryTopProductsItem[];
 }
 
+export type CatalogItemSellableProductOptionsItemOptionValues = {[key: string]: string};
+
 export type CatalogItemSellableProductOptionsItem = {
   id: number;
   catalogItemId: number;
   label: string;
   price: string;
   sku?: string | null;
+  optionValues?: CatalogItemSellableProductOptionsItemOptionValues;
+  imageUrl?: string | null;
+  stockAvailable?: boolean;
 };
 
 export type CatalogItemSellableProduct = {
@@ -402,6 +407,12 @@ export interface OrderItem {
   inventoryDeductions?: OrderItemInventoryDeductionsItem[];
 }
 
+export type OrderPickupDetails = {
+  businessName?: string;
+  address?: string | null;
+  instruction?: string;
+} | null;
+
 export type OrderStatus = typeof OrderStatus[keyof typeof OrderStatus];
 
 
@@ -444,6 +455,7 @@ export const OrderCheckoutConfirmationPaymentMethod = {
   paypal: 'paypal',
   paypal_card: 'paypal_card',
   customer_credit: 'customer_credit',
+  split_tender: 'split_tender',
 } as const;
 
 export type OrderCheckoutConfirmation = {
@@ -470,6 +482,7 @@ export const OrderFulfillmentStatus = {
   submitted: 'submitted',
   accepted: 'accepted',
   preparing: 'preparing',
+  packaging: 'packaging',
   ready: 'ready',
   completed: 'completed',
   cancelled: 'cancelled',
@@ -550,6 +563,8 @@ export interface Order {
   customerId: number;
   customerName?: string;
   customerEmail?: string;
+  assignedCsrDisplayName?: string | null;
+  pickupDetails?: OrderPickupDetails;
   status: OrderStatus;
   paymentStatus: OrderPaymentStatus;
   paymentToken?: string;
@@ -605,6 +620,7 @@ export const CreateOrderBodySelectedPaymentMethod = {
   paypal: 'paypal',
   paypal_card: 'paypal_card',
   customer_credit: 'customer_credit',
+  split_tender: 'split_tender',
 } as const;
 
 export type CreateOrderBodyPaymentMethod = typeof CreateOrderBodyPaymentMethod[keyof typeof CreateOrderBodyPaymentMethod];
@@ -615,6 +631,7 @@ export const CreateOrderBodyPaymentMethod = {
   paypal: 'paypal',
   paypal_card: 'paypal_card',
   customer_credit: 'customer_credit',
+  split_tender: 'split_tender',
 } as const;
 
 export type CreateOrderBodyItemsItem = {
@@ -632,6 +649,7 @@ export const CreateOrderBodyCheckoutConfirmationPaymentMethod = {
   paypal: 'paypal',
   paypal_card: 'paypal_card',
   customer_credit: 'customer_credit',
+  split_tender: 'split_tender',
 } as const;
 
 export type CreateOrderBodyCheckoutConfirmation = {
@@ -641,6 +659,8 @@ export type CreateOrderBodyCheckoutConfirmation = {
   legalDisclaimerText: string;
   paymentMethod?: CreateOrderBodyCheckoutConfirmationPaymentMethod;
   tipAmount?: number | null;
+  /** @minimum 0 */
+  customerCreditAmount?: number;
   tipPercent?: number | null;
 };
 

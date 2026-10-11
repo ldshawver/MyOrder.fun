@@ -13,6 +13,7 @@ export const OrderFulfillmentStatus = {
   submitted: 'submitted',
   accepted: 'accepted',
   preparing: 'preparing',
+  packaging: 'packaging',
   ready: 'ready',
   completed: 'completed',
   cancelled: 'cancelled',

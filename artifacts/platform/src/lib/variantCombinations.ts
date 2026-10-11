@@ -1,10 +1,18 @@
 export function parseVariantAxes(input: string): Array<{ name: string; values: string[] }> {
-  const axes = input.split(";").map(part => part.trim()).filter(Boolean).map(part => {
+  const parts = input.split(";").map(part => part.trim()).filter(Boolean);
+  const axes = parts.map(part => {
     const separator = part.indexOf("=");
-    if (separator < 1) throw new Error("Use Color=Red,Blue; Size=Small,Large");
+    if (separator < 0 && parts.length === 1) {
+      const values = part.split(",").map(value => value.trim());
+      if (!values.length || values.some(value => !value) || new Set(values.map(value => value.toLocaleLowerCase())).size !== values.length) {
+        throw new Error("Each option needs unique, non-empty values");
+      }
+      return { name: "Option", values };
+    }
+    if (separator < 1) throw new Error("Use Size=Small,Large; a lone comma list is treated as values of one Option axis");
     const name = part.slice(0, separator).trim();
-    const values = part.slice(separator + 1).split(",").map(value => value.trim()).filter(Boolean);
-    if (!name || !values.length || new Set(values.map(value => value.toLocaleLowerCase())).size !== values.length) {
+    const values = part.slice(separator + 1).split(",").map(value => value.trim());
+    if (!name || !values.length || values.some(value => !value) || new Set(values.map(value => value.toLocaleLowerCase())).size !== values.length) {
       throw new Error("Each option needs unique, non-empty values");
     }
     return { name, values };

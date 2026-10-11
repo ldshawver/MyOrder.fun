@@ -157,16 +157,17 @@ export async function loadReceiptData(tenantId: number, orderId: number): Promis
       receiptName: item.receiptName,
       alavontName: item.alavontName,
       luciferCruzName: item.luciferCruzName,
-      // Orders do not snapshot options or SKUs yet; see ReceiptItem.
-      optionLabel: null,
-      sku: null,
+      optionLabel: item.optionLabelSnapshot,
+      sku: item.skuSnapshot,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       totalPrice: item.totalPrice,
       note: null,
     })),
     lineNameMode: mode === "alavont_only" || mode === "both" ? mode : "lucifer_only",
-    customer: await person(order.customerId),
+    customer: order.customerNameSnapshot
+      ? { firstName: order.customerNameSnapshot, lastName: null }
+      : await person(order.customerId),
     employee: await person(order.assignedCsrUserId),
     providerCaptureId,
   });

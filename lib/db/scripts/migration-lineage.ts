@@ -92,7 +92,7 @@ export const historicalStagingInventory = Object.freeze({
     { historicalTag: "0065_catalogue_products_options_reorder", canonicalIndex: 44, canonicalTag: "0070_catalogue_products_options_reorder", hash: "a9c0bdef477fc724e91ee1f004936580b383f657cb71084eec6f0b42c6634702", when: 1790200000001, canonicalWhen: 1790600000005 },
     { historicalTag: "0066_refund_state_constraint_reconciliation", canonicalIndex: 45, canonicalTag: "0071_refund_state_constraint_reconciliation", hash: "5988b2eac94914ac9e1f64c4fa0bcb2b75e43d4212a7a12db65e55d2636f1dcb", when: 1790200000002, canonicalWhen: 1790600000006 },
   ],
-  forwardIndices: [39, 40, 41, 42, 46, 47, 48, 49, 50],
+  forwardIndices: [39, 40, 41, 42, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56],
 });
 
 export type HistoricalStaging0047SchemaEvidence = Record<

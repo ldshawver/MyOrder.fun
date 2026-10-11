@@ -170,6 +170,10 @@ async function createProduct(identity: keyof typeof identities, name: string, in
     expect(first.status, first.text).toBe(201);
     expect(second.status, second.text).toBe(201);
     expect(second.body.inventoryItemId).not.toBe(first.body.inventoryItemId);
+    const exactReplay = await as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
+      .send({ label: "Red / Small", optionValues: { Color: "Red", Size: "S" }, sku: "V-RS-" + suffix, price: "12.00", compareAtPrice: "15.00", consumptionQuantity: "1" });
+    expect(exactReplay.status, exactReplay.text).toBe(200);
+    expect(exactReplay.body).toMatchObject({ optionId: first.body.optionId, catalogItemId: first.body.catalogItemId, inventoryItemId: first.body.inventoryItemId, idempotent: true });
     const duplicate = await rejectedWithoutMutation(as("a").post("/api/admin/catalogue/products/" + product.productId + "/options")
       .send({ label: "Red Small duplicate", optionValues: { Color: "Red", Size: "S" }, sku: "V-DUP-" + suffix, price: "99.00", consumptionQuantity: "1" }), 409);
     expect(duplicate.status).toBe(409);

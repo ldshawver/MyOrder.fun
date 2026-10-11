@@ -231,9 +231,13 @@ export async function salesTaxReport(tenantId: number, query: Record<string, unk
     eq(ordersTable.tenantId, tenantId), gte(ordersTable.createdAt, from), lte(ordersTable.createdAt, to),
     locationId ? eq(orderTaxSnapshotsTable.locationId, locationId) : undefined,
   ));
+  const refunds = await db.execute(sql`SELECT order_id, COALESCE(sum(tax_amount), 0) AS tax_refunded
+    FROM return_transactions WHERE tenant_id = ${tenantId} AND status = 'completed'
+    GROUP BY order_id`);
+  const refundedTaxByOrder = new Map((refunds.rows as Array<{ order_id: number; tax_refunded: string }>).map(row => [Number(row.order_id), money(row.tax_refunded)]));
   return buildSalesTaxReportFromRows(rows.filter(({ order }) => ["paid", "refunded", "partially_refunded"].includes(order.paymentStatus)).map(({ order, tax }) => ({
     id: order.id, total: money(order.total), grossSales: money(tax.grossSales), discounts: money(tax.discountAmount), taxableSales: money(tax.taxableSubtotal), nonTaxableSales: money(tax.nonTaxableSubtotal),
-    taxCalculated: money(tax.taxCalculated), taxCollected: money(tax.taxCollected), taxRefunded: money(tax.taxRefunded), jurisdiction: tax.jurisdiction ?? "UNSPECIFIED", taxRate: money(tax.taxRate),
+    taxCalculated: money(tax.taxCalculated), taxCollected: money(tax.taxCollected), taxRefunded: Math.min(money(tax.taxCollected), refundedTaxByOrder.get(order.id) ?? 0), jurisdiction: tax.jurisdiction ?? "UNSPECIFIED", taxRate: money(tax.taxRate),
     paymentMethod: order.paymentMethod ?? "unknown", customerCreditApplied: money(order.customerCreditApplied), voided: Boolean(order.voidedAt), refundAmount: order.paymentStatus === "refunded" ? money(order.total) : 0,
   })));
 }

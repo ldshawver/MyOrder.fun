@@ -35,9 +35,13 @@ export async function repairPushNotifications(getToken: () => Promise<string | n
   if (isIos() && !isStandalonePwa()) return { ok: false, code: "ios_home_screen_required", message: "On iPhone/iPad, install MyOrder.fun to the Home Screen and open that icon before enabling push notifications." };
 
   let permission = Notification.permission;
-  if (permission === "default") permission = await Notification.requestPermission();
+  if (permission === "default") {
+    try { permission = await Notification.requestPermission(); }
+    catch { return { ok: false, code: "permission_request_failed", message: "The browser could not request notification permission. Check this site's browser settings and try again." }; }
+  }
   if (permission !== "granted") return { ok: false, code: "permission_not_granted", message: "Notification permission is blocked or was not granted. Enable notifications in browser settings, then run repair again." };
 
+  try {
   await Promise.all((await navigator.serviceWorker.getRegistrations()).map(async (existing) => {
     const scriptUrl = existing.active?.scriptURL || existing.installing?.scriptURL || existing.waiting?.scriptURL || "";
     if (scriptUrl.endsWith(LEGACY_PUSH_SW_FILENAME)) await existing.unregister();
@@ -70,4 +74,7 @@ export async function repairPushNotifications(getToken: () => Promise<string | n
     return { ok: false, code: "backend_registration_failed", message: body.error ?? "Could not register this device for push notifications." };
   }
   return { ok: true, message: "Push notifications repaired. Diagnostics should now show pushSubscriptionActive=true.", pushSubscriptionActive: true };
+  } catch {
+    return { ok: false, code: "push_setup_failed", message: "Could not set up browser push notifications. Check your connection and browser settings, then try again." };
+  }
 }

@@ -1,6 +1,6 @@
 import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod/v4";
 import {
   adminSettingsTable, auditLogsTable, cashLedgerEntriesTable, csrBoxesTable, db,
@@ -10,10 +10,11 @@ import {
 import { isShiftOrderRoutable } from "../lib/orderRouting";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "ready", "pending", "processing"];
-const ACTIVE_FULFILLMENT_STATUSES = ["submitted", "in_progress", "preparing", "ready"];
+const QUEUE_ORDER_STATUSES = ["submitted", "in_progress", "preparing", "packaging", "ready", "pending", "processing"];
+const ACTIVE_FULFILLMENT_STATUSES = ["submitted", "in_progress", "preparing", "packaging", "ready"];
 // Payment capture retains the legacy order status `confirmed`. Fulfillment is
 // authoritative for staff work, so a paid pickup still has to enter the queue.
 // Keep terminal fulfillment states out even when an old status is stale.
@@ -25,6 +26,44 @@ const activeQueueOrder = and(
   ),
 );
 const supervisorRoles = new Set(["supervisor", "admin", "global_admin"]);
+const firstQueueObservationAt = new Map<string, number>();
+
+function logQueueObservation(tenantId: number, count: number, createdAt: Array<Date | null>, observedAt: number) {
+  const ages = createdAt.filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()))
+    .map(value => Math.max(0, observedAt - value.getTime())).sort((a, b) => a - b);
+  logger.info({
+    event: "queue_snapshot_observed",
+    tenantId,
+    orderCount: count,
+    creationToObservationMedianMs: ages.length ? ages[Math.floor((ages.length - 1) / 2)] : null,
+    creationToObservationMaxMs: ages.at(-1) ?? null,
+  }, "Queue snapshot observed");
+}
+
+function logFirstQueueVisibility(tenantId: number, orders: Array<{ id: number; createdAt: Date | null }>, observedAt: number) {
+  const firstSeenAges: number[] = [];
+  for (const order of orders) {
+    if (!(order.createdAt instanceof Date) || !Number.isFinite(order.createdAt.getTime())) continue;
+    const key = `${tenantId}:${order.id}`;
+    if (firstQueueObservationAt.has(key)) continue;
+    firstQueueObservationAt.set(key, observedAt);
+    firstSeenAges.push(Math.max(0, observedAt - order.createdAt.getTime()));
+  }
+  while (firstQueueObservationAt.size > 50_000) {
+    const oldest = firstQueueObservationAt.keys().next().value;
+    if (oldest === undefined) break;
+    firstQueueObservationAt.delete(oldest);
+  }
+  if (!firstSeenAges.length) return;
+  firstSeenAges.sort((a, b) => a - b);
+  logger.info({
+    event: "queue_order_first_visible",
+    tenantId,
+    orderCount: firstSeenAges.length,
+    creationToFirstQueueSnapshotObservedMedianMs: firstSeenAges[Math.floor((firstSeenAges.length - 1) / 2)],
+    creationToFirstQueueSnapshotObservedMaxMs: firstSeenAges.at(-1),
+  }, "Orders first observed in queue snapshots");
+}
 
 async function currentGeneralQueueSession(tenantId: number, locationId?: number) {
   const filters = [eq(generalQueueCashSessionsTable.tenantId, tenantId), eq(generalQueueCashSessionsTable.status, "open")];
@@ -152,17 +191,31 @@ router.get("/shift-queue/orders", requirePermission("queue.view"), async (req, r
   const actor = req.dbUser!;
   const tenantId = req.authorizedTenantId!;
   const role = normalizeRole(actor.role);
+  const customerName = sql<string>`coalesce(nullif(trim(${ordersTable.customerNameSnapshot}), ''), nullif(trim(concat_ws(' ', ${usersTable.firstName}, ${usersTable.lastName})), ''), ${usersTable.email}, 'Customer')`;
+  try {
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
     const scope = shift && isShiftOrderRoutable(shift)
       ? sql`(${ordersTable.assignedShiftId} = ${shift.id} OR (${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id})))`
       : sql`(${ordersTable.assignedShiftId} IS NULL AND (${ordersTable.assignedCsrUserId} IS NULL OR ${ordersTable.assignedCsrUserId} = ${actor.id}))`;
-    const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder, scope)).orderBy(desc(ordersTable.createdAt));
+    const orders = await db.select({ ...getTableColumns(ordersTable), customerName }).from(ordersTable)
+      .innerJoin(usersTable, and(eq(usersTable.id, ordersTable.customerId), eq(usersTable.tenantId, tenantId)))
+      .where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder, scope)).orderBy(desc(ordersTable.createdAt));
+    logQueueObservation(tenantId, orders.length, orders.map(o => o.createdAt), Date.now());
+    logFirstQueueVisibility(tenantId, orders.map(o => ({ id: o.id, createdAt: o.createdAt })), Date.now());
     res.json({ orders, total: orders.length });
     return;
   }
-  const orders = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder)).orderBy(desc(ordersTable.createdAt));
+  const orders = await db.select({ ...getTableColumns(ordersTable), customerName }).from(ordersTable)
+    .innerJoin(usersTable, and(eq(usersTable.id, ordersTable.customerId), eq(usersTable.tenantId, tenantId)))
+    .where(and(eq(ordersTable.tenantId, tenantId), activeQueueOrder)).orderBy(desc(ordersTable.createdAt));
+  logQueueObservation(tenantId, orders.length, orders.map(o => o.createdAt), Date.now());
+  logFirstQueueVisibility(tenantId, orders.map(o => ({ id: o.id, createdAt: o.createdAt })), Date.now());
   res.json({ orders, total: orders.length });
+  } catch (error) {
+    logger.warn({ event: "queue_snapshot_failed", tenantId, errorName: error instanceof Error ? error.name : "unknown" }, "Queue snapshot request failed");
+    res.status(503).json({ error: "Order queue is temporarily unavailable" });
+  }
 });
 
 router.get("/shift-queue/general", requirePermission("queue.view"), async (req, res): Promise<void> => {

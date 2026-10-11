@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { db, ordersTable, orderTaxSnapshotsTable, inventoryReservationsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable, auditLogsTable, usersTable } from "@workspace/db";
+import { db, ordersTable, orderTaxSnapshotsTable, inventoryReservationsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable, auditLogsTable, usersTable, cashLedgerEntriesTable } from "@workspace/db";
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
@@ -24,7 +24,7 @@ export class PaymentServiceError extends Error {
 export class PaymentService {
   constructor(private readonly config: EnabledPaymentConfig, private readonly provider: PaymentProvider) {}
 
-  async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string }) {
+  async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string; amount?: string | number }) {
     const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
@@ -32,13 +32,14 @@ export class PaymentService {
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
       if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
-        && !["paypal", "paypal_card"].includes(order.selectedPaymentMethod ?? "")) {
+        && !["paypal", "paypal_card", "split_tender"].includes(order.selectedPaymentMethod ?? "")) {
         throw new PaymentServiceError(409, "TENDER_MISMATCH", "Order was not confirmed for PayPal tender");
       }
       if (["cancelled", "refunded", "voided", "archived", "completed"].includes(order.status)) throw new PaymentServiceError(409, "INVALID_ORDER_STATE", "Order cannot be paid in its current state");
       if (!order.checkoutConversionSnapshot || !order.legalDisclaimerAccepted || !order.finalConfirmationAt) throw new PaymentServiceError(422, "CHECKOUT_NOT_VERIFIED", "Checkout conversion and confirmation are required");
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
+      if (existing && input.amount !== undefined && !sameMoney(String(input.amount), String(existing.requestedAmount))) throw new PaymentServiceError(409, "IDEMPOTENCY_AMOUNT_MISMATCH", "Payment idempotency key was already used for another amount");
       if (existing?.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt with a new idempotency key");
       if (existing?.state === "reconciliation_required" || existing?.state === "creating") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the existing payment attempt before retrying");
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
@@ -69,11 +70,19 @@ export class PaymentService {
       const settings = await getCheckoutTaxSettings(input.tenantId, Number.isInteger(locationId) && locationId > 0 ? locationId : undefined);
       const taxableMerchandiseCents = dollarsToCents(order.taxableSubtotal ?? order.subtotal);
       const creditCents = dollarsToCents(order.customerCreditApplied);
+      const splitTender = order.selectedPaymentMethod === "split_tender";
       const baseTotalCents = dollarsToCents(order.total) - dollarsToCents(order.tax);
-      const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, nonTaxableFundingCents: creditCents, taxRate: settings.taxRate });
+      const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, taxRate: settings.taxRate });
       const totalCents = baseTotalCents + taxCents;
-      const remainingCents = totalCents - creditCents;
-      if (order.financialFinalizedAt && (dollarsToCents(order.tax) !== taxCents || dollarsToCents(order.total) !== totalCents || dollarsToCents(order.remainingTenderAmount) !== remainingCents)) {
+      let remainingCents = totalCents - creditCents;
+      if (splitTender) {
+        if (creditCents !== 0 || order.taxSnapshot && (order.taxSnapshot as { taxMode?: string }).taxMode === "included") throw new PaymentServiceError(409, "SPLIT_TENDER_SNAPSHOT_INVALID", "Split tender requires the standard taxable sale snapshot");
+        const [cash] = await tx.select({ amount: sql<string>`coalesce(sum(${cashLedgerEntriesTable.amount}), 0)` }).from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, input.tenantId), eq(cashLedgerEntriesTable.orderId, order.id), eq(cashLedgerEntriesTable.entryType, "cash_sale_closeout")));
+        const [card] = await tx.select({ amount: sql<string>`coalesce(sum(${paymentCapturesTable.amount}), 0)` }).from(paymentCapturesTable).innerJoin(paymentAttemptsTable, and(eq(paymentAttemptsTable.id, paymentCapturesTable.paymentAttemptId), eq(paymentAttemptsTable.tenantId, paymentCapturesTable.tenantId))).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, order.id), eq(paymentCapturesTable.state, "completed"), eq(paymentCapturesTable.currency, CURRENCY)));
+        remainingCents = totalCents - dollarsToCents(cash?.amount) - dollarsToCents(card?.amount);
+        if (remainingCents < 0 || dollarsToCents(order.remainingTenderAmount) !== remainingCents) throw new PaymentServiceError(409, "TENDER_LEDGER_MISMATCH", "Split tender balance requires reconciliation");
+      }
+      if (order.financialFinalizedAt && (dollarsToCents(order.tax) !== taxCents || dollarsToCents(order.total) !== totalCents || (!splitTender && dollarsToCents(order.remainingTenderAmount) !== remainingCents))) {
         throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order financial snapshot requires reconciliation");
       }
       const checkoutSnapshot = order.checkoutConversionSnapshot as Record<string, unknown> | null;
@@ -85,18 +94,20 @@ export class PaymentService {
         pricingSnapshot: { ...pricingSnapshot, tax: taxCents / 100, customerTax: taxCents / 100, total: totalCents / 100,
           totalBeforeTip: (totalCents - tipCents) / 100 },
       } : checkoutSnapshot;
-      const tenderAllocation = { customerCreditCents: creditCents, paypalMerchandiseCents: taxableBaseCents, paypalTaxCents: taxCents };
-      const taxSnapshot = { ...(order.taxSnapshot as Record<string, unknown> ?? {}), schemaVersion: 3, jurisdiction: settings.taxJurisdiction, taxConfigurationId: settings.taxConfigurationId, effectiveTaxRate: settings.taxRate, taxRate: settings.taxRate, customerTaxableTenderBase: taxableBaseCents / 100, customerTaxCollected: taxCents / 100, taxCalculated: taxCents / 100, taxCollected: taxCents / 100, tenderAllocation, tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, pendingTender: false };
+      const tenderAllocation = { customerCreditCents: creditCents, paypalMerchandiseCents: Math.max(0, baseTotalCents - creditCents), paypalTaxCents: taxCents };
+      const taxSnapshot = { ...(order.taxSnapshot as Record<string, unknown> ?? {}), schemaVersion: 3, jurisdiction: settings.taxJurisdiction, taxConfigurationId: settings.taxConfigurationId, effectiveTaxRate: settings.taxRate, taxRate: settings.taxRate, customerTaxableTenderBase: taxableBaseCents / 100, customerTaxCollected: taxCents / 100, taxCalculated: taxCents / 100, taxCollected: taxCents / 100, tenderAllocation: splitTender ? { ...(order.taxSnapshot as { tenderAllocation?: Record<string, unknown> } | null)?.tenderAllocation, ...tenderAllocation, cashAndCardTaxCalculatedOnce: true } : tenderAllocation, tender: splitTender ? "split_tender" : creditCents > 0 ? "customer_credit+paypal" : "paypal", locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, pendingTender: false };
       await tx.update(ordersTable).set({ tax: centsToDollars(taxCents), total: centsToDollars(totalCents), remainingTenderAmount: centsToDollars(remainingCents), taxSnapshot, checkoutConversionSnapshot: finalCheckoutSnapshot, financialFinalizedAt: new Date() }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
       const grossSalesCents = dollarsToCents(order.grossSubtotal ?? order.subtotal);
       const snapshotValues = { jurisdiction: settings.taxJurisdiction, locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, taxConfigurationId: settings.taxConfigurationId, grossSales: centsToDollars(grossSalesCents), taxRate: String(settings.taxRate), taxableSubtotal: centsToDollars(taxableBaseCents), nonTaxableSubtotal: centsToDollars(Math.max(0, dollarsToCents(order.subtotal) - taxableBaseCents)), discountAmount: String(order.discountTotal ?? "0.00"), cashDiscountAmount: "0.00", taxCollected: centsToDollars(taxCents), taxCalculated: centsToDollars(taxCents), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", exemptionReason: null, snapshotJson: { customerTaxableTenderBaseCents: taxableBaseCents, customerTaxCollectedCents: taxCents, tenderAllocation, taxConfigurationId: settings.taxConfigurationId } };
       const [existingSnapshot] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
       if (existingSnapshot) {
-        if (dollarsToCents(existingSnapshot.taxCollected) !== taxCents || dollarsToCents(existingSnapshot.grossSales) !== grossSalesCents || !["paypal", "paypal_card"].includes((existingSnapshot.tender ?? "").replace("customer_credit+", ""))) {
+        if (dollarsToCents(existingSnapshot.taxCollected) !== taxCents || dollarsToCents(existingSnapshot.grossSales) !== grossSalesCents || !(splitTender ? existingSnapshot.tender === "split_tender" : ["paypal", "paypal_card"].includes((existingSnapshot.tender ?? "").replace("customer_credit+", "")))) {
           throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order tax snapshot requires reconciliation");
         }
       } else await tx.insert(orderTaxSnapshotsTable).values({ tenantId: input.tenantId, orderId: order.id, ...snapshotValues });
-      const amount = centsToDollars(remainingCents);
+      const requestedCents = input.amount === undefined ? remainingCents : dollarsToCents(input.amount);
+      if (requestedCents <= 0 || requestedCents > remainingCents || (!splitTender && requestedCents !== remainingCents)) throw new PaymentServiceError(422, "INVALID_PAYMENT_AMOUNT", "Card amount must be positive and no greater than the outstanding balance");
+      const amount = centsToDollars(requestedCents);
       if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
       let providerOrder;
@@ -104,7 +115,7 @@ export class PaymentService {
       catch (error) {
         const unknown = error instanceof PayPalProviderError && error.failureClass === "unknown_outcome";
         await tx.update(paymentAttemptsTable).set({ state: unknown ? "reconciliation_required" : "failed", reconciliationState: unknown ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
-        if (!unknown) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        if (!unknown && order.selectedPaymentMethod !== "split_tender") await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
         return { providerError: error };
       }
       if (!sameMoney(providerOrder.amount.value, amount) || providerOrder.amount.currency !== CURRENCY) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "amount_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(502, "PROVIDER_AMOUNT_MISMATCH", "Provider order amount mismatch") }; }
@@ -128,10 +139,13 @@ export class PaymentService {
       if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
       if (attempt.state === "reconciliation_required" || attempt.state === "capturing") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
-      if (existingCapture?.state === "completed" && order.paymentStatus === "paid") return { status: "captured", captureId: existingCapture.providerCaptureId, replayed: true };
+      if (existingCapture?.state === "completed" && attempt.state === "captured") return { status: order.paymentStatus === "paid" ? "captured" : "partially_captured", captureId: existingCapture.providerCaptureId, replayed: true, remainingBalance: String(order.remainingTenderAmount ?? "0.00") };
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
       if (!["created", "approved"].includes(attempt.state)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
-      if (!order.financialFinalizedAt || !sameMoney(String(order.remainingTenderAmount), String(attempt.requestedAmount)) || attempt.requestedCurrency !== CURRENCY) {
+      const splitTender = order.selectedPaymentMethod === "split_tender";
+      const dueCents = dollarsToCents(order.remainingTenderAmount ?? order.total);
+      const requestedCents = dollarsToCents(attempt.requestedAmount);
+      if (!order.financialFinalizedAt || (splitTender ? requestedCents > dueCents : requestedCents !== dueCents) || attempt.requestedCurrency !== CURRENCY) {
         throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order and payment attempt require reconciliation");
       }
       await tx.update(paymentAttemptsTable).set({ state: "capturing" }).where(eq(paymentAttemptsTable.id, attempt.id));
@@ -140,23 +154,30 @@ export class PaymentService {
       catch (error) {
         const declined = error instanceof PayPalProviderError && error.failureClass === "declined";
         await tx.update(paymentAttemptsTable).set({ state: declined ? "failed" : "reconciliation_required", reconciliationState: declined ? "not_required" : "pending", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
-        if (declined) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        if (declined && order.selectedPaymentMethod !== "split_tender") await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
         return { providerError: error };
       }
       if (capture.orderId !== attempt.providerOrderId || capture.status !== "COMPLETED" || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "capture_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(409, "CAPTURE_MISMATCH", "Capture requires reconciliation") }; }
       await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
+      const remainingAfterCapture = dueCents - requestedCents;
+      const fullySettled = remainingAfterCapture === 0;
       try {
         await tx.transaction(async finalizeTx => {
-          await input.finalize(order, finalizeTx);
+          if (fullySettled) await input.finalize(order, finalizeTx);
           const creditCents = dollarsToCents(order.customerCreditApplied);
           if (creditCents > 0) await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
           const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
           const finalTender = creditCents > 0 ? `customer_credit+${tender}` : tender;
-          await finalizeTx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: finalTender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId,
-            taxSnapshot: { ...(order.taxSnapshot as Record<string, unknown> ?? {}), tender: finalTender } }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
+          let finalPaymentMethod = finalTender;
+          if (splitTender) {
+            const [cash] = await finalizeTx.select({ amount: sql<string>`coalesce(sum(${cashLedgerEntriesTable.amount}), 0)` }).from(cashLedgerEntriesTable).where(and(eq(cashLedgerEntriesTable.tenantId, input.tenantId), eq(cashLedgerEntriesTable.orderId, order.id), eq(cashLedgerEntriesTable.entryType, "cash_sale_closeout")));
+            finalPaymentMethod = fullySettled && dollarsToCents(cash?.amount) > 0 ? `cash+${tender}` : fullySettled ? tender : "split_tender";
+          }
+          await finalizeTx.update(ordersTable).set({ paymentStatus: fullySettled ? "paid" : "unpaid", status: fullySettled && order.status === "submitted" ? "confirmed" : order.status, paymentMethod: finalPaymentMethod, selectedPaymentMethod: splitTender ? "split_tender" : tender, paymentIntentId: fullySettled ? capture.captureId : null,
+            remainingTenderAmount: centsToDollars(remainingAfterCapture), taxSnapshot: splitTender ? order.taxSnapshot : { ...(order.taxSnapshot as Record<string, unknown> ?? {}), tender: finalTender } }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
           await finalizeTx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
         });
-        return { status: "captured", captureId: capture.captureId, replayed: false };
+        return { status: fullySettled ? "captured" : "partially_captured", captureId: capture.captureId, replayed: false, remainingBalance: centsToDollars(remainingAfterCapture) };
       } catch (error) {
         await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id));
         return { providerError: error };
@@ -183,9 +204,17 @@ export class PaymentService {
       if (!attempt) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
       const [capture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (!capture) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
-      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter(row => row.state === "locally_finalized" || row.state === "completed");
-      const refunded = completed.reduce((sum, row) => sum + Number(row.amount), 0); const amount = Number(input.amount ?? (Number(capture.amount) - refunded).toFixed(2));
-      if (!Number.isFinite(amount) || amount <= 0 || refunded + amount > Number(capture.amount)) throw new PaymentServiceError(409, "INVALID_REFUND_AMOUNT", "Refund exceeds captured amount");
+      const priorRefunds = (await tx.select().from(paymentRefundsTable).where(and(
+        eq(paymentRefundsTable.tenantId, input.tenantId), eq(paymentRefundsTable.paymentCaptureId, capture.id),
+      ))).filter(row => row.state !== "failed");
+      // An unresolved provider operation reserves its amount. A timeout or
+      // reconciliation_required state must never make the same captured funds
+      // available to a second refund request.
+      const reservedCents = priorRefunds.reduce((sum, row) => sum + dollarsToCents(row.amount), 0);
+      const capturedCents = dollarsToCents(capture.amount);
+      const requestedCents = input.amount === undefined ? capturedCents - reservedCents : dollarsToCents(input.amount);
+      if (requestedCents <= 0 || reservedCents + requestedCents > capturedCents) throw new PaymentServiceError(409, "INVALID_REFUND_AMOUNT", "Refund exceeds the remaining captured amount");
+      const amount = requestedCents / 100;
       const [existing] = await tx.select().from(paymentRefundsTable).where(and(eq(paymentRefundsTable.tenantId, input.tenantId), eq(paymentRefundsTable.paymentCaptureId, capture.id), eq(paymentRefundsTable.idempotencyKey, input.idempotencyKey))).limit(1);
       if (existing && !existing.providerRequestId) throw new PaymentServiceError(409, "LOST_PROVIDER_IDENTITY", "Historical refund requires reconciliation; provider replay is forbidden");
       const [row] = existing ? [existing] : await tx.insert(paymentRefundsTable).values({ tenantId: input.tenantId, paymentCaptureId: capture.id, idempotencyKey: input.idempotencyKey, providerRequestId: `refund-${randomUUID()}`, amount: amount.toFixed(2), currency: capture.currency, reason: input.reason.slice(0, 500), actorUserId: input.actorUserId, state: "requested", requestedAt: new Date() }).returning();
@@ -229,13 +258,6 @@ export class PaymentService {
         const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
         if (fullProviderRefund && creditCents > 0) await restoreCustomerCredit(tx, { tenantId: row.tenantId, customerId: order.customerId, actorUserId: row.actorUserId, orderId: order.id, amountCents: creditCents, paymentRefundId: row.id, idempotencyKey: `restore:refund:${row.id}`, reason: "Original-tender refund restoration" });
         const fullOrderRefund = fullProviderRefund;
-        const [tax] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, row.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
-        if (tax) {
-          const priorTaxRefunded = Number(tax.taxRefunded); const orderTotal = Number(order.total);
-          const economicRefund = amount + (fullProviderRefund ? creditCents / 100 : 0);
-          const taxRefund = fullOrderRefund ? Number(tax.taxCollected) : Math.round(Number(tax.taxCollected) * economicRefund / orderTotal * 100) / 100;
-          await tx.update(orderTaxSnapshotsTable).set({ taxRefunded: Math.min(Number(tax.taxCollected), priorTaxRefunded + taxRefund).toFixed(2) }).where(eq(orderTaxSnapshotsTable.id, tax.id));
-        }
         await tx.update(paymentCapturesTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentCapturesTable.id, capture.id));
         await tx.update(paymentAttemptsTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentAttemptsTable.id, attempt.id));
         await tx.update(ordersTable).set(fullOrderRefund ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, order.id));

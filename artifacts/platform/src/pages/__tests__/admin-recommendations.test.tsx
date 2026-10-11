@@ -41,7 +41,7 @@ it("shows Coffee Beans transfer and purchase as distinct suggestions without cha
   await vi.waitFor(() => expect(host?.textContent).toContain("Suggested external purchase: 2000.000000 g"));
   expect(host.textContent).toContain("Suggested internal transfer: Storefront → Backstock · 1000.000000 g");
   expect(host.textContent).toContain("No inventory transfer or purchase has been created");
-  expect(paths).toEqual(["/api/admin/catalogue/products", "/api/admin/catalogue/recommendations"]);
+  expect(paths).toEqual(["/api/admin/catalogue/products", "/api/admin/catalogue/recommendations", "/api/admin/catalogue/default-location"]);
 });
 
 it("keeps variants, location inventory, and Global Admin compliance controls together on the selected catalogue item", async () => {

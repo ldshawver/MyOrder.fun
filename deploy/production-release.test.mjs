@@ -444,16 +444,22 @@ test("maintenance closes ingress during database work and checks the API private
   );
 });
 
-test("application startup does not trigger Woo synchronization or Uber dispatch", () => {
+test("application startup starts the Woo worker without triggering catalog sync or Uber dispatch", () => {
   const startup = readFileSync(
     new URL("../artifacts/api-server/src/index.ts", import.meta.url),
     "utf8",
   );
   assert.match(startup, /startFeedbackArchiveScheduler\(\)/);
   assert.match(startup, /startOrderNotificationWorker\(\)/);
+  assert.match(startup, /startWooSyncWorker\(\)/);
+  assert.match(startup, /startOrderPrintOutboxWorker\(\)/);
+  const stagingCompose = readFileSync(new URL("./docker-compose.staging.yml", import.meta.url), "utf8");
+  assert.match(stagingCompose, /ORDER_NOTIFICATION_WORKER_ENABLED: \$\{ORDER_NOTIFICATION_WORKER_ENABLED:-1\}/);
+  assert.match(stagingCompose, /VAPID_PUBLIC_KEY: \$\{VAPID_PUBLIC_KEY:-\}/);
+  assert.match(stagingCompose, /VAPID_PRIVATE_KEY: \$\{VAPID_PRIVATE_KEY:-\}/);
   assert.doesNotMatch(
     startup,
-    /Woo|woo|syncPending|dispatchPendingUberDelivery|createUberDelivery/,
+    /runWooCatalogSync\(\)|syncPending|dispatchPendingUberDelivery|createUberDelivery/,
   );
   const runner = readFileSync(
     new URL("./production-release.mjs", import.meta.url),

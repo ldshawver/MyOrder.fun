@@ -26,6 +26,8 @@ describe("PayPal refund durability regressions", () => {
     expect(source).toContain("LOST_PROVIDER_IDENTITY");
     expect(source).toContain("REFUND_NOT_READY");
     expect(source).toContain("locallyFinalizedAt");
+    expect(source).toContain('row.state !== "failed"');
+    expect(source).toContain("reservedCents + requestedCents > capturedCents");
   });
 
   it("uses verified webhook evidence idempotently and safely rejects unknown mappings", () => {
@@ -43,5 +45,6 @@ describe("PayPal refund durability regressions", () => {
     expect(returns).toContain("cash_refund");
     expect(returns).toContain("roundingOverage");
     expect(returns).toContain("return-movement:");
+    expect(returns).toContain("Mixed cash/card refunds are disabled");
   });
 });

@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode, useState, useEffect, useCallback } from "react";
+import { Component, type ErrorInfo, type ReactNode, useState, useEffect, useCallback, useRef } from "react";
 import { useGetCurrentUser, type Order, type OrderItem } from "@workspace/api-client-react";
 import { CsrAlertBanner } from "@/components/CsrAlertBanner";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
@@ -15,9 +15,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
-import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
+import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES } from "@/lib/staffFulfillmentAction";
 
-type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
+type ExtendedOrder = Omit<Order, "fulfillmentStatus"> & { fulfillmentStatus?: string | null; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
 type GeneralQueueSessionState = {
   session: { id: number; status: string; openedAt: string; openingBalance: string; locationId: number; registerBoxId: number | null; locationName?: string; registerLabel?: string | null; accountableCash?: string; expectedClosingCash?: string; opener?: { firstName?: string | null; lastName?: string | null; email?: string | null } | null } | null;
@@ -41,12 +41,6 @@ function formatCourierEta(value?: string | null) {
   if (Number.isNaN(date.getTime())) return null;
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
-
-const STATUS_TABS = [
-  { value: "submitted", label: "Incoming" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "ready", label: "Ready" },
-];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -204,24 +198,32 @@ class StaffErrorBoundary extends Component<{ children: ReactNode }, { error: Err
 function useShift(getToken: () => Promise<string | null>) {
   const [shift, setShift] = useState<ActiveShift | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const requestNumber = useRef(0);
 
   const fetchShift = useCallback(async () => {
+    const request = ++requestNumber.current;
+    setLoading(true);
     try {
       const token = await getToken();
+      if (!token) throw new Error("Authentication is refreshing. Retrying shift status…");
       const res = await fetch("/api/shifts/current", {
         headers: { Authorization: `Bearer ${token}` },
+        credentials: "include",
       });
-      if (res.ok) {
-        const data = await res.json();
-        setShift(normalizeActiveShift(data.shift as RawShift));
-      }
-    } catch { /* ignore fetch errors */ }
-    setLoading(false);
+      if (!res.ok) throw new Error(res.status === 401 ? "Authentication expired. Refreshing shift status…" : `Shift status unavailable (HTTP ${res.status}).`);
+      const data = await res.json();
+      if (request === requestNumber.current) { setShift(normalizeActiveShift(data.shift as RawShift)); setError(null); }
+    } catch (reason) {
+      if (request === requestNumber.current) setError(reason instanceof Error ? reason.message : "Shift status unavailable. Retry shortly.");
+    } finally {
+      if (request === requestNumber.current) setLoading(false);
+    }
   }, [getToken]);
 
   useEffect(() => { fetchShift(); }, [fetchShift]);
 
-  return { shift, setShift, loading, refetch: fetchShift };
+  return { shift, setShift, loading, error, refetch: fetchShift };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1145,6 +1147,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
   const clockedInAtMs = new Date(shift.clockedInAt ?? Date.now()).getTime();
   const duration = Math.max(0, Math.round((Date.now() - (Number.isNaN(clockedInAtMs) ? Date.now() : clockedInAtMs)) / 60000));
   const [tab, setTab] = useState<"overview" | "customers" | "inventory">("overview");
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   const sections: { name: string; items: EnrichedItem[] }[] = [];
   let currentSection: { name: string; items: EnrichedItem[] } | null = null;
@@ -1199,6 +1202,10 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" aria-expanded={detailsExpanded} onClick={() => setDetailsExpanded(value => !value)} data-testid="button-shift-details">
+          {detailsExpanded ? "Hide details" : "Shift details"}
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -1209,8 +1216,10 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
           <LogOut size={12} className="mr-1.5" />
           End Shift
         </Button>
+        </div>
       </div>
 
+      {detailsExpanded && <>
       {/* Stats bar */}
       <div className="grid grid-cols-4 divide-x divide-border/30 border-b border-border/30">
         <div className="px-4 py-3 text-center">
@@ -1349,6 +1358,7 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
           )
         )}
       </div>
+      </>}
     </div>
   );
 }
@@ -1357,8 +1367,8 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 
 const FULFILLMENT_STEPS = STAFF_FULFILLMENT_STATUSES.map(status => ({
   status,
-  label: status === "in_progress" ? "Claim" : status === "ready" ? "Ready" : "Complete",
-  icon: status === "in_progress" ? HandshakeIcon : status === "ready" ? DoorOpen : CheckCircle2,
+  label: status === "in_progress" ? "Claim Order" : status === "packaging" ? "Packaging" : status === "ready" ? "Ready" : "Complete",
+  icon: status === "in_progress" ? HandshakeIcon : status === "ready" ? DoorOpen : status === "packaging" ? Package : CheckCircle2,
   color: status === "in_progress" ? "yellow" : "emerald",
 }));
 
@@ -1446,7 +1456,7 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
     } catch { /* non-critical */ } finally { setHandoffBusy(false); }
   }
 
-  async function setFulfillmentStatus(status: "in_progress" | "preparing" | "ready" | "completed") {
+  async function setFulfillmentStatus(status: "in_progress" | "preparing" | "packaging" | "ready" | "completed") {
     if (loading !== null) return;
     setLoading(status);
     setActionMessage(null);
@@ -1510,7 +1520,13 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
     } catch { /* ignore fetch errors */ } finally { setPrintingLabel(false); }
   }
 
-  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === staffVisibleFulfillmentState(fulfillment));
+  const canonicalState = fulfillment ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
+  const nextStatus = ["submitted", "pending"].includes(canonicalState) ? "in_progress"
+    : ["in_progress", "preparing"].includes(canonicalState) ? "packaging"
+    : canonicalState === "packaging" ? "ready"
+    : canonicalState === "ready" && (order.deliveryMethod !== "uber_direct" || courierState === "delivered") ? "completed"
+    : null;
+  const nextStep = FULFILLMENT_STEPS.find(step => step.status === nextStatus);
   const lateState = getOrderLateState(order);
 
   return (
@@ -1708,35 +1724,10 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
         </div>
         <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">Fulfillment</div>
         <div className="flex flex-wrap gap-2">
-          {FULFILLMENT_STEPS.map((step, idx) => {
-            const isDone = activeStep >= idx;
-            const isActive = fulfillment === step.status;
-            const Icon = step.icon;
-            const isLast = idx === FULFILLMENT_STEPS.length - 1;
-            return (
-              <button
-                key={step.status}
-                disabled={loading === step.status}
-                onClick={() => setFulfillmentStatus(step.status)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all ${
-                  isActive
-                    ? isLast
-                      ? "bg-red-500/20 border-red-500/40 text-red-400"
-                      : "bg-primary/15 border-primary/40 text-primary"
-                    : isDone && !isLast
-                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                    : "bg-muted/20 border-border/40 text-muted-foreground hover:border-border"
-                }`}
-              >
-                {loading === step.status
-                  ? <RefreshCw size={11} className="animate-spin" />
-                  : isDone && !isActive && !isLast
-                  ? <CheckCircle2 size={11} />
-                  : <Icon size={11} />}
-                {isAdmin && step.status === "in_progress" ? "Start" : step.label}
-              </button>
-            );
-          })}
+          {nextStep && <Button size="sm" onClick={() => void setFulfillmentStatus(nextStep.status)} disabled={loading !== null} data-testid={`button-next-lifecycle-${order.id}`}>
+            {loading === nextStep.status ? <RefreshCw size={12} className="mr-1.5 animate-spin" /> : <nextStep.icon size={12} className="mr-1.5" />}
+            {isAdmin && nextStep.status === "in_progress" ? "Start Order" : nextStep.label}
+          </Button>}
           {order.deliveryMethod === "uber_direct" && fulfillment === "ready" && (
             <Button size="sm" onClick={() => void requestCourier()} disabled={loading !== null || order.paymentStatus !== "paid" || ![null, "payment_pending", "awaiting_staff_request"].includes(courierState)} data-testid={`button-request-delivery-${order.id}`}>
               Request Delivery
@@ -1753,21 +1744,25 @@ function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
 
 function CustomerServiceRepQueueContent() {
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState("pending");
   const [summaryData, setSummaryData] = useState<SummaryData | null>(null);
   const [queueData, setQueueData] = useState<{ orders: ExtendedOrder[]; total: number }>({ orders: [], total: 0 });
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [queueUpdatedAt, setQueueUpdatedAt] = useState<number | null>(null);
+  const queueRequestNumber = useRef(0);
+  const queueEventRevision = useRef(0);
   const [showClockOutModal, setShowClockOutModal] = useState(false);
   const queryClient = useQueryClient();
   const { getToken } = useAuth();
   const { data: user } = useGetCurrentUser({ query: { queryKey: ["getCurrentUser"] } });
 
-  const { shift, setShift, loading: shiftLoading, refetch: refetchShift } = useShift(getToken);
+  const { shift, setShift, loading: shiftLoading, error: shiftError, refetch: refetchShift } = useShift(getToken);
 
   const userRole = normalizeUiRole(user?.role);
   const isAdmin = userRole === "admin" || userRole === "global_admin";
   const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
   const [generalSession, setGeneralSession] = useState<GeneralQueueSessionState>({ session: null, participants: [] });
+  const [generalSessionError, setGeneralSessionError] = useState<string | null>(null);
   const [sessionOptions, setSessionOptions] = useState<GeneralSessionOptions>({ locations: [], boxes: [], eligibleCsrs: [] });
   const [selectedLocationId, setSelectedLocationId] = useState("");
   const [selectedRegisterBoxId, setSelectedRegisterBoxId] = useState("");
@@ -1780,41 +1775,65 @@ function CustomerServiceRepQueueContent() {
   const [sessionMessage, setSessionMessage] = useState<string | null>(null);
 
   const fetchQueue = useCallback(async () => {
+    const request = ++queueRequestNumber.current;
+    const eventRevision = queueEventRevision.current;
     setIsLoadingQueue(true);
     try {
       const token = await getToken();
-      const res = await fetch("/api/shift-queue/orders", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
-      if (!res.ok) { setQueueData({ orders: [], total: 0 }); return; }
+      if (!token) throw new Error("Authentication is refreshing. Retrying the order queue…");
+      const res = await fetch("/api/shift-queue/orders", { headers: { Authorization: `Bearer ${token}` }, credentials: "include" });
+      if (!res.ok) throw new Error(res.status === 401 ? "Authentication expired. Retrying the order queue…" : `Order queue unavailable (HTTP ${res.status}).`);
       const json = await res.json() as { orders?: ExtendedOrder[]; total?: number };
       const safeOrders = safeArray<ExtendedOrder>(json.orders);
-      setQueueData({ orders: safeOrders, total: json.total ?? 0 });
+      if (request === queueRequestNumber.current && eventRevision === queueEventRevision.current) {
+        setQueueData({ orders: safeOrders, total: json.total ?? safeOrders.length });
+        setQueueUpdatedAt(Date.now());
+        setQueueError(null);
+      }
+    } catch (reason) {
+      if (request === queueRequestNumber.current) setQueueError(reason instanceof Error ? reason.message : "Order queue unavailable. Retry shortly.");
     } finally {
-      setIsLoadingQueue(false);
+      if (request === queueRequestNumber.current) setIsLoadingQueue(false);
     }
   }, [getToken]);
 
   const fetchGeneralSession = useCallback(async () => {
-    const token = await getToken();
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    const [sessionResponse, optionsResponse] = await Promise.all([
-      fetch("/api/shift-queue/general/session", { headers }),
-      fetch("/api/shift-queue/general/session/options", { headers }),
-    ]);
-    if (sessionResponse.ok) setGeneralSession(await sessionResponse.json());
-    if (optionsResponse.ok) {
-      const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
-      const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
-      setSessionOptions(options);
-      setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
-      setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Authentication is refreshing. Retry cash session status shortly.");
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+      const [sessionResponse, optionsResponse] = await Promise.all([
+        fetch("/api/shift-queue/general/session", { headers, credentials: "include" }),
+        fetch("/api/shift-queue/general/session/options", { headers, credentials: "include" }),
+      ]);
+      if (!sessionResponse.ok) throw new Error(`Cash session status unavailable (HTTP ${sessionResponse.status}).`);
+      const session = await sessionResponse.json() as GeneralQueueSessionState;
+      setGeneralSession(session);
+      if (optionsResponse.ok) {
+        const data = await optionsResponse.json() as Partial<GeneralSessionOptions>;
+        const options = { locations: safeArray(data.locations), boxes: safeArray(data.boxes), eligibleCsrs: safeArray(data.eligibleCsrs) };
+        setSessionOptions(options);
+        setSelectedLocationId(current => current || String(options.locations[0]?.locationId ?? ""));
+        setSelectedParticipantId(current => current || String(options.eligibleCsrs[0]?.id ?? ""));
+      } else if (optionsResponse.status !== 403) {
+        throw new Error(`Cash session options unavailable (HTTP ${optionsResponse.status}).`);
+      }
+      setGeneralSessionError(null);
+    } catch (reason) {
+      setGeneralSessionError(reason instanceof Error ? reason.message : "Cash session status is unavailable.");
     }
   }, [getToken]);
 
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
-  const visibleOrders = safeOrders.filter(order => {
-    const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
-    return (lifecycle === "preparing" ? "in_progress" : lifecycle) === activeTab;
-  });
+  const lifecycleOf = (order: ExtendedOrder) => order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
+  const isExceptionOrder = (order: ExtendedOrder) => ["reconciliation_required", "failed", "delayed", "exception"].includes(lifecycleOf(order)) || (order.estimatedReadyAt != null && Date.parse(String(order.estimatedReadyAt)) < Date.now() && !["ready", "completed"].includes(lifecycleOf(order)));
+  const orderSections = [
+    { key: "new", title: "New Orders", orders: safeOrders.filter(order => !isExceptionOrder(order) && ["submitted", "pending"].includes(lifecycleOf(order))) },
+    { key: "preparing", title: "Preparing", orders: safeOrders.filter(order => !isExceptionOrder(order) && ["in_progress", "preparing"].includes(lifecycleOf(order))) },
+    { key: "packaging", title: "Packaging", orders: safeOrders.filter(order => !isExceptionOrder(order) && lifecycleOf(order) === "packaging") },
+    { key: "ready", title: "Ready / Handoff", orders: safeOrders.filter(order => !isExceptionOrder(order) && lifecycleOf(order) === "ready") },
+    { key: "exceptions", title: "Exceptions", orders: safeOrders.filter(isExceptionOrder) },
+  ];
 
   const refresh = useCallback(() => {
     for (const queryKey of [
@@ -1834,9 +1853,15 @@ function CustomerServiceRepQueueContent() {
     void fetchGeneralSession();
   }, [fetchGeneralSession, fetchQueue, queryClient, refetchShift]);
 
-  useOrderEvents(() => {
+  const onOrderEvent = useCallback(() => {
+    queueEventRevision.current++;
     refresh();
-  }, Boolean(shift));
+  }, [refresh]);
+  const onSseReconnect = useCallback(() => {
+    void fetchQueue();
+    void refetchShift();
+  }, [fetchQueue, refetchShift]);
+  useOrderEvents(onOrderEvent, true, { onReconnect: onSseReconnect });
 
   useEffect(() => {
     void fetchQueue();
@@ -1844,10 +1869,23 @@ function CustomerServiceRepQueueContent() {
   }, [fetchGeneralSession, fetchQueue, shift]);
 
   useEffect(() => {
-    if (!shift) return;
-    const timer = setInterval(() => { refetchShift(); void fetchQueue(); }, 30_000);
-    return () => clearInterval(timer);
-  }, [shift, refetchShift, fetchQueue]);
+    const reconcile = () => {
+      if (document.visibilityState === "visible") {
+        void fetchQueue();
+        void refetchShift();
+        void fetchGeneralSession();
+      }
+    };
+    window.addEventListener("online", reconcile);
+    document.addEventListener("visibilitychange", reconcile);
+    const timer = setInterval(reconcile, 15_000);
+    reconcile();
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", reconcile);
+      document.removeEventListener("visibilitychange", reconcile);
+    };
+  }, [fetchGeneralSession, fetchQueue, refetchShift]);
 
   const handleClockIn = async (snapshot: InventorySnapshot[], cashBankStart: number, setup: ShiftSetup) => {
     const token = await getToken();
@@ -1986,10 +2024,10 @@ function CustomerServiceRepQueueContent() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight" data-testid="text-title">
-            Shift Dashboard
+            Shift / Queue
           </h1>
           <p className="text-sm text-muted-foreground mt-1" data-testid="text-subtitle">
-            Start shift, manage inventory, track cash bank &amp; orders
+            Manage your shift, cash bank, and customer orders
           </p>
         </div>
         <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl" onClick={refresh} title="Refresh">
@@ -2003,6 +2041,7 @@ function CustomerServiceRepQueueContent() {
       )}
 
       <section className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-4" data-testid="general-queue-management">
+        {generalSessionError && <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 px-3 py-2 text-xs" role="status">{generalSessionError} Showing the last confirmed session state. <Button size="sm" variant="outline" onClick={() => void fetchGeneralSession()}>Retry</Button></div>}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="font-semibold">View General Queue</h2>
@@ -2069,7 +2108,15 @@ function CustomerServiceRepQueueContent() {
         shiftLoading ? (
           <div className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
         ) : shift ? (
-          <ActiveShiftPanel shift={shift} onClockOut={() => setShowClockOutModal(true)} />
+          <>
+            {shiftError && <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs" role="status">Shift status is temporarily stale. <Button size="sm" variant="outline" onClick={() => void refetchShift()}>Retry shift</Button></div>}
+            <ActiveShiftPanel shift={shift} onClockOut={() => setShowClockOutModal(true)} />
+          </>
+        ) : shiftError ? (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm" role="alert" data-testid="shift-load-error">
+            <span>{shiftError} No clock-in action is shown until shift status can be verified.</span>
+            <Button size="sm" variant="outline" onClick={() => void refetchShift()}>Retry shift</Button>
+          </div>
         ) : (
           <ClockInPanel onClockIn={handleClockIn} getToken={getToken} />
         )
@@ -2081,49 +2128,32 @@ function CustomerServiceRepQueueContent() {
       )}
 
       {/* Order queue */}
-      <div className="space-y-4">
-        <div className="flex gap-1 p-1 bg-muted/20 border border-border/40 rounded-xl w-fit">
-          {STATUS_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              onClick={() => setActiveTab(tab.value)}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold tracking-wider uppercase transition-all ${
-                activeTab === tab.value
-                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {isLoadingQueue ? (
+      <div className="space-y-5" aria-label="Customer order queue">
+        {queueError && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm" role="alert" data-testid="queue-error">
+            <span>{queueError}{queueUpdatedAt ? " Showing the last successful queue snapshot." : ""}</span>
+            <Button size="sm" variant="outline" onClick={() => void fetchQueue()} disabled={isLoadingQueue}>Retry queue</Button>
+          </div>
+        )}
+        {queueUpdatedAt && <p className="text-xs text-muted-foreground" role="status">{queueError ? "Queue snapshot is stale" : "Queue current"} · refreshed {new Date(queueUpdatedAt).toLocaleTimeString()}</p>}
+        {isLoadingQueue && !queueUpdatedAt ? (
           <div className="space-y-3">
             {[1, 2, 3].map((i) => (
               <div key={i} className="h-24 animate-pulse bg-muted/20 rounded-2xl" />
             ))}
           </div>
-        ) : visibleOrders.length === 0 ? (
-          <div className="glass-card rounded-2xl flex flex-col items-center justify-center py-20 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-muted/20 flex items-center justify-center mb-4">
-              <Package size={24} className="text-muted-foreground" />
-            </div>
-            <h3 className="font-semibold text-sm mb-1">Queue is clear</h3>
-            <p className="text-xs text-muted-foreground">No {activeTab} orders right now.</p>
-          </div>
         ) : (
-          <div className="space-y-3">
-            {visibleOrders.map((order) => (
-              <FulfillmentCard
-                key={order.id}
-                order={order as ExtendedOrder}
-                onRefresh={refresh}
-                getToken={getToken}
-                isAdmin={isAdmin}
-              />
-            ))}
-          </div>
+          orderSections.map(section => (
+            <section key={section.key} className="space-y-3 border-t border-border/40 pt-4" aria-labelledby={`queue-section-${section.key}`}>
+              <div className="flex items-baseline justify-between">
+                <h2 id={`queue-section-${section.key}`} className="text-sm font-semibold">{section.title}</h2>
+                <span className="text-xs text-muted-foreground">{section.orders.length}</span>
+              </div>
+              {section.orders.length ? section.orders.map(order => (
+                <FulfillmentCard key={order.id} order={order as ExtendedOrder} onRefresh={refresh} getToken={getToken} isAdmin={isAdmin} />
+              )) : <p className="py-2 text-xs text-muted-foreground">No orders in this section.</p>}
+            </section>
+          ))
         )}
       </div>
 

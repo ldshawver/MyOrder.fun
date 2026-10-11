@@ -5,6 +5,7 @@
  * OrderFlow Platform API - Multi-tenant ordering platform with onboarding workflow
  * OpenAPI spec version: 0.1.0
  */
+import type { CatalogItemSellableProductOptionsItemOptionValues } from './catalogItemSellableProductOptionsItemOptionValues';
 
 export type CatalogItemSellableProductOptionsItem = {
   id: number;
@@ -12,4 +13,7 @@ export type CatalogItemSellableProductOptionsItem = {
   label: string;
   price: string;
   sku?: string | null;
+  optionValues?: CatalogItemSellableProductOptionsItemOptionValues;
+  imageUrl?: string | null;
+  stockAvailable?: boolean;
 };

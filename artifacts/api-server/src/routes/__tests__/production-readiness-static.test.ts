@@ -36,7 +36,8 @@ describe("production readiness workflow coverage", () => {
     expect(staff).toContain("staffFulfillmentAction");
     expect(actions).toContain("/api/orders/${orderId}/claim");
     expect(actions).toContain("/api/orders/${orderId}/complete");
-    expect(actions).toContain('"in_progress", "ready", "completed"');
+    expect(actions).toContain('"in_progress", "packaging", "ready", "completed"');
+    expect(actions).toContain('/api/orders/${orderId}/packaging');
     expect(staff).not.toContain('label: "Prepare"');
     expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
     expect(staff).toContain('/api/print/orders/${order.id}/receipt');

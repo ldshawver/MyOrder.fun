@@ -98,7 +98,7 @@ export async function fetchWooSafely(storeUrl: string, path: string, consumerKey
       });
       res.on("end", () => {
         const headers = new Headers({ "content-type": String(res.headers["content-type"] ?? "application/json") });
-        for (const name of ["x-wp-total", "x-wp-totalpages"]) {
+        for (const name of ["x-wp-total", "x-wp-totalpages", "retry-after"]) {
           const value = res.headers[name];
           if (typeof value === "string") headers.set(name, value);
         }

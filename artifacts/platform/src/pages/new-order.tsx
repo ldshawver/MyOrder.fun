@@ -84,7 +84,7 @@ type CheckoutQuote = {
   availableCustomerCredit: number;
   appliedCustomerCredit: number;
   remainingMerchandiseAmount: number;
-  taxableDigitalBase: number;
+  taxableMerchandiseBase: number;
   customerTax: number;
   deliveryFee: number;
   tipAmount: number;
@@ -318,7 +318,7 @@ export default function NewOrder() {
     if ((deliveryMethod === "manual_delivery" || deliveryMethod === "uber_direct") && !shippingAddress.trim()) throw new Error("A delivery address is required.");
 
     setOrderSubmitError(null);
-    const paymentMethod = (checkoutQuote.tenderDue === 0 && checkoutQuote.appliedCustomerCredit > 0 ? "customer_credit" : paymentMethodOverride) as "cash" | "paypal" | "paypal_card" | "customer_credit";
+    const paymentMethod = (checkoutQuote.tenderDue === 0 && checkoutQuote.appliedCustomerCredit > 0 ? "customer_credit" : paymentMethodOverride) as "cash" | "paypal" | "paypal_card" | "customer_credit" | "split_tender";
 
     try {
       const checkoutConversionToken = conversionPreview.checkoutConversionToken ?? conversionPreview.conversionToken;
@@ -411,7 +411,7 @@ export default function NewOrder() {
         body: JSON.stringify({
           items: checkoutOptionLines(cart),
           paymentMethod: selectedPaymentMethod,
-          ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
+          ...(useCustomerCredit && selectedPaymentMethod !== "customer_credit" && selectedPaymentMethod !== "split_tender" ? { customerCreditAmount: Number(customerCreditAmount || 0) } : {}),
           tipAmount,
           deliveryMethod,
           ...(deliveryQuote ? { deliveryQuoteId: deliveryQuote.quoteId } : {}),
@@ -782,7 +782,7 @@ export default function NewOrder() {
                       <span>Customer Credit available</span>
                       <span className="font-mono" data-testid="text-customer-credit-available">${(checkoutQuote?.availableCustomerCredit ?? 0).toFixed(2)}</span>
                     </div>
-                    {selectedPaymentMethod !== "customer_credit" && (
+                    {selectedPaymentMethod !== "customer_credit" && selectedPaymentMethod !== "split_tender" && (
                       <label className="flex items-center gap-2 text-sm">
                         <input type="checkbox" checked={useCustomerCredit} onChange={event => {
                           setUseCustomerCredit(event.target.checked);
@@ -791,10 +791,10 @@ export default function NewOrder() {
                         Apply Customer Credit
                       </label>
                     )}
-                    {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && (
+                    {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && selectedPaymentMethod !== "split_tender" && (
                       <Input type="number" min="0" step="0.01" value={customerCreditAmount} onChange={event => setCustomerCreditAmount(event.target.value)} aria-label="Customer Credit amount" data-testid="input-customer-credit-amount" />
                     )}
-                    <div className="flex justify-between text-xs"><span>Taxable PayPal merchandise</span><span className="font-mono" data-testid="text-taxable-digital-base">${(checkoutQuote?.taxableDigitalBase ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-xs"><span>Taxable merchandise</span><span className="font-mono" data-testid="text-taxable-merchandise-base">${(checkoutQuote?.taxableMerchandiseBase ?? 0).toFixed(2)}</span></div>
                     <div className="flex justify-between text-xs"><span>Customer tax</span><span className="font-mono" data-testid="text-customer-tax">${(checkoutQuote?.customerTax ?? 0).toFixed(2)}</span></div>
                     <div className="flex justify-between text-sm font-semibold"><span>Amount due by selected tender</span><span className="font-mono" data-testid="text-tender-due">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating…"}</span></div>
                     {isQuotingCheckout && <p className="text-xs text-muted-foreground">Updating checkout quote…</p>}

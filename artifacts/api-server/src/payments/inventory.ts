@@ -22,6 +22,11 @@ export type PaymentTransaction = Parameters<Parameters<typeof db.transaction>[0]
 /** Reacquire released reservations before a payment retry can contact PayPal. */
 export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, order: typeof ordersTable.$inferSelect): Promise<void> {
   const items = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+  const taxSnapshot = order.taxSnapshot && typeof order.taxSnapshot === "object" ? order.taxSnapshot as Record<string, unknown> : {};
+  const orderLocationId = Number.isSafeInteger(Number(taxSnapshot.locationId)) && Number(taxSnapshot.locationId) > 0 ? Number(taxSnapshot.locationId) : null;
+  const configuredLocation = orderLocationId == null ? rows<{ locationId: number | null }>(await tx.execute(sql`
+    SELECT default_inventory_location_id AS "locationId" FROM tenant_settings WHERE tenant_id = ${order.tenantId} LIMIT 1
+  `))[0]?.locationId ?? null : orderLocationId;
   for (const item of items) {
     const reservationItemId = item.inventoryItemId == null ? null : item.id;
     const consumed = rows<{ id: number }>(await tx.execute(sql`
@@ -41,7 +46,7 @@ export async function ensurePaidOrderInventoryReserved(tx: PaymentTransaction, o
     const physicalQuantity = item.inventoryQuantitySnapshot ?? quantityText(quantityUnits(String(item.quantity)));
     const reservations = await reserveCheckoutInventoryByOrderType(tx, order.tenantId, order.id,
       inventoryCatalogItemId, physicalQuantity, orderTypeForPaidDeduction(order), reservationItemId ?? undefined,
-      source?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
+      source?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS", configuredLocation);
     if (!reservations) throw new PaymentInventoryError(item.catalogItemId);
     await tx.update(orderItemsTable).set({ inventoryDeductions: reservations }).where(eq(orderItemsTable.id, item.id));
   }

@@ -54,12 +54,45 @@ async function ensurePushSubscriptionsTable(): Promise<void> {
   ensured = true;
 }
 
-function configureWebPush(): boolean {
+export function configureWebPush(): boolean {
   const publicKey = process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   if (!publicKey || !privateKey) return false;
   webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:support@myorder.fun", publicKey, privateKey);
   return true;
+}
+
+export function isPwaPushConfigured(): boolean {
+  return Boolean(process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY) && Boolean(process.env.VAPID_PRIVATE_KEY);
+}
+
+export type PwaPushDeliveryResult = { attempted: number; sent: number; failed: number; retryable: number; uncertain: number; skipped: boolean };
+export async function sendPwaPushToUser(input: { tenantId: number; userId: number; payload: PwaPushPayload }): Promise<PwaPushDeliveryResult> {
+  if (!configureWebPush()) return { attempted: 0, sent: 0, failed: 0, retryable: 0, uncertain: 0, skipped: true };
+  await ensurePushSubscriptionsTable();
+  const subscriptions = rowsFrom<SubscriptionRow>(await db.execute(sql`SELECT s.id,s.user_id,s.tenant_id,s.endpoint,s.subscription
+    FROM pwa_push_subscriptions s JOIN users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id
+    WHERE s.tenant_id=${input.tenantId} AND s.user_id=${input.userId} AND s.is_active=true
+      AND u.web_push_order_alerts_enabled=true AND u.is_active=true AND u.status='approved'
+      AND u.role IN ('global_admin','admin','supervisor','csr')`));
+  const payload = JSON.stringify({ badge: "/lc-icon.png", ...input.payload });
+  let sent = 0; let failed = 0; let retryable = 0; let uncertain = 0;
+  for (const row of subscriptions) {
+    const endpointHash = pushEndpointHash(row.endpoint);
+    try {
+      await webpush.sendNotification(row.subscription, payload);
+      sent += 1;
+      logger.info({ event: "pwa_order_push_sent", subscriptionId: row.id, userId: row.user_id, tenantId: row.tenant_id, endpointHash }, "Order alert push sent");
+    } catch (err) {
+      failed += 1;
+      const statusCode = (err as { statusCode?: number }).statusCode;
+      if (statusCode === 429) retryable += 1;
+      else if (statusCode == null || statusCode >= 500) uncertain += 1;
+      logger.warn({ event: "pwa_order_push_failed", subscriptionId: row.id, userId: row.user_id, tenantId: row.tenant_id, endpointHash, statusCode }, "Order alert push failed");
+      if (statusCode === 404 || statusCode === 410) await db.execute(sql`UPDATE pwa_push_subscriptions SET is_active=false,updated_at=now() WHERE id=${row.id}`);
+    }
+  }
+  return { attempted: subscriptions.length, sent, failed, retryable, uncertain, skipped: false };
 }
 
 export async function sendPwaPushToTenant(input: { tenantId: number | null; payload: PwaPushPayload }): Promise<{ attempted: number; sent: number; failed: number; skipped: boolean }> {

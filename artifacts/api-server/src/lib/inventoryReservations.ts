@@ -78,6 +78,7 @@ export async function reserveCheckoutInventoryByOrderType(
   orderType: InventoryOrderType,
   orderItemId?: number,
   locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS" = "COMBINED_LOCATIONS",
+  preferredLocationId: number | null = null,
 ): Promise<CheckoutInventoryLocationDeduction[] | null> {
   assertKernelCatalogItemId(productId, "checkout.inventoryReservation.orderTypeAware");
   return executeTransaction(tenantId, executor, "inventoryReservations.reserveCheckout", async tx => {
@@ -89,6 +90,11 @@ export async function reserveCheckoutInventoryByOrderType(
   const owner = rowsFrom<{ id: number }>(await tx.execute(sql`SELECT id FROM orders WHERE id = ${orderId} AND tenant_id = ${tenantId} FOR UPDATE`));
   const product = rowsFrom<{ id: number }>(await tx.execute(sql`SELECT id FROM catalog_items WHERE id = ${productId} AND tenant_id = ${tenantId}`));
   if (!owner.length || !product.length) throw new Error("Order or catalog item is not in the authorized tenant");
+  if (preferredLocationId != null) {
+    const preferred = rowsFrom<{ id: number }>(await tx.execute(sql`SELECT id FROM inventory_locations WHERE tenant_id = ${tenantId} AND id = ${preferredLocationId} AND is_active = true`));
+    if (!preferred.length) throw new Error("Preferred inventory location is not active in the authorized tenant");
+  }
+  if (locationEvaluation === "PER_LOCATION" && preferredLocationId == null) return null;
 
   const existingReservations = await tx.select({
     locationId: inventoryReservationsTable.locationId,
@@ -118,7 +124,8 @@ export async function reserveCheckoutInventoryByOrderType(
       AND ib.is_sellable = true
       AND ib.quarantined_at IS NULL
       AND il.is_active = true
-    ORDER BY array_position(ARRAY[${sql.join([...ORDER_LOCATION_POLICY[orderType]], sql`, `)}]::text[], il.name) NULLS LAST, il.display_order ASC, il.id ASC
+    ORDER BY CASE WHEN il.id = ${preferredLocationId ?? -1} THEN 0 ELSE 1 END,
+      array_position(ARRAY[${sql.join([...ORDER_LOCATION_POLICY[orderType]], sql`, `)}]::text[], il.name) NULLS LAST, il.display_order ASC, il.id ASC
     FOR UPDATE OF ib
   `));
 
@@ -126,6 +133,7 @@ export async function reserveCheckoutInventoryByOrderType(
   const expiresAt = new Date(Date.now() + Math.max(1, RESERVATION_TTL_MINUTES) * 60_000);
   const reservations: CheckoutInventoryLocationDeduction[] = [];
   for (const row of balanceRows) {
+    if (locationEvaluation === "PER_LOCATION" && row.locationId !== preferredLocationId) continue;
     if (remaining <= 0n) break;
     const [{ reservedQuantity = 0 } = { reservedQuantity: 0 }] = rowsFrom<ReservedQuantityRow>(await tx.execute(sql`
       SELECT COALESCE(SUM(r.quantity), 0)::numeric AS "reservedQuantity"

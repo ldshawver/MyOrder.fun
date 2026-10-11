@@ -11,6 +11,7 @@ import type { OrderCheckoutConfirmation } from './orderCheckoutConfirmation';
 import type { OrderFulfillmentStatus } from './orderFulfillmentStatus';
 import type { OrderItem } from './orderItem';
 import type { OrderPaymentStatus } from './orderPaymentStatus';
+import type { OrderPickupDetails } from './orderPickupDetails';
 import type { OrderRouteSource } from './orderRouteSource';
 import type { OrderStatus } from './orderStatus';
 import type { OrderTaxSnapshot } from './orderTaxSnapshot';
@@ -21,6 +22,8 @@ export interface Order {
   customerId: number;
   customerName?: string;
   customerEmail?: string;
+  assignedCsrDisplayName?: string | null;
+  pickupDetails?: OrderPickupDetails;
   status: OrderStatus;
   paymentStatus: OrderPaymentStatus;
   paymentToken?: string;

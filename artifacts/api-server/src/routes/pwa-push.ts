@@ -1,13 +1,16 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
 import { logger } from "../lib/logger";
-import { pushEndpointHash } from "../lib/pwaPushSender";
+import { isPwaPushConfigured, pushEndpointHash, sendPwaPushToUser } from "../lib/pwaPushSender";
 
 const router: IRouter = Router();
 export const SERVICE_WORKER_VERSION = "20260708-push-subscription-repair-v3";
+const testPushLimiter = rateLimit({ windowMs: 60_000, limit: 5, standardHeaders: true, legacyHeaders: false, message: { error: "Test notifications are rate limited. Try again in one minute." } });
+const pushSubscriptionLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Push subscription changes are rate limited." } });
 
 const PushSubscriptionBody = z.object({
   subscription: z.object({ endpoint: z.string().url(), expirationTime: z.number().nullable().optional(), keys: z.object({ p256dh: z.string(), auth: z.string() }) }),
@@ -60,6 +63,52 @@ async function ensurePushSubscriptionsTable(): Promise<void> {
 }
 
 router.use("/pwa/push", requireAuth, loadDbUser, requireDbUser, requireApproved);
+
+const orderAlertRole = requireRole("global_admin", "admin", "supervisor", "csr");
+const orderAlertBody = z.object({ enabled: z.boolean() }).strict();
+function actorTenant(req: Request, res: Response): number | null {
+  const tenantId = req.dbUser?.tenantId;
+  if (!Number.isSafeInteger(tenantId) || tenantId == null || tenantId <= 0) { res.status(403).json({ error: "Tenant assignment required" }); return null; }
+  return tenantId;
+}
+
+router.get("/pwa/push/order-alerts", orderAlertRole, async (req, res): Promise<void> => {
+  const actor = req.dbUser!; const tenantId = actorTenant(req, res); if (tenantId == null) return;
+  await ensurePushSubscriptionsTable();
+  const result = await db.execute(sql`SELECT web_push_order_alerts_enabled AS enabled FROM users WHERE id=${actor.id} AND tenant_id=${tenantId}`);
+  const subscription = await db.execute(sql`SELECT count(*)::int AS count FROM pwa_push_subscriptions WHERE tenant_id=${tenantId} AND user_id=${actor.id} AND is_active=true`);
+  res.json({ enabled: Boolean(rowsFrom<{ enabled: boolean }>(result)[0]?.enabled), activeSubscriptionCount: Number(rowsFrom<{ count: number }>(subscription)[0]?.count ?? 0), deliveryConfigured: isPwaPushConfigured(), vapidPublicKeyConfigured: Boolean(process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY), serviceWorkerVersion: SERVICE_WORKER_VERSION });
+});
+
+router.put("/pwa/push/order-alerts", orderAlertRole, async (req, res): Promise<void> => {
+  const actor = req.dbUser!; const tenantId = actorTenant(req, res); if (tenantId == null) return;
+  const parsed = orderAlertBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "Invalid order alert preference" }); return; }
+  await ensurePushSubscriptionsTable();
+  const active = rowsFrom<{ count: number }>(await db.execute(sql`SELECT count(*)::int AS count FROM pwa_push_subscriptions WHERE tenant_id=${tenantId} AND user_id=${actor.id} AND is_active=true`))[0]?.count ?? 0;
+  if (parsed.data.enabled && !isPwaPushConfigured()) { res.status(503).json({ error: "Browser push delivery is not configured on the server" }); return; }
+  if (parsed.data.enabled && Number(active) === 0) { res.status(409).json({ error: "Register this browser for push notifications before enabling order alerts" }); return; }
+  await db.transaction(async tx => {
+    await tx.execute(sql`UPDATE users SET web_push_order_alerts_enabled=${parsed.data.enabled},updated_at=now() WHERE id=${actor.id} AND tenant_id=${tenantId}`);
+    if (!parsed.data.enabled) {
+      await tx.execute(sql`UPDATE pwa_push_subscriptions SET is_active=false,updated_at=now() WHERE user_id=${actor.id} AND tenant_id=${tenantId}`);
+      await tx.execute(sql`UPDATE order_push_notification_jobs SET state='skipped',failure_class='recipient_disabled',completed_at=now(),lease_until=NULL,updated_at=now()
+        WHERE tenant_id=${tenantId} AND recipient_user_id=${actor.id} AND state='queued'`);
+    }
+  });
+  res.json({ enabled: parsed.data.enabled, activeSubscriptionCount: parsed.data.enabled ? Number(active) : 0 });
+});
+
+router.post("/pwa/push/order-alerts/test", orderAlertRole, testPushLimiter, async (req, res): Promise<void> => {
+  const actor = req.dbUser!; const tenantId = actorTenant(req, res); if (tenantId == null) return;
+  const pref = rowsFrom<{ enabled: boolean }>(await db.execute(sql`SELECT web_push_order_alerts_enabled AS enabled FROM users WHERE id=${actor.id} AND tenant_id=${tenantId}`))[0];
+  if (!pref?.enabled) { res.status(409).json({ error: "Enable order alerts before sending a test" }); return; }
+  if (!isPwaPushConfigured()) { res.status(503).json({ error: "Browser push delivery is not configured on the server" }); return; }
+  const result = await sendPwaPushToUser({ tenantId, userId: actor.id, payload: { type: "order", title: "MyOrder test alert", body: "Browser order alerts are enabled for this account.", url: "/admin/order-notifications", tag: `myorder-test-${actor.id}` } });
+  if (result.skipped || result.attempted === 0) { res.status(409).json({ error: "No active push subscription is available for this browser" }); return; }
+  if (result.sent === 0) { res.status(502).json({ error: "The push service could not deliver the test notification" }); return; }
+  res.json({ ok: true, sent: result.sent, failed: result.failed });
+});
 
 router.get("/pwa/push/debug", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
@@ -122,7 +171,7 @@ router.get("/pwa/push/vapid-public-key", (_req, res): void => {
   res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || "" });
 });
 
-router.post("/pwa/push/subscribe", async (req, res): Promise<void> => {
+router.post("/pwa/push/subscribe", pushSubscriptionLimiter, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const parsed = PushSubscriptionBody.safeParse(req.body);
   if (!parsed.success) {
@@ -151,7 +200,8 @@ router.post("/pwa/push/subscribe", async (req, res): Promise<void> => {
   } catch (err) {
     await rollbackFailedTransaction();
     const missingColumn = missingColumnFromError(err);
-    logger.warn({ err, userId: actor.id, tenantId: actor.tenantId ?? null, deviceId, endpointHash, missingColumn }, "PWA push subscription registration failed safely");
+    const code = typeof err === "object" && err !== null && "code" in err && typeof err.code === "string" ? err.code : undefined;
+    logger.warn({ userId: actor.id, tenantId: actor.tenantId ?? null, deviceId, endpointHash, missingColumn, code }, "PWA push subscription registration failed safely");
     res.status(500).json({
       ok: false,
       success: false,
