@@ -52,7 +52,7 @@ jobs:
         env:
           POSTGRES_DB: myorder_p0_owner_approval_ci
           POSTGRES_USER: myorder_ci
-          POSTGRES_PASSWORD: myorder_ci_only
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -61,8 +61,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      DATABASE_URL: postgres://myorder_ci:myorder_ci_only@localhost:5432/myorder_p0_owner_approval_ci
-      MYORDER_OWNER_APPROVAL_DATABASE_URL: postgres://myorder_ci:myorder_ci_only@localhost:5432/myorder_p0_owner_approval_ci
+      DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+      MYORDER_OWNER_APPROVAL_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
       DB_SSL: "false"
     steps:
       - uses: actions/checkout@v4

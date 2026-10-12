@@ -143,7 +143,6 @@ role: "admin",
 tenantId: 1,
 status: "approved",
 isActive: true,
-main
   };
 }
 

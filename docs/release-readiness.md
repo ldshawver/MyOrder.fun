@@ -17,7 +17,7 @@ backup_dir="$(mktemp -d /tmp/myorder-release-backup.XXXXXX)"
 export RELEASE_RESTORE_ACK=I_UNDERSTAND_THIS_IS_A_RESTORE_REHEARSAL
 export SOURCE_CONTAINER=deploy-db-1
 export BACKUP_DIR="$backup_dir"
-export RESTORE_PASSWORD='use-a-new-disposable-test-password'
+export RESTORE_PASSWORD="${RESTORE_PASSWORD:?Set a disposable-only restore password}"
 bash scripts/release/backup-restore-rehearsal.sh
 ```
 
@@ -27,7 +27,7 @@ the preceding command, then rehearse the candidate migrations:
 ```bash
 export RELEASE_MIGRATION_REHEARSAL_ACK=I_UNDERSTAND_THIS_MUTATES_ONLY_THE_RESTORE
 export RESTORE_CONTAINER='myorder-release-restore-...'
-export DATABASE_URL='postgresql://myorder_restore:use-a-new-disposable-test-password@127.0.0.1:PORT/myorder_restore'
+export DATABASE_URL="${RESTORE_DATABASE_URL:?Set this to the disposable restore connection string}"
 export EVIDENCE_FILE="$backup_dir/backup-restore-evidence.txt"
 bash scripts/release/rehearse-migrations.sh
 ```

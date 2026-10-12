@@ -25,8 +25,16 @@ drizzle_source="$repo_root/lib/db/drizzle"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/myorder-p0-pg16.XXXXXX")"
 trap 'rm -rf "$tmp_root"' EXIT
 
-test "$(jq -r '.entries[-1].tag' "$drizzle_source/meta/_journal.json")" = \
-  "0068_print_jobs_document_job_types" || die "expected deferred migration 0068 at journal tip"
+node --input-type=module - "$drizzle_source/meta/_journal.json" <<'NODE'
+import { readFileSync } from 'node:fs';
+const journalPath = process.argv[2];
+const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+const boundary = journal.entries.findIndex((entry) => entry.tag === '0067_print_routes_document_types');
+const deferred = journal.entries.findIndex((entry) => entry.tag === '0068_print_jobs_document_job_types');
+if (boundary !== 41 || deferred !== boundary + 1 || journal.entries.length <= deferred) {
+  throw new Error('expected the production 0067 boundary followed by deferred 0068 and retained later journal entries');
+}
+NODE
 
 # This is a schema fixture only: it contains the columns touched by the P0 API
 # plus validator-required baseline tables. In particular, print_jobs retains
@@ -56,6 +64,14 @@ CREATE TABLE public.clerk_webhook_events (
 CREATE TABLE public.orders (
   id serial PRIMARY KEY, tenant_id integer NOT NULL, customer_id integer NOT NULL,
   subtotal numeric(10,2) NOT NULL, total numeric(10,2) NOT NULL
+);
+CREATE TABLE public.payment_refunds (
+  id serial PRIMARY KEY,
+  state text NOT NULL,
+  CONSTRAINT payment_refunds_state_check CHECK (state IN (
+    'requested', 'provider_succeeded', 'locally_finalized', 'completed',
+    'pending', 'failed', 'reconciliation_required'
+  ))
 );
 CREATE TABLE public.catalog_items (
   id serial PRIMARY KEY, tenant_id integer, name text, is_available boolean DEFAULT true
@@ -126,7 +142,11 @@ import pg from 'pg';
 const repo = process.env.CI_P0_REPO_ROOT;
 const dir = path.join(repo, 'lib/db/drizzle');
 const journal = JSON.parse(readFileSync(path.join(dir, 'meta/_journal.json'), 'utf8'));
-const entries = journal.entries.filter((entry) => entry.tag !== '0068_print_jobs_document_job_types');
+const deferredIndex = journal.entries.findIndex((entry) => entry.tag === '0068_print_jobs_document_job_types');
+if (deferredIndex !== 42 || journal.entries[deferredIndex - 1]?.tag !== '0067_print_routes_document_types') {
+  throw new Error('expected 0068 immediately after the production 0067 boundary');
+}
+const entries = journal.entries.slice(0, deferredIndex);
 if (entries.length !== 42 || entries.at(-1)?.tag !== '0067_print_routes_document_types') {
   throw new Error('expected exactly the 42-entry production prefix through 0067');
 }

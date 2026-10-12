@@ -244,26 +244,25 @@ describe("receipts and deploy workflow", () => {
 
   it("uses safer deploy flow and OAuth Tailscale tags", () => {
     const deploy = src(".github/workflows/deploy.yml");
-    for (const required of ["VPS_KNOWN_HOSTS", "VPS_HOST_FALLBACK", "VPS_HOST_FALLBACK_PORT", "SELECTED_VPS_HOST", "SELECTED_VPS_PORT", "tags: tag:github-actions"]) {
+    for (const required of ["VPS_KNOWN_HOSTS", "VPS_TAILSCALE_HOST", "VPS_PORT", "SELECTED_VPS_HOST", "SELECTED_VPS_PORT", "tags: tag:github-actions"]) {
       expect(deploy).toContain(required);
     }
     expect(deploy).toContain("secrets.VPS_USERNAME || secrets.VPS_USER || 'serveradmin'");
-    expect(deploy).toContain("allow src tag:github-actions to SSH as ${VPS_USER}");
     expect(deploy).toContain("DEPLOY_PATH: /opt/alavont");
     expect(deploy).toContain("COMPOSE_PROJECT_NAME: deploy");
-    expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
-    expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
-    expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
     expect(deploy).toContain("production_confirmation:");
     expect(deploy).toContain("environment: production");
-    expect(deploy).toContain("node safe-compose.mjs production config --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production build --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production up db --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production migrate --authorize-production");
-    expect(deploy).toContain("node safe-compose.mjs production up api platform nginx --authorize-production");
-    expect(deploy).toContain("docker compose --project-name deploy --env-file .env --file docker-compose.yml ps");
-    expect(deploy).toContain("deploy_postgres_data");
-    expect(deploy).toContain("http://127.0.0.1:8081/api/healthz");
+    expect(deploy).toContain("git archive --format=tar");
+    expect(deploy).toContain("production-release.mjs");
+    expect(deploy).toContain("--authorized");
+    expect(deploy).toContain("--release-sha");
+    expect(deploy).toContain("--release-tree");
+    expect(deploy).toContain("--tooling-sha");
+    expect(deploy).toContain("StrictHostKeyChecking=yes");
+    expect(deploy).not.toContain("VPS_HOST_FALLBACK");
+    expect(deploy).not.toMatch(/rsync[^\n]*--delete|rsync\s+-[^\n]*delete/);
+    expect(deploy).toContain("https://myorder.fun/api/healthz");
+    expect(deploy).toContain("RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360");
     expect(deploy).toContain("Public health check passed with expected release SHA");
     expect(deploy).not.toMatch(/docker compose down/);
     expect(deploy).not.toContain("/root/lux-email-bot");
