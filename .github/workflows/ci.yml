@@ -80,6 +80,8 @@ jobs:
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown
       - run: pnpm test
+      - name: Run guarded production release orchestration tests
+        run: node --test deploy/production-release.test.mjs
 
 
   checkout-conversion-proof:
