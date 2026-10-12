@@ -30,18 +30,35 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const owner = await db.insert(usersTable).values({ clerkId: ownerId, email: "owner@test.invalid", role: "global_admin", status: "approved", tenantId: null, isActive: true }).returning({ id: usersTable.id });
     const subjectId = `user_pg_hotfix_${process.pid}_${Date.now()}`;
     const subject = await db.insert(usersTable).values({ clerkId: subjectId, email: `${subjectId}@test.invalid`, role: "csr", status: "pending", tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
+    const supervisorId = `${subjectId}_supervisor`;
+    const supervisor = await db.insert(usersTable).values({ clerkId: supervisorId, email: `${supervisorId}@test.invalid`, role: "supervisor", status: "approved", approvedByClerkId: ownerId, approvedAt: new Date(), tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
+    const adminId = `${subjectId}_admin`;
+    const admin = await db.insert(usersTable).values({ clerkId: adminId, email: `${adminId}@test.invalid`, role: "admin", status: "approved", approvedByClerkId: ownerId, approvedAt: new Date(), tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const app = express(); app.use(express.json()); app.use("/api", usersRouter);
     const shiftApp = express(); shiftApp.use(express.json()); shiftApp.use("/api", shiftsRouter);
     try {
       clerkState.userId = subjectId;
       clerkState.sessionClaims = { publicMetadata: { role: "global_admin", status: "approved" }, unsafeMetadata: { status: "approved" }, fva: [1, -1] };
-      expect((await supertest(app).get("/api/users")).status).toBe(403);
+      const pendingDenied = await supertest(app).get("/api/users");
+      expect(pendingDenied.status, JSON.stringify(pendingDenied.body)).toBe(403);
       expect((await supertest(app).get("/api/admin/users/all")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
       expect((await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true })).status).toBe(403);
 
+      for (const nonOwner of [
+        supervisorId,
+        adminId,
+      ]) {
+        clerkState.userId = nonOwner;
+        clerkState.sessionClaims = { fva: [1, -1] };
+        expect((await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true, tenantId: tenant.id })).status).toBe(403);
+        expect((await db.select().from(auditLogsTable).where(eq(auditLogsTable.resourceId, String(subject[0].id)))).filter((row) => row.action === "APPROVE_USER")).toHaveLength(0);
+      }
+
+      clerkState.userId = subjectId;
       await db.update(usersTable).set({ status: "approved", approvedByClerkId: null, approvedAt: null }).where(eq(usersTable.id, subject[0].id));
-      expect((await supertest(app).get("/api/users")).status).toBe(403);
+      const missingProvenance = await supertest(app).get("/api/users");
+      expect(missingProvenance.status, JSON.stringify(missingProvenance.body)).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
 
       await db.update(usersTable).set({ status: "approved", approvedByClerkId: "some_other_owner", approvedAt: new Date() }).where(eq(usersTable.id, subject[0].id));
@@ -57,6 +74,10 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       const [approved] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
       expect(approved).toMatchObject({ status: "approved", approvedByClerkId: ownerId, tenantId: tenant.id });
       expect(approved.approvedAt).toBeInstanceOf(Date);
+      const approvalAudit = await db.select().from(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
+      expect(approvalAudit).toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: "APPROVE_USER", actorId: owner[0].id, resourceType: "user", resourceId: String(subject[0].id) }),
+      ]));
       clerkState.userId = subjectId;
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(200);
       clerkState.userId = ownerId;
@@ -64,11 +85,30 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       expect(suspended.status).toBe(200);
       const [suspendedRow] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
       expect(suspendedRow).toMatchObject({ status: "deactivated", approvedByClerkId: null, approvedAt: null });
+      const suspensionAudit = await db.select().from(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
+      expect(suspensionAudit).toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: "UPDATE_USER_STATUS", metadata: expect.objectContaining({ newStatus: "deactivated", previousStatus: "approved" }) }),
+      ]));
       clerkState.userId = subjectId;
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
+
+      clerkState.userId = ownerId;
+      clerkState.sessionClaims = { fva: [1, -1] };
+      const revoked = await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: false });
+      expect(revoked.status).toBe(200);
+      const [revokedRow] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
+      expect(revokedRow).toMatchObject({ status: "rejected", approvedByClerkId: null, approvedAt: null });
+      const revocationAudit = await db.select().from(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
+      expect(revocationAudit).toEqual(expect.arrayContaining([
+        expect.objectContaining({ action: "REJECT_USER", metadata: expect.objectContaining({ newStatus: "rejected", previousStatus: "deactivated" }) }),
+      ]));
+      clerkState.userId = subjectId;
+      expect((await supertest(app).get("/api/users")).status).toBe(403);
     } finally {
       await db.delete(notificationsTable).where(eq(notificationsTable.userId, subject[0].id));
       await db.delete(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
+      await db.delete(usersTable).where(eq(usersTable.id, supervisor[0].id));
+      await db.delete(usersTable).where(eq(usersTable.id, admin[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, subject[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, owner[0].id));
       await pool.end();

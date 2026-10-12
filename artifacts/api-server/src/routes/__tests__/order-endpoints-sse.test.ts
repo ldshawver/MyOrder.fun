@@ -435,6 +435,24 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("keeps customer order history scoped to the authenticated tenant and customer despite modified IDs", async () => {
+    mockActor = dbState.users[0]!;
+    dbState.orders.push(
+      { id: 92, tenantId: 1, customerId: 5, status: "confirmed", createdAt: new Date("2026-01-01T00:00:00Z"), total: "10.00" },
+      { id: 93, tenantId: 1, customerId: 99, status: "confirmed", createdAt: new Date("2026-01-02T00:00:00Z"), total: "20.00" },
+      { id: 94, tenantId: 2, customerId: 5, status: "confirmed", createdAt: new Date("2026-01-03T00:00:00Z"), total: "30.00" },
+    );
+
+    const app = buildApp();
+    expect((await supertest(app).get("/api/orders?tenantId=2")).status).toBe(403);
+    const history = await supertest(app).get("/api/orders?tenantId=1&customerId=99");
+    expect(history.status).toBe(200);
+    expect(history.body.orders).toEqual([]);
+
+    expect((await supertest(app).get("/api/orders/93")).status).toBe(404);
+    expect((await supertest(app).get("/api/orders/94")).status).toBe(404);
+  });
+
   it("hides courier status from another customer and another tenant", async () => {
     mockActor = dbState.users[0]!;
     dbState.orders.push({ id: 91, tenantId: 1, customerId: 99, deliveryMethod: "uber_direct" });
