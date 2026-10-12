@@ -1,15 +1,21 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { db, ordersTable, orderTaxSnapshotsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable } from "@workspace/db";
+import { db, ordersTable, orderTaxSnapshotsTable, inventoryReservationsTable, paymentAttemptsTable, paymentCapturesTable, paymentRefundsTable, paymentWebhookEventsTable, auditLogsTable, usersTable } from "@workspace/db";
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
-import { consumeCustomerCredit, restoreCustomerCredit } from "./customerCredit";
+import { consumeCustomerCredit, releaseCustomerCredit, restoreCustomerCredit } from "./customerCredit";
 import { logger } from "../lib/logger";
+import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservations";
+import { ensurePaidOrderInventoryReserved, PaymentInventoryError, type PaymentTransaction } from "./inventory";
+import { computeTenderTaxCents, centsToDollars, dollarsToCents } from "../lib/tenderTax";
+import { getCheckoutTaxSettings } from "../lib/checkoutNormalizer";
 
 const CURRENCY = "USD";
-const money = (value: unknown) => Number(value).toFixed(2);
-const sameMoney = (a: string, b: string) => Number(a).toFixed(2) === Number(b).toFixed(2);
+const sameMoney = (a: string, b: string) => {
+  try { return dollarsToCents(a) === dollarsToCents(b); }
+  catch { return false; }
+};
 
 export class PaymentServiceError extends Error {
   constructor(public readonly statusCode: number, public readonly code: string, message: string) { super(message); this.name = "PaymentServiceError"; }
@@ -19,17 +25,34 @@ export class PaymentService {
   constructor(private readonly config: EnabledPaymentConfig, private readonly provider: PaymentProvider) {}
 
   async create(input: { tenantId: number; customerId: number; orderId: number; idempotencyKey: string }) {
-    return db.transaction(async tx => {
+    const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
+      if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
+        && !["paypal", "paypal_card"].includes(order.selectedPaymentMethod ?? "")) {
+        throw new PaymentServiceError(409, "TENDER_MISMATCH", "Order was not confirmed for PayPal tender");
+      }
       if (["cancelled", "refunded", "voided", "archived", "completed"].includes(order.status)) throw new PaymentServiceError(409, "INVALID_ORDER_STATE", "Order cannot be paid in its current state");
       if (!order.checkoutConversionSnapshot || !order.legalDisclaimerAccepted || !order.finalConfirmationAt) throw new PaymentServiceError(422, "CHECKOUT_NOT_VERIFIED", "Checkout conversion and confirmation are required");
 
       const [existing] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.idempotencyKey, input.idempotencyKey))).limit(1);
+      if (existing?.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt with a new idempotency key");
+      if (existing?.state === "reconciliation_required" || existing?.state === "creating") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the existing payment attempt before retrying");
       if (existing?.providerOrderId) return { attemptId: existing.id, providerOrderId: existing.providerOrderId, status: existing.state, replayed: true };
+      const [unresolved] = await tx.select({ id: paymentAttemptsTable.id }).from(paymentAttemptsTable).where(and(
+        eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId),
+        inArray(paymentAttemptsTable.state, ["creating", "created", "approved", "capturing", "reconciliation_required"]),
+      )).limit(1);
+      if (unresolved) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the existing payment attempt before retrying");
+
+      try { await ensurePaidOrderInventoryReserved(tx, order); }
+      catch (error) {
+        if (error instanceof PaymentInventoryError) throw new PaymentServiceError(409, "INSUFFICIENT_INVENTORY", error.message);
+        throw error;
+      }
 
       // A new browser session must resume an existing durable PayPal order,
       // rather than create a second provider order for the same MyOrder
@@ -42,44 +65,105 @@ export class PaymentService {
       )).orderBy(sql`${paymentAttemptsTable.createdAt} DESC`).limit(1);
       if (activeAttempt?.providerOrderId) return { attemptId: activeAttempt.id, providerOrderId: activeAttempt.providerOrderId, status: activeAttempt.state, replayed: true };
 
-      const amount = money(order.remainingTenderAmount ?? order.total);
+      const locationId = Number((order.taxSnapshot as { locationId?: unknown } | null)?.locationId);
+      const settings = await getCheckoutTaxSettings(input.tenantId, Number.isInteger(locationId) && locationId > 0 ? locationId : undefined);
+      const taxableMerchandiseCents = dollarsToCents(order.taxableSubtotal ?? order.subtotal);
+      const creditCents = dollarsToCents(order.customerCreditApplied);
+      const baseTotalCents = dollarsToCents(order.total) - dollarsToCents(order.tax);
+      const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, nonTaxableFundingCents: creditCents, taxRate: settings.taxRate });
+      const totalCents = baseTotalCents + taxCents;
+      const remainingCents = totalCents - creditCents;
+      if (order.financialFinalizedAt && (dollarsToCents(order.tax) !== taxCents || dollarsToCents(order.total) !== totalCents || dollarsToCents(order.remainingTenderAmount) !== remainingCents)) {
+        throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order financial snapshot requires reconciliation");
+      }
+      const checkoutSnapshot = order.checkoutConversionSnapshot as Record<string, unknown> | null;
+      const pricingSnapshot = checkoutSnapshot?.pricingSnapshot as Record<string, unknown> | undefined;
+      const tipSnapshot = checkoutSnapshot?.tip as { amount?: unknown } | undefined;
+      const tipCents = typeof tipSnapshot?.amount === "number" || typeof tipSnapshot?.amount === "string" ? dollarsToCents(tipSnapshot.amount) : 0;
+      const finalCheckoutSnapshot = checkoutSnapshot && pricingSnapshot ? {
+        ...checkoutSnapshot,
+        pricingSnapshot: { ...pricingSnapshot, tax: taxCents / 100, customerTax: taxCents / 100, total: totalCents / 100,
+          totalBeforeTip: (totalCents - tipCents) / 100 },
+      } : checkoutSnapshot;
+      const tenderAllocation = { customerCreditCents: creditCents, paypalMerchandiseCents: taxableBaseCents, paypalTaxCents: taxCents };
+      const taxSnapshot = { ...(order.taxSnapshot as Record<string, unknown> ?? {}), schemaVersion: 3, jurisdiction: settings.taxJurisdiction, taxConfigurationId: settings.taxConfigurationId, effectiveTaxRate: settings.taxRate, taxRate: settings.taxRate, customerTaxableTenderBase: taxableBaseCents / 100, customerTaxCollected: taxCents / 100, taxCalculated: taxCents / 100, taxCollected: taxCents / 100, tenderAllocation, tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, pendingTender: false };
+      await tx.update(ordersTable).set({ tax: centsToDollars(taxCents), total: centsToDollars(totalCents), remainingTenderAmount: centsToDollars(remainingCents), taxSnapshot, checkoutConversionSnapshot: finalCheckoutSnapshot, financialFinalizedAt: new Date() }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
+      const grossSalesCents = dollarsToCents(order.grossSubtotal ?? order.subtotal);
+      const snapshotValues = { jurisdiction: settings.taxJurisdiction, locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, taxConfigurationId: settings.taxConfigurationId, grossSales: centsToDollars(grossSalesCents), taxRate: String(settings.taxRate), taxableSubtotal: centsToDollars(taxableBaseCents), nonTaxableSubtotal: centsToDollars(Math.max(0, dollarsToCents(order.subtotal) - taxableBaseCents)), discountAmount: String(order.discountTotal ?? "0.00"), cashDiscountAmount: "0.00", taxCollected: centsToDollars(taxCents), taxCalculated: centsToDollars(taxCents), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", exemptionReason: null, snapshotJson: { customerTaxableTenderBaseCents: taxableBaseCents, customerTaxCollectedCents: taxCents, tenderAllocation, taxConfigurationId: settings.taxConfigurationId } };
+      const [existingSnapshot] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
+      if (existingSnapshot) {
+        if (dollarsToCents(existingSnapshot.taxCollected) !== taxCents || dollarsToCents(existingSnapshot.grossSales) !== grossSalesCents || !["paypal", "paypal_card"].includes((existingSnapshot.tender ?? "").replace("customer_credit+", ""))) {
+          throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order tax snapshot requires reconciliation");
+        }
+      } else await tx.insert(orderTaxSnapshotsTable).values({ tenantId: input.tenantId, orderId: order.id, ...snapshotValues });
+      const amount = centsToDollars(remainingCents);
       if (Number(amount) <= 0) throw new PaymentServiceError(409, "NO_EXTERNAL_BALANCE", "Customer Credit covers the full order; no PayPal order is permitted");
       const [attempt] = existing ? [existing] : await tx.insert(paymentAttemptsTable).values({ tenantId: input.tenantId, orderId: input.orderId, provider: "paypal", providerEnvironment: this.config.environment, idempotencyKey: input.idempotencyKey, requestedAmount: amount, requestedCurrency: CURRENCY, state: "creating" }).returning();
       let providerOrder;
       try { providerOrder = await this.provider.createOrder({ amount: { value: amount, currency: CURRENCY }, requestId: `create-${attempt.id}`, internalOrderId: input.orderId }); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: error instanceof PayPalProviderError && error.failureClass === "unknown_outcome" ? "reconciliation_required" : "failed", reconciliationState: error instanceof PayPalProviderError && error.failureClass === "unknown_outcome" ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      if (!sameMoney(providerOrder.amount.value, amount) || providerOrder.amount.currency !== CURRENCY) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "amount_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw new PaymentServiceError(502, "PROVIDER_AMOUNT_MISMATCH", "Provider order amount mismatch"); }
+      catch (error) {
+        const unknown = error instanceof PayPalProviderError && error.failureClass === "unknown_outcome";
+        await tx.update(paymentAttemptsTable).set({ state: unknown ? "reconciliation_required" : "failed", reconciliationState: unknown ? "pending" : "not_required", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        if (!unknown) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { providerError: error };
+      }
+      if (!sameMoney(providerOrder.amount.value, amount) || providerOrder.amount.currency !== CURRENCY) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "amount_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(502, "PROVIDER_AMOUNT_MISMATCH", "Provider order amount mismatch") }; }
       await tx.update(paymentAttemptsTable).set({ providerOrderId: providerOrder.id, state: "created" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { attemptId: attempt.id, providerOrderId: providerOrder.id, approvalUrl: providerOrder.approvalUrl, status: "created", replayed: false };
     });
+    if ("providerError" in outcome) throw outcome.providerError;
+    return outcome;
   }
 
-  async capture(input: { tenantId: number; customerId: number; orderId: number; attemptId: number; idempotencyKey: string; finalize: (order: typeof ordersTable.$inferSelect) => Promise<void> }) {
-    return db.transaction(async tx => {
+  async capture(input: { tenantId: number; customerId: number; orderId: number; attemptId: number; idempotencyKey: string; finalize: (order: typeof ordersTable.$inferSelect, tx: PaymentTransaction) => Promise<void> }) {
+    const outcome = await db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, input.orderId), eq(ordersTable.tenantId, input.tenantId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
       if (order.customerId !== input.customerId) throw new PaymentServiceError(403, "ORDER_FORBIDDEN", "Forbidden");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.id, input.attemptId), eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).limit(1);
       if (!attempt?.providerOrderId) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      if (attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(409, "PAYMENT_ENVIRONMENT_MISMATCH", "Payment attempt requires its original provider environment");
+      if (["cancelled", "refunded", "voided", "archived", "completed"].includes(order.status)) throw new PaymentServiceError(409, "INVALID_ORDER_STATE", "Order cannot be captured in its current state");
+      if (attempt.state === "failed") throw new PaymentServiceError(409, "PAYMENT_ATTEMPT_FAILED", "Start a new payment attempt");
+      if (attempt.state === "reconciliation_required" || attempt.state === "capturing") throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
       const [existingCapture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (existingCapture?.state === "completed" && order.paymentStatus === "paid") return { status: "captured", captureId: existingCapture.providerCaptureId, replayed: true };
       if (order.paymentStatus === "paid") throw new PaymentServiceError(409, "ORDER_ALREADY_PAID", "Order is already paid");
+      if (!["created", "approved"].includes(attempt.state)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Resolve the capture outcome before retrying");
+      if (!order.financialFinalizedAt || !sameMoney(String(order.remainingTenderAmount), String(attempt.requestedAmount)) || attempt.requestedCurrency !== CURRENCY) {
+        throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order and payment attempt require reconciliation");
+      }
       await tx.update(paymentAttemptsTable).set({ state: "capturing" }).where(eq(paymentAttemptsTable.id, attempt.id));
       let capture;
       try { capture = await this.provider.captureOrder(attempt.providerOrderId, `capture-${attempt.id}`); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      if (capture.orderId !== attempt.providerOrderId || capture.status !== "COMPLETED" || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "capture_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw new PaymentServiceError(409, "CAPTURE_MISMATCH", "Capture requires reconciliation"); }
+      catch (error) {
+        const declined = error instanceof PayPalProviderError && error.failureClass === "declined";
+        await tx.update(paymentAttemptsTable).set({ state: declined ? "failed" : "reconciliation_required", reconciliationState: declined ? "not_required" : "pending", failureClass: error instanceof PayPalProviderError ? error.failureClass : "provider_error" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        if (declined) await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { providerError: error };
+      }
+      if (capture.orderId !== attempt.providerOrderId || capture.status !== "COMPLETED" || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "manual_review", failureClass: "capture_mismatch" }).where(eq(paymentAttemptsTable.id, attempt.id)); return { providerError: new PaymentServiceError(409, "CAPTURE_MISMATCH", "Capture requires reconciliation") }; }
       await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
-      try { await input.finalize(order); }
-      catch (error) { await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id)); throw error; }
-      const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
-      if (creditCents > 0) await consumeCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
-      const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
-      await tx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: creditCents > 0 ? `customer_credit+${tender}` : tender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
-      await tx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
-      return { status: "captured", captureId: capture.captureId, replayed: false };
+      try {
+        await tx.transaction(async finalizeTx => {
+          await input.finalize(order, finalizeTx);
+          const creditCents = dollarsToCents(order.customerCreditApplied);
+          if (creditCents > 0) await consumeCustomerCredit(finalizeTx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.customerId, orderId: order.id, amountCents: creditCents, idempotencyKey: `consume:capture:${attempt.id}` });
+          const tender = capture.fundingSource === "card" ? "paypal_card" : "paypal";
+          const finalTender = creditCents > 0 ? `customer_credit+${tender}` : tender;
+          await finalizeTx.update(ordersTable).set({ paymentStatus: "paid", status: "confirmed", paymentMethod: finalTender, selectedPaymentMethod: tender, paymentIntentId: capture.captureId,
+            taxSnapshot: { ...(order.taxSnapshot as Record<string, unknown> ?? {}), tender: finalTender } }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
+          await finalizeTx.update(paymentAttemptsTable).set({ state: "captured", fundingSource: capture.fundingSource ?? "paypal", capturedAmount: capture.amount.value, capturedCurrency: capture.amount.currency, reconciliationState: "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        });
+        return { status: "captured", captureId: capture.captureId, replayed: false };
+      } catch (error) {
+        await tx.update(paymentAttemptsTable).set({ state: "reconciliation_required", reconciliationState: "pending", failureClass: "local_finalize_failed" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        return { providerError: error };
+      }
     });
+    if ("providerError" in outcome) throw outcome.providerError;
+    return outcome;
   }
 
   /**
@@ -176,7 +260,7 @@ export class PaymentService {
     return { ...finalized, replayed: intent.replayed || finalized.replayed };
   }
 
-  async reconcile(input: { tenantId: number; orderId: number; finalize: (order: typeof ordersTable.$inferSelect) => Promise<void> }) {
+  async reconcile(input: { tenantId: number; orderId: number; finalize: (order: typeof ordersTable.$inferSelect, tx: PaymentTransaction) => Promise<void> }) {
     return db.transaction(async tx => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
@@ -189,9 +273,8 @@ export class PaymentService {
         if (capture.orderId !== attempt.providerOrderId || !sameMoney(capture.amount.value, attempt.requestedAmount) || capture.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "RECONCILIATION_MISMATCH", "Capture does not match the order");
         await tx.insert(paymentCapturesTable).values({ tenantId: input.tenantId, paymentAttemptId: attempt.id, provider: "paypal", providerEnvironment: this.config.environment, providerCaptureId: capture.captureId, amount: capture.amount.value, currency: capture.amount.currency, state: "completed", capturedAt: new Date() }).onConflictDoNothing();
         if (order.paymentStatus !== "paid") {
-          try {
-            await input.finalize(order);
-          } catch (error) {
+          try { await input.finalize(order, tx); }
+          catch (error) {
             logger.error({ orderId: order.id, failureClass: "local_finalize_failed", error: error instanceof Error ? error.message : "unknown" }, "PayPal reconciliation local finalization failed");
             throw error;
           }
@@ -201,8 +284,44 @@ export class PaymentService {
         return { localState: "captured", providerState: capture.status, recovered: order.paymentStatus !== "paid" };
       }
       const nextState = authoritative.status === "APPROVED" ? "approved" : authoritative.status === "CREATED" ? "created" : "reconciliation_required";
+      if (authoritative.status === "VOIDED" && !authoritative.capture && order.paymentStatus !== "paid") {
+        await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_voided" }).where(eq(paymentAttemptsTable.id, attempt.id));
+        await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+        return { localState: "failed", providerState: authoritative.status, recovered: false };
+      }
       await tx.update(paymentAttemptsTable).set({ state: nextState, reconciliationState: nextState === "reconciliation_required" ? "manual_review" : "not_required" }).where(eq(paymentAttemptsTable.id, attempt.id));
       return { localState: nextState, providerState: authoritative.status, recovered: false };
+    });
+  }
+
+  /** Resolve only an expired, unapproved sandbox checkout. This cannot
+   * release a hold after approval or an ambiguous provider response. */
+  async expireAbandonedCreated(input: { tenantId: number; orderId: number; attemptId: number; actorUserId: number }) {
+    if (this.config.environment !== "sandbox") throw new PaymentServiceError(409, "SANDBOX_ONLY", "Abandoned-order expiry requires sandbox");
+    return db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
+      const [actor] = await tx.select({ id: usersTable.id, tenantId: usersTable.tenantId, email: usersTable.email, role: usersTable.role }).from(usersTable).where(and(eq(usersTable.id, input.actorUserId), eq(usersTable.tenantId, input.tenantId))).limit(1);
+      if (!actor || !["admin", "global_admin"].includes(actor.role)) throw new PaymentServiceError(403, "PAYMENT_FORBIDDEN", "Admin authorization required");
+      const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
+      const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId), eq(paymentAttemptsTable.id, input.attemptId))).limit(1);
+      if (!order || !attempt?.providerOrderId || attempt.providerEnvironment !== this.config.environment) throw new PaymentServiceError(404, "PAYMENT_NOT_FOUND", "Payment attempt not found");
+      if (attempt.state === "failed" && attempt.failureClass === "provider_created_abandoned" && order.status === "cancelled") return { status: "expired", replayed: true, reservationReleased: 0 };
+      const unfulfilledPickupReady = order.status === "ready" && order.deliveryMethod === "pickup" && !order.acceptedAt && !order.preparedAt && !order.handoffCompletedAt;
+      if (order.paymentStatus !== "unpaid" || attempt.state !== "created" || attempt.capturedAmount || (!["submitted", "confirmed"].includes(order.status) && !unfulfilledPickupReady)) throw new PaymentServiceError(409, "PAYMENT_RECONCILIATION_REQUIRED", "Payment is not an abandoned created checkout");
+      const [capture] = await tx.select().from(paymentCapturesTable).where(and(eq(paymentCapturesTable.tenantId, input.tenantId), eq(paymentCapturesTable.paymentAttemptId, attempt.id))).limit(1);
+      if (capture) throw new PaymentServiceError(409, "CAPTURE_RECONCILIATION_REQUIRED", "Captured payment cannot be expired");
+      const reservations = await tx.select({ id: inventoryReservationsTable.id, expiresAt: inventoryReservationsTable.expiresAt }).from(inventoryReservationsTable).where(and(eq(inventoryReservationsTable.orderId, order.id), eq(inventoryReservationsTable.status, "reserved")));
+      if (!reservations.length || reservations.some(row => row.expiresAt.getTime() > Date.now())) throw new PaymentServiceError(409, "RESERVATION_NOT_EXPIRED", "Inventory reservation is not expired");
+      const authoritative = await this.provider.getOrder(attempt.providerOrderId);
+      if (authoritative.id !== attempt.providerOrderId || authoritative.status !== "CREATED" || authoritative.capture || !sameMoney(authoritative.amount.value, attempt.requestedAmount) || authoritative.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "PROVIDER_ORDER_NOT_ABANDONED", "Provider order requires reconciliation");
+      await tx.update(paymentAttemptsTable).set({ state: "failed", reconciliationState: "resolved", failureClass: "provider_created_abandoned" }).where(and(eq(paymentAttemptsTable.id, attempt.id), eq(paymentAttemptsTable.tenantId, input.tenantId)));
+      const reservationReleased = await releaseInventoryReservationsForOrder(tx, input.tenantId, order.id);
+      const creditCents = dollarsToCents(order.customerCreditApplied);
+      if (creditCents > 0) await releaseCustomerCredit(tx, { tenantId: input.tenantId, customerId: order.customerId, actorUserId: input.actorUserId, orderId: order.id, amountCents: creditCents, idempotencyKey: `release:abandoned:${attempt.id}`, reason: "Abandoned sandbox PayPal checkout" });
+      const now = new Date();
+      await tx.update(ordersTable).set({ status: "cancelled", fulfillmentStatus: "cancelled", cancelledAt: now, cancelledByUserId: input.actorUserId, customerCreditApplied: creditCents > 0 ? "0.00" : order.customerCreditApplied, remainingTenderAmount: creditCents > 0 ? order.total : order.remainingTenderAmount, updatedAt: now }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, input.tenantId)));
+      await tx.insert(auditLogsTable).values({ tenantId: input.tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "PAYPAL_CREATED_ORDER_ABANDONED", resourceType: "order", resourceId: String(order.id), metadata: { attemptId: attempt.id, reservationReleased, providerState: "CREATED" } });
+      return { status: "expired", replayed: false, reservationReleased };
     });
   }
 
@@ -210,9 +329,21 @@ export class PaymentService {
     if (!await this.provider.verifyWebhook(headers, event)) throw new PaymentServiceError(400, "INVALID_WEBHOOK_SIGNATURE", "Invalid webhook signature");
     const allowed = new Set(["CHECKOUT.ORDER.APPROVED", "PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED", "PAYMENT.REFUND.COMPLETED", "PAYMENT.REFUND.PENDING", "PAYMENT.REFUND.FAILED"]);
     const environment = this.config.environment;
-    const inserted = await db.insert(paymentWebhookEventsTable).values({ provider: "paypal", providerEnvironment: environment, providerEventId: event.id, eventType: event.event_type, processingState: allowed.has(event.event_type) ? "verified" : "ignored" }).onConflictDoNothing().returning();
-    if (inserted.length === 0) return { replayed: true, processed: true };
-    if (!allowed.has(event.event_type)) return { replayed: false, processed: false };
+    const recorded = await db.insert(paymentWebhookEventsTable).values({ provider: "paypal", providerEnvironment: environment, providerEventId: event.id, eventType: event.event_type, processingState: allowed.has(event.event_type) ? "verified" : "ignored" }).onConflictDoNothing().returning();
+    if (!allowed.has(event.event_type)) return { replayed: recorded.length === 0, processed: false };
+    try { return await db.transaction(async tx => {
+    // A delivery may race with a replay. Keep the event row, provider lookup,
+    // and every local effect under one lock, and retry only unfinished rows.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(192837465, hashtext(${event.id}))`);
+    const [row] = await tx.select().from(paymentWebhookEventsTable).where(and(
+      eq(paymentWebhookEventsTable.provider, "paypal"), eq(paymentWebhookEventsTable.providerEnvironment, environment),
+      eq(paymentWebhookEventsTable.providerEventId, event.id),
+    )).limit(1);
+    if (!row || row.eventType !== event.event_type) throw new PaymentServiceError(409, "WEBHOOK_IDENTITY_MISMATCH", "Webhook event identity mismatch");
+    if (row.processingState === "processed" || row.processingState === "ignored") return { replayed: true, processed: row.processingState === "processed" };
+    if (!["verified", "reconciliation_required"].includes(row.processingState)) throw new PaymentServiceError(409, "WEBHOOK_RECONCILIATION_REQUIRED", "Webhook event requires review");
+    const inserted = [row];
+    const db = tx;
     // The resource identifier is used only to retrieve authoritative provider
     // state. It is never trusted as the local order mapping.
     const resourceId = typeof event.resource?.id === "string" ? event.resource.id : undefined;
@@ -244,7 +375,10 @@ export class PaymentService {
       const [attempt] = await db.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.provider, "paypal"), eq(paymentAttemptsTable.providerEnvironment, environment), eq(paymentAttemptsTable.providerOrderId, authoritative.id))).limit(1);
       if (!attempt) { await db.update(paymentWebhookEventsTable).set({ processingState: "reconciliation_required", failureClass: "unmapped_provider_order", providerOrderId: authoritative.id, processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id)); return { replayed: false, processed: false }; }
       if (!sameMoney(authoritative.amount.value, attempt.requestedAmount) || authoritative.amount.currency !== attempt.requestedCurrency) throw new PaymentServiceError(409, "WEBHOOK_AMOUNT_MISMATCH", "Webhook order requires reconciliation");
-      await db.update(paymentAttemptsTable).set({ state: "approved" }).where(eq(paymentAttemptsTable.id, attempt.id));
+      // A delayed approval must never move a captured or refunded attempt
+      // backwards. Capture can complete before this webhook is delivered.
+      if (attempt.state === "created") await db.update(paymentAttemptsTable).set({ state: "approved" })
+        .where(and(eq(paymentAttemptsTable.id, attempt.id), eq(paymentAttemptsTable.state, "created")));
       await db.update(paymentWebhookEventsTable).set({ tenantId: attempt.tenantId, paymentAttemptId: attempt.id, providerOrderId: authoritative.id, processingState: "processed", processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id));
     } else {
       const authoritative = await this.provider.getCapture(resourceId);
@@ -258,6 +392,13 @@ export class PaymentService {
       if (event.event_type === "PAYMENT.CAPTURE.REFUNDED" && pendingRefunds.length === 1) await db.update(paymentRefundsTable).set({ state: "reconciliation_required", failureClass: "capture_refunded_without_refund_identity" }).where(eq(paymentRefundsTable.id, pendingRefunds[0].id));
       await db.update(paymentWebhookEventsTable).set({ tenantId: attempt.tenantId, paymentAttemptId: attempt.id, providerOrderId: authoritative.orderId, providerCaptureId: authoritative.captureId, processingState: event.event_type === "PAYMENT.CAPTURE.REFUNDED" ? "reconciliation_required" : "processed", failureClass: event.event_type === "PAYMENT.CAPTURE.REFUNDED" ? "capture_refunded_without_refund_identity" : null, processedAt: new Date() }).where(eq(paymentWebhookEventsTable.id, inserted[0].id));
     }
-    return { replayed: false, processed: true };
+    return { replayed: recorded.length === 0, processed: true };
+    }); } catch (error) {
+      // Preserve a verified event even when authoritative provider lookup or
+      // local processing fails. A later signed delivery may safely retry it.
+      await db.update(paymentWebhookEventsTable).set({ processingState: "reconciliation_required", failureClass: error instanceof PayPalProviderError ? "provider_lookup_failed" : "processing_failed", processedAt: new Date() })
+        .where(and(eq(paymentWebhookEventsTable.provider, "paypal"), eq(paymentWebhookEventsTable.providerEnvironment, environment), eq(paymentWebhookEventsTable.providerEventId, event.id), inArray(paymentWebhookEventsTable.processingState, ["verified", "reconciliation_required"])));
+      throw error;
+    }
   }
 }

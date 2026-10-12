@@ -1,3 +1,4 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { and, asc, or, ilike, eq, sql, inArray } from "drizzle-orm";
@@ -11,11 +12,10 @@ import {
   AiCatalogSearchResponse,
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
-import { getHouseTenantId } from "../lib/singleTenant";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 export const DEFAULT_AI_CONCIERGE_PROMPT = `You are Zappy — the friendly MyOrder.fun order concierge. Your job is to help customers find what they need from their tenant's catalogue.
 
@@ -192,7 +192,7 @@ const CART_TOOLS: OpenAITool[] = [
 router.get("/admin/ai/product-master-options", async (req, res): Promise<void> => {
   const actorRole = req.dbUser?.role;
   if (actorRole !== "global_admin" && actorRole !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const catalog = await loadAvailableCatalog(tenantId);
   const options = catalog.map(i => ({
     id: i.id,
@@ -208,7 +208,7 @@ router.get("/admin/ai/product-master-options", async (req, res): Promise<void> =
 router.patch("/admin/ai/product-master-config", async (req, res): Promise<void> => {
   const actorRole = req.dbUser?.role;
   if (actorRole !== "global_admin" && actorRole !== "admin") { res.status(403).json({ error: "Forbidden" }); return; }
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const body = z.object({
     catalogItemId: z.number().int().positive(),
     aiUpsellIds: z.array(z.number().int().positive()).max(50).optional(),
@@ -234,7 +234,7 @@ router.post("/ai/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const catalog = await loadAvailableCatalog(tenantId);
   const availableItems = catalog;
 
@@ -361,7 +361,7 @@ router.post("/ai/catalog-search", async (req, res): Promise<void> => {
   const q = query.trim().toLowerCase();
 
   try {
-    const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+    const tenantId = req.authorizedTenantId!;
     const catalog = await db.select().from(catalogItemsTable)
       .where(and(
         eq(catalogItemsTable.tenantId, tenantId),
@@ -394,7 +394,7 @@ router.post("/ai/upsell", async (req, res): Promise<void> => {
     return;
   }
 
-  const tenantId = req.dbUser?.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const catalog = await loadAvailableCatalog(tenantId);
   const cartItems = catalog.filter(i => body.data.cartItemIds.includes(i.id));
   const otherItems = catalog.filter(i => !body.data.cartItemIds.includes(i.id));

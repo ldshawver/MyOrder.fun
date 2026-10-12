@@ -37,10 +37,8 @@ function selectRows(table: { __t?: string } | undefined) {
   return settingsRows;
 }
 
-vi.mock("@workspace/db", () => ({
-  adminSettingsTable,
-  customerDisclaimerAcceptancesTable,
-  db: {
+vi.mock("@workspace/db", () => {
+  const db = {
     execute: vi.fn(() => Promise.resolve()),
     select: () => ({
       from: (table: { __t?: string }) => ({
@@ -62,8 +60,11 @@ vi.mock("@workspace/db", () => ({
       Object.assign(row, vals);
       return [row];
     } }) }) }),
-  },
-}));
+    transaction: vi.fn(),
+  };
+  db.transaction.mockImplementation((callback: (tx: typeof db) => Promise<unknown>) => callback(db));
+  return { adminSettingsTable, customerDisclaimerAcceptancesTable, db };
+});
 vi.mock("drizzle-orm", () => ({
   eq: (col: string, val: unknown) => (row: Record<string, unknown>) => row[col] === val,
   and: (...preds: Array<(row: Record<string, unknown>) => boolean>) => (row: Record<string, unknown>) => preds.every((p) => p(row)),

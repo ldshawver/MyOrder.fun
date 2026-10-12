@@ -1,6 +1,7 @@
 import { Link } from "wouter";
 import { Lock, Store, BarChart3, SlidersHorizontal } from "lucide-react";
 import { useBrand } from "@/contexts/BrandContext";
+import LuciferLanding from "./lucifer-landing";
 
 export default function Home() {
   const { branding, publicBrandLoading } = useBrand();
@@ -8,6 +9,11 @@ export default function Home() {
   const description = branding.customer.businessDescription;
   if (publicBrandLoading) {
     return <main className="min-h-screen bg-background text-foreground flex items-center justify-center"><span className="text-sm text-muted-foreground">Loading storefront…</span></main>;
+  }
+  // Keep other tenants' public homepages intact. myorder.fun is the original
+  // Lucifer Cruz entry host; configured Lucifer Cruz storefront hosts use it too.
+  if (name.trim().toLowerCase() === "lucifer cruz" || window.location.hostname === "myorder.fun") {
+    return <LuciferLanding />;
   }
   return (
     <main className="min-h-screen bg-background text-foreground">

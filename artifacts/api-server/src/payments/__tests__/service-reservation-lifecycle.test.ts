@@ -1,0 +1,191 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PayPalProviderError } from "../paypal";
+
+const state = vi.hoisted(() => ({
+  attempts: [] as Array<Record<string, unknown>>,
+  captures: [] as Array<Record<string, unknown>>,
+  snapshots: [] as Array<Record<string, unknown>>,
+  reservations: [] as Array<Record<string, unknown>>,
+  audit: [] as Array<Record<string, unknown>>,
+  reserved: vi.fn(),
+  released: vi.fn(),
+}));
+
+vi.mock("../inventory", () => ({ ensurePaidOrderInventoryReserved: state.reserved,
+  PaymentInventoryError: class PaymentInventoryError extends Error {} }));
+vi.mock("../../lib/inventoryReservations", () => ({ releaseInventoryReservationsForOrder: state.released }));
+vi.mock("../customerCredit", () => ({ consumeCustomerCredit: vi.fn(), releaseCustomerCredit: vi.fn(), restoreCustomerCredit: vi.fn() }));
+vi.mock("../../lib/checkoutNormalizer", () => ({ getCheckoutTaxSettings: vi.fn(async () => ({ taxMode: "added", taxRate: 0, taxJurisdiction: "test", taxConfigurationId: 1 })) }));
+vi.mock("drizzle-orm", () => ({
+  eq: (field: string, value: unknown) => ({ kind: "eq", field, value }),
+  inArray: (field: string, values: unknown[]) => ({ kind: "in", field, values }),
+  and: (...conditions: unknown[]) => ({ kind: "and", conditions }),
+  sql: (parts: TemplateStringsArray, ...values: unknown[]) => ({ parts, values }),
+}));
+vi.mock("@workspace/db", () => {
+  const col = (name: string) => name;
+  const ordersTable = { table: "orders", id: col("id"), tenantId: col("tenantId") };
+  const paymentAttemptsTable = { table: "attempts", id: col("id"), tenantId: col("tenantId"), orderId: col("orderId"), idempotencyKey: col("idempotencyKey"), state: col("state") };
+  const paymentCapturesTable = { table: "captures", id: col("id"), paymentAttemptId: col("paymentAttemptId") };
+  const inventoryReservationsTable = { table: "reservations", id: col("id"), orderId: col("orderId"), status: col("status"), expiresAt: col("expiresAt") };
+  const usersTable = { table: "users", id: col("id"), tenantId: col("tenantId"), email: col("email"), role: col("role") };
+  const auditLogsTable = { table: "audit" };
+  const other = { id: col("id"), tenantId: col("tenantId"), orderId: col("orderId") };
+  const orderTaxSnapshotsTable = { ...other, table: "taxSnapshots" };
+  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), financialFinalizedAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
+  function matches(row: Record<string, unknown>, condition: unknown): boolean {
+    const c = condition as { kind?: string; field?: string; value?: unknown; values?: unknown[]; conditions?: unknown[] };
+    if (c.kind === "eq") return row[c.field!] === c.value;
+    if (c.kind === "in") return c.values!.includes(row[c.field!]);
+    if (c.kind === "and") return c.conditions!.every(part => matches(row, part));
+    return true;
+  }
+  const tx = {
+    execute: vi.fn(async () => []),
+    select: vi.fn(() => ({ from: (table: { table: string }) => ({ where: (condition: unknown) => {
+      const rows = () => (table.table === "orders" ? [order] : table.table === "captures" ? state.captures : table.table === "taxSnapshots" ? state.snapshots : table.table === "reservations" ? state.reservations : table.table === "users" ? [{ id: 9, tenantId: 2, email: "admin@example.test", role: "admin" }] : state.attempts).filter(row => matches(row, condition));
+      const limit = async () => rows().slice(0, 1);
+      return { limit, then: (resolve: (value: Record<string, unknown>[]) => unknown) => Promise.resolve(rows()).then(resolve), orderBy: () => ({ limit }) };
+    } }) })),
+    insert: vi.fn((table: { table?: string }) => ({ values: (values: Record<string, unknown>) => {
+      const target = table.table === "captures" ? state.captures : table.table === "taxSnapshots" ? state.snapshots : table.table === "audit" ? state.audit : state.attempts;
+      const inserted = { id: target.length + 1, ...values };
+      if (table.table === "audit") { target.push(inserted); return Promise.resolve(); }
+      return {
+        returning: async () => { target.push(inserted); return [inserted]; },
+        onConflictDoNothing: async () => { target.push(inserted); return []; },
+      };
+    } })),
+    update: vi.fn((table: { table?: string }) => ({ set: (values: Record<string, unknown>) => ({ where: (condition: unknown) => {
+      const target = table.table === "orders" ? [order] : table.table === "attempts" ? state.attempts : [];
+      for (const row of target) if (matches(row, condition)) Object.assign(row, values);
+      return { returning: async () => [] };
+    } }) })),
+    transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
+      const before = state.attempts.map(attempt => ({ ...attempt }));
+      try { return await work(tx); } catch (error) { state.attempts = before; throw error; }
+    },
+  };
+  return { testOrder: order, db: { transaction: async (work: (value: typeof tx) => Promise<unknown>) => {
+    const before = state.attempts.map(attempt => ({ ...attempt }));
+    try { return await work(tx); } catch (error) { state.attempts = before; throw error; }
+  } }, ordersTable, paymentAttemptsTable, orderTaxSnapshotsTable, paymentCapturesTable, inventoryReservationsTable, usersTable, auditLogsTable,
+    paymentRefundsTable: other, paymentWebhookEventsTable: other };
+});
+
+const { PaymentService } = await import("../service");
+const { testOrder } = await import("@workspace/db") as unknown as { testOrder: { status: string; remainingTenderAmount: string } };
+const input = { tenantId: 2, customerId: 9, orderId: 4, idempotencyKey: "first" };
+const config = { enabled: true, environment: "sandbox" } as never;
+
+beforeEach(() => { state.attempts = []; state.captures = []; state.snapshots = []; state.reservations = []; state.audit = []; state.reserved.mockReset(); state.released.mockReset(); testOrder.status = "submitted"; testOrder.remainingTenderAmount = "12.00"; });
+
+describe("payment attempt and inventory lifecycle", () => {
+  it("expires an unapproved sandbox order with an expired reservation exactly once and audits it", async () => {
+    state.attempts.push({ id: 12, tenantId: 2, orderId: 4, providerOrderId: "P-CREATED", providerEnvironment: "sandbox", state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+    state.reservations.push({ id: 49, orderId: 4, status: "reserved", expiresAt: new Date(Date.now() - 60_000) });
+    state.released.mockImplementation(async () => {
+      if (state.attempts[0]?.state !== "failed") throw new Error("Unresolved attempt still holds inventory");
+      return 1;
+    });
+    const provider = { getOrder: vi.fn(async () => ({ id: "P-CREATED", status: "CREATED", amount: { value: "12.00", currency: "USD" }, capture: null })) };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.expireAbandonedCreated({ tenantId: 2, orderId: 4, attemptId: 12, actorUserId: 9 })).resolves.toMatchObject({ status: "expired", replayed: false, reservationReleased: 1 });
+    expect(state.attempts[0]).toMatchObject({ state: "failed", failureClass: "provider_created_abandoned" });
+    expect(testOrder.status).toBe("cancelled");
+    expect(state.captures).toHaveLength(0);
+    expect(state.audit).toHaveLength(1);
+    await expect(service.expireAbandonedCreated({ tenantId: 2, orderId: 4, attemptId: 12, actorUserId: 9 })).resolves.toMatchObject({ replayed: true, reservationReleased: 0 });
+    expect(provider.getOrder).toHaveBeenCalledTimes(1);
+    expect(state.released).toHaveBeenCalledTimes(1);
+    expect(state.audit).toHaveLength(1);
+  });
+
+  it.each(["APPROVED", "COMPLETED", "VOIDED"])("does not abandon provider state %s", async status => {
+    state.attempts.push({ id: 12, tenantId: 2, orderId: 4, providerOrderId: "P-CREATED", providerEnvironment: "sandbox", state: "created", requestedAmount: "12.00", requestedCurrency: "USD" });
+    state.reservations.push({ id: 49, orderId: 4, status: "reserved", expiresAt: new Date(Date.now() - 60_000) });
+    const service = new PaymentService(config, { getOrder: vi.fn(async () => ({ id: "P-CREATED", status, amount: { value: "12.00", currency: "USD" } })) } as never);
+    await expect(service.expireAbandonedCreated({ tenantId: 2, orderId: 4, attemptId: 12, actorUserId: 9 })).rejects.toMatchObject({ code: "PROVIDER_ORDER_NOT_ABANDONED" });
+    expect(state.released).not.toHaveBeenCalled();
+    expect(state.audit).toHaveLength(0);
+  });
+  it("commits an unknown provider outcome and keeps inventory held", async () => {
+    const service = new PaymentService(config, { createOrder: vi.fn(async () => { throw new PayPalProviderError("unknown_outcome", "timeout after send"); }) } as never);
+    await expect(service.create(input)).rejects.toThrow("timeout after send");
+    expect(state.attempts[0]).toMatchObject({ state: "reconciliation_required", reconciliationState: "pending" });
+    expect(state.reserved).toHaveBeenCalledTimes(1);
+    expect(state.released).not.toHaveBeenCalled();
+    await expect(service.create({ ...input, idempotencyKey: "retry" })).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_REQUIRED" });
+  });
+
+  it("releases after definitive failure and allows a new keyed retry", async () => {
+    const provider = { createOrder: vi.fn()
+      .mockRejectedValueOnce(new PayPalProviderError("declined", "declined"))
+      .mockResolvedValueOnce({ id: "P-1", amount: { value: "12.00", currency: "USD" }, approvalUrl: "https://example.test" }) };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.create(input)).rejects.toThrow("declined");
+    expect(state.attempts[0]).toMatchObject({ state: "failed" });
+    expect(state.released).toHaveBeenCalledTimes(1);
+    await expect(service.create(input)).rejects.toMatchObject({ code: "PAYMENT_ATTEMPT_FAILED" });
+    const retried = await service.create({ ...input, idempotencyKey: "second" });
+    expect(retried.providerOrderId).toBe("P-1");
+    expect(state.reserved).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps inventory held after an unknown capture result", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const provider = { captureOrder: vi.fn(async () => { throw new PayPalProviderError("unknown_outcome", "capture timed out"); }) };
+    const finalize = vi.fn();
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize })).rejects.toThrow("capture timed out");
+    expect(state.attempts[0]).toMatchObject({ state: "reconciliation_required", reconciliationState: "pending" });
+    expect(state.released).not.toHaveBeenCalled();
+    expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it("releases only on a definitive capture decline", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const provider = { captureOrder: vi.fn(async () => { throw new PayPalProviderError("declined", "declined"); }) };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toThrow("declined");
+    expect(state.attempts[0]).toMatchObject({ state: "failed" });
+    expect(state.released).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a captured provider payment in reconciliation when local finalization fails", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, idempotencyKey: "first", providerOrderId: "P-1",
+      state: "created", providerEnvironment: "sandbox", requestedAmount: "12.00", requestedCurrency: "USD" });
+    const provider = { captureOrder: vi.fn(async () => ({ orderId: "P-1", captureId: "C-1", status: "COMPLETED",
+      amount: { value: "12.00", currency: "USD" }, fundingSource: "paypal" })) };
+    const finalize = vi.fn(async () => { throw new Error("local inventory write failed"); });
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize })).rejects.toThrow("local inventory write failed");
+    expect(state.attempts[0]).toMatchObject({ state: "reconciliation_required", failureClass: "local_finalize_failed" });
+    expect(state.captures).toHaveLength(1);
+    expect(state.released).not.toHaveBeenCalled();
+    await expect(service.capture({ ...input, attemptId: 1, finalize })).rejects.toMatchObject({ code: "PAYMENT_RECONCILIATION_REQUIRED" });
+    expect(provider.captureOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses provider capture after the local order is cancelled", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, providerOrderId: "P-1", providerEnvironment: "sandbox",
+      state: "approved", requestedAmount: "12.00", requestedCurrency: "USD" });
+    testOrder.status = "cancelled";
+    const provider = { captureOrder: vi.fn() };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toMatchObject({ code: "INVALID_ORDER_STATE" });
+    expect(provider.captureOrder).not.toHaveBeenCalled();
+  });
+
+  it("refuses provider capture when the finalized order balance differs from the attempt", async () => {
+    state.attempts.push({ id: 1, tenantId: 2, orderId: 4, providerOrderId: "P-1", providerEnvironment: "sandbox",
+      state: "approved", requestedAmount: "12.00", requestedCurrency: "USD" });
+    testOrder.remainingTenderAmount = "12.01";
+    const provider = { captureOrder: vi.fn() };
+    const service = new PaymentService(config, provider as never);
+    await expect(service.capture({ ...input, attemptId: 1, finalize: vi.fn() })).rejects.toMatchObject({ code: "FINANCIAL_SNAPSHOT_MISMATCH" });
+    expect(provider.captureOrder).not.toHaveBeenCalled();
+  });
+});

@@ -92,8 +92,9 @@ describe("catalog/inventory/par/order source of truth", () => {
     expect(orders).toContain("order = await db.transaction(async (tx) => {");
     expect(orders).toContain("insert(ordersTable)");
     expect(orders).toContain("insert(orderItemsTable)");
-    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType)");
-    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, createdOrder.id,");
+    expect(orders).toContain("reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,");
+    expect(orders).toContain("inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,");
+    expect(orders).toContain("confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id,");
     expect(api("lib/inventoryReservations.ts")).toContain("FOR UPDATE OF ib");
     expect(api("lib/inventoryReservations.ts")).toContain("status = 'reserved'");
     expect(api("lib/inventoryReservations.ts")).toContain("expires_at > now()");
@@ -196,11 +197,14 @@ describe("catalog/inventory/par/order source of truth", () => {
 
 describe("authenticated CSR claim client contract", () => {
   const staff = platform("pages/staff.tsx");
+  const fulfillmentActions = platform("lib/staffFulfillmentAction.ts");
   const detail = platform("pages/order-detail.tsx");
 
   it("sends an identity-free claim once, surfaces errors, and refreshes affected state", () => {
     expect(staff).toContain("if (loading !== null) return;");
-    expect(staff).toContain('body: JSON.stringify(status === "in_progress" ? {}');
+    expect(staff).toContain("staffFulfillmentAction(order.id, status, isAdmin)");
+    expect(fulfillmentActions).toContain('endpoint: `/api/orders/${orderId}/claim`, body: {}');
+    expect(fulfillmentActions).toContain('STAFF_FULFILLMENT_STATUSES = ["in_progress", "ready", "completed"]');
     expect(staff).toContain("body?.error ?? `Request failed with HTTP ${res.status}`");
     expect(staff).toContain('data-testid={`claim-message-${order.id}`}');
     for (const key of ["shiftQueueOrders", "generalQueueOrders", "csrAssignedOrders", "queueCounts", "activeAssignment", "getCurrentShift", "getOrder"]) {
@@ -250,11 +254,14 @@ describe("receipts and deploy workflow", () => {
     expect(deploy).toContain('cd "${DEPLOY_PATH}/deploy"');
     expect(deploy).toContain("Deploy path: ${DEPLOY_PATH}/deploy");
     expect(deploy).toContain("Compose project: ${COMPOSE_PROJECT_NAME}");
-    expect(deploy).toContain("docker compose build --pull");
-    expect(deploy).toContain("docker compose up -d db");
-    expect(deploy).toContain("docker compose run --rm migrate");
-    expect(deploy).toContain("docker compose up -d api platform nginx");
-    expect(deploy).toContain("docker compose ps");
+    expect(deploy).toContain("production_confirmation:");
+    expect(deploy).toContain("environment: production");
+    expect(deploy).toContain("node safe-compose.mjs production config --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production build --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production up db --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production migrate --authorize-production");
+    expect(deploy).toContain("node safe-compose.mjs production up api platform nginx --authorize-production");
+    expect(deploy).toContain("docker compose --project-name deploy --env-file .env --file docker-compose.yml ps");
     expect(deploy).toContain("deploy_postgres_data");
     expect(deploy).toContain("http://127.0.0.1:8081/api/healthz");
     expect(deploy).toContain("Public health check passed with expected release SHA");
@@ -447,8 +454,8 @@ describe("admin/POS/security cleanup regressions", () => {
     const newOrder = platform("pages/new-order.tsx");
     expect(orders).toContain('csrDeliveryDistanceMiles > 2');
     expect(orders).toContain('CSR personal delivery is only available within 2 miles');
-    expect(orders).toContain('Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100');
-    expect(newOrder).toContain('$6 + 3% of sale total');
+    expect(orders).toContain('BigInt(dollarsToCents(subtotal)) * 3n');
+    expect(newOrder).toContain('$6 + 3% of merchandise subtotal');
   });
 
 

@@ -14,14 +14,24 @@ const productionCompose = readFileSync(resolve(root, "deploy/docker-compose.yml"
 describe("PayPal release security structure", () => {
   it("fails legacy Stripe endpoints closed without mock fallback reachability", () => { expect(legacy).toContain("PAYMENT_PROVIDER_RETIRED"); expect(legacy).toContain("status(410)"); expect(legacy).not.toContain("mockPayment"); });
   it("requires auth, approval, strict schemas, idempotency and refund permission", () => { expect(route).toContain("requireApproved"); expect(route).toContain(".strict()"); expect(route).toContain("Idempotency-Key"); expect(route).toContain('requirePermission("orders.refund")'); });
-  it("uses a raw bounded webhook and signature metadata", () => { expect(route).toContain("Buffer.isBuffer"); expect(route).toContain("PayPal-Transmission-Sig"); expect(route).toContain("PayPal-Cert-Url"); });
+  it("uses a raw bounded webhook and preserves the parsed raw event for signature verification", () => {
+    expect(route).toContain("Buffer.isBuffer");
+    expect(route).toContain("PayPal-Transmission-Sig");
+    expect(route).toContain("PayPal-Cert-Url");
+    expect(route).toContain("const event = parsedBody as typeof parsedEvent.data");
+    expect(route).not.toContain("const event = parsedEvent.data");
+  });
   it("does not load PayPal SDK until server configuration enables it", () => { expect(frontend).toContain("!config.enabled"); expect(frontend.indexOf("!config.enabled")).toBeLessThan(frontend.indexOf("document.createElement")); expect(frontend).not.toContain("paypalme"); });
   it("uses the v6 official Wallet element with only the publishable client ID and automatic presentation", () => {
-    expect(frontend).toContain('document.createElement("paypal-button")');
+    expect(frontend).toContain('tag: "paypal-button"');
     expect(frontend).toContain("createPayPalOneTimePaymentSession");
-    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments"], pageType: "checkout" })');
+    expect(frontend).toContain('createInstance({ clientId: config.clientId, components: ["paypal-payments", "venmo-payments", "paypal-guest-payments", "applepay-payments", "googlepay-payments"], pageType: "checkout" })');
+    expect(frontend).toContain("createApplePayOneTimePaymentSession");
+    expect(frontend).toContain("createGooglePayOneTimePaymentSession");
+    expect(frontend).toContain('methods.isEligible("applepay")');
+    expect(frontend).toContain('methods.isEligible("googlepay")');
     expect(frontend).toContain('presentationMode: "auto"');
-    expect(frontend).toContain('headers: await authHeaders()');
+    expect(frontend).toContain('...await authHeaders()');
     expect(frontend).not.toContain("browser-token");
     expect(frontend).not.toContain("clientSecret");
     expect(frontend).not.toContain("type=\"text\" name=\"cardNumber\"");

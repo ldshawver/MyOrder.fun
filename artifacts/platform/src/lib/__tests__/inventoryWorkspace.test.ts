@@ -18,6 +18,14 @@ describe("consolidated inventory workspace", () => {
     expect(source).not.toContain('`/api/admin/inventory-balances/${balance.id}`');
   });
 
+  it("shows one catalogue product row with an expandable all-location quantity view", () => {
+    expect(source).toContain("{items.map(item => <CombinedItemCard key={item.id}");
+    expect(source).toContain("const [showLocations, setShowLocations] = useState(false)");
+    expect(source).toContain("aria-expanded={showLocations}");
+    expect(source).toContain("Quantities by location");
+    expect(source).toContain("const visibleLocations = locationRows");
+  });
+
   it("keeps Inventory Health secondary and shows the canonical preferred reorder quantity", () => {
     expect(source).toContain("Inventory Health");
     expect(source).toContain("showInventoryHealth");

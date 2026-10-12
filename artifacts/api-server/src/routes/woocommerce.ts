@@ -1,13 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, catalogItemsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
 import { getOrCreateSettings, getDecryptedWooCreds } from "./settings";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 function requireTenantAssignedOrGlobal(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
   const actor = req.dbUser!;
@@ -65,6 +65,7 @@ interface WooProduct {
   description?: string;
   short_description?: string;
   stock_status?: string;
+  catalog_visibility?: string;
   sku?: string;
   date_created?: string | null;
   date_modified?: string | null;
@@ -136,27 +137,18 @@ function pickWooCategory(categories: Array<{ name?: string }> | undefined): stri
   return names.find((name) => LC_MAIN_CATEGORIES.includes(name)) || names[0] || "Uncategorized";
 }
 
-const WOO_REQUEST_TIMEOUT_MS = 10_000;
+import { fetchWooSafely } from "../lib/wooSafeHttp";
 const WOO_MAX_PAGES = 100;
 
 async function fetchWoo(storeUrl: string, path: string, consumerKey: string, consumerSecret: string): Promise<Response> {
-  const base = storeUrl.replace(/\/$/, "");
-  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString("base64");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), WOO_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${base}${path}`, {
-      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-      signal: controller.signal,
-    });
+    const response = await fetchWooSafely(storeUrl, path, consumerKey, consumerSecret);
     if (!response.ok) throw classifyWooStatus(response.status);
     return response;
   } catch (error) {
     if (error instanceof WooCommerceUpstreamError) throw error;
-    if (error instanceof Error && error.name === "AbortError") throw new WooCommerceUpstreamError("timeout");
+    if (error instanceof Error && /timed out/i.test(error.message)) throw new WooCommerceUpstreamError("timeout");
     throw new WooCommerceUpstreamError("unavailable");
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -164,7 +156,8 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
   const base = storeUrl.replace(/\/$/, "");
   const allProducts: WooProduct[] = [];
   let page = 1;
-  const perPage = 100;
+  // A full page from this store exceeds the safe client's 10-second timeout.
+  const perPage = 20;
 
   while (page <= WOO_MAX_PAGES) {
     const res = await fetchWoo(base, `/wp-json/wc/v3/products?per_page=${perPage}&page=${page}&status=publish`, consumerKey, consumerSecret);
@@ -174,8 +167,13 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
     allProducts.push(...products);
 
     // Check total pages from header
-    const totalPages = parseInt(res.headers.get("X-WP-TotalPages") ?? "1", 10);
-    if (!Number.isSafeInteger(totalPages) || totalPages < 1 || page >= totalPages || products.length < perPage) break;
+    const totalPagesHeader = res.headers.get("X-WP-TotalPages");
+    const totalPages = totalPagesHeader === null ? null : Number(totalPagesHeader);
+    if (totalPages !== null && (!Number.isSafeInteger(totalPages) || totalPages < 1 || totalPages > WOO_MAX_PAGES)) {
+      throw new WooCommerceUpstreamError("malformed");
+    }
+    if ((totalPages !== null && page >= totalPages) || products.length < perPage) break;
+    if (page === WOO_MAX_PAGES) throw new WooCommerceUpstreamError("malformed");
     page++;
   }
 
@@ -185,7 +183,7 @@ async function fetchAllWooProducts(storeUrl: string, consumerKey: string, consum
 // Sync handler — credentials are always loaded (decrypted) from the DB
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
-async function syncHandler(_req: import("express").Request, res: import("express").Response): Promise<void> {
+export async function syncHandler(req: import("express").Request, res: import("express").Response): Promise<void> {
     try {
       await ensureWooCatalogSchema();
     } catch {
@@ -193,13 +191,13 @@ async function syncHandler(_req: import("express").Request, res: import("express
       return;
     }
 
-    const houseTenantId = await getHouseTenantId();
+    const houseTenantId = req.authorizedTenantId!;
 
     // Always use the saved (and decrypted) credentials. Request-body
     // overrides are intentionally not accepted to avoid SSRF, and env
     // fallbacks are intentionally not accepted so missing persisted
     // config reliably surfaces as a JSON 412.
-    const saved = await getDecryptedWooCreds();
+    const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";
     const storeUrl = saved.storeUrl || "https://lucifercruz.com";
@@ -238,6 +236,7 @@ async function syncHandler(_req: import("express").Request, res: import("express
         const description = product.description ? stripHtml(product.description) : null;
         const shortDesc = product.short_description ? stripHtml(product.short_description) : null;
         const inStock = product.stock_status ? product.stock_status === "instock" : true;
+        const visibleInCatalog = product.catalog_visibility !== "hidden" && product.catalog_visibility !== "search";
         const wcSku = product.sku?.trim() || null;
 
         if (!lcName) { skipped++; continue; }
@@ -283,9 +282,9 @@ async function syncHandler(_req: import("express").Request, res: import("express
 
         // Dedup by alavont_id = "wc_{product_id}"
         const [existing] = await db
-          .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont })
+          .select({ id: catalogItemsTable.id, isLocalAlavont: catalogItemsTable.isLocalAlavont, metadata: catalogItemsTable.metadata })
           .from(catalogItemsTable)
-          .where(eq(catalogItemsTable.alavontId, `wc_${wcId}`))
+          .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.alavontId, `wc_${wcId}`)))
           .limit(1);
 
         if (existing) {
@@ -294,11 +293,14 @@ async function syncHandler(_req: import("express").Request, res: import("express
           if (existing.isLocalAlavont) {
             skipped++;
           } else {
-            await db.update(catalogItemsTable).set(values).where(eq(catalogItemsTable.id, existing.id));
+            const metadata = existing.metadata && typeof existing.metadata === "object" && !Array.isArray(existing.metadata)
+              ? existing.metadata as Record<string, unknown> : {};
+            await db.update(catalogItemsTable).set({ ...values, metadata: { ...metadata, isVisible: visibleInCatalog } })
+              .where(and(eq(catalogItemsTable.tenantId, houseTenantId), eq(catalogItemsTable.id, existing.id)));
             updated++;
           }
         } else {
-          await db.insert(catalogItemsTable).values(values);
+          await db.insert(catalogItemsTable).values({ ...values, metadata: { isVisible: visibleInCatalog } });
           inserted++;
         }
       } catch (err) {
@@ -328,8 +330,8 @@ router.get(
   "/admin/woocommerce/status",
   requirePermission("settings.view"),
   requireTenantAssignedOrGlobal,
-  async (_req, res): Promise<void> => {
-    const s = await getOrCreateSettings();
+  async (req, res): Promise<void> => {
+    const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
     const hasKey = !!(s.wcConsumerKey ?? process.env.WC_CONSUMER_KEY);
     const hasSecret = !!(s.wcConsumerSecret ?? process.env.WC_CONSUMER_SECRET);
     res.json({
@@ -354,12 +356,12 @@ router.post(
   "/admin/woocommerce/test",
   requirePermission("settings.manage_tenant"),
   requireTenantAssignedOrGlobal,
-  async (_req, res): Promise<void> => {
+  async (req, res): Promise<void> => {
     // Test only the SAVED credentials. We deliberately do not honor
     // request-body overrides (admin-gated SSRF) and we deliberately do
     // not fall back to env vars (so missing persisted config surfaces
     // as a clear 412 instead of silently passing).
-    const saved = await getDecryptedWooCreds();
+    const saved = await getDecryptedWooCreds(req.authorizedTenantId!);
     const storeUrl = saved.storeUrl ?? "https://lucifercruz.com";
     const consumerKey = saved.consumerKey ?? "";
     const consumerSecret = saved.consumerSecret ?? "";

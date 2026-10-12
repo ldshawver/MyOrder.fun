@@ -18,6 +18,7 @@ import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPoli
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
 import Home from "@/pages/home";
+import PublicCatalog from "@/pages/public-catalog";
 import WaitlistPage from "@/pages/waitlist";
 import Terms from "@/pages/terms";
 import Privacy from "@/pages/privacy";
@@ -44,7 +45,9 @@ import MfaSetup from "@/pages/admin/mfa";
 import AdminImport from "@/pages/admin/import";
 import AdminInventory from "@/pages/admin/inventory";
 import AdminSettingsPage from "@/pages/admin/settings-page";
+import OrderNotifications from "@/pages/admin/order-notifications";
 import AdminEditCatalog from "@/pages/admin/edit-catalog";
+import AdminCatalogueProducts from "@/pages/admin/catalogue-products";
 import AdminReceipts from "@/pages/admin/receipts";
 import AdminCloseouts from "@/pages/admin/closeouts";
 import AdminFeedback from "@/pages/admin/feedback";
@@ -173,6 +176,15 @@ function HomeRedirect() {
       </Show>
     </>
   );
+}
+
+function SignedOutCatalog() {
+  const { branding, publicBrandLoading } = useBrand();
+  if (publicBrandLoading) return <LoadingScreen />;
+  if (branding.customer.displayName.trim().toLowerCase() !== "lucifer cruz" && window.location.hostname !== "myorder.fun") {
+    return <Redirect to="/waitlist" />;
+  }
+  return <PublicCatalog />;
 }
 
 /** Legacy customer URLs have one canonical mutable cart: /cart. */
@@ -531,6 +543,7 @@ function AuthenticatedApp() {
           )}
 
           {isStaff && <Route path="/admin/inventory">{() => protect(<AdminInventory />)}</Route>}
+          {isStaff && <Route path="/admin/catalogue-products">{() => protect(<AdminCatalogueProducts />)}</Route>}
 
           {["global_admin", "admin"].includes(appRole) && (
             <>
@@ -539,6 +552,7 @@ function AuthenticatedApp() {
               <Route path="/admin/mfa" component={MfaSetup} />
               <Route path="/admin/import" component={AdminImport} />
               <Route path="/admin/settings">{() => protect(<AdminSettingsPage />)}</Route>
+              <Route path="/admin/order-notifications">{() => protect(<OrderNotifications />)}</Route>
               <Route path="/admin/edit-catalog" component={AdminEditCatalog} />
               <Route path="/admin/receipts">{() => protect(<AdminReceipts />)}</Route>
               <Route path="/admin/closeouts" component={AdminCloseouts} />
@@ -593,6 +607,10 @@ function Router() {
       <Route path="/sign-in/*?" component={SignInPage} />
       <Route path="/sign-up/*?" component={SignUpPage} />
       <Route path="/waitlist/*?" component={WaitlistPage} />
+      <Route path="/catalog">
+        <Show when="signed-in"><AuthenticatedApp /></Show>
+        <Show when="signed-out"><SignedOutCatalog /></Show>
+      </Route>
       <Route path="/onboarding">
         <Redirect to="/waitlist" />
       </Route>

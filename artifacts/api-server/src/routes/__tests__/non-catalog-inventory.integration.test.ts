@@ -127,7 +127,7 @@ integrationDescribe("non-catalog inventory disposable-DB acceptance", () => {
     const created = await as("adminA").post("/api/admin/non-catalog/sections").send({ name: "Shipping Supplies" }); expect(created.status).toBe(201); const section = created.body.section;
     expect((await as("adminA").get(`/api/admin/non-catalog/sections/${section.id}`)).status).toBe(200);
     const renamed = await as("adminA").patch(`/api/admin/non-catalog/sections/${section.id}`).send({ name: "Shipping & Supplies" }); expect(renamed.status).toBe(200);
-    const badField = await as("adminA").post("/api/admin/non-catalog/items").send({ name: "Bad item", tenantId: tenantB }); expect(badField.status).toBe(400);
+    const badField = await as("adminA").post("/api/admin/non-catalog/items").send({ name: "Bad item", tenantId: tenantB }); expect(badField.status).toBe(403);
     const createdItem = await as("adminA").post("/api/admin/non-catalog/items").send({ name: "Acceptance Shipping Box", description: "Controlled shipping box", sectionId: section.id, sku: "ACCEPT-BOX-01", barcode: "123456789012", unitOfMeasure: "each", parLevel: 12, moq: 24, preferredReorderQuantity: 36, unitCost: 2.75, supplier: "Acceptance Supply Co", supplierSku: "SUP-BOX-01", notes: "Keep dry" });
     expect(createdItem.status).toBe(201); const item = createdItem.body.item;
     expect(item).toMatchObject({ name: "Acceptance Shipping Box", description: "Controlled shipping box", sectionId: section.id, sku: "ACCEPT-BOX-01", barcode: "123456789012", unitOfMeasure: "each", parLevel: "12.000", moq: "24.000", preferredReorderQuantity: "36.000", unitCost: "2.75", supplier: "Acceptance Supply Co", supplierSku: "SUP-BOX-01", notes: "Keep dry", isActive: true });

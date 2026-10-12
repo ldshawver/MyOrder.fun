@@ -181,6 +181,7 @@ function makePendingUser() {
     firstName: "Pending",
     lastName: "User",
     role: "user",
+    tenantId: 7,
     status: "pending",
     isActive: true,
     mfaEnabled: false,
@@ -321,7 +322,7 @@ describe("Approval gate — catalog endpoints", () => {
 
     const app = buildApp(catalogRouter);
     const res = await supertest(app).post("/api/catalog").send({
-      name: " Tenant Seven Product ", category: " Staging ", price: 1.25, tenantId: 999,
+      name: " Tenant Seven Product ", category: " Staging ", price: 1.25,
       description: null, imageUrl: null, sku: null, alavontImageUrl: " ", luciferCruzImageUrl: null,
     });
 

@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@clerk/react";
+import { staffFulfillmentAction, STAFF_FULFILLMENT_STATUSES, staffVisibleFulfillmentState } from "@/lib/staffFulfillmentAction";
 
 type ExtendedOrder = Order & { fulfillmentStatus?: string; paymentMethod?: string };
 type ExtendedOrderItem = OrderItem & { labName?: string; luciferCruzName?: string; receiptName?: string };
@@ -44,7 +45,6 @@ function formatCourierEta(value?: string | null) {
 const STATUS_TABS = [
   { value: "submitted", label: "Incoming" },
   { value: "in_progress", label: "In Progress" },
-  { value: "preparing", label: "Preparing" },
   { value: "ready", label: "Ready" },
 ];
 
@@ -1355,12 +1355,12 @@ function ActiveShiftPanel({ shift, onClockOut }: { shift: ActiveShift; onClockOu
 
 // ─── Fulfillment Card ─────────────────────────────────────────────────────────
 
-const FULFILLMENT_STEPS = [
-  { status: "in_progress", label: "Claim", icon: HandshakeIcon, color: "yellow" },
-  { status: "preparing", label: "Prepare", icon: Activity, color: "blue" },
-  { status: "ready", label: "Ready", icon: DoorOpen, color: "emerald" },
-  { status: "completed", label: "Complete", icon: CheckCircle2, color: "emerald" },
-];
+const FULFILLMENT_STEPS = STAFF_FULFILLMENT_STATUSES.map(status => ({
+  status,
+  label: status === "in_progress" ? "Claim" : status === "ready" ? "Ready" : "Complete",
+  icon: status === "in_progress" ? HandshakeIcon : status === "ready" ? DoorOpen : CheckCircle2,
+  color: status === "in_progress" ? "yellow" : "emerald",
+}));
 
 function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolean } | null {
   if (!order.estimatedReadyAt) return null;
@@ -1372,10 +1372,11 @@ function getOrderLateState(order: ExtendedOrder): { label: string; stale: boolea
   return { label: `${lateMinutes}m late`, stale: false };
 }
 
-function FulfillmentCard({ order, onRefresh, getToken }: {
+function FulfillmentCard({ order, onRefresh, getToken, isAdmin }: {
   order: ExtendedOrder;
   onRefresh: () => void;
   getToken: () => Promise<string | null>;
+  isAdmin: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const [printingReceipt, setPrintingReceipt] = useState(false);
@@ -1383,11 +1384,41 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
   const [expanded, setExpanded] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [courierState, setCourierState] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<Record<string, boolean>>(
     (order.handoffChecklist as Record<string, boolean> | null) ?? {}
   );
   const fulfillment = order.fulfillmentStatus as string | null;
   const safeItems = safeArray<ExtendedOrderItem>(order.items);
+
+  useEffect(() => {
+    if (order.deliveryMethod !== "uber_direct") return;
+    let stopped = false;
+    const refresh = async () => {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (response.ok && !stopped) setCourierState((await response.json() as { state: string }).state);
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 15000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [getToken, order.id, order.deliveryMethod]);
+
+  async function requestCourier() {
+    setLoading("courier");
+    setActionMessage(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/orders/${order.id}/courier/request`, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: "{}" });
+      const result = await response.json() as { error?: string; state?: string };
+      if (!response.ok) throw new Error(result.error ?? result.state ?? "Courier request requires review");
+      setCourierState(result.state ?? null);
+      setActionMessage({ kind: "success", text: "Courier request recorded." });
+      onRefresh();
+    } catch (error) {
+      setActionMessage({ kind: "error", text: error instanceof Error ? error.message : "Courier request failed" });
+    } finally { setLoading(null); }
+  }
 
   async function toggleChecklistItem(key: string, value: boolean) {
     const next = { ...checklist, [key]: value };
@@ -1415,32 +1446,26 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     } catch { /* non-critical */ } finally { setHandoffBusy(false); }
   }
 
-  async function setFulfillmentStatus(status: string) {
+  async function setFulfillmentStatus(status: "in_progress" | "preparing" | "ready" | "completed") {
     if (loading !== null) return;
     setLoading(status);
     setActionMessage(null);
     try {
       const token = await getToken();
-      const endpoint = status === "in_progress"
-      ? `/api/orders/${order.id}/claim`
-        : status === "preparing"
-        ? `/api/orders/${order.id}/prepare`
-        : status === "ready"
-        ? `/api/orders/${order.id}/ready`
-        : `/api/orders/${order.id}/complete`;
-      const res = await fetch(endpoint, {
+      const action = staffFulfillmentAction(order.id, status, isAdmin);
+      const res = await fetch(action.endpoint, {
         method: "POST",
         headers: status === "completed"
           ? { Authorization: `Bearer ${token}` }
           : { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        ...(status === "completed" ? {} : { body: JSON.stringify(status === "in_progress" ? {} : { fulfillmentStatus: status }) }),
+        ...(action.body ? { body: JSON.stringify(action.body) } : {}),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null) as { error?: string } | null;
         throw new Error(body?.error ?? `Request failed with HTTP ${res.status}`);
       }
       onRefresh();
-      setActionMessage({ kind: "success", text: status === "in_progress" ? "Order claimed and assigned to your active shift." : "Order updated." });
+      setActionMessage({ kind: "success", text: status === "in_progress" ? (isAdmin ? "Order started." : "Order claimed and assigned to your active shift.") : "Order updated." });
     } catch (err) {
       console.error("Fulfillment action failed", err);
       setActionMessage({ kind: "error", text: err instanceof Error ? err.message : "The order could not be updated." });
@@ -1485,7 +1510,7 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
     } catch { /* ignore fetch errors */ } finally { setPrintingLabel(false); }
   }
 
-  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === fulfillment);
+  const activeStep = FULFILLMENT_STEPS.findIndex(s => s.status === staffVisibleFulfillmentState(fulfillment));
   const lateState = getOrderLateState(order);
 
   return (
@@ -1708,11 +1733,17 @@ function FulfillmentCard({ order, onRefresh, getToken }: {
                   : isDone && !isActive && !isLast
                   ? <CheckCircle2 size={11} />
                   : <Icon size={11} />}
-                {step.label}
+                {isAdmin && step.status === "in_progress" ? "Start" : step.label}
               </button>
             );
           })}
+          {order.deliveryMethod === "uber_direct" && fulfillment === "ready" && (
+            <Button size="sm" onClick={() => void requestCourier()} disabled={loading !== null || order.paymentStatus !== "paid" || ![null, "payment_pending", "awaiting_staff_request"].includes(courierState)} data-testid={`button-request-delivery-${order.id}`}>
+              Request Delivery
+            </Button>
+          )}
         </div>
+        {order.deliveryMethod === "uber_direct" && courierState && <p className="mt-2 text-xs text-muted-foreground" role="status">Courier: {({ awaiting_staff_request: "Awaiting staff request", delivery_create_pending: "Request pending", delivery_created: "Courier requested", reconciliation_required: "Status under review", manual_reconciliation_required: "Operator review required", delivered: "Delivered", canceled: "Canceled" } as Record<string, string>)[courierState] ?? "Status pending"}</p>}
       </div>
     </div>
   );
@@ -1782,7 +1813,7 @@ function CustomerServiceRepQueueContent() {
   const safeOrders = safeArray<ExtendedOrder>(queueData.orders);
   const visibleOrders = safeOrders.filter(order => {
     const lifecycle = order.fulfillmentStatus ?? (order.status === "pending" ? "submitted" : order.status === "processing" ? "preparing" : order.status);
-    return lifecycle === activeTab;
+    return (lifecycle === "preparing" ? "in_progress" : lifecycle) === activeTab;
   });
 
   const refresh = useCallback(() => {
@@ -2089,6 +2120,7 @@ function CustomerServiceRepQueueContent() {
                 order={order as ExtendedOrder}
                 onRefresh={refresh}
                 getToken={getToken}
+                isAdmin={isAdmin}
               />
             ))}
           </div>

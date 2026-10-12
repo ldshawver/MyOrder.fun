@@ -6,7 +6,8 @@ import { requirePermission } from "../lib/roles";
 import { z } from "zod";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
 import { restoreCustomerCredit } from "../payments/customerCredit";
-import { loadPaymentConfig, requireOnlinePayments } from "../payments/config";
+import { requireOnlinePayments } from "../payments/config";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { PaymentService, PaymentServiceError } from "../payments/service";
 
@@ -94,9 +95,8 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     const tender = String(order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
     const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender.startsWith("paypal") ? "paypal" : null;
     if (!tenderType) return { status: 409, error: "Unsupported refund tender" };
-    const paypalService = tenderType === "paypal"
-      ? new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())))
-      : undefined;
+    const paypalConfig = tenderType === "paypal" ? requireOnlinePayments(await loadTenantPaymentConfig(tenantId)) : null;
+    const paypalService = paypalConfig ? new PaymentService(paypalConfig, new PayPalProvider(paypalConfig)) : undefined;
     const paidCents = tenderType === "customer_credit" ? cents(order.customer_credit_applied) : cents(order.total);
     const prior = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(refund_amount),0) AS amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status = 'completed'`))[0];
     const remainingPaid = paidCents - cents(prior?.amount);
@@ -170,7 +170,8 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
   if ("paypalPending" in outcome) {
     const pending = outcome.paypalPending;
     if (!pending) { res.status(500).json({ error: "Invalid return outcome" }); return; }
-    const paypalService = new PaymentService(requireOnlinePayments(loadPaymentConfig()), new PayPalProvider(requireOnlinePayments(loadPaymentConfig())));
+    const paypalConfig = requireOnlinePayments(await loadTenantPaymentConfig(tenantId));
+    const paypalService = new PaymentService(paypalConfig, new PayPalProvider(paypalConfig));
     try {
       // Re-entering with the same return idempotency key reuses the durable
       // provider request ID and therefore cannot create a second refund.

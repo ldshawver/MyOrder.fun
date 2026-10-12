@@ -5,6 +5,8 @@ import pg from "pg";
 import {
   assertHistoricalStaging0047Schema,
   historicalStaging0047,
+  historicalStaging0058,
+  historicalStagingInventory,
   type HistoricalStaging0047SchemaEvidence,
   legacyDev0038,
   validateAppliedLineage,
@@ -258,7 +260,99 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       legacyIndices,
       appliedJournalIndices,
       historicalStaging0047Recognized,
+      historicalStaging0058Recognized,
+      historicalStagingInventoryRecognized,
     } = validateAppliedLineage(local, applied);
+
+    if (historicalStagingInventoryRecognized) {
+      // This is the verified result of historical staging 0064-0066. Compare
+      // complete catalog definitions for the affected objects, including
+      // columns, defaults, constraints, indexes, triggers and functions.
+      const legacyTables = [
+        "inventory_transaction_log", "inventory_reservations", "inventory_balances",
+        "inventory_restorations", "catalogue_products", "inventory_items",
+        "catalogue_options", "inventory_reorder_policies", "order_items",
+        "catalog_items", "payment_refunds",
+      ];
+      const objects = await client.query<{ kind: string; key: string; digest: string }>(`
+        WITH affected(name) AS (SELECT unnest($1::text[])), objects AS (
+          SELECT 'table' AS kind, c.relname AS key, c.relkind::text AS definition
+            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relname IN (SELECT name FROM affected)
+          UNION ALL SELECT 'column', table_name||'.'||column_name,
+            ordinal_position||'|'||udt_name||'|'||is_nullable||'|'||COALESCE(column_default,'<none>')
+            FROM information_schema.columns WHERE table_schema='public' AND table_name IN (SELECT name FROM affected)
+          UNION ALL SELECT 'constraint', c.relname||'.'||k.conname, pg_get_constraintdef(k.oid,true)
+            FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname IN (SELECT name FROM affected)
+          UNION ALL SELECT 'index', tablename||'.'||indexname, indexdef
+            FROM pg_indexes WHERE schemaname='public' AND tablename IN (SELECT name FROM affected)
+          UNION ALL SELECT 'trigger', c.relname||'.'||t.tgname, pg_get_triggerdef(t.oid,true)
+            FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='public' AND c.relname IN (SELECT name FROM affected) AND NOT t.tgisinternal
+          UNION ALL SELECT 'function', p.proname, pg_get_functiondef(p.oid)
+            FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='public' AND p.proname IN ('block_live_inventory_model_change','create_standard_option_for_catalogue_item')
+        ) SELECT kind,key,md5(definition) AS digest FROM objects`, [legacyTables]);
+      const fingerprint = createHash("sha256").update(objects.rows
+        .map((row) => `${row.kind}|${row.key}|${row.digest}`).sort().join("\n")).digest("hex");
+      if (objects.rows.length !== 308 || fingerprint !== "6f869975ab4b5538f094c828524f32c3db5a6cfcc1987a29a362b044c055600f") {
+        fail("historical staging 0064-0066 resulting schema does not match the verified snapshot");
+      }
+      const validity = await client.query<{ healthy: boolean }>(`
+        SELECT NOT EXISTS (
+          SELECT 1 FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid
+          WHERE t.relname=ANY($1::text[]) AND (NOT i.indisvalid OR NOT i.indisready)
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+          WHERE t.relname=ANY($1::text[]) AND NOT c.convalidated
+            AND c.conname <> 'inventory_transaction_log_tenant_required'
+        ) AS healthy`, [legacyTables]);
+      if (validity.rows[0]?.healthy !== true) fail("historical staging inventory/catalogue indexes or constraints are invalid");
+      const backfill = await client.query<{ healthy: boolean }>(`
+        SELECT NOT EXISTS (SELECT 1 FROM inventory_reservations
+          WHERE idempotency_key IS NULL OR btrim(idempotency_key)='')
+          AND NOT EXISTS (SELECT 1 FROM catalog_items c WHERE NOT EXISTS (
+            SELECT 1 FROM catalogue_options o WHERE o.tenant_id=c.tenant_id AND o.catalog_item_id=c.id
+          )) AS healthy`);
+      if (backfill.rows[0]?.healthy !== true) fail("historical staging inventory/catalogue backfill is incomplete");
+      for (const row of historicalStagingInventory.rows) {
+        console.log(`[migration-ledger] HISTORICAL-LINEAGE ${row.historicalTag} sha256=${row.hash} canonical=${row.canonicalTag}`);
+      }
+    }
+
+    if (appliedJournalIndices.has(historicalStaging0058.index)) {
+      const constraint = await client.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint
+         WHERE conrelid = 'public.payment_refunds'::regclass
+           AND conname = 'payment_refunds_state_check'
+           AND contype = 'c' AND convalidated`,
+      );
+      const canonicalStates = [
+        "requested", "provider_succeeded", "locally_finalized", "completed",
+        "pending", "failed", "reconciliation_required",
+      ];
+      const oldStates = canonicalStates.filter((state) => state !== "completed");
+      const reconciled = appliedJournalIndices.has(historicalStaging0058.reconciliationIndex);
+      const expectedStates = historicalStaging0058Recognized && !reconciled
+        ? oldStates : canonicalStates;
+      const expectedDefinition = `CHECK ((state = ANY (ARRAY[${expectedStates
+        .map((state) => `'${state}'::text`).join(", ")}])))`;
+      if (
+        constraint.rows.length !== 1 ||
+        constraint.rows[0]?.definition !== expectedDefinition
+      ) {
+        fail("payment_refunds_state_check does not match the verified 0058 lineage");
+      }
+      if (historicalStaging0058Recognized) {
+        console.log(
+          `[migration-ledger] HISTORICAL-LINEAGE ${historicalStaging0058.tag} ` +
+          `sha256=${historicalStaging0058.hash} ` +
+          `reconciled=${reconciled} ledger_mutated=false`,
+        );
+      }
+    }
 
     if (legacyIndices.has(legacyDev0038.index)) {
       const reconciled = await client.query<{ healthy: boolean }>(`
@@ -564,7 +658,9 @@ async function validateAppliedPrefix(local: LocalMigration[]): Promise<void> {
       const lineage = legacyIndices.has(index)
         ? index === historicalStaging0047.index
           ? ` historical-sha256=${historicalStaging0047.historicalHash}`
-          : ` historical-sha256=${legacyDev0038.hash}`
+          : index === historicalStaging0058.index
+            ? ` historical-sha256=${historicalStaging0058.hash}`
+            : ` historical-sha256=${legacyDev0038.hash}`
         : "";
       console.log(
         `[migration-ledger] ${state} ${migration.tag} sha256=${migration.hash}${lineage}`,

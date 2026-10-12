@@ -146,7 +146,7 @@ export function normalizeUberAddress(value: string | UberAddress): UberAddress {
   }
 
   const trimmed = value.trim().replace(/\u00a0/g, " ");
-  // eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
+// eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
   if (!trimmed || trimmed.length > 300 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(trimmed)) throw new UberDirectConfigError("A valid delivery address is required for Uber Direct.");
 
   if (trimmed.startsWith("{")) {
@@ -181,7 +181,7 @@ function validateUberAddress(value: UberAddress): UberAddress {
   const zip = clean(value.zip_code);
   const country = clean(value.country).toUpperCase();
   const all = [...street, city, state, zip, country];
-  // eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
+// eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
   if (!street.length || street.length > 2 || !city || !state || !zip || !/^[A-Z]{2}$/.test(country) || all.some(entry => entry.length > 120 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(entry))) {
     throw new UberDirectConfigError("A complete, valid delivery address is required for Uber Direct.");
   }
@@ -218,7 +218,7 @@ export async function getUberAccessToken(config: UberDirectRuntimeConfig): Promi
   catch { throw new UberDirectApiError(502, "Uber Direct authentication is unavailable.", "oauth_unavailable"); }
   const data = await parseUberResponse(res) as { access_token?: string; expires_in?: number; error?: string };
   if (!res.ok || !data?.access_token) {
-    const code = typeof data?.error === "string" ? data.error.slice(0, 80) : null;
+    const code = null; // Provider text is untrusted, even when it looks like a token.
     logger.warn({ status: res.status, code }, "Uber Direct authentication failed");
     throw new UberDirectApiError(res.status, "Uber Direct authentication failed.", code);
   }
@@ -249,14 +249,48 @@ export async function createUberDeliveryQuote(input: {
   catch { throw new UberDirectApiError(502, "Uber Direct quote service is unavailable.", "quote_unavailable"); }
   const data = await parseUberResponse(res);
   if (!res.ok) {
-    const code = data && typeof data === "object" && "code" in data && typeof data.code === "string" ? data.code.slice(0, 80) : null;
+    const code = null;
     logger.warn({ status: res.status, code }, "Uber Direct quote creation failed");
     throw new UberDirectApiError(res.status, "Uber Direct quote creation failed.", code);
   }
   return data as UberDeliveryQuote;
 }
 
-export type UberDelivery = { id: string; status?: string };
+export type UberDelivery = { id: string; status?: string; external_id?: string; quote_id?: string };
+
+export async function listUberDeliveries(config: UberDirectRuntimeConfig, limit = 100, offset = 0): Promise<{ deliveries: Array<UberDelivery & { external_id?: string; quote_id?: string }>; hasMore: boolean }> {
+  const token = await getUberAccessToken(config);
+  const url = `${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/deliveries?limit=${Math.min(100, limit)}&offset=${offset}`;
+  let res: Response;
+  try { res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) }); }
+  catch { throw new UberDirectApiError(502, "Uber Direct delivery lookup is unavailable.", "lookup_unavailable"); }
+  const data = await parseUberResponse(res);
+  if (!res.ok || !data || typeof data !== "object") throw new UberDirectApiError(res.status, "Uber Direct delivery lookup failed.", "lookup_failed");
+  const result = data as { data?: unknown; deliveries?: unknown; next_href?: string };
+  const deliveries = Array.isArray(result.data) ? result.data : Array.isArray(result.deliveries) ? result.deliveries : [];
+  if (!Array.isArray(result.data) && !Array.isArray(result.deliveries)) throw new UberDirectApiError(502, "Uber Direct delivery lookup was malformed.", "lookup_malformed");
+  return { deliveries: deliveries as Array<UberDelivery & { external_id?: string; quote_id?: string }>, hasMore: Boolean(result.next_href) };
+}
+
+export async function cancelUberDelivery(providerDeliveryId: string, config: UberDirectRuntimeConfig): Promise<UberDelivery> {
+  const token = await getUberAccessToken(config);
+  let res: Response;
+  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/deliveries/${encodeURIComponent(providerDeliveryId)}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) }); }
+  catch { throw new UberDirectApiError(502, "Uber Direct cancellation requires reconciliation.", "cancel_ambiguous"); }
+  const data = await parseUberResponse(res);
+  if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string" || !(data as { id: string }).id.trim()) throw new UberDirectApiError(res.status, "Uber Direct cancellation requires reconciliation.", "cancel_failed");
+  return data as UberDelivery;
+}
+
+export async function getUberDelivery(providerDeliveryId: string, config: UberDirectRuntimeConfig): Promise<UberDelivery & { external_id?: string; quote_id?: string }> {
+  const token = await getUberAccessToken(config);
+  let res: Response;
+  try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${encodeURIComponent(config.customerId)}/deliveries/${encodeURIComponent(providerDeliveryId)}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(10_000) }); }
+  catch { throw new UberDirectApiError(502, "Uber Direct delivery lookup is unavailable.", "lookup_unavailable"); }
+  const data = await parseUberResponse(res);
+  if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string" || !(data as { id: string }).id.trim()) throw new UberDirectApiError(res.status, "Uber Direct delivery lookup failed.", "lookup_failed");
+  return data as UberDelivery & { external_id?: string; quote_id?: string };
+}
 
 export async function createUberDelivery(input: {
   quoteId: string;
@@ -273,7 +307,7 @@ export async function createUberDelivery(input: {
   const token = await getUberAccessToken(config);
   const payload = {
     quote_id: input.quoteId,
-    external_order_id: input.externalOrderReference,
+    external_id: input.externalOrderReference,
     pickup_name: input.pickupName,
     pickup_address: JSON.stringify(input.pickupAddress),
     pickup_phone_number: input.pickupPhoneNumber,
@@ -287,10 +321,15 @@ export async function createUberDelivery(input: {
   try { res = await fetch(`${UBER_API_BASE_URL}/v1/customers/${config.customerId}/deliveries`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "Idempotency-Key": input.externalOrderReference }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000) }); }
   catch { throw new UberDirectApiError(502, "Uber Direct delivery service is unavailable.", "delivery_unavailable"); }
   const data = await parseUberResponse(res);
-  if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string") {
-    const code = data && typeof data === "object" && "code" in data && typeof (data as { code?: unknown }).code === "string" ? (data as { code: string }).code.slice(0, 80) : null;
+  if (!res.ok || !data || typeof data !== "object" || typeof (data as { id?: unknown }).id !== "string" || !(data as { id: string }).id.trim()) {
+    const code = null;
     logger.warn({ status: res.status, code }, "Uber Direct delivery creation failed");
     throw new UberDirectApiError(res.status || 502, "Uber Direct delivery creation failed.", code);
+  }
+  const created = data as UberDelivery;
+  if ((created.external_id && created.external_id !== input.externalOrderReference)
+    || (created.quote_id && created.quote_id !== input.quoteId)) {
+    throw new UberDirectApiError(502, "Uber Direct delivery identity requires reconciliation.", "delivery_identity_mismatch");
   }
   return data as UberDelivery;
 }

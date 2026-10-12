@@ -1,3 +1,4 @@
+import { requireTenantContext } from "../lib/tenantContext";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -123,7 +124,10 @@ function validatePuckData(data: unknown): string | null {
   if (rec.zones) for (const [zoneName, zoneContent] of Object.entries(rec.zones as Record<string, unknown>)) { const err = validateNodes(zoneContent, `zones.${zoneName}`); if (err) return err; }
   return scan(data);
 }
-async function actorTenantId(req: Request): Promise<number> { return req.dbUser?.tenantId ?? await getHouseTenantId(); }
+async function actorTenantId(req: Request): Promise<number> {
+  if (req.authorizedTenantId == null) throw new Error("Explicit tenant context is required");
+  return req.authorizedTenantId;
+}
 function visibleToTenant(req: Request, tenantId: number) { return normalizeRole(req.dbUser?.role) === "global_admin" || req.dbUser?.tenantId === tenantId; }
 
 function htmlFromPuckData(data: unknown): string {
@@ -178,7 +182,7 @@ async function requirePagesManage(req: Request, res: Response, next: import("exp
   if (!(await hasPermission(req.dbUser, "pages.manage", req.dbUser?.tenantId))) { res.status(403).json({ error: "Forbidden: missing permission", permission: "pages.manage" }); return; }
   next();
 }
-router.use("/admin/pages", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"), requirePagesManage);
+router.use("/admin/pages", requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext, requireRole("global_admin", "admin", "tenant_admin"), requirePagesManage);
 
 router.get("/admin/pages/importable", async (req: Request, res: Response): Promise<void> => {
   await ensureVisualEditorSchema();
@@ -227,7 +231,7 @@ router.post("/admin/pages/import", async (req: Request, res: Response): Promise<
   }
 });
 
-router.use("/admin/visual-editor", requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin", "tenant_admin"));
+router.use("/admin/visual-editor", requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext, requireRole("global_admin", "admin", "tenant_admin"));
 
 router.get("/admin/visual-editor/pages", async (req: Request, res: Response): Promise<void> => {
   await ensureVisualEditorSchema();

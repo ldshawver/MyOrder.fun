@@ -132,8 +132,18 @@ import shiftsRouter from "../shifts";
 
 function makeAdmin() {
   return {
-    id: 1, clerkId: "admin-clerk-id", approvedByClerkId: "test-owner", approvedAt: new Date(), email: "admin@example.com",
-    firstName: "A", lastName: "D", role: "admin", status: "approved", isActive: true,
+id: 1,
+clerkId: "admin-clerk-id",
+approvedByClerkId: "test-owner",
+approvedAt: new Date(),
+email: "admin@example.com",
+firstName: "A",
+lastName: "D",
+role: "admin",
+tenantId: 1,
+status: "approved",
+isActive: true,
+main
   };
 }
 

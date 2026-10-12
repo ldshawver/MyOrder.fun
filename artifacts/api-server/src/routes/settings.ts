@@ -3,16 +3,17 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, adminSettingsTable, customerDisclaimerAcceptancesTable, uberDirectSettingsTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
 import { requirePermission, isGlobalAdmin } from "../lib/roles";
-import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
-import { loadPaymentConfig } from "../payments/config";
+import { getTenantPayPalStatus, loadTenantPaymentConfig, paypalSettingsBody, saveTenantPayPalSettings } from "../payments/tenantConfig";
 import { PayPalProvider } from "../payments/paypal";
 import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
 import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
+import { requireTenantContext } from "../lib/tenantContext";
 import { z } from "zod";
+import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
 
 const uberTestAttempts = new Map<string, number[]>();
 function allowUberAdminTest(tenantId: number, userId: number): boolean {
@@ -284,19 +285,17 @@ function isCustomerRole(role: string | null | undefined): boolean {
 }
 
 async function resolveSettingsTenantId(actor?: { tenantId?: number | null; role?: string | null }): Promise<number> {
-  if (actor && !isGlobalAdmin({ role: actor.role ?? "user" }) && actor.tenantId != null) return actor.tenantId;
-  return getHouseTenantId();
+  if (actor?.tenantId != null) return actor.tenantId;
+  throw new Error("Explicit tenant context is required for settings");
 }
 
 async function getTenantScopedSettingsForActor(actor: { tenantId?: number | null; role?: string | null }, createIfMissing = true) {
   await ensureAdminSettingsSchema();
   if (isGlobalAdmin({ role: actor.role ?? "user" })) return getOrCreateSettings(actor);
   if (actor.tenantId == null) return null;
+  if (createIfMissing) return getOrCreateSettings(actor);
   const [existing] = await db.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, actor.tenantId)).limit(1);
-  if (existing) return existing;
-  if (!createIfMissing) return null;
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId: actor.tenantId }).returning();
-  return created;
+  return existing ?? null;
 }
 
 async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, version: number) {
@@ -312,14 +311,18 @@ async function getCurrentDisclaimerAcceptance(tenantId: number, userId: number, 
 async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: string | null }) {
   await ensureAdminSettingsSchema();
   const tenantId = await resolveSettingsTenantId(actor);
-  const [existing] = await db
-    .select()
-    .from(adminSettingsTable)
-    .where(eq(adminSettingsTable.tenantId, tenantId))
-    .limit(1);
-  if (existing) return existing;
-  const [created] = await db.insert(adminSettingsTable).values({ tenantId }).returning();
-  return created;
+  // Some supported staging baselines recorded the historical unique-index
+  // migration without retaining that index. Serialize provisioning explicitly;
+  // an ON CONFLICT (tenant_id) clause fails on those baselines.
+  return db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(734201, ${tenantId})`);
+    const rows = await tx.select().from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(2);
+    if (rows.length > 1) throw new Error("Duplicate tenant settings require reconciliation");
+    if (rows[0]) return rows[0];
+    const [created] = await tx.insert(adminSettingsTable).values({ tenantId }).returning();
+    if (!created) throw new Error("Tenant settings provisioning failed");
+    return created;
+  });
 }
 
 /**
@@ -327,13 +330,13 @@ async function getOrCreateSettings(actor?: { tenantId?: number | null; role?: st
  * Returns null for either field if decryption fails or the column is empty.
  * Used by the woocommerce route to load creds for syncs / connection tests.
  */
-async function getDecryptedWooCreds(): Promise<{
+async function getDecryptedWooCreds(tenantId: number): Promise<{
   storeUrl: string;
   consumerKey: string | null;
   consumerSecret: string | null;
   enabled: boolean;
 }> {
-  const s = await getOrCreateSettings();
+  const s = await getOrCreateSettings({ tenantId });
   return {
     storeUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
     consumerKey: safeDecrypt(s.wcConsumerKey),
@@ -404,7 +407,7 @@ router.post("/customer/disclaimer/accept", async (req, res): Promise<void> => {
 
 // GET /api/admin/settings/customer-disclaimer
 router.get("/admin/settings/customer-disclaimer", requireRole("global_admin", "admin", "supervisor"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
-  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  const settings = await getTenantScopedSettingsForActor({ tenantId: req.authorizedTenantId!, role: req.dbUser!.role });
   if (!settings) {
     res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
     return;
@@ -429,7 +432,7 @@ router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "a
     res.status(400).json({ error: `text must be between 20 and ${CUSTOMER_DISCLAIMER_MAX_CHARS} characters` });
     return;
   }
-  const settings = await getTenantScopedSettingsForActor(req.dbUser!);
+  const settings = await getTenantScopedSettingsForActor({ tenantId: req.authorizedTenantId!, role: req.dbUser!.role });
   if (!settings) {
     res.status(403).json({ error: "Tenant-scoped settings access requires a tenant assignment" });
     return;
@@ -457,27 +460,16 @@ router.put("/admin/settings/customer-disclaimer", requireRole("global_admin", "a
 
 // GET /api/admin/settings
 router.get("/admin/settings", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings(_req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json(mapSettings(s));
 });
 
-/**
- * Provider-specific status only. Credentials stay in deployment secrets and
- * are never accepted by or returned from the tenant settings API.
- */
-router.get("/admin/settings/paypal-status", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
+/** Tenant-scoped PayPal status; secrets are never returned. */
+router.get("/admin/settings/paypal-status", requireRole("admin", "global_admin"), requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
   try {
-    const config = loadPaymentConfig();
-    if (!config.enabled) {
-      res.json({ enabled: false, environment: "disabled", clientIdConfigured: false, clientSecretConfigured: false, webhookIdConfigured: false, wallet: "not_configured", advancedCards: "not_configured", vault: "unknown", connection: "not_tested" });
-      return;
-    }
+    const status = await getTenantPayPalStatus(_req.authorizedTenantId!);
     res.json({
-      enabled: true,
-      environment: config.environment,
-      clientIdConfigured: true,
-      clientSecretConfigured: true,
-      webhookIdConfigured: true,
+      ...status,
       // Eligibility is intentionally discovered by PayPal's browser SDK for
       // the merchant, buyer, currency, and session; never promise a method
       // from a tenant-edited setting.
@@ -491,10 +483,20 @@ router.get("/admin/settings/paypal-status", requirePermission("settings.view"), 
   }
 });
 
-/** Runs a bounded OAuth handshake without returning or storing credentials. */
-router.post("/admin/settings/paypal-status/test", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+router.put("/admin/settings/paypal-status", requireRole("admin", "global_admin"), requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  const parsed = paypalSettingsBody.safeParse(req.body ?? {});
+  if (!parsed.success) { res.status(400).json({ error: "Invalid PayPal configuration" }); return; }
   try {
-    const config = loadPaymentConfig();
+    const status = await saveTenantPayPalSettings(req.authorizedTenantId!, parsed.data);
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.paypal.configuration_changed", resourceType: "payment_provider", resourceId: "paypal", metadata: { fields: Object.keys(parsed.data).filter(field => field !== "clientSecret"), clientSecretUpdated: Boolean(parsed.data.clientSecret), environment: status.environment }, ipAddress: req.ip });
+    res.json({ ...status, wallet: "checkout_eligibility_required", advancedCards: "checkout_eligibility_required", vault: "unknown", connection: "not_tested" });
+  } catch { res.status(409).json({ error: "PayPal configuration is incomplete or conflicts with the selected environment" }); }
+});
+
+/** Runs a bounded OAuth handshake without returning or storing credentials. */
+router.post("/admin/settings/paypal-status/test", requireRole("admin", "global_admin"), requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+  try {
+    const config = await loadTenantPaymentConfig(req.authorizedTenantId!);
     if (!config.enabled) {
       res.status(503).json({ connection: "not_configured" });
       return;
@@ -601,7 +603,7 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
     }
   }
 
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   if (Object.keys(update).length === 0) {
     res.json(mapSettings(existing));
     return;
@@ -620,8 +622,8 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
  * Returns the WC config in masked form. Secrets are NEVER returned in plaintext —
  * only boolean flags indicating whether they have been saved.
  */
-router.get("/admin/settings/woocommerce", requirePermission("settings.view"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
-  const s = await getOrCreateSettings(_req.dbUser);
+router.get("/admin/settings/woocommerce", requireRole("admin"), requireTenantAssignedOrGlobal, async (_req, res): Promise<void> => {
+  const s = await getOrCreateSettings({ tenantId: _req.authorizedTenantId! });
   res.json({
     wc_store_url: s.wcStoreUrl ?? "https://lucifercruz.com",
     wcStoreUrl: s.wcStoreUrl ?? "https://lucifercruz.com",
@@ -639,14 +641,22 @@ router.get("/admin/settings/woocommerce", requirePermission("settings.view"), re
  * Secrets are encrypted at rest using AES-256-GCM keyed off SETTINGS_ENC_KEY.
  * They are never echoed back to the client.
  */
-router.put("/admin/settings/woocommerce", requirePermission("settings.manage_tenant"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
+const WooCredentialsBody = z.object({
+  wcStoreUrl: z.string().url().max(2048).optional(),
+  wc_store_url: z.string().url().max(2048).optional(),
+  wcConsumerKey: z.string().max(256).optional(),
+  wc_consumer_key: z.string().max(256).optional(),
+  wcConsumerSecret: z.string().max(256).optional(),
+  wc_consumer_secret: z.string().max(256).optional(),
+  enabled: z.boolean().optional(),
+  wcEnabled: z.boolean().optional(),
+}).strict();
+
+router.put("/admin/settings/woocommerce", requireRole("admin"), requireTenantAssignedOrGlobal, async (req, res): Promise<void> => {
   try {
-    const body = (req.body ?? {}) as {
-      wcStoreUrl?: string; wc_store_url?: string;
-      wcConsumerKey?: string; wc_consumer_key?: string;
-      wcConsumerSecret?: string; wc_consumer_secret?: string;
-      enabled?: boolean; wcEnabled?: boolean;
-    };
+    const parsed = WooCredentialsBody.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: "Invalid WooCommerce configuration" }); return; }
+    const body = parsed.data;
 
     const storeUrl = body.wcStoreUrl ?? body.wc_store_url;
     const consumerKey = body.wcConsumerKey ?? body.wc_consumer_key;
@@ -656,7 +666,10 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
     const update: Record<string, unknown> = {};
     if (storeUrl !== undefined) {
       const trimmed = String(storeUrl).trim();
-      update["wcStoreUrl"] = trimmed || "https://lucifercruz.com";
+      let url: URL;
+      try { url = assertWooHttpsOrigin(trimmed); }
+      catch { res.status(400).json({ error: "Store URL must be a public HTTPS origin" }); return; }
+      update["wcStoreUrl"] = url.origin;
     }
     if (consumerKey !== undefined) {
       const trimmed = String(consumerKey).trim();
@@ -675,14 +688,16 @@ router.put("/admin/settings/woocommerce", requirePermission("settings.manage_ten
       return;
     }
 
-    const existing = await getOrCreateSettings(req.dbUser);
+    const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
     const [updated] = await db.update(adminSettingsTable)
       .set(update)
-      .where(eq(adminSettingsTable.id, existing.id))
+      .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, req.authorizedTenantId!)))
       .returning();
+    if (!updated) { res.status(409).json({ error: "WooCommerce configuration could not be saved" }); return; }
+    await writeAuditLog({ actorId: req.dbUser!.id, actorEmail: req.dbUser!.email, actorRole: req.dbUser!.role, tenantId: req.authorizedTenantId!, action: "settings.woocommerce.credentials_changed", resourceType: "admin_settings", resourceId: String(updated.id), metadata: { keyAction: consumerKey === undefined ? "unchanged" : consumerKey.trim() ? existing.wcConsumerKey ? "replaced" : "created" : "removed", secretAction: consumerSecret === undefined ? "unchanged" : consumerSecret.trim() ? existing.wcConsumerSecret ? "replaced" : "created" : "removed" }, ipAddress: req.ip });
     res.json(mapSettings(updated));
-  } catch (err) {
-    res.status(500).json({ error: (err as Error)?.message ?? "Failed to save WooCommerce settings" });
+  } catch {
+    res.status(500).json({ error: "Failed to save WooCommerce configuration" });
   }
 });
 
@@ -799,7 +814,7 @@ router.post("/admin/settings/uber-direct/test-quote", requireUberAdmin, requireT
 // ─── CSR / Pickup / Printer Network Settings ─────────────────────────────────
 
 router.get("/admin/csr-settings", requirePermission("shift_settings.view"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! }) as AdminSettingsWithCsr;
   res.json({
     pickupInstructionOptions: parsePickupInstructions(s.pickupInstructionOptions),
     shiftLocationOptions: parseShiftLocations(s.shiftLocationOptions),
@@ -814,7 +829,7 @@ router.put("/admin/csr-settings", requirePermission("shift_settings.manage"), as
   const deliveryOptions = req.body?.deliveryOptions;
   const printerNetworkConfig = req.body?.printerNetworkConfig;
   const update: Record<string, unknown> = {};
-  const existing = await getOrCreateSettings(req.dbUser!) as AdminSettingsWithCsr;
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! }) as AdminSettingsWithCsr;
 
   if (pickupInstructionOptions !== undefined) {
     if (!Array.isArray(pickupInstructionOptions) || pickupInstructionOptions.length > 20) {
@@ -899,7 +914,7 @@ function parseIds(raw: string | null | undefined): number[] {
 
 // GET /api/concierge/promoted — authenticated users: returns full catalog items
 router.get("/concierge/promoted", async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   const ids = parseIds(s.conciergePromotedItemIds);
   if (ids.length === 0) { res.json([]); return; }
   const { catalogItemsTable } = await import("@workspace/db");
@@ -918,7 +933,7 @@ router.get("/concierge/promoted", async (req, res): Promise<void> => {
 
 // GET /api/admin/concierge/promoted — admin/supervisor: returns IDs
 router.get("/admin/concierge/promoted", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json({ ids: parseIds(s.conciergePromotedItemIds) });
 });
 
@@ -929,7 +944,7 @@ router.put("/admin/concierge/promoted", requireRole("global_admin", "admin"), as
     res.status(400).json({ error: "ids must be an array of up to 8 positive integers" });
     return;
   }
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   await db.update(adminSettingsTable)
     .set({ conciergePromotedItemIds: JSON.stringify(ids) })
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)));
@@ -971,13 +986,13 @@ function containsProhibitedConciergeLanguage(steps: Array<{ title: string; body:
 
 // GET /api/concierge/intro-steps — any authenticated user
 router.get("/concierge/intro-steps", async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
 // GET /api/admin/concierge-steps — admin/supervisor read
 router.get("/admin/concierge-steps", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
-  const s = await getOrCreateSettings(req.dbUser);
+  const s = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   res.json(parseSteps(s.conciergeIntroSteps));
 });
 
@@ -992,7 +1007,7 @@ router.put("/admin/concierge-steps", requireRole("global_admin", "admin", "super
     res.status(400).json({ error: "Intro steps contain unsafe or prohibited marketplace language." });
     return;
   }
-  const existing = await getOrCreateSettings(req.dbUser);
+  const existing = await getOrCreateSettings({ tenantId: req.authorizedTenantId! });
   const [updated] = await db.update(adminSettingsTable)
     .set({ conciergeIntroSteps: JSON.stringify(parsed.data) })
     .where(and(eq(adminSettingsTable.id, existing.id), eq(adminSettingsTable.tenantId, existing.tenantId)))

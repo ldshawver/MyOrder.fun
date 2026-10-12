@@ -38,6 +38,12 @@ function storefrontHostFromUrl(value: string | null): string | null {
   } catch { return null; }
 }
 
+/** Select a tenant only when one configured storefront owns the exact host. */
+export function resolvePublicStorefrontTenantIdForHost(host: string, records: StorefrontBrandingRecord[]): number | null {
+  const matches = records.filter(record => storefrontHostFromUrl(record.storefrontUrl) === host);
+  return matches.length === 1 ? matches[0].tenantId : null;
+}
+
 export function publicBrandingFromRecord(record: StorefrontBrandingRecord): PublicStorefrontBranding | null {
   if (!storefrontHostFromUrl(record.storefrontUrl)) return null;
   const customer = object((object(record.settings).branding as TenantBrandingEnvelope | undefined)?.customer);

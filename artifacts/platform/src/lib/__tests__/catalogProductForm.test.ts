@@ -20,6 +20,16 @@ describe("catalog product submission", () => {
     }));
   });
 
+  it("round-trips a legacy item with no compare-at price or PAR without creating zero prices", () => {
+    const legacy = { ...valid, compareAtPrice: null, parLevel: null };
+    const editDraft = { ...valid, compareAtPrice: legacy.compareAtPrice ?? "", parLevel: legacy.parLevel ?? "" };
+    const unchanged = createCatalogProductPayload(editDraft);
+    expect(unchanged.compareAtPrice).toBeNull();
+    expect(unchanged.parLevel).toBeNull();
+    const edited = createCatalogProductPayload({ ...editDraft, compareAtPrice: "12.50" });
+    expect(edited.compareAtPrice).toBe(12.5);
+  });
+
   it("sends edited customer-safe presentation fields", () => {
     expect(createCatalogProductPayload({
       ...valid,

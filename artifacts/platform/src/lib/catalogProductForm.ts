@@ -1,5 +1,5 @@
 export type CatalogProductDraft = Record<string, string | boolean | number>;
-export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price" | "imageUrl" | "alavontImageUrl" | "luciferCruzImageUrl", string>>;
+export type CatalogProductFieldErrors = Partial<Record<"name" | "category" | "price" | "compareAtPrice" | "regularPrice" | "homiePrice" | "parLevel" | "moq" | "preferredReorderQuantity" | "imageUrl" | "alavontImageUrl" | "luciferCruzImageUrl", string>>;
 
 function canonicalText(form: CatalogProductDraft, primary: string, fallback: string): string {
   return String(form[primary] || form[fallback] || "").trim();
@@ -37,9 +37,12 @@ export function validateCatalogProductDraft(form: CatalogProductDraft): CatalogP
   if (!canonicalText(form, "category", "alavontCategory")) errors.category = "Category is required.";
   const price = Number(form.price);
   if (!Number.isFinite(price) || price <= 0) errors.price = "Price must be greater than zero.";
+  for (const key of ["compareAtPrice", "regularPrice", "homiePrice"] as const) {
+    if (optionalNumber(form, key) === undefined) errors[key] = "Enter a valid amount or leave this blank.";
+  }
   for (const key of ["parLevel", "moq", "preferredReorderQuantity"] as const) {
     const value = optionalNumber(form, key);
-    if (value === undefined || (value != null && value < 0)) errors.price = `${key === "parLevel" ? "PAR" : key === "moq" ? "Minimum order quantity" : "Preferred reorder quantity"} must be a non-negative number.`;
+    if (value === undefined || (value != null && value < 0)) errors[key] = `${key === "parLevel" ? "PAR" : key === "moq" ? "Minimum order quantity" : "Preferred reorder quantity"} must be a non-negative number.`;
   }
   for (const key of ["imageUrl", "alavontImageUrl", "luciferCruzImageUrl"] as const) {
     const value = optionalText(form, key);
@@ -64,7 +67,7 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     alavontDescription: String(form.alavontDescription || "").trim() || null,
     price: Number(form.price),
     compareAtPrice: optionalNumber(form, "compareAtPrice"),
-    regularPrice: form.regularPrice ? Number(form.regularPrice) : null,
+    regularPrice: optionalNumber(form, "regularPrice"),
     homiePrice: optionalNumber(form, "homiePrice"),
     imageUrl: optionalText(form, "imageUrl"),
     alavontImageUrl: String(form.alavontImageUrl || "").trim() || null,
@@ -75,7 +78,7 @@ export function createCatalogProductPayload(form: CatalogProductDraft): Record<s
     isTaxable: form.isTaxable !== false,
     isFeatured: form.isFeatured === true,
     isSaleFeatured: form.isSaleFeatured === true,
-    parLevel: optionalNumber(form, "parLevel") ?? 0,
+    parLevel: optionalNumber(form, "parLevel"),
     moq: optionalNumber(form, "moq") ?? 0,
     preferredReorderQuantity: optionalNumber(form, "preferredReorderQuantity") ?? 0,
     displayName: optionalText(form, "displayName") ?? null,

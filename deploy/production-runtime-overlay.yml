@@ -1,0 +1,4 @@
+services:
+  api:
+    volumes:
+      - /opt/alavont/shared/print-assets:/var/lib/myorder/print-assets

@@ -63,4 +63,5 @@ export interface Order {
   handoffCompletedByUserId?: number | null;
   createdAt: Date;
   updatedAt: Date;
+  serverNow?: Date;
 }

@@ -1,6 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { eq, and, desc, lt, gt, isNotNull, isNull, notInArray, or, sql, inArray } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
+import { isFinanciallyClosedForFulfillment } from "../lib/orderCloseEligibility";
+import { canAdminStartDefaultQueueOrder } from "../lib/adminQueueStart";
 import {
   db,
   ordersTable,
@@ -13,6 +15,8 @@ import {
   inventoryLocationsTable,
   catalogItemsTable,
   cashLedgerEntriesTable,
+  paymentAttemptsTable,
+  paymentCapturesTable,
   auditLogsTable,
   csrBoxesTable,
   generalQueueCashSessionParticipantsTable,
@@ -40,10 +44,13 @@ import {
 } from "@workspace/api-zod";
 import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
-import { getHouseTenantId } from "../lib/singleTenant";
+import { requireTenantContext } from "../lib/tenantContext";
+import { quantityText, quantityUnits } from "../lib/exactQuantity";
+import { enqueueOrderCreated } from "../lib/orderNotifications";
 import { getBranding } from "../config/brandingConfig";
 import {
   normalizeCheckoutCart,
+  computeBaseCheckoutTotals,
   computeCheckoutTotals,
   getCheckoutTaxSettings,
   CheckoutMappingError,
@@ -60,13 +67,14 @@ import {
 import { POS_INTEGRITY_STRICT } from "../lib/posIntegrity";
 import { z } from "zod";
 import { computeOrderFinancialSnapshot } from "../lib/orderFinancialSnapshots";
-import { consumeCustomerCredit } from "../payments/customerCredit";
+import { consumeCustomerCredit, getCustomerCreditBalance, releaseCustomerCredit, reserveCustomerCredit, CustomerCreditError } from "../payments/customerCredit";
 import { deductPaidOrderInventory } from "../payments/inventory";
-import { loadPaymentConfig } from "../payments/config";
+import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 import { checkoutPaymentMethods } from "../payments/checkoutMethods";
+import { centsToDollars, dollarsToCents } from "../lib/tenderTax";
 
 import { logger } from "../lib/logger";
-import { queueUberDeliveryForPaidOrder } from "../lib/uberFulfillment";
+import { queueUberDeliveryForPaidOrder, reconcileUberDelivery, requestUberCancellation, requestUberDelivery } from "../lib/uberFulfillment";
 import { usesGeneralQueueCashSession } from "../lib/cashCloseoutContext";
 import { requireCurrentCustomerDisclaimerAcceptance } from "../lib/customerDisclaimerEnforcement";
 import { createVerifiedCheckoutConversionToken, requireVerifiedCheckoutConversion, sendCheckoutConversionRequired, CheckoutConversionRequiredError } from "../lib/checkoutConversionGate";
@@ -113,6 +121,9 @@ class InsufficientInventoryError extends Error {
     this.name = "InsufficientInventoryError";
   }
 }
+class OptionSelectionError extends Error {}
+class CheckoutReplayConflictError extends Error {}
+type OptionCheckoutRequest = Request & { selectedOptionByCatalog?: Map<number, number> };
 
 class UberQuoteConsumedError extends Error {}
 
@@ -144,6 +155,7 @@ router.get(
   loadDbUser,
   requireDbUser,
   requireApproved,
+  requireTenantContext,
   (req, res): void => {
     const actor = req.dbUser!;
     res.setHeader("Content-Type", "text/event-stream");
@@ -153,7 +165,7 @@ router.get(
     res.flushHeaders?.();
     res.write(`event: hello\ndata: ${JSON.stringify({ userId: actor.id, role: actor.role })}\n\n`);
 
-    const teardown = subscribe({ res, userId: actor.id, role: actor.role });
+    const teardown = subscribe({ res, tenantId: req.authorizedTenantId!, userId: actor.id, role: actor.role });
     const keepalive = setInterval(() => {
       try { res.write(`: keepalive\n\n`); } catch { /* ignore */ }
     }, 25_000);
@@ -174,11 +186,12 @@ router.get(
   loadDbUser,
   requireDbUser,
   requireApproved,
+  requireTenantContext,
   (req, res): void => {
     const actor = req.dbUser!;
     const since = typeof req.query.since === "string" ? req.query.since : new Date(Date.now() - 60_000).toISOString();
     const events = getRecentEventsForClient(
-      { res, userId: actor.id, role: actor.role },
+      { res, tenantId: req.authorizedTenantId!, userId: actor.id, role: actor.role },
       since,
     );
     res.json({ events, serverTime: new Date().toISOString() });
@@ -193,7 +206,8 @@ router.get(
   requireDbUser,
   requireApproved,
   requireRole("global_admin", "admin"),
-  async (_req, res): Promise<void> => {
+  requireTenantContext,
+  async (req, res): Promise<void> => {
     // Push the delayed predicate into SQL so we don't load the full
     // orders table to filter in memory. Excludes terminal fulfillment
     // and terminal legacy status values to keep parity with the
@@ -203,6 +217,7 @@ router.get(
     const TERMINAL_STATUS = ["completed", "cancelled", "ready", "delivered", "refunded"];
     const delayed = await db.select().from(ordersTable).where(
       and(
+        eq(ordersTable.tenantId, req.authorizedTenantId!),
         isNotNull(ordersTable.estimatedReadyAt),
         lt(ordersTable.estimatedReadyAt, now),
         or(
@@ -217,7 +232,50 @@ router.get(
   },
 );
 
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
+
+function queryRows<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  return ((value as { rows?: T[] } | undefined)?.rows ?? []);
+}
+
+// The new storefront sends option IDs. Resolve them under the authorized tenant
+// before the existing conversion and order schemas see a catalogue identity.
+router.use(async (req, res, next) => {
+  if (req.method !== "POST" || !["/orders", "/cart/convert", "/checkout/quote", "/orders/preview-conversion", "/orders/delivery-quote"].includes(req.path)) { next(); return; }
+  const incoming = (req.body as { items?: unknown } | undefined)?.items;
+  if (!Array.isArray(incoming) || !incoming.some(line => line && typeof line === "object" && "optionId" in line)) { next(); return; }
+  const count = z.number().int().positive();
+  const parsed = z.array(z.union([
+    z.object({ optionId: z.number().int().positive(), quantity: count }).strict(),
+    z.object({ catalogItemId: z.number().int().positive(), quantity: count }).strict(),
+  ])).min(1).safeParse(incoming);
+  if (!parsed.success) { res.status(400).json({ error: "Cart items must contain an optionId or legacy catalogItemId and quantity" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const mapped = [];
+  const selectedOptionByCatalog = new Map<number, number>();
+  for (const line of parsed.data) {
+    if ("catalogItemId" in line) { mapped.push(line); continue; }
+    const option = queryRows<{ catalogItemId: number }>(await db.execute(sql`
+      SELECT co.catalog_item_id AS "catalogItemId" FROM catalogue_options co
+      JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
+      JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+      WHERE co.tenant_id = ${tenantId} AND co.id = ${line.optionId}
+        AND co.active = true AND cp.active = true AND ci.is_available = true
+        AND ci.alavont_in_stock IS DISTINCT FROM false
+        AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+        AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
+        AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
+        AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL LIMIT 1
+    `))[0];
+    if (!option) { res.status(404).json({ error: "Option not available" }); return; }
+    selectedOptionByCatalog.set(option.catalogItemId, line.optionId);
+    mapped.push({ catalogItemId: option.catalogItemId, quantity: line.quantity });
+  }
+  (req.body as { items: unknown }).items = mapped;
+  (req as OptionCheckoutRequest).selectedOptionByCatalog = selectedOptionByCatalog;
+  next();
+});
 
 const conversionSnapshots = new Map<string, { tenantId: number; userId: number; itemKey: string; snapshot: unknown; createdAt: number }>();
 function cartItemKey(items: Array<{ catalogItemId: number; quantity: number }>): string {
@@ -260,11 +318,11 @@ const PreviewConversionBody = z.object({
 }).strict();
 
 async function buildConversionPreview(lines: NormalizedCartLine[], confirmation: z.infer<typeof PreviewConversionBody>["confirmation"], tenantId?: number) {
-  const totals = computeCheckoutTotals(lines, await getCheckoutTaxSettings(tenantId));
+  const totals = computeBaseCheckoutTotals(lines);
   const branding = tenantId ? await getBranding(tenantId) : null;
   const [paymentSettings] = tenantId ? await db.select({ enabledProcessors: adminSettingsTable.enabledProcessors })
     .from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1) : [];
-  const paymentMethods = checkoutPaymentMethods(paymentSettings?.enabledProcessors ?? ["paypal"], loadPaymentConfig().enabled);
+  const paymentMethods = checkoutPaymentMethods(paymentSettings?.enabledProcessors ?? ["paypal"], tenantId ? (await loadTenantPaymentConfig(tenantId)).enabled : false);
   return {
     confirmation: {
       acceptedAllSalesFinal: true,
@@ -348,6 +406,15 @@ const DeliveryQuoteBody = z.object({
   }).optional(),
 }).strict();
 
+const CheckoutQuoteBody = z.object({
+  items: z.array(DeliveryQuoteCartLineInput).min(1),
+  paymentMethod: z.enum(["cash", "paypal", "paypal_card", "customer_credit"]),
+  customerCreditAmount: z.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
+  tipAmount: z.number().finite().nonnegative().optional(),
+  deliveryMethod: z.enum(["pickup", "manual_delivery", "csr_delivery", "uber_direct"]).default("pickup"),
+  deliveryQuoteId: z.string().min(1).optional(),
+}).strict();
+
 function buildUberManifestItems(lines: NormalizedCartLine[]): UberManifestItem[] {
   buildSafeMerchantPayloadLines(lines);
   return lines.map(line => ({
@@ -365,13 +432,22 @@ function checkoutFingerprint(lines: NormalizedCartLine[]): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function sameUberAddress(left: UberAddress, right: UberAddress): boolean {
+  return left.street_address.length === right.street_address.length &&
+    left.street_address.every((part, index) => part === right.street_address[index]) &&
+    left.city === right.city && left.state === right.state &&
+    left.zip_code === right.zip_code && left.country === right.country;
+}
+
 function normalizeCheckoutTip(raw: unknown): number {
   if (raw === undefined || raw === null || raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0 || n > 1000) {
+  let cents: number;
+  try { cents = dollarsToCents(raw as string | number); }
+  catch { throw new Error("Tip amount must use whole cents."); }
+  if (cents > 100000) {
     throw new Error("Tip amount must be between $0 and $1,000.");
   }
-  return Math.round(n * 100) / 100;
+  return cents / 100;
 }
 
 // POST /api/orders/preview-conversion
@@ -387,7 +463,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
 
   let normalizedLines: NormalizedCartLine[];
   try {
-    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, actor.tenantId ?? await getHouseTenantId(), true);
+    normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, false, req.authorizedTenantId!, true);
   } catch (normErr) {
     if (normErr instanceof CheckoutMappingError) {
       await writeAuditLog({
@@ -410,7 +486,7 @@ router.post("/orders/preview-conversion", async (req, res): Promise<void> => {
     return;
   }
 
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const preview = await buildConversionPreview(normalizedLines, body.data.confirmation, tenantId);
   const token = await createVerifiedCheckoutConversionToken({ tenantId, userId: actor.id, items: body.data.items, snapshot: preview });
   const conversionToken = storeConversionSnapshot(tenantId, actor.id, body.data.items, preview, token.checkoutConversionToken);
@@ -440,7 +516,7 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message, details: body.error.issues });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   try {
     const normalizedLines = await normalizeCheckoutCart(body.data.items, undefined, true, tenantId, true);
     // Static regression guard legacy substring: const preview = await buildConversionPreview(normalizedLines, body.data.confirmation);
@@ -474,6 +550,63 @@ router.post("/cart/convert", async (req, res): Promise<void> => {
   }
 });
 
+// POST /api/checkout/quote
+// A display quote only. Order creation re-resolves every price, allocation,
+// delivery quote and tax setting from the database before persistence.
+router.post("/checkout/quote", async (req, res): Promise<void> => {
+  const parsed = CheckoutQuoteBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "INVALID_CHECKOUT_QUOTE", details: parsed.error.issues }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  try {
+    const lines = await normalizeCheckoutCart(parsed.data.items, undefined, true, tenantId, true);
+    const totals = computeBaseCheckoutTotals(lines);
+    const [settings] = await db.select({
+      cashDiscountEnabled: adminSettingsTable.cashDiscountEnabled,
+      cashDiscountType: adminSettingsTable.cashDiscountType,
+      cashDiscountValue: adminSettingsTable.cashDiscountValue,
+      enabledProcessors: adminSettingsTable.enabledProcessors,
+    }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, tenantId)).limit(1);
+    const tender = parsed.data.paymentMethod;
+    const processor = tender === "paypal_card" ? "paypal" : tender;
+    if ((processor === "cash" || processor === "paypal") && !settings?.enabledProcessors?.includes(processor)) {
+      res.status(422).json({ error: "PAYMENT_METHOD_UNAVAILABLE" }); return;
+    }
+    if (processor === "paypal" && !(await loadTenantPaymentConfig(tenantId)).enabled) { res.status(422).json({ error: "PAYPAL_UNAVAILABLE" }); return; }
+    const taxSettings = processor === "paypal" ? await getCheckoutTaxSettings(tenantId) : null;
+    const cashDiscount = { enabled: Boolean(settings?.cashDiscountEnabled), type: settings?.cashDiscountType === "fixed" ? "fixed" as const : "percentage" as const, value: Number(settings?.cashDiscountValue ?? 0) };
+    const preliminary = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, cashDiscount });
+    const merchandiseCents = dollarsToCents(preliminary.taxableSubtotal) + dollarsToCents(preliminary.nonTaxableSubtotal);
+    const creditCents = dollarsToCents(parsed.data.customerCreditAmount ?? (tender === "customer_credit" ? Number(centsToDollars(merchandiseCents)) : 0));
+    const available = await db.transaction(tx => getCustomerCreditBalance(tx, tenantId, actor.id));
+    if (creditCents > merchandiseCents || creditCents > available.available) { res.status(409).json({ error: "INSUFFICIENT_CUSTOMER_CREDIT" }); return; }
+    const financial = computeOrderFinancialSnapshot({ grossSubtotal: totals.subtotal, taxableSubtotal: totals.taxableSubtotal, nonTaxableSubtotal: totals.nonTaxableSubtotal, taxRate: taxSettings?.taxRate ?? 0, taxMode: "added", tender, nonTaxableFundingCents: creditCents, cashDiscount });
+    let deliveryFeeCents = 0;
+    if (parsed.data.deliveryMethod === "csr_delivery") {
+      deliveryFeeCents = 600 + Number((BigInt(merchandiseCents) * 3n + 50n) / 100n);
+    } else if (parsed.data.deliveryMethod === "uber_direct") {
+      const [quote] = await db.select().from(uberDeliveryQuotesTable).where(and(
+        eq(uberDeliveryQuotesTable.id, parsed.data.deliveryQuoteId ?? ""),
+        eq(uberDeliveryQuotesTable.tenantId, tenantId),
+        eq(uberDeliveryQuotesTable.customerId, actor.id),
+        eq(uberDeliveryQuotesTable.status, "quoted"),
+        gt(uberDeliveryQuotesTable.expiresAt, new Date()),
+      )).limit(1);
+      if (!quote || quote.cartFingerprint !== checkoutFingerprint(lines)) { res.status(422).json({ error: "DELIVERY_QUOTE_UNAVAILABLE" }); return; }
+      deliveryFeeCents = quote.feeCents;
+    }
+    const tipCents = dollarsToCents(normalizeCheckoutTip(parsed.data.tipAmount));
+    const taxCents = dollarsToCents(financial.taxCollected);
+    const totalCents = merchandiseCents + taxCents + deliveryFeeCents + tipCents;
+    const dueCents = totalCents - creditCents;
+    if (tender === "customer_credit" && dueCents !== 0) { res.status(422).json({ error: "CUSTOMER_CREDIT_INCOMPLETE" }); return; }
+    const amount = (cents: number) => Number(centsToDollars(cents));
+    res.json({ merchandiseSubtotal: amount(merchandiseCents), availableCustomerCredit: amount(available.available), appliedCustomerCredit: amount(creditCents), remainingMerchandiseAmount: amount(merchandiseCents - creditCents), taxableDigitalBase: financial.taxSnapshot.customerTaxableTenderBase, effectiveTaxRate: taxSettings?.taxRate ?? 0, customerTax: amount(taxCents), deliveryFee: amount(deliveryFeeCents), tipAmount: amount(tipCents), finalAmountDue: amount(totalCents), tenderDue: amount(dueCents), tenderAllocation: { customerCredit: amount(creditCents), [tender]: amount(dueCents) } });
+  } catch (error) {
+    res.status(error instanceof CustomerCreditError ? error.status : 422).json({ error: error instanceof CustomerCreditError ? error.code : "CHECKOUT_QUOTE_UNAVAILABLE" });
+  }
+});
+
 // POST /api/orders/delivery-quote
 // Creates an Uber Direct quote for customers choosing courier delivery. This
 // does not dispatch a courier; it returns quote details for checkout and order
@@ -485,7 +618,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message, details: body.error.issues });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const conversionCheck = verifyConversionSnapshot(body.data.checkoutConversionToken, tenantId, actor.id, body.data.items);
   if (!conversionCheck.ok) {
     res.status(422).json({ error: conversionCheck.error });
@@ -585,7 +718,7 @@ router.post("/orders/delivery-quote", async (req, res): Promise<void> => {
       res.status(err.status >= 400 && err.status < 500 ? 422 : 502).json({ error: err.message });
       return;
     }
-    logger.warn({ err }, "Unexpected Uber Courier quote failure");
+    logger.warn({ tenantId, failure: "quote_unavailable" }, "Unexpected Uber Courier quote failure");
     res.status(502).json({ error: "Uber Courier quote failed." });
   }
 });
@@ -653,6 +786,7 @@ async function buildOrderResponse(order: typeof ordersTable.$inferSelect) {
     fulfillmentStatus: order.fulfillmentStatus ?? null,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
+    serverNow: new Date(),
   };
 }
 
@@ -664,7 +798,7 @@ router.get("/orders", async (req, res): Promise<void> => {
     res.status(400).json({ error: query.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   let rows = await db.select().from(ordersTable)
     .where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.customerId, actor.id)))
     .orderBy(desc(ordersTable.createdAt));
@@ -706,9 +840,28 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
 
-  const houseTenantId = await getHouseTenantId();
+  const houseTenantId = req.authorizedTenantId!;
   if (body.data.checkoutConfirmation?.acceptedAllSalesFinal !== true) {
     res.status(422).json({ error: "Final-sale confirmation is required before checkout." });
+    return;
+  }
+  const submittedConversionToken = (req.body as { checkoutConversionToken?: unknown }).checkoutConversionToken;
+  const checkoutRequestHash = createHash("sha256").update(JSON.stringify(req.body)).digest("hex");
+  const replayIntentMatches = (candidate: typeof ordersTable.$inferSelect): boolean =>
+    (candidate.checkoutConversionSnapshot as { checkoutRequestHash?: string } | null)?.checkoutRequestHash === checkoutRequestHash;
+  const findReplay = async (queryDb: Pick<typeof db, "select">) => {
+    if (typeof submittedConversionToken !== "string" || !submittedConversionToken) return null;
+    const [candidate] = await queryDb.select().from(ordersTable).where(and(
+      eq(ordersTable.tenantId, houseTenantId),
+      eq(ordersTable.customerId, actor.id),
+      sql`${ordersTable.checkoutConversionSnapshot}->>'checkoutConversionToken' = ${submittedConversionToken}`,
+    )).limit(1);
+    return candidate ?? null;
+  };
+  const priorOrder = await findReplay(db);
+  if (priorOrder) {
+    if (!replayIntentMatches(priorOrder)) { res.status(409).json({ error: "Checkout token was already used for a different request" }); return; }
+    res.status(200).json(await buildOrderResponse(priorOrder));
     return;
   }
   const conversionCheck = verifyConversionSnapshot((body.data as { checkoutConversionToken?: unknown }).checkoutConversionToken, houseTenantId, actor.id, strictItems.data);
@@ -760,20 +913,29 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     enabledProcessors: adminSettingsTable.enabledProcessors,
   }).from(adminSettingsTable).where(eq(adminSettingsTable.tenantId, houseTenantId)).limit(1);
   const tender = body.data.checkoutConfirmation?.paymentMethod ?? "cash";
-  if (tender !== "cash" && tender !== "paypal" && tender !== "customer_credit") {
+  if (tender !== "cash" && tender !== "paypal" && tender !== "paypal_card" && tender !== "customer_credit") {
     res.status(422).json({ error: "Select an available payment method from checkout" });
     return;
   }
-  if ((tender === "cash" || tender === "paypal") && !financialSettings?.enabledProcessors?.includes(tender)) {
+  const processor = tender === "paypal_card" ? "paypal" : tender;
+  if ((processor === "cash" || processor === "paypal") && !financialSettings?.enabledProcessors?.includes(processor)) {
     res.status(422).json({ error: `${tender === "paypal" ? "PayPal" : "Cash"} is not enabled for this tenant` });
     return;
   }
-  if (tender === "paypal" && !loadPaymentConfig().enabled) {
+  if (processor === "paypal" && !(await loadTenantPaymentConfig(houseTenantId)).enabled) {
     res.status(422).json({ error: "PayPal checkout is unavailable until live payment configuration is completed" });
     return;
   }
-  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: trustedTotals.taxJurisdiction, taxConfigurationId: trustedTotals.taxConfigurationId, tender, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
-  const subtotal = financial.taxableSubtotal;
+  const requestedCreditAmount = (body.data.checkoutConfirmation as { customerCreditAmount?: number } | undefined)?.customerCreditAmount;
+  const requestedCreditCents = dollarsToCents(requestedCreditAmount ?? (tender === "customer_credit" ? trustedTotals.subtotal : 0));
+  const merchandiseCents = dollarsToCents(trustedTotals.subtotal);
+  if (requestedCreditCents > merchandiseCents) {
+    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+    return;
+  }
+  const paypalTaxSettings = processor === "paypal" ? await getCheckoutTaxSettings(houseTenantId) : null;
+  const financial = computeOrderFinancialSnapshot({ grossSubtotal: trustedTotals.subtotal, taxableSubtotal: trustedTotals.taxableSubtotal, nonTaxableSubtotal: trustedTotals.nonTaxableSubtotal, taxRate: paypalTaxSettings?.taxRate ?? trustedTotals.taxRate, taxMode: trustedTotals.taxMode, taxJurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId, tender, nonTaxableFundingCents: requestedCreditCents, cashDiscount: { enabled: Boolean(financialSettings?.cashDiscountEnabled), type: financialSettings?.cashDiscountType === "fixed" ? "fixed" : "percentage", value: Number(financialSettings?.cashDiscountValue ?? 0) } });
+  const subtotal = financial.taxableSubtotal + financial.nonTaxableSubtotal;
   const tax = financial.taxCollected;
   const merchandiseTotal = financial.merchandiseTotal;
   const cashDiscountAmount = financial.cashDiscountAmount;
@@ -790,7 +952,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     return;
   }
   // CSR personal delivery fee: $6 flat + 3% of sale total → goes to CSR as gratuity
-  const csrDeliveryFee = isCsrDelivery ? Math.round((6 + 0.03 * merchandiseTotal) * 100) / 100 : 0;
+  const csrDeliveryFee = isCsrDelivery
+    ? Number(centsToDollars(600 + Number((BigInt(dollarsToCents(subtotal)) * 3n + 50n) / 100n)))
+    : 0;
   let trustedUberQuote: typeof uberDeliveryQuotesTable.$inferSelect | null = null;
   if (explicitDeliveryMethod === "uber_direct") {
     if (!clientDeliveryQuote?.quoteId || clientDeliveryQuote.provider !== "uber_direct" || !body.data.shippingAddress) {
@@ -805,7 +969,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
       gt(uberDeliveryQuotesTable.expiresAt, new Date()),
     )).limit(1);
     const normalizedAddress = normalizeUberAddress(body.data.shippingAddress);
-    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || JSON.stringify(quote.dropoffAddress) !== JSON.stringify(normalizedAddress)) {
+    if (!quote || quote.cartFingerprint !== checkoutFingerprint(normalizedLines) || !sameUberAddress(normalizeUberAddress(quote.dropoffAddress as UberAddress), normalizedAddress)) {
       res.status(422).json({ error: "Your Uber delivery quote is missing, expired, or no longer matches this checkout. Please calculate delivery again." });
       return;
     }
@@ -827,7 +991,17 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
     res.status(400).json({ error: (err as Error).message });
     return;
   }
-  const finalTotal = Math.round((merchandiseTotal + deliveryFee + tipAmount) * 100) / 100;
+  const merchandiseAfterDiscountCents = dollarsToCents(subtotal);
+  if (requestedCreditCents > merchandiseAfterDiscountCents) {
+    res.status(409).json({ error: "CREDIT_OVER_APPLICATION" });
+    return;
+  }
+  const finalTotalCents = dollarsToCents(merchandiseTotal) + dollarsToCents(deliveryFee) + dollarsToCents(tipAmount);
+  const finalTotal = Number(centsToDollars(finalTotalCents));
+  if (tender === "customer_credit" && requestedCreditCents !== finalTotalCents) {
+    res.status(422).json({ error: "Customer Credit must cover the full amount when it is the only tender" });
+    return;
+  }
   const finalConfirmationAt = checkoutConfirmation?.confirmedAt
     ? new Date(checkoutConfirmation.confirmedAt)
     : null;
@@ -920,9 +1094,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   }
 
   let order: typeof ordersTable.$inferSelect;
+  let replayed = false;
   try {
 
     order = await db.transaction(async (tx) => {
+      const lockKey = createHash("sha256").update(String(submittedConversionToken)).digest().readInt32BE(0);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${houseTenantId}, ${lockKey})`);
+      const concurrentOrder = await findReplay(tx);
+      if (concurrentOrder) {
+        if (!replayIntentMatches(concurrentOrder)) throw new CheckoutReplayConflictError("Checkout token was already used for a different request");
+        replayed = true;
+        return concurrentOrder;
+      }
       if (trustedUberQuote) {
         const consumed = await tx.update(uberDeliveryQuotesTable).set({ status: "consumed", consumedAt: now })
           .where(and(eq(uberDeliveryQuotesTable.id, trustedUberQuote.id), eq(uberDeliveryQuotesTable.status, "quoted")))
@@ -940,7 +1123,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         total: String(finalTotal.toFixed(2)),
         grossSubtotal: String(trustedTotals.subtotal.toFixed(2)),
         discountTotal: String(cashDiscountAmount.toFixed(2)),
-        taxableSubtotal: String(subtotal.toFixed(2)),
+        taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)),
         nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         customerCreditApplied: "0.00",
         remainingTenderAmount: String(finalTotal.toFixed(2)),
@@ -972,15 +1155,15 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         legalDisclaimerText: checkoutConfirmation?.legalDisclaimerText ?? null,
         selectedPaymentMethod: checkoutConfirmation?.paymentMethod ?? "cash",
         checkoutConversionExpiresAt: conversionExpiresAt,
-        taxSnapshot,
+        taxSnapshot: { ...taxSnapshot, locationId: targetLocationId, pendingTender: false },
         cashDiscountSnapshot,
       }).returning();
 
       await tx.insert(orderTaxSnapshotsTable).values({
-        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: trustedTotals.taxJurisdiction,
-        locationId: targetLocationId, taxConfigurationId: trustedTotals.taxConfigurationId,
+        tenantId: houseTenantId, orderId: createdOrder.id, jurisdiction: paypalTaxSettings?.taxJurisdiction ?? trustedTotals.taxJurisdiction,
+        locationId: targetLocationId, taxConfigurationId: paypalTaxSettings?.taxConfigurationId ?? trustedTotals.taxConfigurationId,
         grossSales: String(trustedTotals.subtotal.toFixed(2)),
-        taxRate: String(trustedTotals.taxRate), taxableSubtotal: String(subtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
+        taxRate: String(paypalTaxSettings?.taxRate ?? trustedTotals.taxRate), taxableSubtotal: String(financial.taxableSubtotal.toFixed(2)), nonTaxableSubtotal: String(nonTaxableSubtotal.toFixed(2)),
         discountAmount: String(cashDiscountAmount.toFixed(2)), cashDiscountAmount: String(cashDiscountAmount.toFixed(2)),
         taxCollected: String(tax.toFixed(2)), taxCalculated: String(tax.toFixed(2)), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender, exemptionReason: null,
         snapshotJson: { tax: taxSnapshot, cashDiscount: cashDiscountSnapshot },
@@ -1012,6 +1195,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }, houseTenantId);
       const checkoutSnapshotWithTip = {
         ...conversionSnapshotForOrder,
+        checkoutRequestHash,
         tip: {
           amount: tipAmount,
           percent: checkoutConfirmation?.tipPercent ?? null,
@@ -1021,6 +1205,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
           ...conversionSnapshotForOrder.pricingSnapshot,
           deliveryFee,
           tipAmount,
+          tax,
+          customerTax: tax,
           totalBeforeTip: merchandiseTotal + deliveryFee,
           total: finalTotal,
         },
@@ -1030,7 +1216,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         alavontCartSnapshot,
         luciferCheckoutSnapshot,
         checkoutConversionSnapshot: checkoutSnapshotWithTip,
-      }).where(eq(ordersTable.id, createdOrder.id));
+      }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, createdOrder.id)));
 
       if (trustedUberQuote) {
         await tx.insert(uberDeliveryFulfillmentsTable).values({
@@ -1044,10 +1230,37 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
 
       const inventoryDeductionAuditEntries: InventoryDeductionAuditEntry[] = [];
       for (const line of normalizedLines) {
+        const option = queryRows<{ optionId: number; productName: string; label: string; sku: string | null; inventoryItemId: number; inventoryCatalogItemId: number; consumptionQuantity: string; locationEvaluation: string }>(await tx.execute(sql`
+          SELECT co.id AS "optionId", cp.name AS "productName", co.label, ci.sku,
+            co.inventory_item_id AS "inventoryItemId", ii.catalog_item_id AS "inventoryCatalogItemId",
+            co.consumption_quantity AS "consumptionQuantity", cp.location_evaluation AS "locationEvaluation"
+          FROM catalogue_options co
+          JOIN catalogue_products cp ON cp.tenant_id = co.tenant_id AND cp.id = co.product_id
+          JOIN inventory_items ii ON ii.tenant_id = co.tenant_id AND ii.id = co.inventory_item_id
+          JOIN catalog_items ci ON ci.tenant_id = co.tenant_id AND ci.id = co.catalog_item_id
+          WHERE co.tenant_id = ${houseTenantId} AND co.catalog_item_id = ${line.catalog_item_id}
+            AND co.active = true AND cp.active = true AND ci.is_available = true
+            AND ci.alavont_in_stock IS DISTINCT FROM false
+            AND COALESCE((ci.metadata->>'archived')::boolean, false) = false
+            AND COALESCE((ci.metadata->>'safeOnlyDuplicate')::boolean, false) = false
+            AND COALESCE((ci.metadata->>'complianceHold')::boolean, false) = false
+            AND ci.metadata->>'mergedIntoCatalogItemId' IS NULL LIMIT 1
+        `))[0];
+        const selectedOptionId = (req as OptionCheckoutRequest).selectedOptionByCatalog?.get(line.catalog_item_id);
+        if (selectedOptionId !== undefined && option?.optionId !== selectedOptionId) {
+          throw new OptionSelectionError("Selected option changed or is no longer available");
+        }
+        const inventoryCatalogItemId = option?.inventoryCatalogItemId ?? line.catalog_item_id;
+        const physicalQuantity = quantityText(quantityUnits(option?.consumptionQuantity ?? "1") * BigInt(line.quantity));
         const [orderItem] = await tx.insert(orderItemsTable).values({
           orderId: createdOrder.id,
           catalogItemId: line.catalog_item_id,
-          catalogItemName: line.catalog_display_name,
+          catalogItemName: option ? `${option.productName}${option.label === "Standard" ? "" : ` — ${option.label}`}` : line.catalog_display_name,
+          optionId: option?.optionId ?? null,
+          optionLabelSnapshot: option?.label ?? null,
+          skuSnapshot: option?.sku ?? line.merchant_sku,
+          inventoryItemId: option?.inventoryItemId ?? null,
+          inventoryQuantitySnapshot: physicalQuantity,
           quantity: line.quantity,
           unitPrice: String(line.unit_price.toFixed(2)),
           totalPrice: String((line.unit_price * line.quantity).toFixed(2)),
@@ -1061,7 +1274,9 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         }).returning({ id: orderItemsTable.id });
 
         if (shouldReserveInventory) {
-          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id, line.catalog_item_id, line.quantity, orderType);
+          const reservations = await reserveCheckoutInventoryByOrderType(tx, houseTenantId, createdOrder.id,
+            inventoryCatalogItemId, physicalQuantity, orderType, orderItem.id,
+            option?.locationEvaluation === "PER_LOCATION" ? "PER_LOCATION" : "COMBINED_LOCATIONS");
           if (!reservations) {
             throw new InsufficientInventoryError(line.catalog_item_id);
           }
@@ -1069,8 +1284,8 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
             .set({ inventoryDeductions: reservations })
             .where(eq(orderItemsTable.id, orderItem.id));
           const deductionDetails = shouldConfirmReservationImmediately
-            ? (await confirmInventoryReservationsForOrder(tx, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.productId === line.catalog_item_id)
-            : reservations.map(reservation => ({ ...reservation, productId: line.catalog_item_id }));
+            ? (await confirmInventoryReservationsForOrder(tx, houseTenantId, createdOrder.id, { id: actor.id, email: actor.email, role: actor.role, ipAddress: req.ip })).filter(deduction => deduction.orderItemId === orderItem.id)
+            : reservations.map(reservation => ({ ...reservation, productId: inventoryCatalogItemId }));
           if (shouldConfirmReservationImmediately) {
             await tx.update(orderItemsTable)
               .set({ inventoryDeductions: deductionDetails.map(({ productId: _productId, ...deduction }) => deduction) })
@@ -1098,16 +1313,18 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
                 SELECT SUM(quantity_on_hand)
                 FROM inventory_balances
                 WHERE tenant_id = ${houseTenantId}
-                  AND product_id = ${line.catalog_item_id}
+                  AND product_id = ${inventoryCatalogItemId}
               ), 0),
               inventory_amount = COALESCE((
                 SELECT SUM(quantity_on_hand)
                 FROM inventory_balances
                 WHERE tenant_id = ${houseTenantId}
-                  AND product_id = ${line.catalog_item_id}
+                  AND product_id = ${inventoryCatalogItemId}
               ), 0)
             WHERE tenant_id = ${houseTenantId}
-              AND id = ${line.catalog_item_id}
+              AND id IN (SELECT catalog_item_id FROM catalogue_options WHERE tenant_id = ${houseTenantId}
+                AND inventory_item_id = ${option?.inventoryItemId ?? null}
+                UNION SELECT ${line.catalog_item_id})
           `);
       }
 
@@ -1125,18 +1342,66 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
         });
       }
 
-      return createdOrder;
+      let currentOrder = createdOrder;
+      if (requestedCreditCents > 0) {
+        const reserved = await reserveCustomerCredit(tx, {
+          tenantId: houseTenantId,
+          customerId: actor.id,
+          actorUserId: actor.id,
+          orderId: createdOrder.id,
+          amountCents: requestedCreditCents,
+          idempotencyKey: `order:${createdOrder.id}:initial-credit`,
+        });
+        if (reserved.appliedCents !== requestedCreditCents) throw new Error("Customer Credit reservation could not be applied");
+        const [creditedOrder] = await tx.select().from(ordersTable)
+          .where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId))).limit(1);
+        if (!creditedOrder) throw new Error("Customer Credit order disappeared before response");
+        currentOrder = creditedOrder;
+        if (tender === "customer_credit" && requestedCreditCents === dollarsToCents(finalTotal)) {
+          await deductPaidOrderInventory(createdOrder, { actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, ipAddress: req.ip }, tx);
+          await consumeCustomerCredit(tx, {
+            tenantId: houseTenantId,
+            customerId: actor.id,
+            actorUserId: actor.id,
+            orderId: createdOrder.id,
+            amountCents: requestedCreditCents,
+            idempotencyKey: `consume:order:${createdOrder.id}:initial-credit`,
+          });
+          const [paidOrder] = await tx.update(ordersTable).set({
+            paymentStatus: "paid",
+            status: "confirmed",
+            paymentMethod: "customer_credit",
+            selectedPaymentMethod: "customer_credit",
+            remainingTenderAmount: "0.00",
+          }).where(and(eq(ordersTable.id, createdOrder.id), eq(ordersTable.tenantId, houseTenantId))).returning();
+          currentOrder = paidOrder ?? currentOrder;
+        }
+      }
+
+      // The event and channel jobs commit with the order. Provider work is
+      // performed only by the independent worker after this transaction.
+      await enqueueOrderCreated(tx, houseTenantId, createdOrder.id, createdOrder.createdAt);
+
+      return currentOrder;
     });
   } catch (err) {
+    if (err instanceof CheckoutReplayConflictError) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof CustomerCreditError) { res.status(err.status).json({ error: err.code }); return; }
     if (err instanceof UberQuoteConsumedError) {
       res.status(409).json({ error: "This Uber delivery quote was already used or refreshed. Please calculate delivery again." });
       return;
     }
+    if (err instanceof OptionSelectionError) { res.status(409).json({ error: err.message }); return; }
     if (err instanceof InsufficientInventoryError) {
       res.status(409).json({ error: err.message, legacyError: "Insufficient inventory", catalogItemId: err.catalogItemId }); // error: "Insufficient inventory"
       return;
     }
     throw err;
+  }
+
+  if (replayed) {
+    res.status(200).json(await buildOrderResponse(order));
+    return;
   }
 
   // Merchant payload audit: log provider-safe line items without sensitive content.
@@ -1231,6 +1496,7 @@ router.post("/orders", requireCurrentCustomerDisclaimerAcceptance("orders.create
   publishOrderEvent({
     type: "order.assigned",
     orderId: order.id,
+    tenantId: order.tenantId,
     customerId: actor.id,
     assignedCsrUserId: routing.assignedCsrUserId,
     routeSource: routing.routeSource,
@@ -1250,6 +1516,7 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   publishOrderEvent({
     type: "order.updated",
     orderId: o.id,
+    tenantId: o.tenantId,
     customerId: o.customerId,
     assignedCsrUserId: o.assignedCsrUserId ?? null,
     fulfillmentStatus: o.fulfillmentStatus ?? null,
@@ -1262,17 +1529,68 @@ function emitUpdated(o: typeof ordersTable.$inferSelect, reason: string) {
   });
 }
 
+async function startDefaultQueueOrder(req: Request, res: Response, order: typeof ordersTable.$inferSelect): Promise<void> {
+  const actor = req.dbUser!;
+  const tenantId = req.authorizedTenantId!;
+  if (!["admin", "global_admin"].includes(normalizeRole(actor.role))) {
+    res.status(403).json({ error: "Admin permission is required to start a default-queue order" });
+    return;
+  }
+  if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
+  if (!canAdminStartDefaultQueueOrder(order)) {
+    res.status(409).json({ error: "Order is not an unclaimed default-queue order" });
+    return;
+  }
+
+  const now = new Date();
+  const updated = await db.transaction(async tx => {
+    // The ownership predicates protect against a concurrent CSR claim or
+    // supervisor reassignment between the read and this transition.
+    const [row] = await tx.update(ordersTable).set({
+      acceptedAt: now,
+      status: "in_progress",
+      fulfillmentStatus: "in_progress",
+      routeSource: "supervisor_override",
+      routedTo: "default_queue",
+      updatedAt: now,
+    }).where(and(
+      eq(ordersTable.id, order.id),
+      eq(ordersTable.tenantId, tenantId),
+      isNull(ordersTable.assignedCsrUserId),
+      isNull(ordersTable.assignedShiftId),
+      isNull(ordersTable.acceptedAt),
+      inArray(ordersTable.routeSource, ["general_account", "supervisor_override"]),
+      sql`coalesce(${ordersTable.fulfillmentStatus}, 'submitted') = 'submitted'`,
+    )).returning();
+    if (!row) return null;
+    await tx.insert(auditLogsTable).values({
+      tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role,
+      action: "ORDER_STARTED_BY_ADMIN", resourceType: "order", resourceId: String(order.id),
+      metadata: { queueContext: "default_queue", priorRouteSource: order.routeSource, priorRoutedTo: order.routedTo },
+      ipAddress: req.ip,
+    });
+    return row;
+  });
+  if (!updated) { res.status(409).json({ error: "Order was claimed or reassigned concurrently" }); return; }
+  emitUpdated(updated, "admin_started_default_queue_order");
+  res.json(await buildOrderResponse(updated));
+}
+
 async function acceptOrder(req: Request, res: Response): Promise<void> {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   if (!z.object({}).strict().safeParse(req.body ?? {}).success) {
     res.status(422).json({ error: "Claim does not accept actor or assignment fields" });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (["admin", "global_admin"].includes(normalizeRole(actor.role))) {
+    await startDefaultQueueOrder(req, res, order);
+    return;
+  }
 
   const eligibleShifts = await listActiveCsrs(tenantId);
   const eligibleShift = eligibleShifts.find(candidate => candidate.userId === actor.id);
@@ -1357,6 +1675,7 @@ async function acceptOrder(req: Request, res: Response): Promise<void> {
     publishOrderEvent({
       type: "order.updated",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: null,
       fulfillmentStatus: updated.fulfillmentStatus ?? null,
@@ -1387,7 +1706,7 @@ router.post("/orders/:id/claim", requirePermission("queue.claim"), acceptOrder);
 
 router.post("/orders/:id/release", requireRole("csr", "supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
   const orderId = Number(req.params.id);
   const parsed = z.object({ reason: z.string().trim().min(3).max(240).optional() }).strict().safeParse(req.body ?? {});
@@ -1406,7 +1725,7 @@ router.post("/orders/:id/release", requireRole("csr", "supervisor", "admin", "gl
 
 router.post("/orders/:id/assign", requireRole("supervisor", "admin", "global_admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const orderId = Number(req.params.id);
   const parsed = z.object({ assigneeUserId: z.number().int().positive(), reason: z.string().trim().min(3).max(240) }).strict().safeParse(req.body ?? {});
   if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "Invalid assignment request" }); return; }
@@ -1426,8 +1745,8 @@ router.post("/orders/:id/assign", requireRole("supervisor", "admin", "global_adm
 // PATCH /api/orders/:id/eta — supervisor adjusts the customer hourglass
 router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { estimatedReadyAt, promisedMinutes } = req.body as { estimatedReadyAt?: string; promisedMinutes?: number };
   let when: Date;
   let promised: number | undefined;
@@ -1441,11 +1760,11 @@ router.patch("/orders/:id/eta", requireRole("global_admin", "admin"), async (req
     res.status(400).json({ error: "Provide estimatedReadyAt (ISO) or promisedMinutes (number > 0)" });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
   const [updated] = await db.update(ordersTable)
     .set({ estimatedReadyAt: when, etaAdjustedBySupervisor: true, ...(promised != null ? { promisedMinutes: promised } : {}) })
-    .where(eq(ordersTable.id, orderId)).returning();
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).returning();
   emitUpdated(updated, "eta_adjusted");
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -1479,7 +1798,7 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
   const orderId = Number(req.params.id);
   const parsed = CashCloseoutBody.safeParse(req.body ?? {});
   if (!Number.isInteger(orderId) || !parsed.success) { res.status(422).json({ error: "A valid cash tender and idempotency key are required" }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const role = normalizeRole(actor.role);
   const canOverride = ["supervisor", "admin", "global_admin"].includes(role);
   if (parsed.data.supervisorOverride && !canOverride) { res.status(403).json({ error: "Supervisor override permission is required" }); return; }
@@ -1500,6 +1819,8 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     }
     const terminal = ["completed", "refunded", "cancelled", "archived", "voided", "closed"].includes(order.status);
     if (terminal || order.paymentStatus === "paid") return { status: 409, error: "Order is already paid or is not eligible for cash closeout" } as const;
+    if (Number((order.taxSnapshot as { schemaVersion?: unknown } | null)?.schemaVersion) >= 3
+      && order.selectedPaymentMethod !== "cash") return { status: 409, error: "Order was not confirmed for Cash tender" } as const;
     if (order.paymentStatus !== "unpaid" || order.paymentIntentId) return { status: 409, error: "Another payment is pending or associated with this order" } as const;
     const dueCents = moneyToCents(order.remainingTenderAmount ?? order.total);
     const tenderedCents = moneyToCents(parsed.data.amountTendered);
@@ -1563,8 +1884,12 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     const [updated] = await tx.update(ordersTable).set({
       paymentStatus: "paid", paymentMethod: creditCents > 0 ? "customer_credit+cash" : "cash", selectedPaymentMethod: "cash",
       amountTendered: (tenderedCents / 100).toFixed(2), changeGiven: (changeCents / 100).toFixed(2), remainingTenderAmount: (dueCents / 100).toFixed(2),
-      paymentToken: null, status: "completed", fulfillmentStatus: "completed",
-      completedAt: now, completedByUserId: actor.id, routingStatus: "closed",
+      paymentToken: null,
+      status: order.deliveryMethod === "uber_direct" ? "confirmed" : "completed",
+      fulfillmentStatus: order.deliveryMethod === "uber_direct" ? "submitted" : "completed",
+      completedAt: order.deliveryMethod === "uber_direct" ? null : now,
+      completedByUserId: order.deliveryMethod === "uber_direct" ? null : actor.id,
+      routingStatus: "closed",
     }).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId), eq(ordersTable.paymentStatus, "unpaid"))).returning();
     if (!updated) return { status: 409, error: "A concurrent closeout already completed this order" } as const;
     // Consume the reservation only after the authoritative cash payment has
@@ -1606,8 +1931,8 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
     return;
   }
   emitUpdated(outcome.updated, "cash_closeout_completed");
-  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(error => {
-    logger.warn({ tenantId, orderId: outcome.updated.id, error: error instanceof Error ? error.message : "unknown" }, "Uber Direct handoff will require recovery");
+  await queueUberDeliveryForPaidOrder(tenantId, outcome.updated.id).catch(() => {
+    logger.warn({ tenantId, orderId: outcome.updated.id, failure: "handoff_unavailable" }, "Uber Direct handoff will require recovery");
   });
   res.json({ ...(await buildOrderResponse(outcome.updated)), cash: { amountDue: outcome.ledger.amount, amountTendered: outcome.ledger.amountTendered, changeGiven: outcome.ledger.changeGiven, idempotent: outcome.idempotent } });
 });
@@ -1615,17 +1940,18 @@ router.post("/orders/:id/closeout", requireRole("global_admin", "admin", "superv
 // POST /api/orders/:id/mark-ready — supervisor-only ready toggle.
 router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
   const now = new Date();
   const [updated] = await db.update(ordersTable)
     .set({ readyAt: now, status: "ready", fulfillmentStatus: "ready" })
-    .where(eq(ordersTable.id, orderId)).returning();
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).returning();
   publishOrderEvent({
     type: "order.ready",
     orderId,
+    tenantId: updated.tenantId,
     customerId: updated.customerId,
     assignedCsrUserId: updated.assignedCsrUserId ?? null,
     readyAt: now.toISOString(),
@@ -1642,10 +1968,10 @@ router.post("/orders/:id/mark-ready", requireRole("global_admin", "admin"), asyn
 // POST /api/orders/:id/reassign — supervisor reassigns to a specific user
 router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "supervisor"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) { res.status(403).json({ error: "Tenant assignment is required" }); return; }
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { assignedCsrUserId } = req.body as { assignedCsrUserId?: number | null };
   if (assignedCsrUserId !== null && typeof assignedCsrUserId !== "number") {
     res.status(400).json({ error: "assignedCsrUserId must be a user id or null" });
@@ -1672,6 +1998,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
     publishOrderEvent({
       type: "order.updated",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: previousAssignedCsrUserId,
       fulfillmentStatus: updated.fulfillmentStatus ?? null,
@@ -1698,6 +2025,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
   publishOrderEvent({
     type: "order.assigned",
     orderId: updated.id,
+    tenantId: updated.tenantId,
     customerId: updated.customerId,
     assignedCsrUserId: updated.assignedCsrUserId ?? null,
     routeSource: "supervisor_override",
@@ -1719,8 +2047,7 @@ router.post("/orders/:id/reassign", requireRole("global_admin", "admin", "superv
 
 // GET /api/orders/active-csrs — supervisor reassign dropdown source.
 router.get("/orders/active-csrs", requirePermission("queue.manage"), async (req, res): Promise<void> => {
-  const actor = req.dbUser!;
-  const tenantId = actor.tenantId;
+  const tenantId = req.authorizedTenantId!;
   if (tenantId == null) {
     res.status(403).json({ error: "Tenant assignment is required" });
     return;
@@ -1769,8 +2096,8 @@ router.get("/orders/active-csrs", requirePermission("queue.manage"), async (req,
 });
 
 // GET /api/orders/summary
-router.get("/orders/summary", requireRole("global_admin", "admin"), async (_req, res): Promise<void> => {
-  const orders = await db.select().from(ordersTable);
+router.get("/orders/summary", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
+  const orders = await db.select().from(ordersTable).where(eq(ordersTable.tenantId, req.authorizedTenantId!));
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfWeek = new Date(now);
@@ -1804,22 +2131,90 @@ router.get("/orders/recent", requireRole("global_admin", "admin"), async (req, r
   }
   const limit = query.data.limit ?? 10;
   const orders = await db.select().from(ordersTable)
+    .where(eq(ordersTable.tenantId, req.authorizedTenantId!))
     .orderBy(desc(ordersTable.createdAt))
     .limit(limit);
   const orderObjs = await Promise.all(orders.map(buildOrderResponse));
   res.json(GetRecentOrdersResponse.parse({ orders: orderObjs, total: orderObjs.length, page: 1, limit }));
 });
 
+// GET /api/orders/:id/courier — only the order owner or tenant staff may read
+// sanitized courier progress. Provider identifiers and address data stay server-side.
+router.get("/orders/:id/courier", async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ id: ordersTable.id, customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod })
+    .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || (normalizeRole(req.dbUser!.role) === "user" && order.customerId !== req.dbUser!.id)) {
+    res.status(404).json({ error: "Not found" }); return;
+  }
+  if (order.deliveryMethod !== "uber_direct") { res.status(404).json({ error: "No courier delivery for this order" }); return; }
+  const [delivery] = await db.select({ requestState: uberDeliveryFulfillmentsTable.requestState, providerStatus: uberDeliveryFulfillmentsTable.providerStatus })
+    .from(uberDeliveryFulfillmentsTable)
+    .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, orderId)))
+    .limit(1);
+  res.json({ orderId, state: delivery?.requestState ?? "payment_pending", courierStatus: delivery?.providerStatus ?? null });
+});
+
+router.post("/orders/:id/courier/request", requireRole("admin", "global_admin", "csr"), async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid delivery request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const actor = req.dbUser!;
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, tenantId), eq(ordersTable.id, orderId))).limit(1);
+  if (!order) { res.status(404).json({ error: "Not found" }); return; }
+  if (normalizeRole(actor.role) === "csr") {
+    const [shift] = await db.select().from(labTechShiftsTable).where(and(eq(labTechShiftsTable.tenantId, tenantId), eq(labTechShiftsTable.id, order.assignedShiftId ?? -1), eq(labTechShiftsTable.techId, actor.id), eq(labTechShiftsTable.status, "active"))).limit(1);
+    if (!shift || !isShiftOrderRoutable(shift) || order.assignedCsrUserId !== actor.id) { res.status(403).json({ error: "Assigned active CSR shift required" }); return; }
+  } else if (order.assignedCsrUserId != null || order.assignedShiftId != null) {
+    res.status(409).json({ error: "Assigned orders require the existing reassignment workflow" }); return;
+  }
+  if (order.deliveryMethod !== "uber_direct" || order.fulfillmentStatus !== "ready" || !order.readyAt) { res.status(409).json({ error: "Courier delivery requires a ready delivery order" }); return; }
+  try {
+    const state = await requestUberDelivery(tenantId, orderId);
+    if (["not_ready", "payment_required", "identity_mismatch", "configuration_required", "requote_required", "manual_reconciliation_required", "reconciliation_required"].includes(state)) { res.status(409).json({ orderId, state }); return; }
+    await writeAuditLog({ actorId: actor.id, actorEmail: actor.email, actorRole: actor.role, tenantId, action: "UBER_DELIVERY_REQUESTED", resourceType: "order", resourceId: String(orderId), metadata: { state }, ipAddress: req.ip });
+    res.status(state === "delivery_created" ? 200 : 202).json({ orderId, state });
+  } catch {
+    res.status(503).json({ error: "Courier request requires reconciliation" });
+  }
+});
+
+router.post("/orders/:id/courier/cancel", async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid cancellation request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ customerId: ordersTable.customerId, deliveryMethod: ordersTable.deliveryMethod })
+    .from(ordersTable).where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || order.deliveryMethod !== "uber_direct" || (normalizeRole(req.dbUser!.role) === "user" && order.customerId !== req.dbUser!.id)) { res.status(404).json({ error: "Not found" }); return; }
+  try {
+    const state = await requestUberCancellation(tenantId, orderId);
+    res.status(state === "not_cancellable" || state === "conflict" ? 409 : 202).json({ orderId, state, paymentResolutionRequired: state === "canceled" || state === "cancel_reconciliation_required" });
+  } catch { res.status(503).json({ error: "Courier cancellation requires reconciliation" }); }
+});
+
+router.post("/admin/orders/:id/courier/reconcile", requireRole("admin", "global_admin", "supervisor"), async (req, res): Promise<void> => {
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0 || Object.keys(req.body ?? {}).length) { res.status(400).json({ error: "Invalid reconciliation request" }); return; }
+  const tenantId = req.authorizedTenantId!;
+  const [order] = await db.select({ id: ordersTable.id, deliveryMethod: ordersTable.deliveryMethod }).from(ordersTable)
+    .where(and(eq(ordersTable.id, orderId), eq(ordersTable.tenantId, tenantId))).limit(1);
+  if (!order || order.deliveryMethod !== "uber_direct") { res.status(404).json({ error: "Not found" }); return; }
+  try { res.json({ orderId, state: await reconcileUberDelivery(tenantId, orderId) }); }
+  catch { res.status(503).json({ error: "Provider reconciliation is unavailable" }); }
+});
+
 // GET /api/orders/:id
 router.get("/orders/:id", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = GetOrderParams.safeParse({ id: parseInt(raw, 10) });
+  const params = GetOrderParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, params.data.id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
     res.status(404).json({ error: "This order could not be found or you do not have access to it." });
@@ -1855,6 +2250,35 @@ async function actorCanOperateOrder(actor: DbActor, order: typeof ordersTable.$i
   return ["supervisor", "admin", "global_admin"].includes(role);
 }
 
+async function uberDeliveryReadyForCompletion(tenantId: number, order: typeof ordersTable.$inferSelect): Promise<boolean> {
+  if (order.deliveryMethod !== "uber_direct") return true;
+  const [delivery] = await db.select({ providerStatus: uberDeliveryFulfillmentsTable.providerStatus })
+    .from(uberDeliveryFulfillmentsTable)
+    .where(and(eq(uberDeliveryFulfillmentsTable.tenantId, tenantId), eq(uberDeliveryFulfillmentsTable.orderId, order.id)))
+    .limit(1);
+  return delivery?.providerStatus === "delivered";
+}
+
+async function paymentReadyForCompletion(tenantId: number, order: typeof ordersTable.$inferSelect): Promise<boolean> {
+  if (order.paymentStatus !== "paid") return false;
+  // remainingTenderAmount is the frozen external-tender quote, not a live
+  // balance. For PayPal, use the completed capture ledger to prove settlement.
+  if (!(order.paymentMethod ?? "").includes("paypal")) return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: "0" });
+  const [settled] = await db.select({ amount: sql<string>`coalesce(sum(${paymentCapturesTable.amount}), 0)` })
+    .from(paymentCapturesTable)
+    .innerJoin(paymentAttemptsTable, and(
+      eq(paymentCapturesTable.paymentAttemptId, paymentAttemptsTable.id),
+      eq(paymentCapturesTable.tenantId, paymentAttemptsTable.tenantId),
+    ))
+    .where(and(
+      eq(paymentAttemptsTable.tenantId, tenantId),
+      eq(paymentAttemptsTable.orderId, order.id),
+      eq(paymentCapturesTable.state, "completed"),
+      eq(paymentCapturesTable.currency, "USD"),
+    ));
+  return isFinanciallyClosedForFulfillment({ paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod, total: order.total, customerCreditApplied: order.customerCreditApplied, completedCaptureAmount: settled?.amount ?? "0" });
+}
+
 async function transitionOrder(req: Request, res: Response, forcedStatus?: "completed" | "cancelled" | "archived" | "voided") {
   const actor = req.dbUser!;
   const id = Number(req.params.id);
@@ -1872,7 +2296,7 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     res.status(400).json({ error: "Reason is required" });
     return;
   }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
   if (!order) {
     res.status(404).json({ error: "This order could not be found or you do not have access to it." });
@@ -1912,7 +2336,16 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
   }
   if (!transition.changed) {
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-      const released = await db.transaction((tx) => releaseInventoryReservationsForOrder(tx, id));
+      const released = await db.transaction(async tx => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${id})`);
+        const count = await releaseInventoryReservationsForOrder(tx, tenantId, id);
+        const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+        if (current && Number(current.customerCreditApplied) > 0) {
+          await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
+          await tx.update(ordersTable).set({ customerCreditApplied: "0.00", remainingTenderAmount: current.total }).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)));
+        }
+        return count;
+      });
       if (released > 0) {
         await writeAuditLog({
           actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -1922,11 +2355,16 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
         });
       }
     }
-    res.json(await buildOrderResponse(order));
+    const [current] = await db.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+    res.json(await buildOrderResponse(current ?? order));
     return;
   }
-  if (status === "completed" && order.paymentStatus !== "paid") {
-    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" });
+  if (status === "completed" && !await paymentReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Order must be fully paid or closed out before it can be completed" });
+    return;
+  }
+  if (status === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" });
     return;
   }
   const now = new Date();
@@ -1937,18 +2375,32 @@ async function transitionOrder(req: Request, res: Response, forcedStatus?: "comp
     normalizedTarget === "reconciliation_required" ? { fulfillmentStatus: "reconciliation_required" } :
     status === "archived" ? { archivedAt: now, archivedByUserId: actor.id } :
     { voidedAt: now, voidedByUserId: actor.id };
-  const [updated] = await db.transaction(async tx => {
+  let updated: typeof ordersTable.$inferSelect;
+  try { [updated] = await db.transaction(async tx => {
     // A reservation is a temporary availability hold, never a final stock
     // movement. Cancelling an unpaid order must release it with the status
     // change so a failed payment cannot leave stock unavailable.
     if (normalizedTarget === "cancelled" && order.paymentStatus !== "paid") {
-      await releaseInventoryReservationsForOrder(tx, id);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${id})`);
+      await releaseInventoryReservationsForOrder(tx, tenantId, id);
+      const [current] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId))).limit(1);
+      if (!current || current.paymentStatus === "paid") throw new Error("Payment must be resolved before cancellation");
+      if (Number(current.customerCreditApplied) > 0) {
+        await releaseCustomerCredit(tx, { tenantId, customerId: current.customerId, actorUserId: actor.id, orderId: id, amountCents: dollarsToCents(current.customerCreditApplied), idempotencyKey: `release:cancel:${id}`, reason: "Unpaid order cancelled" });
+        stamps.customerCreditApplied = "0.00";
+        stamps.remainingTenderAmount = current.total;
+      }
     }
     return tx.update(ordersTable)
       .set({ status: normalizedTarget, updatedAt: now, ...stamps })
       .where(and(eq(ordersTable.id, id), eq(ordersTable.tenantId, tenantId)))
       .returning();
-  });
+  }); } catch (error) {
+    if (normalizedTarget === "cancelled" && (error instanceof CustomerCreditError || (error instanceof Error && /Inventory cannot be released|Payment must be resolved/.test(error.message)))) {
+      res.status(409).json({ error: "Payment or Customer Credit must be resolved before cancellation" }); return;
+    }
+    throw error;
+  }
   await writeAuditLog({
     actorId: actor.id,
     actorEmail: actor.email,
@@ -1973,7 +2425,7 @@ router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin",
   const actor = req.dbUser!;
   const parsed = StaleArchiveBody.safeParse(req.body ?? {});
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   const now = new Date();
   const cutoff = new Date(now.getTime() - parsed.data.olderThanMinutes * 60_000);
   const conditions = [
@@ -1992,7 +2444,7 @@ router.post("/admin/orders/stale-submitted/archive", requireRole("global_admin",
     const candidates = await tx.select().from(ordersTable).where(and(...conditions));
     const result = [];
     for (const order of candidates) {
-      await releaseInventoryReservationsForOrder(tx, order.id);
+      await releaseInventoryReservationsForOrder(tx, tenantId, order.id);
       const [updated] = await tx.update(ordersTable).set({
         status: "archived", fulfillmentStatus: "cancelled", archivedAt: now, archivedByUserId: actor.id, updatedAt: now,
       }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, tenantId))).returning();
@@ -2015,7 +2467,7 @@ router.post("/orders/:id/void", (req, res) => { void transitionOrder(req, res, "
 router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = UpdateOrderStatusParams.safeParse({ id: parseInt(raw, 10) });
+  const params = UpdateOrderStatusParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -2025,14 +2477,14 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Not found" });
     return;
   }
   const [updated] = await db.update(ordersTable)
     .set({ status: body.data.status, notes: body.data.notes ?? order.notes })
-    .where(eq(ordersTable.id, params.data.id))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id)))
     .returning();
 
   // Delivery is a fulfillment state, not a second inventory authority. Physical
@@ -2087,17 +2539,18 @@ router.patch("/orders/:id", requireRole("global_admin", "admin", "csr"), async (
 router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = GetOrderNotesParams.safeParse({ id: parseInt(raw, 10) });
+  const params = GetOrderNotesParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
   }
   let notes = await db.select().from(orderNotesTable).where(eq(orderNotesTable.orderId, params.data.id)).orderBy(desc(orderNotesTable.createdAt));
+  if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Order not found" }); return; }
   // Customers cannot see internal notes
   if (actor.role === "user") {
     notes = notes.filter(n => n.isInternal !== "true");
@@ -2107,7 +2560,7 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
   const authors = authorIds.length > 0
     ? await db.select({ id: usersTable.id, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email })
         .from(usersTable)
-        .where(sql`${usersTable.id} = ANY(${sql.raw(`ARRAY[${authorIds.join(",")}]`)})`)
+        .where(and(eq(usersTable.tenantId, req.authorizedTenantId!), inArray(usersTable.id, authorIds)))
     : [];
   const authorMap = new Map(authors.map(a => [a.id, a]));
 
@@ -2132,8 +2585,8 @@ router.get("/orders/:id/notes", async (req, res): Promise<void> => {
 router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const orderId = parseInt(raw, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(raw);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const { trackingUrl } = req.body as { trackingUrl?: string };
   if (trackingUrl) {
     const parsedTracking = SubmitTrackingLinkBody.safeParse({ trackingUrl });
@@ -2142,11 +2595,11 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
       return;
     }
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const [updated] = await db.update(ordersTable)
     .set({ trackingUrl: trackingUrl ?? null })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2161,8 +2614,8 @@ router.patch("/orders/:id/tracking", requireRole("global_admin", "admin", "csr")
 // POST /api/orders/:id/fulfillment — set fulfillment status (staff/admin)
 async function updateOrderFulfillment(req: Request, res: Response, forcedFulfillmentStatus?: string): Promise<void> {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
 
   const { fulfillmentStatus: bodyFulfillment } = req.body as { fulfillmentStatus?: string };
   const rawFulfillment = forcedFulfillmentStatus ?? bodyFulfillment;
@@ -2182,12 +2635,16 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     res.status(422).json({ error: `fulfillmentStatus must be one of: ${VALID.join(", ")}` }); return;
   }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
   const role = normalizeRole(actor.role);
-  const tenantId = actor.tenantId ?? await getHouseTenantId();
+  const tenantId = req.authorizedTenantId!;
   if (order.tenantId !== tenantId) { res.status(404).json({ error: "Not found" }); return; }
+  if (fulfillmentStatus === "in_progress" && ["admin", "global_admin"].includes(role)) {
+    await startDefaultQueueOrder(req, res, order);
+    return;
+  }
   if (role === "csr") {
     const [shift] = await db.select().from(labTechShiftsTable).where(and(
       eq(labTechShiftsTable.tenantId, tenantId),
@@ -2221,8 +2678,14 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     res.json({ id: order.id, fulfillmentStatus: order.fulfillmentStatus, status: order.status, idempotent: true });
     return;
   }
-  if (fulfillmentStatus === "completed" && order.paymentStatus !== "paid") {
-    res.status(409).json({ error: "Order must be paid or closed out before it can be completed" }); return;
+  if (fulfillmentStatus === "completed" && !await paymentReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Order must be fully paid or closed out before it can be completed" }); return;
+  }
+  if (fulfillmentStatus === "completed" && !await uberDeliveryReadyForCompletion(tenantId, order)) {
+    res.status(409).json({ error: "Courier delivery must be confirmed delivered before completion" }); return;
+  }
+  if (fulfillmentStatus === "cancelled" && order.paymentStatus === "paid") {
+    res.status(409).json({ error: "Paid orders require the supported refund workflow before cancellation" }); return;
   }
 
   const now = new Date();
@@ -2249,6 +2712,7 @@ async function updateOrderFulfillment(req: Request, res: Response, forcedFulfill
     publishOrderEvent({
       type: "order.ready",
       orderId: updated.id,
+    tenantId: updated.tenantId,
       customerId: updated.customerId,
       assignedCsrUserId: updated.assignedCsrUserId ?? null,
       readyAt: (updated.readyAt ?? now).toISOString(),
@@ -2267,10 +2731,10 @@ router.post("/orders/:id/ready", requireRole("global_admin", "admin", "csr"), (r
 // POST /api/orders/:id/purge — purge order data (admin only)
 router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
 
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Not found" }); return; }
 
   const { mode } = req.body as { mode?: string };
@@ -2287,7 +2751,7 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
       notes: null, shippingAddress: null, alavontCartSnapshot: null,
       luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
       status: "purged",
-    }).where(eq(ordersTable.id, orderId));
+    }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   } else if (purgeMode === "partial") {
     // Remove PII only, keep anonymous financial record
     await db.delete(orderNotesTable).where(eq(orderNotesTable.orderId, orderId));
@@ -2295,11 +2759,11 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
       notes: null, shippingAddress: null, alavontCartSnapshot: null,
       luciferCheckoutSnapshot: null, purgedAt: new Date(), auditToken,
       status: "purged",
-    }).where(eq(ordersTable.id, orderId));
+    }).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   } else {
     // delayed — just mark for purge, background job handles it
     await db.update(ordersTable).set({ purgedAt: new Date(), auditToken, status: "pending_purge" })
-      .where(eq(ordersTable.id, orderId));
+      .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)));
   }
 
   await writeAuditLog({
@@ -2316,7 +2780,7 @@ router.post("/orders/:id/purge", requireRole("global_admin", "admin"), async (re
 router.post("/orders/:id/notes", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const params = AddOrderNoteParams.safeParse({ id: parseInt(raw, 10) });
+  const params = AddOrderNoteParams.safeParse({ id: Number(raw) });
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
@@ -2326,11 +2790,12 @@ router.post("/orders/:id/notes", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message });
     return;
   }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, params.data.id)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, params.data.id))).limit(1);
   if (!order) {
     res.status(404).json({ error: "Order not found" });
     return;
   }
+  if (normalizeRole(actor.role) === "user" && order.customerId !== actor.id) { res.status(404).json({ error: "Order not found" }); return; }
   // Staff can add internal notes; regular users cannot
   const isInternal = (actor.role !== "user") && (body.data.isInternal ?? false);
 
@@ -2383,11 +2848,11 @@ const HandoffChecklistBody = z.object({
 // POST /api/orders/:id/delivery/tracking-link — customer submits Uber trip-share link
 router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const body = SubmitTrackingLinkBody.safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const isStaff = ["global_admin", "admin", "supervisor", "csr"].includes(normalizeRole(actor.role));
   if (!isStaff && order.customerId !== actor.id) { res.status(403).json({ error: "Forbidden" }); return; }
@@ -2396,7 +2861,7 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
   }
   const [updated] = await db.update(ordersTable)
     .set({ trackingUrl: body.data.trackingUrl, trackingSubmittedAt: new Date() })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2410,17 +2875,17 @@ router.post("/orders/:id/delivery/tracking-link", async (req, res): Promise<void
 // PATCH /api/orders/:id/delivery/handoff-checklist — CSR updates courier handoff checklist
 router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
   const body = HandoffChecklistBody.safeParse(req.body);
   if (!body.success) { res.status(400).json({ error: body.error.issues[0]?.message ?? "Invalid body" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   const existing = (order.handoffChecklist as Record<string, boolean> | null) ?? {};
   const merged = { ...existing, ...body.data };
   const [updated] = await db.update(ordersTable)
     .set({ handoffChecklist: merged })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,
@@ -2434,15 +2899,15 @@ router.patch("/orders/:id/delivery/handoff-checklist", requireRole("global_admin
 // POST /api/orders/:id/delivery/handoff-complete — CSR marks courier handoff complete
 router.post("/orders/:id/delivery/handoff-complete", requireRole("global_admin", "admin", "csr"), async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const orderId = parseInt(req.params.id as string, 10);
-  if (isNaN(orderId)) { res.status(400).json({ error: "Invalid order id" }); return; }
-  const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, orderId)).limit(1);
+  const orderId = Number(req.params.id);
+  if (!Number.isSafeInteger(orderId) || orderId <= 0) { res.status(400).json({ error: "Invalid order id" }); return; }
+  const [order] = await db.select().from(ordersTable).where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId))).limit(1);
   if (!order) { res.status(404).json({ error: "Order not found" }); return; }
   if (order.handoffCompletedAt) { res.status(409).json({ error: "Handoff already completed" }); return; }
   const now = new Date();
   const [updated] = await db.update(ordersTable)
     .set({ handoffCompletedAt: now, handoffCompletedByUserId: actor.id })
-    .where(eq(ordersTable.id, orderId))
+    .where(and(eq(ordersTable.tenantId, req.authorizedTenantId!), eq(ordersTable.id, orderId)))
     .returning();
   await writeAuditLog({
     actorId: actor.id, actorEmail: actor.email, actorRole: actor.role,

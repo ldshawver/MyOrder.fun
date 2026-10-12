@@ -10,9 +10,8 @@ describe("catalog creation security", () => {
   });
 
   it("uses the authenticated tenant and fails closed for an unscoped tenant admin", () => {
-    expect(source).toContain("const actor = req.dbUser!");
-    expect(source).toContain("const tenantId = actor.tenantId ?? (normalizeRole(actor.role) === \"global_admin\"");
-    expect(source).toContain('res.status(403).json({ error: "Tenant assignment required" })');
+    expect(source).toContain("router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext)");
+    expect(source).toContain("const tenantId = req.authorizedTenantId!");
   });
 
   it("normalizes nullable database text before parsing catalog responses", () => {

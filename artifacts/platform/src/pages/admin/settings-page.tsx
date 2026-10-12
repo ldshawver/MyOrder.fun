@@ -161,6 +161,13 @@ export default function AdminSettingsPage() {
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [paypalStatus, setPayPalStatus] = useState<PayPalStatus | null>(null);
   const [paypalTesting, setPayPalTesting] = useState(false);
+  const [paypalEnabled, setPayPalEnabled] = useState(false);
+  const [paypalEnvironment, setPayPalEnvironment] = useState<"sandbox" | "live">("sandbox");
+  const [paypalClientId, setPayPalClientId] = useState("");
+  const [paypalClientSecret, setPayPalClientSecret] = useState("");
+  const [paypalWebhookId, setPayPalWebhookId] = useState("");
+  const [paypalSaving, setPayPalSaving] = useState(false);
+  const [paypalMessage, setPayPalMessage] = useState<string | null>(null);
   const [uber, setUber] = useState<UberDirectSettings>(EMPTY_UBER);
   const [uberClientSecret, setUberClientSecret] = useState("");
   const [uberWebhookKey, setUberWebhookKey] = useState("");
@@ -199,7 +206,12 @@ export default function AdminSettingsPage() {
           setBusiness({ ...EMPTY_BUSINESS, ...(tenantSettings.business ?? {}) });
         }
         if (brandingRes.ok) setBranding(resolveBranding(await brandingRes.json()));
-        if (paypalRes.ok) setPayPalStatus(await paypalRes.json() as PayPalStatus);
+        if (paypalRes.ok) {
+          const status = await paypalRes.json() as PayPalStatus;
+          setPayPalStatus(status);
+          setPayPalEnabled(status.enabled);
+          if (status.environment === "sandbox" || status.environment === "live") setPayPalEnvironment(status.environment);
+        }
         if (uberRes.ok) setUber(await uberRes.json() as UberDirectSettings);
         if (wcRes.ok) {
           const wc = await wcRes.json();
@@ -774,7 +786,7 @@ export default function AdminSettingsPage() {
 
               <div className="pt-3">
                 <div className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">PayPal</div>
-                <p className="text-xs text-muted-foreground mt-1">Credentials are deployment secrets. This screen reports configuration only; it never displays or stores a secret in the browser.</p>
+                <p className="text-xs text-muted-foreground mt-1">PayPal credentials are encrypted for this tenant. Saved values are never displayed; leave a field blank to retain it.</p>
               </div>
               <div className="rounded-xl border border-border/30 bg-muted/10 p-3 text-xs space-y-2">
                 <div className="grid gap-1 sm:grid-cols-2">
@@ -786,6 +798,30 @@ export default function AdminSettingsPage() {
                   <p><strong>Connection:</strong> {paypalStatus?.connection === "not_tested" ? "Not tested" : paypalStatus?.connection ?? "Not tested"}</p>
                 </div>
                 <p><strong>Webhook URL:</strong> <code>{typeof window === "undefined" ? "/api/webhooks/paypal" : `${window.location.origin}/api/webhooks/paypal`}</code></p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="text-xs">Environment
+                    <select className="mt-1 w-full rounded border border-border bg-background p-2" value={paypalEnvironment} onChange={event => setPayPalEnvironment(event.target.value as "sandbox" | "live")}>
+                      <option value="sandbox">Sandbox</option><option value="live">Live</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={paypalEnabled} onChange={event => setPayPalEnabled(event.target.checked)} /> Enable PayPal</label>
+                  <label className="text-xs">Client ID (blank retains saved value)<Input className="mt-1" value={paypalClientId} onChange={event => setPayPalClientId(event.target.value)} autoComplete="off" /></label>
+                  <label className="text-xs">Client Secret (blank retains saved value)<Input className="mt-1" type="password" value={paypalClientSecret} onChange={event => setPayPalClientSecret(event.target.value)} autoComplete="new-password" /></label>
+                  <label className="text-xs">Webhook ID (blank retains saved value)<Input className="mt-1" value={paypalWebhookId} onChange={event => setPayPalWebhookId(event.target.value)} autoComplete="off" /></label>
+                </div>
+                <Button type="button" variant="outline" size="sm" disabled={paypalSaving} onClick={async () => {
+                  setPayPalSaving(true); setPayPalMessage(null);
+                  try {
+                    const token = await getToken();
+                    const body = { enabled: paypalEnabled, environment: paypalEnvironment, ...(paypalClientId.trim() ? { clientId: paypalClientId.trim() } : {}), ...(paypalClientSecret.trim() ? { clientSecret: paypalClientSecret.trim() } : {}), ...(paypalWebhookId.trim() ? { webhookId: paypalWebhookId.trim() } : {}) };
+                    const response = await fetch("/api/admin/settings/paypal-status", { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+                    const result = await response.json() as PayPalStatus & { error?: string };
+                    if (!response.ok) throw new Error(result.error ?? "PayPal settings save failed");
+                    setPayPalStatus(result); setPayPalClientId(""); setPayPalClientSecret(""); setPayPalWebhookId(""); setPayPalMessage("PayPal settings saved for this tenant.");
+                  } catch (error) { setPayPalMessage(error instanceof Error ? error.message : "PayPal settings save failed"); }
+                  finally { setPayPalSaving(false); }
+                }}>{paypalSaving ? "Saving…" : "Save PayPal Settings"}</Button>
+                {paypalMessage && <p role="status">{paypalMessage}</p>}
                 <p><strong>PayPal Wallet:</strong> determined by the official PayPal SDK for the current merchant, buyer, and session.</p>
                 <p><strong>Credit/Debit Cards:</strong> not exposed until this merchant's PayPal Advanced Cards capability and v6 hosted-fields integration are verified. <strong>Vault/Saved Payments:</strong> {paypalStatus?.vault === "unknown" ? "not configured/verified" : paypalStatus?.vault ?? "not configured/verified"}.</p>
                 <Button type="button" variant="outline" size="sm" disabled={paypalTesting} onClick={async () => {

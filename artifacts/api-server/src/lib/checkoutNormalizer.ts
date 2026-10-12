@@ -2,6 +2,7 @@ import { z } from "zod";
 import { db, catalogItemsTable, taxConfigurationsTable } from "@workspace/db";
 import { and, eq, gte, isNull, lte, or } from "drizzle-orm";
 import { logger } from "./logger";
+import { dollarsToCents } from "./tenderTax";
 
 // ─── Strict input contract ─────────────────────────────────────────────────────
 // Lines coming in over the wire MUST contain only catalogItemId + quantity.
@@ -75,6 +76,19 @@ export interface CheckoutTotals {
   taxMode: "added" | "included";
   taxJurisdiction: string;
   taxConfigurationId: number;
+}
+
+export function computeBaseCheckoutTotals(lines: NormalizedCartLine[]): CheckoutTotals {
+  let subtotalCents = 0;
+  let taxableCents = 0;
+  for (const line of lines) {
+    if (!Number.isSafeInteger(line.quantity) || line.quantity <= 0) throw new Error("Invalid checkout quantity");
+    const lineCents = dollarsToCents(line.unit_price) * line.quantity;
+    if (!Number.isSafeInteger(lineCents) || !Number.isSafeInteger(subtotalCents + lineCents)) throw new Error("Checkout total exceeds safe cent range");
+    subtotalCents += lineCents;
+    if (line.is_taxable !== false) taxableCents += lineCents;
+  }
+  return { subtotal: subtotalCents / 100, taxableSubtotal: taxableCents / 100, nonTaxableSubtotal: (subtotalCents - taxableCents) / 100, tax: 0, total: subtotalCents / 100, taxRate: 0, taxMode: "added", taxJurisdiction: "PENDING_TENDER", taxConfigurationId: -1 };
 }
 
 export class TaxConfigurationError extends Error {
@@ -156,6 +170,7 @@ export async function normalizeCheckoutCart(
   tenantId?: number,
   requireCompleteSafeFields = false,
 ): Promise<NormalizedCartLine[]> {
+  if (tenantId == null || !Number.isSafeInteger(tenantId) || tenantId <= 0) throw new Error("Explicit tenant context is required");
   const parsed = CartInputSchema.safeParse(rawLines);
   if (!parsed.success) {
     throw new Error(`Invalid cart input: ${parsed.error.message}`);
@@ -167,7 +182,7 @@ export async function normalizeCheckoutCart(
     const [ci] = await db
       .select()
       .from(catalogItemsTable)
-      .where(tenantId ? and(eq(catalogItemsTable.id, line.catalogItemId), eq(catalogItemsTable.tenantId, tenantId)) : eq(catalogItemsTable.id, line.catalogItemId))
+      .where(and(eq(catalogItemsTable.id, line.catalogItemId), eq(catalogItemsTable.tenantId, tenantId)))
       .limit(1);
 
     if (!ci) {
