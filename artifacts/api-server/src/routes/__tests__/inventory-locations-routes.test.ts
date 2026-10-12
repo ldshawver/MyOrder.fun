@@ -149,6 +149,15 @@ function makeCsr() {
   };
 }
 
+function makeConfiguredOwner() {
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
+  return {
+    id: 3, tenantId: 1, clerkId: "test-owner", email: "owner@example.com",
+    firstName: "Owner", lastName: "Account", role: "global_admin", status: "approved",
+    approvedByClerkId: null, approvedAt: null, isActive: true,
+  };
+}
+
 function makeLocation(overrides: Record<string, unknown> = {}) {
   return {
     id: 1, tenantId: 1, name: "Backstock", type: "backstock",
@@ -346,6 +355,24 @@ describe("GET /api/admin/inventory-balances", () => {
     configureDb(makeCsr());
     const res = await supertest(buildApp(shiftsRouter)).get("/api/admin/inventory-balances");
     expect(res.status).toBe(200);
+  });
+});
+
+describe("owner approval gate on shift routes", () => {
+  it("allows the exact authenticated configured owner without approval provenance, then applies route authorization", async () => {
+    mockUserId = "test-owner";
+    configureDb(makeConfiguredOwner());
+    const res = await supertest(buildApp(shiftsRouter)).get("/api/shift-queue/status");
+    expect(res.status).not.toBe(403);
+    expect(res.body.error).not.toBe("Account approval provenance required");
+  });
+
+  it("keeps provenance required for a non-owner using the shift-specific gate", async () => {
+    mockUserId = "admin-clerk-id";
+    configureDb({ ...makeAdmin(), approvedByClerkId: null, approvedAt: null });
+    const res = await supertest(buildApp(shiftsRouter)).get("/api/shift-queue/status");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Account approval provenance required");
   });
 });
 

@@ -24,7 +24,7 @@ import {
   printPrintersTable,
 } from "@workspace/db";
 import { getAuth } from "@clerk/express";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog, normalizeRole } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, evaluateAccountApproval, writeAuditLog, normalizeRole } from "../lib/auth";
 import { requirePermission } from "../lib/roles";
 import { ensureInventoryBalanceClassificationSchema, sellableBalanceWhere } from "../lib/inventoryHealth";
 import { quantityUnits } from "../lib/exactQuantity";
@@ -285,43 +285,28 @@ function logMarekCsrAuthDebug(req: Request, failedCondition: string | null = nul
 
 function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;
-
-  if (!user) {
-    // Delegate to requireApproved so the mock in tests (noop) remains effective.
-    // In production requireApproved returns 401 for missing user — same outcome.
-    logCsrShiftAuth(req, "approval", "deny", "missing_db_user");
-    logMarekCsrAuthDebug(req, "missing_db_user");
-    requireApproved(req, res, next);
+  const decision = evaluateAccountApproval(req, user);
+  if (decision.allowed) {
+    const reason = decision.reason === "configured_owner_provenance_exception" ? "configured_owner_provenance_exception" : "approved_user";
+    logCsrShiftAuth(req, "approval", "pass", reason);
+    logMarekCsrAuthDebug(req, null);
+    next();
     return;
   }
-  if (user.isActive === false || user.status === "deactivated") {
-    logCsrShiftAuth(req, "approval", "deny", "inactive_or_deactivated");
-    logMarekCsrAuthDebug(req, "inactive_or_deactivated_user");
-    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
-    return;
+  const failedCondition = decision.reason;
+  logCsrShiftAuth(req, "approval", "deny", failedCondition);
+  logMarekCsrAuthDebug(req, failedCondition);
+  if (decision.reason === "missing_db_user") {
+    res.status(401).json({ error: "Unauthorized", code: "AUTHENTICATION_REQUIRED" });
+  } else if (decision.reason === "inactive") {
+    res.status(403).json({ error: "Account deactivated", code: "ACCOUNT_DEACTIVATED", status: user?.status ?? "deactivated" });
+  } else if (decision.reason === "rejected") {
+    res.status(403).json({ error: "Account rejected", code: "ACCOUNT_REJECTED", status: user?.status });
+  } else if (decision.reason === "pending") {
+    res.status(403).json({ error: "Account pending approval", code: "ACCOUNT_PENDING_APPROVAL", status: user?.status ?? "pending" });
+  } else {
+    res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user?.status });
   }
-  if (user.status === "rejected") {
-    logCsrShiftAuth(req, "approval", "deny", "rejected");
-    logMarekCsrAuthDebug(req, "rejected_user");
-    res.status(403).json({ error: "Account rejected", status: user.status });
-    return;
-  }
-  if (user.status !== "approved") {
-    logCsrShiftAuth(req, "approval", "deny", `not_approved:${user.status ?? "pending"}`);
-    logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
-    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
-    return;
-  }
-  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
-  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
-    logCsrShiftAuth(req, "approval", "deny", "missing_owner_provenance");
-    res.status(403).json({ error: "Account approval provenance required", status: user.status });
-    return;
-  }
-
-  logCsrShiftAuth(req, "approval", "pass", "approved_user");
-  logMarekCsrAuthDebug(req, null);
-  next();
 }
 
 function requireShiftOperatorRoleWithDebug(req: Request, res: Response, next: NextFunction): void {

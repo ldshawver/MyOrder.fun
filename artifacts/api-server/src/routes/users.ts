@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { db, usersTable, notificationsTable, onboardingRequestsTable } from "@workspace/db";
+import { db, usersTable, notificationsTable, onboardingRequestsTable, auditLogsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -564,34 +564,48 @@ router.patch("/admin/users/:id/approval", requireAccountOwner, requireRecentOwne
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const id = parseInt(raw, 10);
   if (isNaN(id)) {
-    res.status(400).json({ error: "Invalid user id" });
+    res.status(400).json({ error: "Invalid approval request", code: "INVALID_APPROVAL_REQUEST" });
     return;
   }
 
   const body = ApprovalBody.safeParse(req.body);
   if (!body.success) {
-    res.status(400).json({ error: body.error.message });
+    res.status(400).json({ error: "Invalid approval request", code: "INVALID_APPROVAL_REQUEST" });
     return;
   }
   if (body.data.approve && !isConfiguredAccountOwner(actor)) {
-    res.status(403).json({ error: "Forbidden: account owner approval required" });
+    res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
     return;
   }
 
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!target) {
-    res.status(404).json({ error: "User not found" });
+    res.status(404).json({ error: "Approval target unavailable", code: "APPROVAL_TARGET_UNAVAILABLE" });
     return;
   }
   if (!canManageUserInTenant(actor, target)) {
-    res.status(403).json({ error: "Forbidden: cannot modify user outside tenant" });
+    // Keep nonexistent and out-of-scope targets indistinguishable to callers.
+    res.status(404).json({ error: "Approval target unavailable", code: "APPROVAL_TARGET_UNAVAILABLE" });
     return;
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
   const newRole = body.data.approve && body.data.role ? normalizeRole(body.data.role) : undefined;
   if (newRole && !canAssignRole(actor, target, newRole)) {
-    res.status(403).json({ error: "Forbidden: cannot assign role" });
+    res.status(403).json({ error: "Requested role cannot be assigned", code: "ROLE_ASSIGNMENT_DENIED" });
+    return;
+  }
+
+  const finalRole = newRole ?? normalizeRole(target.role);
+  const finalTenantId = body.data.approve && body.data.tenantId !== undefined ? body.data.tenantId : target.tenantId;
+  const alreadyApplied = target.status === newStatus
+    && normalizeRole(target.role) === finalRole
+    && target.tenantId === finalTenantId
+    && (newStatus === "approved"
+      ? target.approvedByClerkId === actor.clerkId && !!target.approvedAt
+      : target.approvedByClerkId == null && target.approvedAt == null);
+  if (alreadyApplied) {
+    res.json({ id: target.id, status: target.status, role: normalizeRole(target.role) });
     return;
   }
 
@@ -601,11 +615,30 @@ router.patch("/admin/users/:id/approval", requireAccountOwner, requireRecentOwne
   if (newRole) updateSet.role = newRole;
   if (body.data.approve && body.data.tenantId !== undefined) updateSet.tenantId = body.data.tenantId;
 
-  const [updated] = await db
-    .update(usersTable)
-    .set(updateSet)
-    .where(eq(usersTable.id, id))
-    .returning();
+  let updated: typeof usersTable.$inferSelect;
+  try {
+    updated = await db.transaction(async (tx) => {
+      const [row] = await tx.update(usersTable).set(updateSet).where(eq(usersTable.id, id)).returning();
+      if (!row) throw new Error("approval_target_changed");
+      await tx.insert(auditLogsTable).values({
+        actorId: actor.id,
+        actorEmail: actor.email ?? "",
+        actorRole: actor.role,
+        action: body.data.approve ? "APPROVE_USER" : "REJECT_USER",
+        tenantId: body.data.approve && body.data.tenantId !== undefined ? body.data.tenantId : target.tenantId,
+        resourceType: "user",
+        resourceId: String(id),
+        metadata: { newStatus, newRole, previousStatus: target.status, previousRole: target.role },
+        ipAddress: req.ip ?? null,
+      });
+      return row;
+    });
+  } catch {
+    // Approval state and its audit record are a single durable database action.
+    // A failed audit insert rolls back the status/provenance update as well.
+    res.status(500).json({ error: "Approval could not be saved. No account change was confirmed.", code: "APPROVAL_PERSISTENCE_FAILED" });
+    return;
+  }
 
   // Push to Clerk publicMetadata so the next sign-in does not re-pend the user.
   if (hasRealClerkUserId(updated.clerkId)) {
@@ -614,17 +647,6 @@ router.patch("/admin/users/:id/approval", requireAccountOwner, requireRecentOwne
       role: newRole ?? normalizeRole(updated.role),
     });
   }
-
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: body.data.approve ? "APPROVE_USER" : "REJECT_USER",
-    resourceType: "user",
-    resourceId: String(id),
-    metadata: { newStatus, newRole, previousStatus: target.status, previousRole: target.role },
-    ipAddress: req.ip,
-  });
 
   if (newStatus === "approved" && target.status !== "approved") {
     try {

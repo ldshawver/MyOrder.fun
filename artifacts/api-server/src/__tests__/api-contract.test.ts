@@ -81,6 +81,7 @@ vi.mock("../lib/auth", () => {
     requireAccountOwner: noop,
     requireRecentOwnerAuth: noop,
     isConfiguredAccountOwner: () => true,
+    evaluateAccountApproval: () => ({ allowed: true, reason: "valid_provenance" }),
     requireRole: () => noop,
   };
 });

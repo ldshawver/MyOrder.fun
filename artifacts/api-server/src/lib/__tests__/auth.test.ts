@@ -112,12 +112,24 @@ describe("requireApproved middleware", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("allows the authenticated configured owner with pending status", () => {
+  it("does not let the owner exception bypass pending approval status", () => {
     vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: {} } as never);
     const req = { dbUser: makeUser({ clerkId: "configured_owner", status: "pending", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
-    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe("ACCOUNT_PENDING_APPROVAL");
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not let the owner exception bypass rejected status", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", status: "rejected", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).code).toBe("ACCOUNT_REJECTED");
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("requires the authenticated Clerk subject and configured database identity to match exactly", () => {

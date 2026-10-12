@@ -22,13 +22,13 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const database = await import("@workspace/db");
     const { db, usersTable, tenantsTable, auditLogsTable, notificationsTable, pool } = database;
     const { eq, and } = await import("drizzle-orm");
-    const [{ default: usersRouter }, { default: shiftsRouter }] = await Promise.all([
-      import("../users"), import("../shifts"),
+    const [{ default: usersRouter }, { default: shiftsRouter }, { default: inventoryRouter }] = await Promise.all([
+      import("../users"), import("../shifts"), import("../inventory"),
     ]);
     const { requireAuth, loadDbUser, requireDbUser, requireApproved } = await import("../../lib/auth");
     const [tenant] = await db.select({ id: tenantsTable.id }).from(tenantsTable).limit(1);
     if (!tenant) throw new Error("Disposable database needs one tenant");
-    const owner = await db.insert(usersTable).values({ clerkId: ownerId, email: "owner@test.invalid", role: "global_admin", status: "approved", tenantId: null, isActive: true }).returning({ id: usersTable.id });
+    const owner = await db.insert(usersTable).values({ clerkId: ownerId, email: "owner@test.invalid", role: "global_admin", status: "approved", tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const subjectId = `user_pg_hotfix_${process.pid}_${Date.now()}`;
     const subject = await db.insert(usersTable).values({ clerkId: subjectId, email: `${subjectId}@test.invalid`, role: "csr", status: "pending", tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const supervisorId = `${subjectId}_supervisor`;
@@ -37,6 +37,7 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const admin = await db.insert(usersTable).values({ clerkId: adminId, email: `${adminId}@test.invalid`, role: "admin", status: "approved", approvedByClerkId: ownerId, approvedAt: new Date(), tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const app = express(); app.use(express.json()); app.use("/api", usersRouter);
     const shiftApp = express(); shiftApp.use(express.json()); shiftApp.use("/api", shiftsRouter);
+    const inventoryApp = express(); inventoryApp.use(express.json()); inventoryApp.use("/api", inventoryRouter);
     const protectedApp = express();
     protectedApp.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
     protectedApp.get("/api/protected-fixture", (_req, res) => res.status(200).json({ ok: true }));
@@ -47,6 +48,7 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       expect(pendingDenied.status, JSON.stringify(pendingDenied.body)).toBe(403);
       expect((await supertest(app).get("/api/admin/users/all")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
+      expect((await supertest(inventoryApp).get("/api/admin/inventory")).status).toBe(403);
       expect((await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true })).status).toBe(403);
 
       for (const nonOwner of [
@@ -69,10 +71,11 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       clerkState.sessionClaims = { publicMetadata: { status: "pending", role: "user" } };
       const ownerProtectedAccess = await supertest(protectedApp).get("/api/protected-fixture");
       expect(ownerProtectedAccess.status, JSON.stringify(ownerProtectedAccess.body)).toBe(200);
+      expect((await supertest(inventoryApp).get("/api/admin/inventory")).status).toBe(200);
       expect((await supertest(app).get("/api/users/me")).body.isConfiguredOwner).toBe(true);
       await db.update(usersTable).set({ status: "pending" }).where(eq(usersTable.id, owner[0].id));
-      expect((await supertest(protectedApp).get("/api/protected-fixture")).status).toBe(200);
-      expect((await supertest(app).get("/api/users/me")).body).toMatchObject({ status: "pending", isConfiguredOwner: true });
+      expect((await supertest(protectedApp).get("/api/protected-fixture")).status).toBe(403);
+      expect((await supertest(shiftApp).get("/api/shift-queue/status")).status).toBe(403);
       await db.update(usersTable).set({ status: "approved" }).where(eq(usersTable.id, owner[0].id));
 
       clerkState.userId = subjectId;
@@ -89,7 +92,12 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       const [approved] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
       expect(approved).toMatchObject({ status: "approved", approvedByClerkId: ownerId, tenantId: tenant.id });
       expect(approved.approvedAt).toBeInstanceOf(Date);
+      const repeat = await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true, role: "csr", tenantId: tenant.id });
+      expect(repeat.status).toBe(200);
+      const [afterRepeat] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
+      expect(afterRepeat.approvedAt).toEqual(approved.approvedAt);
       const approvalAudit = await db.select().from(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
+      expect(approvalAudit.filter((row) => row.action === "APPROVE_USER")).toHaveLength(1);
       expect(approvalAudit).toEqual(expect.arrayContaining([
         expect.objectContaining({ action: "APPROVE_USER", actorId: owner[0].id, resourceType: "user", resourceId: String(subject[0].id) }),
       ]));

@@ -18,6 +18,37 @@ export function isConfiguredAccountOwner(user: { clerkId?: string | null } | nul
   return Boolean(configuredOwnerId && user?.clerkId && user.clerkId === configuredOwnerId);
 }
 
+/** True only when the authenticated Clerk subject matches the configured owner and resolved DB row. */
+export function isAuthenticatedConfiguredAccountOwner(req: Request, user: { clerkId?: string | null } | null | undefined): boolean {
+  const authenticatedSubject = getAuth(req)?.userId;
+  return !!authenticatedSubject && authenticatedSubject === user?.clerkId && isConfiguredAccountOwner(user);
+}
+
+export type AccountApprovalDecision =
+  | { allowed: true; reason: "configured_owner_provenance_exception" | "valid_provenance" }
+  | { allowed: false; reason: "missing_db_user" | "inactive" | "rejected" | "pending" | "missing_provenance" };
+
+/** Shared approval policy. The owner exception satisfies provenance only; it
+ * does not bypass account status, activity, tenant, role, or object checks. */
+export function evaluateAccountApproval(req: Request, user: {
+  clerkId?: string | null;
+  status?: string | null;
+  isActive?: boolean | null;
+  approvedByClerkId?: string | null;
+  approvedAt?: Date | string | null;
+} | null | undefined): AccountApprovalDecision {
+  if (!user) return { allowed: false, reason: "missing_db_user" };
+  if (user.isActive === false || user.status === "deactivated") return { allowed: false, reason: "inactive" };
+  if (user.status === "rejected") return { allowed: false, reason: "rejected" };
+  if (user.status !== "approved") return { allowed: false, reason: "pending" };
+  if (isAuthenticatedConfiguredAccountOwner(req, user)) return { allowed: true, reason: "configured_owner_provenance_exception" };
+  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
+    return { allowed: false, reason: "missing_provenance" };
+  }
+  return { allowed: true, reason: "valid_provenance" };
+}
+
 let usersSchemaEnsured = false;
 
 async function ensureUsersAuthSchema(): Promise<void> {
@@ -170,7 +201,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const auth = getAuth(req);
   if (!auth?.userId) {
-    res.status(401).json({ error: "Unauthorized" });
+    res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
   next();
@@ -178,7 +209,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
 export function requireDbUser(req: Request, res: Response, next: NextFunction): void {
   if (!req.dbUser) {
-    res.status(401).json({ error: "User profile not found" });
+    res.status(401).json({ error: "Authenticated account profile unavailable", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
   next();
@@ -206,47 +237,37 @@ export function isGlobalAdmin(user: { role?: string | null } | null | undefined)
 
 export function requireApproved(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;
-  if (!user) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  if (user.isActive === false || user.status === "deactivated") {
-    res.status(403).json({ error: "Account deactivated", code: "ACCOUNT_DEACTIVATED", status: user.status ?? "deactivated" });
-    return;
-  }
-
-  // The configured owner is the approval authority and cannot depend on a
-  // second account approving them. Require the authenticated Clerk subject to
-  // match the server-resolved database row before applying this exception.
-  const authenticatedSubject = getAuth(req)?.userId;
-  if (authenticatedSubject && authenticatedSubject === user.clerkId && isConfiguredAccountOwner(user)) {
+  const decision = evaluateAccountApproval(req, user);
+  if (decision.allowed) {
     next();
     return;
   }
-
-  if (user.status === "rejected") {
-    res.status(403).json({ error: "Account rejected", code: "ACCOUNT_REJECTED", status: user.status });
+  if (decision.reason === "missing_db_user") {
+    res.status(401).json({ error: "Unauthorized" });
     return;
   }
-  if (user.status !== "approved") {
-    res.status(403).json({ error: "Account pending approval", code: "ACCOUNT_PENDING_APPROVAL", status: user.status ?? "pending" });
+  if (decision.reason === "inactive") {
+    res.status(403).json({ error: "Account deactivated", code: "ACCOUNT_DEACTIVATED", status: user?.status ?? "deactivated" });
     return;
   }
-  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
-  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
-    res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user.status });
+  if (decision.reason === "rejected") {
+    res.status(403).json({ error: "Account rejected", code: "ACCOUNT_REJECTED", status: user?.status });
     return;
   }
-  next();
+  if (decision.reason === "pending") {
+    res.status(403).json({ error: "Account pending approval", code: "ACCOUNT_PENDING_APPROVAL", status: user?.status ?? "pending" });
+    return;
+  }
+  res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user?.status });
 }
 
 export function requireAccountOwner(req: Request, res: Response, next: NextFunction): void {
   if (!req.dbUser) {
-    res.status(401).json({ error: "Unauthorized" });
+    res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
-  if (!isConfiguredAccountOwner(req.dbUser)) {
-    res.status(403).json({ error: "Forbidden: account owner approval required" });
+  if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
+    res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
     return;
   }
   next();
@@ -261,7 +282,18 @@ export function requireRecentOwnerAuth(req: Request, res: Response, next: NextFu
   // Clerk fva values are minutes; auth_time is a Unix timestamp in seconds.
   const recent = (authTime !== null && authTime <= now && now - authTime <= 600) || (fva !== null && fva >= 0 && fva <= 10);
   if (!recent) {
-    res.status(403).json({ error: "Recent authentication required" });
+    // Clerk's useReverification() recognizes this signed-session step-up hint.
+    // The client retries only the request that the owner explicitly initiated,
+    // after Clerk completes reverification; the API repeats this check.
+    res.status(403).json({
+      error: "Recent authentication required",
+      code: "RECENT_AUTH_REQUIRED",
+      clerk_error: {
+        type: "forbidden",
+        reason: "reverification-error",
+        metadata: { reverification: { level: "first_factor", afterMinutes: 10 } },
+      },
+    });
     return;
   }
   next();

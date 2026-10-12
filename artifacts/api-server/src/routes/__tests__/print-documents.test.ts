@@ -119,6 +119,7 @@ vi.mock("../../lib/auth", () => ({
   loadDbUser: (req: { dbUser?: unknown }, _s: unknown, next: () => void) => { req.dbUser = { ...store.user }; next(); },
   requireDbUser: (_q: unknown, _s: unknown, next: () => void) => next(),
   requireApproved: (_q: unknown, _s: unknown, next: () => void) => next(),
+  evaluateAccountApproval: () => ({ allowed: true, reason: "valid_provenance" }),
   requireRole:
     (...roles: string[]) =>
     (req: { dbUser: { role: string } }, res: { status: (n: number) => { json: (b: unknown) => void } }, next: () => void) =>
