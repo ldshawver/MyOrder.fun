@@ -2,9 +2,11 @@
 
 ## Release identity and migration scope
 
-The accepted authorization-code candidate is `ad2d7e6487316e0be28ba3c8423b450e506af51e`, based on production API commit `579cce225c0f9e7bee41a4c226d43e5ba5c86606`. Production's Drizzle ledger ends at the 0067 prefix. `deploy/hotfix-owner-approval.sql` is the only database change for this release. It is a standalone transaction, writes marker `public.myorder_hotfix_migrations / p0_owner_approval_provenance`, and leaves the Drizzle ledger unchanged. The final release SHA must come from the reviewed release record; use the same full SHA for source checkout, build argument, image tag, running-container label, and API health response.
+The previous production API release is `07239c557b5176f75362797829e8c341098ed447`. The owner-login correction is in source commit `6061c505f3553b6c9b0cd51c784f61804d56ec17` (parent `07239c557b5176f75362797829e8c341098ed447`). This runbook update is a follow-up commit, so the deployable release identity is the exact full SHA of the reviewed PR #147 head after this update is published and CI passes. Do not deploy the previous production image or the earlier code-only candidate image when the final PR head differs.
 
-The committed `0068_print_jobs_document_job_types` migration is deferred. Do not build or run the `migrate` Compose service, invoke `drizzle-kit migrate`, or use the normal deploy workflow for this hotfix. A future release must restore the pending print migration and add an idempotent Drizzle reconciliation migration for the owner provenance columns after it.
+The previously built API candidate image `sha256:6523ae58917a025927734b74a277aa0312cb66a121e218636dd447ffc7aaccd8` was built from `6061c505f3553b6c9b0cd51c784f61804d56ec17`; it is not the final release image if the reviewed PR head changes. The final API image and the proposed platform image must both be rebuilt from the final reviewed PR SHA and carry that exact revision in both `org.opencontainers.image.revision` and `com.myorder.deploy-sha` labels. The platform image contains the frontend's explicit account-approval error handling; the API image contains the backend owner authorization correction.
+
+Production's Drizzle ledger ends at the 0067 prefix. `deploy/hotfix-owner-approval.sql` is the only database change for this release. It is a standalone transaction, writes marker `public.myorder_hotfix_migrations / p0_owner_approval_provenance`, and leaves the Drizzle ledger unchanged. The committed `0068_print_jobs_document_job_types` migration remains deferred. Do not build or run the `migrate` Compose service, invoke `drizzle-kit migrate`, or use the normal deploy workflow for this hotfix. A future release must restore the pending print migration and add an idempotent Drizzle reconciliation migration for the owner provenance columns after it.
 
 ## Owner subject configuration
 
@@ -56,7 +58,7 @@ There is no planned database restart or database downtime. The public API is alr
 
 ## Stage the exact source and image
 
-The production checkout is mutable and currently resolves to the deployed parent SHA; the hotfix commit is not present there. First make this exact commit available through the approved, protected source/CI path. After that step is complete and deployment is separately authorized, run the following as the production deployment operator. This uses a detached release worktree and full-SHA image tag, not `/opt/alavont` source files:
+After PR #147 has the final reviewed SHA and all required CI checks pass, make that exact commit available through the approved, protected source/CI path. After deployment is separately authorized, run the following as the production deployment operator. This uses a detached release worktree and full-SHA image tags, not mutable `/opt/alavont` source files:
 
 ```bash
 set -euo pipefail
@@ -76,11 +78,16 @@ cd "$RELEASE/deploy"
 export DEPLOY_SHA="$SHA"
 dc() { docker compose --project-directory "$RELEASE/deploy" --env-file "$ENV_FILE" -f "$RELEASE/deploy/docker-compose.yml" -p deploy "$@"; }
 dc config --services
-dc build api
-test "$(docker image inspect --format '{{index .Config.Labels "com.myorder.deploy-sha"}}' "myorder-api:$SHA")" = "$SHA"
+dc build --pull=false api platform
+for service in api platform; do
+  image="myorder-$service:$SHA"
+  test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$SHA"
+  test "$(docker image inspect --format '{{index .Config.Labels "com.myorder.deploy-sha"}}' "$image")" = "$SHA"
+  docker image inspect --format '{{.Id}} {{index .Config.Labels "com.myorder.deploy-sha"}}' "$image"
+done
 ```
 
-The service list is `db`, `api`, `migrate`, `platform`, `nginx`; the release builds only `api`, does not build or run `migrate`, and `dc config --services` is not permission to start services. The image label check must return the full SHA. After API startup, also check the running container's image label and `/api/healthz` SHA.
+The service list is `db`, `api`, `migrate`, `platform`, `nginx`; the release builds only the `api` and `platform` images, and does not build or run `migrate`. `dc config --services` does not start services. Before startup, verify that the effective Compose configuration selects exactly `myorder-api:$SHA` and `myorder-platform:$SHA`, that `MYORDER_OWNER_CLERK_ID` is explicitly passed to the API, and that the platform build uses the protected production `.env` values for the Clerk publishable key and `https://myorder.fun/api/__clerk` proxy. Do not print rendered Compose configuration. Record each image ID and digest with its matching labels. After startup, check the running container's image label and `/api/healthz` SHA.
 
 ## Preconditions and database patch
 
@@ -97,7 +104,7 @@ Do not run `dc run migrate`, `dc up migrate`, or the standard deployment workflo
 
 ## Start and verify after separate authorization
 
-Only after the operator has approved the restart, start just the API service. Do not start platform, nginx, or the migration service as part of this hotfix:
+Only after the operator has approved the restart, start the verified API and platform images. Do not run the migration service, recreate PostgreSQL, or restart nginx. First update the API with dependencies disabled, verify its owner configuration, health and security smoke tests; then update only the platform after confirming Clerk initialization and proxy routing. Keep the existing database, nginx and platform instances in service until their individual replacement is explicitly authorized. The API-only command is:
 
 ```bash
 dc up -d --no-deps api
@@ -107,6 +114,8 @@ docker inspect deploy-api-1 --format '{{range .Config.Env}}{{if eq (index (split
 curl --fail --connect-timeout 5 --max-time 15 http://127.0.0.1:8081/api/healthz
 curl --fail --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
 ```
+
+After the API passes its checks, a separately authorized frontend replacement uses `dc up -d --no-deps platform`; do not include `nginx`, `db`, or `migrate` in either command. Confirm the Clerk proxy remains routed through `/api/__clerk` and that the platform health check passes.
 
 The image label and health JSON `sha` must equal the full release SHA. The API container health check probes `/healthz` on port 8080; nginx and platform health checks must remain healthy. Verify pending accounts and approved legacy accounts without matching owner provenance are denied on protected and shift routes; forged Clerk metadata does not grant access. Verify the configured owner can approve only with recent authentication, that approval records the owner subject and timestamp and chosen tenant, and that suspension clears provenance and denies access. Check the approval audit rows (`APPROVE_USER` / `UPDATE_USER_STATUS`) against owner actor and target IDs using a restricted audit session.
 
