@@ -767,16 +767,14 @@ router.post("/admin/users/waitlist/:id/invite", requireAccountOwner, requireRece
       emailAddress: invited.emailAddress,
     };
   } catch (err) {
-    req.log.error({ err, waitlistId: id }, "Clerk waitlist invite failed — attempting DB-only approval");
+    req.log.error({ err, waitlistId: id }, "Clerk waitlist invite failed — retaining a pending database invitation");
     // If we have no email at all we genuinely cannot proceed
     if (!prefetchedEmail) {
       res.status(500).json({ error: "Failed to invite user from waitlist and could not determine their email. If this user has already signed up, find them in the Platform Users tab and approve them there instead." });
       return;
     }
-    // Proceed without the Clerk invite — the DB row will be created/updated
-    // so the user is approved. They won't receive an invite email, but if
-    // they already have a Clerk account the next sign-in will pick up the
-    // approved status from our DB.
+    // Preserve the invitation as pending when Clerk cannot send it. A later
+    // sign-in or manual approval must not turn this fallback into approval.
     clerkInviteFailed = true;
     entry = { id, status: "clerk_invite_skipped", emailAddress: prefetchedEmail };
   }
@@ -806,9 +804,9 @@ router.post("/admin/users/waitlist/:id/invite", requireAccountOwner, requireRece
 
   // Reconcile against any existing real (non-sentinel) user row for this
   // email. If one exists, the person already has a Clerk account — skip the
-  // sentinel and just promote that row to approved + the picked role. This
-  // prevents stale orphan sentinel rows that would never be upgraded
-  // (because no future `user.created` webhook will fire).
+  // sentinel and keep that row pending with the selected role. This prevents
+  // stale orphan sentinel rows that would never be upgraded (because no
+  // future `user.created` webhook will fire).
   let existingReal: typeof usersTable.$inferSelect | undefined;
   if (email) {
     // Case-insensitive email match — see webhooks.ts for the rationale.

@@ -36,10 +36,16 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       clerkState.userId = subjectId;
       clerkState.sessionClaims = { publicMetadata: { role: "global_admin", status: "approved" }, unsafeMetadata: { status: "approved" }, fva: [1, -1] };
       expect((await supertest(app).get("/api/users")).status).toBe(403);
+      expect((await supertest(app).get("/api/admin/users/all")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
       expect((await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true })).status).toBe(403);
 
+      await db.update(usersTable).set({ status: "approved", approvedByClerkId: null, approvedAt: null }).where(eq(usersTable.id, subject[0].id));
+      expect((await supertest(app).get("/api/users")).status).toBe(403);
+      expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
+
       await db.update(usersTable).set({ status: "approved", approvedByClerkId: "some_other_owner", approvedAt: new Date() }).where(eq(usersTable.id, subject[0].id));
+      expect((await supertest(app).get("/api/users")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
 
       clerkState.userId = ownerId;
