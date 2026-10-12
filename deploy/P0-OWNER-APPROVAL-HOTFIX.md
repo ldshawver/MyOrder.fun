@@ -107,7 +107,7 @@ Do not run `dc run migrate`, `dc up migrate`, or the standard deployment workflo
 Only after the operator has approved the restart, start the verified API and platform images. Do not run the migration service, recreate PostgreSQL, or restart nginx. First update the API with dependencies disabled, verify its owner configuration, health and security smoke tests; then update only the platform after confirming Clerk initialization and proxy routing. Keep the existing database, nginx and platform instances in service until their individual replacement is explicitly authorized. The API-only command is:
 
 ```bash
-dc up -d --no-deps api
+dc up -d --no-deps --no-build --pull never api
 dc ps api db nginx
 docker inspect deploy-api-1 --format '{{index .Config.Labels "com.myorder.deploy-sha"}}'
 docker inspect deploy-api-1 --format '{{range .Config.Env}}{{if eq (index (split . "=") 0) "MYORDER_OWNER_CLERK_ID"}}owner_setting_present{{end}}{{end}}'
@@ -115,7 +115,7 @@ curl --fail --connect-timeout 5 --max-time 15 http://127.0.0.1:8081/api/healthz
 curl --fail --connect-timeout 10 --max-time 20 https://myorder.fun/api/healthz
 ```
 
-After the API passes its checks, a separately authorized frontend replacement uses `dc up -d --no-deps platform`; do not include `nginx`, `db`, or `migrate` in either command. Confirm the Clerk proxy remains routed through `/api/__clerk` and that the platform health check passes.
+After the API passes its checks, a separately authorized frontend replacement uses `dc up -d --no-deps --no-build --pull never platform`; do not include `nginx`, `db`, or `migrate` in either command. Confirm the Clerk proxy remains routed through `/api/__clerk` and that the platform health check passes.
 
 The image label and health JSON `sha` must equal the full release SHA. The API container health check probes `/healthz` on port 8080; nginx and platform health checks must remain healthy. Verify pending accounts and approved legacy accounts without matching owner provenance are denied on protected and shift routes; forged Clerk metadata does not grant access. Verify the configured owner can approve only with recent authentication, that approval records the owner subject and timestamp and chosen tenant, and that suspension clears provenance and denies access. Check the approval audit rows (`APPROVE_USER` / `UPDATE_USER_STATUS`) against owner actor and target IDs using a restricted audit session.
 
