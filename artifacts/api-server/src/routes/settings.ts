@@ -7,7 +7,7 @@ import { getHouseTenantId } from "../lib/singleTenant";
 import { encrypt, hasConfiguredSettingsEncryptionKey, safeDecrypt } from "../lib/crypto";
 import { loadPaymentConfig } from "../payments/config";
 import { PayPalProvider } from "../payments/paypal";
-import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, type UberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
+import { createUberDeliveryQuote, getUberAccessToken, normalizeUberAddress, UberDirectApiError, UberDirectConfigError } from "../lib/uberDirect";
 import { getUberDirectAdminSettings, getUberDirectPickupAddress, getUberDirectRuntimeConfig, requirePickupAddress } from "../lib/uberDirectConfig";
 import { z } from "zod";
 

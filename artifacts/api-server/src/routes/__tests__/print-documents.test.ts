@@ -112,6 +112,9 @@ vi.mock("@workspace/db", () => {
 });
 
 vi.mock("../../lib/auth", () => ({
+  requireAccountOwner: (_q: unknown, _s: unknown, next: () => void) => next(),
+  requireRecentOwnerAuth: (_q: unknown, _s: unknown, next: () => void) => next(),
+  isConfiguredAccountOwner: () => true,
   requireAuth: (_q: unknown, _s: unknown, next: () => void) => next(),
   loadDbUser: (req: { dbUser?: unknown }, _s: unknown, next: () => void) => { req.dbUser = { ...store.user }; next(); },
   requireDbUser: (_q: unknown, _s: unknown, next: () => void) => next(),
@@ -186,7 +189,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const api = supertest(app);
 
 const asUser = (tenantId: number, role = "admin") => {
-  store.user = { id: tenantId * 100, role, status: "approved", isActive: true, tenantId, email: `u@t${tenantId}`, firstName: "Luke", lastName: "Sample" };
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
+  store.user = { id: tenantId * 100, role, status: "approved", approvedByClerkId: "test-owner", approvedAt: new Date(), isActive: true, tenantId, email: `u@t${tenantId}`, firstName: "Luke", lastName: "Sample" };
 };
 
 // Tenant 1: Mac bridge (id 10) with an 80mm Brightek and a full-page office printer;

@@ -154,6 +154,8 @@ function seedAdmin() {
     lastName: "User",
     role: "admin",
     status: "approved",
+    approvedByClerkId: "admin-clerk-id",
+    approvedAt: new Date(),
     isActive: true,
     contactPhone: null,
     mfaEnabled: false,
@@ -166,7 +168,7 @@ function seedGlobalAdmin() {
   dbState.users.push({
     id: 99, clerkId: "global-admin-clerk-id", email: "global@example.com",
     firstName: "Global", lastName: "Admin", role: "global_admin", status: "approved",
-    isActive: true, contactPhone: null, mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
+    isActive: true, approvedByClerkId: "global-admin-clerk-id", approvedAt: new Date(), contactPhone: null, mfaEnabled: false, createdAt: new Date(), updatedAt: new Date(),
   });
 }
 
@@ -194,10 +196,24 @@ beforeEach(() => {
   dbState.notifications = [];
   dbState.audits = [];
   mockUserId = "admin-clerk-id";
-  mockSessionClaims = undefined;
+  mockSessionClaims = { fva: [1, -1] };
+  process.env.MYORDER_OWNER_CLERK_ID = "admin-clerk-id";
 });
 
 describe("PATCH /api/admin/users/:id/approval", () => {
+  it("rejects approval by an administrator who is not the configured owner", async () => {
+    seedAdmin();
+    seedPending(2, "pending-clerk-id");
+    process.env.MYORDER_OWNER_CLERK_ID = "different-owner";
+    const app = buildApp(usersRouter);
+    const res = await supertest(app)
+      .patch("/api/admin/users/2/approval")
+      .send({ approve: true, role: "user" });
+    expect(res.status).toBe(403);
+    expect(dbState.users.find((u) => u.id === 2)?.status).toBe("pending");
+    expect(clerkClient.users.updateUserMetadata).not.toHaveBeenCalled();
+  });
+
   it("approves a pending user, updates the DB, and pushes to Clerk", async () => {
     seedAdmin();
     seedPending(2, "pending-clerk-id");
@@ -323,6 +339,7 @@ describe("Admin route aliases", () => {
 
   it("global_admin can assign global_admin role", async () => {
     seedGlobalAdmin();
+    process.env.MYORDER_OWNER_CLERK_ID = "global-admin-clerk-id";
     seedPending(24, "global-role-clerk-id-2");
     mockUserId = "global-admin-clerk-id";
     const app = buildApp(usersRouter);
@@ -354,10 +371,10 @@ describe("PATCH /api/users/:id/status", () => {
 });
 
 describe("loadDbUser sync-on-read (DB role wins)", () => {
-  it("updates the DB row when Clerk publicMetadata.status differs", async () => {
+  it("does not treat Clerk publicMetadata.status as an approval decision", async () => {
     seedPending(7, "round-trip-clerk-id");
     mockUserId = "round-trip-clerk-id";
-    // Clerk says approved, DB still says pending — sync-on-read should reconcile
+    // Clerk says approved, DB still says pending — the database approval state wins.
     mockSessionClaims = { publicMetadata: { status: "approved", role: "lab_tech" } };
 
     const app = express();
@@ -374,16 +391,16 @@ describe("loadDbUser sync-on-read (DB role wins)", () => {
 
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
+    expect(res.body.status).toBe("pending");
     expect(res.body.role).toBe("user");
 
     // DB status was reconciled; Clerk role metadata did not elevate the user.
     const dbRow = dbState.users.find((u) => u.id === 7)!;
-    expect(dbRow.status).toBe("approved");
+    expect(dbRow.status).toBe("pending");
     expect(dbRow.role).toBe("user");
   });
 
-  it("falls back to Clerk API publicMetadata when session claims omit metadata", async () => {
+  it("does not treat Clerk API publicMetadata.status as approval provenance", async () => {
     seedPending(17, "api-metadata-clerk-id");
     mockUserId = "api-metadata-clerk-id";
     mockSessionClaims = {};
@@ -405,11 +422,11 @@ describe("loadDbUser sync-on-read (DB role wins)", () => {
 
     const res = await supertest(app).get("/whoami");
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
+    expect(res.body.status).toBe("pending");
     expect(res.body.role).toBe("user");
 
     const dbRow = dbState.users.find((u) => u.id === 17)!;
-    expect(dbRow.status).toBe("approved");
+    expect(dbRow.status).toBe("pending");
     expect(dbRow.role).toBe("user");
   });
 

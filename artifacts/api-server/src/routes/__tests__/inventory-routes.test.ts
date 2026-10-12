@@ -132,7 +132,7 @@ import shiftsRouter from "../shifts";
 
 function makeAdmin() {
   return {
-    id: 1, clerkId: "admin-clerk-id", email: "admin@example.com",
+    id: 1, clerkId: "admin-clerk-id", approvedByClerkId: "test-owner", approvedAt: new Date(), email: "admin@example.com",
     firstName: "A", lastName: "D", role: "admin", status: "approved", isActive: true,
   };
 }
@@ -178,6 +178,7 @@ function buildApp(router: Router) {
 }
 
 beforeEach(() => {
+    process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
   vi.clearAllMocks();
   mockUserId = "admin-clerk-id";
 });

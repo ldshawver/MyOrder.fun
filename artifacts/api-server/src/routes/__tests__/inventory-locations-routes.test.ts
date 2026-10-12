@@ -134,16 +134,18 @@ function buildApp(router: Router) {
 }
 
 function makeAdmin() {
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
   return {
     id: 1, tenantId: 1, clerkId: "admin-clerk-id", email: "admin@example.com",
-    firstName: "A", lastName: "D", role: "admin", status: "approved", isActive: true,
+    firstName: "A", lastName: "D", role: "admin", status: "approved", approvedByClerkId: "test-owner", approvedAt: new Date(), isActive: true,
   };
 }
 
 function makeCsr() {
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
   return {
     id: 2, tenantId: 1, clerkId: "csr-clerk-id", email: "csr@example.com",
-    firstName: "C", lastName: "R", role: "customer_service_rep", status: "approved", isActive: true,
+    firstName: "C", lastName: "R", role: "customer_service_rep", status: "approved", approvedByClerkId: "test-owner", approvedAt: new Date(), isActive: true,
   };
 }
 

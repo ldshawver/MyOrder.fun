@@ -191,7 +191,8 @@ function makePendingUser() {
 }
 
 function makeApprovedUser() {
-  return { ...makePendingUser(), id: 11, email: "approved@example.com", status: "approved" };
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
+  return { ...makePendingUser(), id: 11, email: "approved@example.com", status: "approved", approvedByClerkId: "test-owner", approvedAt: new Date() };
 }
 
 /**

@@ -307,18 +307,16 @@ function requireApprovedWithCsrDebug(req: Request, res: Response, next: NextFunc
     res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
-  const actorRole = normalizeRole(user.role);
-  // Staff roles (CSR / admin / global_admin) are implicitly approved.
-  if (actorRole === "global_admin" || actorRole === "admin" || actorRole === "supervisor" || actorRole === "csr") {
-    logCsrShiftAuth(req, "approval", "pass", "staff_role_bypass");
-    logMarekCsrAuthDebug(req, null);
-    next();
-    return;
-  }
   if (user.status !== "approved") {
     logCsrShiftAuth(req, "approval", "deny", `not_approved:${user.status ?? "pending"}`);
     logMarekCsrAuthDebug(req, `not_approved:${user.status ?? "pending"}`);
     res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    return;
+  }
+  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
+    logCsrShiftAuth(req, "approval", "deny", "missing_owner_provenance");
+    res.status(403).json({ error: "Account approval provenance required", status: user.status });
     return;
   }
 

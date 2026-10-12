@@ -397,6 +397,8 @@ function seedUser(id: number, clerkId: string, role: string): UserRow {
     lastName: "L",
     role,
     status: "approved",
+    approvedByClerkId: "test-owner",
+    approvedAt: new Date(),
     isActive: true,
     contactPhone: null,
     mfaEnabled: false,
@@ -408,6 +410,7 @@ function seedUser(id: number, clerkId: string, role: string): UserRow {
 }
 
 beforeEach(() => {
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
   vi.clearAllMocks();
   dbState.users = [];
   dbState.tickets = [];

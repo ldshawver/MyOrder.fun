@@ -19,7 +19,7 @@ vi.mock("../logger", () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
 }));
 
-import { normalizeRole, requireApproved, requireDbUser, requireRole } from "../auth";
+import { isConfiguredAccountOwner, normalizeRole, requireApproved, requireDbUser, requireRole } from "../auth";
 
 function makeRes() {
   const res = {
@@ -44,6 +44,8 @@ function makeUser(overrides: Record<string, unknown> = {}) {
     email: "test@example.com",
     role: "user",
     status: "approved",
+    approvedByClerkId: "configured_owner",
+    approvedAt: new Date(),
     isActive: true,
     ...overrides,
   };
@@ -54,6 +56,7 @@ describe("requireApproved middleware", () => {
 
   beforeEach(() => {
     next = vi.fn();
+    process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
   });
 
   it("returns 401 when req.dbUser is not set", () => {
@@ -89,20 +92,28 @@ describe("requireApproved middleware", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("calls next() for an admin user with pending status", () => {
+  it("fails closed for legacy approved accounts without owner provenance", () => {
+    const req = { dbUser: makeUser({ approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("blocks an admin user with pending status", () => {
     const req = { dbUser: makeUser({ role: "admin", status: "pending" }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
-    expect(next).toHaveBeenCalledOnce();
-    expect(res.statusCode).toBe(200);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
   });
 
-  it("treats csr as staff for approval purposes", () => {
+  it("blocks a csr with pending status", () => {
     const req = { dbUser: makeUser({ role: "csr", status: "pending" }) } as unknown as Request;
     const res = makeRes();
     requireApproved(req, res, next as NextFunction);
-    expect(next).toHaveBeenCalledOnce();
-    expect(res.statusCode).toBe(200);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
   });
 
   it("blocks a rejected staff user", () => {
@@ -237,5 +248,25 @@ describe("normalizeRole", () => {
     ["Customer-Service-Representative", "csr"],
   ])("normalizes %s to %s", (role, expected) => {
     expect(normalizeRole(role)).toBe(expected);
+  });
+});
+
+describe("owner-only approval identity", () => {
+  const previous = process.env.MYORDER_OWNER_CLERK_ID;
+
+  afterEach(() => {
+    if (previous === undefined) delete process.env.MYORDER_OWNER_CLERK_ID;
+    else process.env.MYORDER_OWNER_CLERK_ID = previous;
+  });
+
+  it("fails closed when the owner identity is not configured", () => {
+    delete process.env.MYORDER_OWNER_CLERK_ID;
+    expect(isConfiguredAccountOwner({ clerkId: "owner" })).toBe(false);
+  });
+
+  it("accepts only the exact configured Clerk identity", () => {
+    process.env.MYORDER_OWNER_CLERK_ID = "owner_clerk_id";
+    expect(isConfiguredAccountOwner({ clerkId: "owner_clerk_id" })).toBe(true);
+    expect(isConfiguredAccountOwner({ clerkId: "other_clerk_id" })).toBe(false);
   });
 });

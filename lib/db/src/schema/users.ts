@@ -31,6 +31,8 @@ export const usersTable = pgTable("users", {
     platformUpdates: "in_app",
   }),
   status: text("status").notNull().default("pending"),
+  approvedByClerkId: text("approved_by_clerk_id"),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
   isActive: boolean("is_active").notNull().default(true),
   isDefaultTech: boolean("is_default_tech").notNull().default(false),
   identityStatus: text("identity_status").notNull().default("verification_pending"),

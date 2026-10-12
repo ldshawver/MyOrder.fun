@@ -70,8 +70,7 @@ export async function provisionVerifiedClerkUser(input: { clerkUser: ClerkProvis
   try {
     const [byClerk] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId)).limit(1);
     if (byClerk) {
-      const isPendingCustomer = normalizeRole(byClerk.role) === "user" && byClerk.status === "pending";
-      const [updated] = await db.update(usersTable).set({ email, normalizedEmail, firstName: firstName ?? byClerk.firstName, lastName: lastName ?? byClerk.lastName, contactPhone: contactPhone ?? byClerk.contactPhone, tenantId: byClerk.tenantId ?? (normalizeRole(byClerk.role) === "user" ? tenantId : null), role: normalizeRole(byClerk.role), status: isPendingCustomer ? "approved" : byClerk.status, isActive: isPendingCustomer ? true : byClerk.isActive, identityStatus: verified ? "verified" : "verification_pending", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byClerk.id)).returning();
+      const [updated] = await db.update(usersTable).set({ email, normalizedEmail, firstName: firstName ?? byClerk.firstName, lastName: lastName ?? byClerk.lastName, contactPhone: contactPhone ?? byClerk.contactPhone, tenantId: byClerk.tenantId ?? (normalizeRole(byClerk.role) === "user" ? tenantId : null), role: normalizeRole(byClerk.role), status: byClerk.status, isActive: byClerk.isActive, identityStatus: verified ? "verified" : "verification_pending", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byClerk.id)).returning();
       return { user: updated ?? byClerk, status: "updated", correlationId };
     }
     const [byEmail] = await db.select().from(usersTable).where(sql`${usersTable.normalizedEmail} = ${normalizedEmail}`).limit(1);
@@ -81,11 +80,11 @@ export async function provisionVerifiedClerkUser(input: { clerkUser: ClerkProvis
         logger.warn({ correlationId, clerkId, userId: byEmail.id }, "Provisioning blocked by normalized email collision");
         return { user: byEmail, status: "failed", correlationId, error: "normalized_email_collision" };
       }
-      const [linked] = await db.update(usersTable).set({ clerkId, email, normalizedEmail, firstName: firstName ?? byEmail.firstName, lastName: lastName ?? byEmail.lastName, contactPhone: contactPhone ?? byEmail.contactPhone, tenantId: byEmail.tenantId ?? tenantId, role: normalizeRole(byEmail.role), status: byEmail.status === "pending" ? "approved" : byEmail.status, isActive: true, identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byEmail.id)).returning();
+      const [linked] = await db.update(usersTable).set({ clerkId, email, normalizedEmail, firstName: firstName ?? byEmail.firstName, lastName: lastName ?? byEmail.lastName, contactPhone: contactPhone ?? byEmail.contactPhone, tenantId: byEmail.tenantId ?? tenantId, role: normalizeRole(byEmail.role), status: byEmail.status, isActive: byEmail.isActive, identityStatus: "verified", provisioningStatus: "active", provisioningError: null, updatedAt: new Date() }).where(eq(usersTable.id, byEmail.id)).returning();
       await auditProvisioning(linked ?? byEmail, "USER_RECONCILED_LINKED", correlationId, input.source);
       return { user: linked ?? byEmail, status: "linked", correlationId };
     }
-    const [created] = await db.insert(usersTable).values({ clerkId, email, normalizedEmail, firstName, lastName, contactPhone, tenantId, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" }).returning();
+    const [created] = await db.insert(usersTable).values({ clerkId, email, normalizedEmail, firstName, lastName, contactPhone, tenantId, role: "user", status: "pending", isActive: true, identityStatus: "verified", provisioningStatus: "active" }).returning();
     await auditProvisioning(created, "USER_PROVISIONED", correlationId, input.source);
     return { user: created, status: "created", correlationId };
   } catch (err) {

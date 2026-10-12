@@ -6,22 +6,17 @@ import { logger } from "./logger";
 import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail } from "./userProvisioning";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
+import { normalizeRole, hasRoleValue, type NormalizedRole } from "./roles";
 import { getHouseTenantId } from "./singleTenant";
 export { normalizeRole } from "./roles";
 
 export type Role = NormalizedRole | string;
 
 
-// Staff roles are implicitly approved — having been assigned a staff role
-// by an admin is itself the approval gate. Keep this list in sync with
-// requireApproved below.
-export const STAFF_ROLES: readonly CanonicalRole[] = [
-  "global_admin",
-  "admin",
-  "supervisor",
-  "csr",
-] as const;
+export function isConfiguredAccountOwner(user: { clerkId?: string | null } | null | undefined): boolean {
+  const configuredOwnerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  return Boolean(configuredOwnerId && user?.clerkId && user.clerkId === configuredOwnerId);
+}
 
 let usersSchemaEnsured = false;
 
@@ -132,7 +127,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     const tenantId = await getHouseTenantId();
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, tenantId, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" })
+      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, tenantId, role: "user", status: "pending", isActive: true, identityStatus: "verified", provisioningStatus: "active" })
       .returning();
     return created;
   } catch (err) {
@@ -223,15 +218,40 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     res.status(403).json({ error: "Account rejected", status: user.status });
     return;
   }
-  // Elevated/staff roles are implicitly approved — having been assigned a
-  // staff role by an admin is itself the approval gate. Only end-customer
-  // "user" accounts require an explicit status check.
-  if ((STAFF_ROLES as readonly string[]).includes(normalizeRole(user.role))) {
-    next();
-    return;
-  }
   if (user.status !== "approved") {
     res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    return;
+  }
+  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
+    res.status(403).json({ error: "Account approval provenance required", status: user.status });
+    return;
+  }
+  next();
+}
+
+export function requireAccountOwner(req: Request, res: Response, next: NextFunction): void {
+  if (!req.dbUser) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (!isConfiguredAccountOwner(req.dbUser)) {
+    res.status(403).json({ error: "Forbidden: account owner approval required" });
+    return;
+  }
+  next();
+}
+
+export function requireRecentOwnerAuth(req: Request, res: Response, next: NextFunction): void {
+  const auth = getAuth(req);
+  const claims = (auth?.sessionClaims ?? {}) as Record<string, unknown>;
+  const authTime = typeof claims.auth_time === "number" ? claims.auth_time : null;
+  const fva = Array.isArray(claims.fva) && typeof claims.fva[0] === "number" ? claims.fva[0] : null;
+  const now = Math.floor(Date.now() / 1000);
+  // Clerk fva values are minutes; auth_time is a Unix timestamp in seconds.
+  const recent = (authTime !== null && authTime <= now && now - authTime <= 600) || (fva !== null && fva >= 0 && fva <= 10);
+  if (!recent) {
+    res.status(403).json({ error: "Recent authentication required" });
     return;
   }
   next();
@@ -239,9 +259,8 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
 
 // Middleware that loads the DB user into req.dbUser.
 //
-// Sync-on-read: Clerk's publicMetadata is the source of truth for status/role
-// at sign-in time. If the JWT carries a status/role that differs from the DB
-// row, reconcile the DB to match Clerk so manual dashboard changes propagate.
+// Database rows are authoritative for authorization. Clerk metadata is read
+// for identity diagnostics only and never grants account approval.
 export async function loadDbUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const user = await getOrCreateDbUser(req);
   if (user) {
@@ -264,21 +283,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       }
     }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
-    if (meta.status && meta.status !== user.status) {
-      // Never let stale Clerk metadata downgrade an approved user back to
-      // pending. Approval is an admin action that goes through the app (which
-      // updates both DB and Clerk together). If they're out of sync it means
-      // Clerk has a stale value — the DB 'approved' state wins.
-      const isDowngrade = user.status === "approved" && meta.status === "pending";
-      if (!isDowngrade) {
-        updates.status = meta.status;
-      } else {
-        logger.warn(
-          { userId: user.id, dbStatus: user.status, clerkStatus: meta.status },
-          "Ignoring Clerk metadata status downgrade (approved → pending) — DB is authoritative",
-        );
-      }
-    }
     if (meta.role) {
       const dbRole = normalizeRole(user.role);
       const clerkRole = normalizeRole(meta.role);
