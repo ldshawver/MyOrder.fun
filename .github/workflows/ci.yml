@@ -60,10 +60,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    env:
-      DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
-      MYORDER_OWNER_APPROVAL_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
-      DB_SSL: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -75,7 +71,16 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - name: Rehearse P0 schema on PostgreSQL 16 through production migration 0067
+        env:
+          DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+          DB_SSL: "false"
         run: bash scripts/release/ci-p0-postgres-validation.sh
+      - name: Run PostgreSQL-backed owner authorization regression
+        env:
+          DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+          MYORDER_OWNER_APPROVAL_DATABASE_URL: postgres://myorder_ci@localhost:5432/myorder_p0_owner_approval_ci
+          DB_SSL: "false"
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/__tests__/owner-approval-postgres.integration.test.ts
       - run: pnpm lint
       - run: pnpm lint:ratchet
       - run: pnpm --filter @workspace/scripts inventory:lockdown
