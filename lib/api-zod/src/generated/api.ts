@@ -1731,6 +1731,7 @@ export const GetCurrentUserResponse = zod.object({
   "tenantName": zod.string().optional(),
   "mfaEnabled": zod.boolean().optional(),
   "status": zod.enum(['pending', 'approved', 'rejected', 'deactivated']).optional(),
+  "isConfiguredOwner": zod.boolean(),
   "isActive": zod.boolean(),
   "contactPhone": zod.string().nullish(),
   "avatarUrl": zod.string().nullish(),

@@ -25,6 +25,7 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const [{ default: usersRouter }, { default: shiftsRouter }] = await Promise.all([
       import("../users"), import("../shifts"),
     ]);
+    const { requireAuth, loadDbUser, requireDbUser, requireApproved } = await import("../../lib/auth");
     const [tenant] = await db.select({ id: tenantsTable.id }).from(tenantsTable).limit(1);
     if (!tenant) throw new Error("Disposable database needs one tenant");
     const owner = await db.insert(usersTable).values({ clerkId: ownerId, email: "owner@test.invalid", role: "global_admin", status: "approved", tenantId: null, isActive: true }).returning({ id: usersTable.id });
@@ -36,6 +37,9 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const admin = await db.insert(usersTable).values({ clerkId: adminId, email: `${adminId}@test.invalid`, role: "admin", status: "approved", approvedByClerkId: ownerId, approvedAt: new Date(), tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const app = express(); app.use(express.json()); app.use("/api", usersRouter);
     const shiftApp = express(); shiftApp.use(express.json()); shiftApp.use("/api", shiftsRouter);
+    const protectedApp = express();
+    protectedApp.use(requireAuth, loadDbUser, requireDbUser, requireApproved);
+    protectedApp.get("/api/protected-fixture", (_req, res) => res.status(200).json({ ok: true }));
     try {
       clerkState.userId = subjectId;
       clerkState.sessionClaims = { publicMetadata: { role: "global_admin", status: "approved" }, unsafeMetadata: { status: "approved" }, fva: [1, -1] };
@@ -61,6 +65,17 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       expect(missingProvenance.status, JSON.stringify(missingProvenance.body)).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);
 
+      clerkState.userId = ownerId;
+      clerkState.sessionClaims = { publicMetadata: { status: "pending", role: "user" } };
+      const ownerProtectedAccess = await supertest(protectedApp).get("/api/protected-fixture");
+      expect(ownerProtectedAccess.status, JSON.stringify(ownerProtectedAccess.body)).toBe(200);
+      expect((await supertest(app).get("/api/users/me")).body.isConfiguredOwner).toBe(true);
+      await db.update(usersTable).set({ status: "pending" }).where(eq(usersTable.id, owner[0].id));
+      expect((await supertest(protectedApp).get("/api/protected-fixture")).status).toBe(200);
+      expect((await supertest(app).get("/api/users/me")).body).toMatchObject({ status: "pending", isConfiguredOwner: true });
+      await db.update(usersTable).set({ status: "approved" }).where(eq(usersTable.id, owner[0].id));
+
+      clerkState.userId = subjectId;
       await db.update(usersTable).set({ status: "approved", approvedByClerkId: "some_other_owner", approvedAt: new Date() }).where(eq(usersTable.id, subject[0].id));
       expect((await supertest(app).get("/api/users")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shifts/current")).status).toBe(403);

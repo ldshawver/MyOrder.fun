@@ -211,20 +211,30 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
     return;
   }
   if (user.isActive === false || user.status === "deactivated") {
-    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
+    res.status(403).json({ error: "Account deactivated", code: "ACCOUNT_DEACTIVATED", status: user.status ?? "deactivated" });
     return;
   }
+
+  // The configured owner is the approval authority and cannot depend on a
+  // second account approving them. Require the authenticated Clerk subject to
+  // match the server-resolved database row before applying this exception.
+  const authenticatedSubject = getAuth(req)?.userId;
+  if (authenticatedSubject && authenticatedSubject === user.clerkId && isConfiguredAccountOwner(user)) {
+    next();
+    return;
+  }
+
   if (user.status === "rejected") {
-    res.status(403).json({ error: "Account rejected", status: user.status });
+    res.status(403).json({ error: "Account rejected", code: "ACCOUNT_REJECTED", status: user.status });
     return;
   }
   if (user.status !== "approved") {
-    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+    res.status(403).json({ error: "Account pending approval", code: "ACCOUNT_PENDING_APPROVAL", status: user.status ?? "pending" });
     return;
   }
   const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
   if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
-    res.status(403).json({ error: "Account approval provenance required", status: user.status });
+    res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user.status });
     return;
   }
   next();

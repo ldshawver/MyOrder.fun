@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response, NextFunction } from "express";
+import { getAuth } from "@clerk/express";
+import { requireTenantContext } from "../tenantContext";
 
 vi.mock("@clerk/express", () => ({
   getAuth: vi.fn(),
@@ -57,6 +59,7 @@ describe("requireApproved middleware", () => {
   beforeEach(() => {
     next = vi.fn();
     process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
+    vi.mocked(getAuth).mockReturnValue(null as never);
   });
 
   it("returns 401 when req.dbUser is not set", () => {
@@ -98,6 +101,60 @@ describe("requireApproved middleware", () => {
     requireApproved(req, res, next as NextFunction);
     expect(res.statusCode).toBe(403);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("allows the authenticated configured owner with approved status and incomplete provenance", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("allows the authenticated configured owner with pending status", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", status: "pending", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("requires the authenticated Clerk subject and configured database identity to match exactly", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "different_subject", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", status: "pending" }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not grant owner access based on a matching email", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "non_owner_subject", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "non_owner_subject", email: "owner@example.invalid", approvedByClerkId: null, approvedAt: null }) } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not grant owner access from Clerk metadata or a frontend role", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "non_owner_subject", sessionClaims: { publicMetadata: { role: "global_admin", status: "approved" } } } as never);
+    const req = { dbUser: makeUser({ clerkId: "non_owner_subject", role: "global_admin", approvedByClerkId: null, approvedAt: null }), role: "global_admin" } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, next as NextFunction);
+    expect(res.statusCode).toBe(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not let the owner exception bypass a later tenant or object authorization check", () => {
+    vi.mocked(getAuth).mockReturnValue({ userId: "configured_owner", sessionClaims: {} } as never);
+    const req = { dbUser: makeUser({ clerkId: "configured_owner", role: "user", tenantId: 1 }), query: { tenantId: "2" }, body: {} } as unknown as Request;
+    const res = makeRes();
+    requireApproved(req, res, (() => requireTenantContext(req, res, next as NextFunction)) as NextFunction);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect((res._json as Record<string, unknown>).error).toMatch(/tenant assignment does not match/i);
   });
 
   it("blocks an admin user with pending status", () => {

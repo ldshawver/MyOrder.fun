@@ -213,6 +213,7 @@ function serializeUser(user: typeof usersTable.$inferSelect) {
     mfaEnabled: user.mfaEnabled ?? undefined,
     isActive: user.isActive,
     status: normalizeStatus(user.status),
+    isConfiguredOwner: isConfiguredAccountOwner(user),
     createdAt: user.createdAt,
   });
 }
