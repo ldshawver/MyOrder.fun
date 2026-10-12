@@ -54,7 +54,7 @@ Compose requires this variable and has no `_USER_ID` alias. Never output `docker
 
 ## Downtime expectation and prerequisites
 
-There is no planned database restart or database downtime. The public API is already unavailable with HTTP 503 and must remain unavailable until the separately authorized hotfix API passes health and security verification. After that authorization, expect only the API cold-start interval before its health check passes; if any check fails, the outage continues under containment. Before starting, require: verified owner subject and mode-0600 env file, approved release SHA available in the protected source path, passing CI/security tests, a verified pre-patch database snapshot, exact 0067 ledger tip, and an API image whose label matches the approved SHA.
+There is no planned database restart or database downtime. The previously deployed API (`07239c557b5176f75362797829e8c341098ed447`) is currently healthy but blocks the configured owner at the ordinary approval gate. It is not the corrected release. Until a separate production authorization is given, leave the API and platform untouched. After authorization, expect an API cold-start interval while Compose replaces the old API; if any check fails, stop the candidate API and keep the database and backup intact. Before starting, require: verified owner subject and mode-0600 env file, approved release SHA available in the protected source path, passing CI/security tests, verified database snapshot and Stage 1 patch status, exact 0067 ledger tip, and API/platform images whose labels match the approved SHA.
 
 ## Stage the exact source and image
 
@@ -91,7 +91,7 @@ The service list is `db`, `api`, `migrate`, `platform`, `nginx`; the release bui
 
 ## Preconditions and database patch
 
-Keep `deploy-api-1` stopped until the explicit restart authorization. Verify Compose is targeting project `deploy`, its current database service is `deploy-db-1` on `deploy_postgres_data`, and nginx remains the existing service bound to `127.0.0.1:8081`. Take a verified database snapshot before applying SQL. Confirm the migration ledger is the production 0067 prefix; capture user and order counts. Apply the standalone SQL only after the approved snapshot is verified:
+Do not change `deploy-api-1` or any other production service until explicit deployment authorization. Verify Compose is targeting project `deploy`, its current database service is `deploy-db-1` on `deploy_postgres_data`, and nginx remains the existing service bound to `127.0.0.1:8081`. Take and verify a protected database snapshot before any production SQL action. Confirm the migration ledger is the production 0067 prefix; capture user and order counts. Apply the standalone SQL only after the approved snapshot is verified and SQL application is separately authorized:
 
 ```bash
 dc exec -T db sh -lc 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "/var/backups/myorder-pre-owner-hotfix-$SHA.dump"
