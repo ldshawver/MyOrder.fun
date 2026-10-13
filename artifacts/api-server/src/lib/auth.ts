@@ -6,47 +6,66 @@ import { logger } from "./logger";
 import { fetchAndProvisionClerkUser, ensureProvisioningSchema, normalizeEmail } from "./userProvisioning";
 import { normalizeClerkPublicMetadata, readClerkPublicMetadata } from "./clerkSync";
 
-import { normalizeRole, hasRoleValue, type CanonicalRole, type NormalizedRole } from "./roles";
+import { normalizeRole, hasRoleValue, type NormalizedRole } from "./roles";
 import { getHouseTenantId } from "./singleTenant";
 export { normalizeRole } from "./roles";
 
 export type Role = NormalizedRole | string;
 
 
-// Staff roles are implicitly approved — having been assigned a staff role
-// by an admin is itself the approval gate. Keep this list in sync with
-// requireApproved below.
-export const STAFF_ROLES: readonly CanonicalRole[] = [
-  "global_admin",
-  "admin",
-  "supervisor",
-  "csr",
-] as const;
+export function isConfiguredAccountOwner(user: { clerkId?: string | null } | null | undefined): boolean {
+  const configuredOwnerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  return Boolean(configuredOwnerId && user?.clerkId && user.clerkId === configuredOwnerId);
+}
 
-let usersSchemaEnsured = false;
+/** True only when the authenticated Clerk subject matches the configured owner and resolved DB row. */
+export function isAuthenticatedConfiguredAccountOwner(req: Request, user: { clerkId?: string | null } | null | undefined): boolean {
+  const authenticatedSubject = getAuth(req)?.userId;
+  return !!authenticatedSubject && authenticatedSubject === user?.clerkId && isConfiguredAccountOwner(user);
+}
 
-async function ensureUsersAuthSchema(): Promise<void> {
-  if (usersSchemaEnsured) return;
+export type AccountApprovalDecision =
+  | { allowed: true; reason: "configured_owner_provenance_exception" | "valid_provenance" }
+  | { allowed: false; reason: "missing_db_user" | "inactive" | "rejected" | "pending" | "missing_provenance" };
 
-  const statements = [
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "first_name" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_name" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
-  ];
-
-  for (const statement of statements) {
-    await db.execute(statement);
+/** Shared approval policy. The owner exception satisfies provenance only; it
+ * does not bypass account status, activity, tenant, role, or object checks. */
+export function evaluateAccountApproval(req: Request, user: {
+  clerkId?: string | null;
+  status?: string | null;
+  isActive?: boolean | null;
+  approvedByClerkId?: string | null;
+  approvedAt?: Date | string | null;
+} | null | undefined): AccountApprovalDecision {
+  if (!user) return { allowed: false, reason: "missing_db_user" };
+  if (user.isActive === false || user.status === "deactivated") return { allowed: false, reason: "inactive" };
+  if (user.status === "rejected") return { allowed: false, reason: "rejected" };
+  if (user.status !== "approved") return { allowed: false, reason: "pending" };
+  if (isAuthenticatedConfiguredAccountOwner(req, user)) return { allowed: true, reason: "configured_owner_provenance_exception" };
+  const ownerId = process.env.MYORDER_OWNER_CLERK_ID?.trim();
+  if (!ownerId || user.approvedByClerkId !== ownerId || !user.approvedAt) {
+    return { allowed: false, reason: "missing_provenance" };
   }
-  usersSchemaEnsured = true;
+  return { allowed: true, reason: "valid_provenance" };
+}
+
+let usersSchemaVerified = false;
+
+/**
+ * Authentication must never mutate schema during a request. Check the legacy
+ * auth columns read-only; deployments with an incomplete users schema must
+ * apply the reviewed migration before serving authenticated traffic.
+ */
+async function verifyUsersAuthSchema(): Promise<void> {
+  if (usersSchemaVerified) return;
+
+  await db.execute(sql`
+    SELECT mfa_enabled, mfa_secret, mfa_backup_codes, first_name, last_name,
+      contact_phone, avatar_url, status, is_active, is_default_tech,
+      created_at, updated_at
+    FROM users LIMIT 0
+  `);
+  usersSchemaVerified = true;
 }
 
 declare global {
@@ -62,7 +81,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   const auth = getAuth(req);
   if (!auth?.userId) return null;
 
-  await ensureUsersAuthSchema();
+  await verifyUsersAuthSchema();
   await ensureProvisioningSchema();
 
   const clerkId = auth.userId;
@@ -132,7 +151,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
     const tenantId = await getHouseTenantId();
     const [created] = await db
       .insert(usersTable)
-      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, tenantId, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" })
+      .values({ clerkId, email, normalizedEmail: normalizeEmail(email), firstName: firstName ?? undefined, lastName: lastName ?? undefined, tenantId, role: "user", status: "pending", isActive: true, identityStatus: "verified", provisioningStatus: "active" })
       .returning();
     return created;
   } catch (err) {
@@ -175,7 +194,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const auth = getAuth(req);
   if (!auth?.userId) {
-    res.status(401).json({ error: "Unauthorized" });
+    res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
   next();
@@ -183,7 +202,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
 export function requireDbUser(req: Request, res: Response, next: NextFunction): void {
   if (!req.dbUser) {
-    res.status(401).json({ error: "User profile not found" });
+    res.status(401).json({ error: "Authenticated account profile unavailable", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
   next();
@@ -211,27 +230,63 @@ export function isGlobalAdmin(user: { role?: string | null } | null | undefined)
 
 export function requireApproved(req: Request, res: Response, next: NextFunction): void {
   const user = req.dbUser;
-  if (!user) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  if (user.isActive === false || user.status === "deactivated") {
-    res.status(403).json({ error: "Account deactivated", status: user.status ?? "deactivated" });
-    return;
-  }
-  if (user.status === "rejected") {
-    res.status(403).json({ error: "Account rejected", status: user.status });
-    return;
-  }
-  // Elevated/staff roles are implicitly approved — having been assigned a
-  // staff role by an admin is itself the approval gate. Only end-customer
-  // "user" accounts require an explicit status check.
-  if ((STAFF_ROLES as readonly string[]).includes(normalizeRole(user.role))) {
+  const decision = evaluateAccountApproval(req, user);
+  if (decision.allowed) {
     next();
     return;
   }
-  if (user.status !== "approved") {
-    res.status(403).json({ error: "Account pending approval", status: user.status ?? "pending" });
+  if (decision.reason === "missing_db_user") {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  if (decision.reason === "inactive") {
+    res.status(403).json({ error: "Account deactivated", code: "ACCOUNT_DEACTIVATED", status: user?.status ?? "deactivated" });
+    return;
+  }
+  if (decision.reason === "rejected") {
+    res.status(403).json({ error: "Account rejected", code: "ACCOUNT_REJECTED", status: user?.status });
+    return;
+  }
+  if (decision.reason === "pending") {
+    res.status(403).json({ error: "Account pending approval", code: "ACCOUNT_PENDING_APPROVAL", status: user?.status ?? "pending" });
+    return;
+  }
+  res.status(403).json({ error: "Account approval provenance required", code: "ACCOUNT_APPROVAL_PROVENANCE_REQUIRED", status: user?.status });
+}
+
+export function requireAccountOwner(req: Request, res: Response, next: NextFunction): void {
+  if (!req.dbUser) {
+    res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
+    return;
+  }
+  if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
+    res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
+    return;
+  }
+  next();
+}
+
+export function requireRecentOwnerAuth(req: Request, res: Response, next: NextFunction): void {
+  const auth = getAuth(req);
+  const claims = (auth?.sessionClaims ?? {}) as Record<string, unknown>;
+  const authTime = typeof claims.auth_time === "number" ? claims.auth_time : null;
+  const fva = Array.isArray(claims.fva) && typeof claims.fva[0] === "number" ? claims.fva[0] : null;
+  const now = Math.floor(Date.now() / 1000);
+  // Clerk fva values are minutes; auth_time is a Unix timestamp in seconds.
+  const recent = (authTime !== null && authTime <= now && now - authTime <= 600) || (fva !== null && fva >= 0 && fva <= 10);
+  if (!recent) {
+    // Clerk's useReverification() recognizes this signed-session step-up hint.
+    // The client retries only the request that the owner explicitly initiated,
+    // after Clerk completes reverification; the API repeats this check.
+    res.status(403).json({
+      error: "Recent authentication required",
+      code: "RECENT_AUTH_REQUIRED",
+      clerk_error: {
+        type: "forbidden",
+        reason: "reverification-error",
+        metadata: { reverification: { level: "first_factor", afterMinutes: 10 } },
+      },
+    });
     return;
   }
   next();
@@ -239,9 +294,8 @@ export function requireApproved(req: Request, res: Response, next: NextFunction)
 
 // Middleware that loads the DB user into req.dbUser.
 //
-// Sync-on-read: Clerk's publicMetadata is the source of truth for status/role
-// at sign-in time. If the JWT carries a status/role that differs from the DB
-// row, reconcile the DB to match Clerk so manual dashboard changes propagate.
+// Database rows are authoritative for authorization. Clerk metadata is read
+// for identity diagnostics only and never grants account approval.
 export async function loadDbUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   const user = await getOrCreateDbUser(req);
   if (user) {
@@ -264,21 +318,6 @@ export async function loadDbUser(req: Request, res: Response, next: NextFunction
       }
     }
     const updates: Partial<typeof usersTable.$inferInsert> = {};
-    if (meta.status && meta.status !== user.status) {
-      // Never let stale Clerk metadata downgrade an approved user back to
-      // pending. Approval is an admin action that goes through the app (which
-      // updates both DB and Clerk together). If they're out of sync it means
-      // Clerk has a stale value — the DB 'approved' state wins.
-      const isDowngrade = user.status === "approved" && meta.status === "pending";
-      if (!isDowngrade) {
-        updates.status = meta.status;
-      } else {
-        logger.warn(
-          { userId: user.id, dbStatus: user.status, clerkStatus: meta.status },
-          "Ignoring Clerk metadata status downgrade (approved → pending) — DB is authoritative",
-        );
-      }
-    }
     if (meta.role) {
       const dbRole = normalizeRole(user.role);
       const clerkRole = normalizeRole(meta.role);

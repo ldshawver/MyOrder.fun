@@ -13,7 +13,7 @@ vi.mock("../../middlewares/clerkProxyMiddleware", () => ({
 vi.mock("../../lib/printService", () => ({ startPrintWorker: () => {} }));
 vi.mock("../../lib/auth", () => {
   const noop = (_req: unknown, _res: unknown, next: () => void) => next();
-  return { requireAuth: noop, loadDbUser: noop, requireDbUser: noop, requireApproved: noop, requireRole: () => noop };
+  return { requireAuth: noop, loadDbUser: noop, requireDbUser: noop, requireApproved: noop, requireRole: () => noop, requireAccountOwner: noop, requireRecentOwnerAuth: noop, isConfiguredAccountOwner: () => true };
 });
 vi.mock("@workspace/db", () => ({ db: {}, usersTable: {}, tenantsTable: {}, ordersTable: { status: {}, fulfillmentStatus: {} } }));
 vi.mock("drizzle-orm", () => ({ eq: vi.fn(), and: vi.fn(), or: vi.fn(), inArray: vi.fn(), isNull: vi.fn(), ilike: vi.fn(), like: vi.fn(), asc: vi.fn(), desc: vi.fn(), gte: vi.fn(), sql: vi.fn() }));

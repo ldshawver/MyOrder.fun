@@ -36,6 +36,7 @@ const DEFAULT_CATALOG_BANNERS = ["/banners/banner1.png", "/banners/banner2.png",
 function getSafeImageSrc(src: string | null | undefined): string | null {
   const trimmed = src?.trim();
   if (!trimmed) return null;
+  if (trimmed.length <= 250_000 && /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+=*$/.test(trimmed)) return trimmed;
   if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
 
   try {

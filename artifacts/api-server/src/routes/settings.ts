@@ -155,6 +155,8 @@ const DEFAULT_CATALOG_BANNERS = [
   "/banners/banner2.png",
   "/banners/banner3.png",
 ];
+const MAX_CATALOG_BANNER_DATA_URL_LENGTH = 250_000;
+const CATALOG_BANNER_DATA_URL_PATTERN = /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/]+=*$/;
 
 function parseCatalogBannerImages(raw: string | null | undefined) {
   if (!raw) return DEFAULT_CATALOG_BANNERS;
@@ -542,6 +544,10 @@ router.put("/admin/settings", requirePermission("settings.manage_tenant"), requi
       .map((value) => typeof value === "string" ? value.trim() : "")
       .filter(Boolean)
       .slice(0, 6);
+    if (banners.some((value) => value.startsWith("data:") && (value.length > MAX_CATALOG_BANNER_DATA_URL_LENGTH || !CATALOG_BANNER_DATA_URL_PATTERN.test(value)))) {
+      res.status(400).json({ error: "Uploaded catalog banners must be valid PNG, JPG, or WebP images within the size limit" });
+      return;
+    }
     update.catalogBannerImages = JSON.stringify(banners.length ? banners : DEFAULT_CATALOG_BANNERS);
   }
   if (body.salesTaxMode !== undefined && body.salesTaxMode !== "added" && body.salesTaxMode !== "included") {

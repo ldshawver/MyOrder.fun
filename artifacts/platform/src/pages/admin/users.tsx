@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus, useGetCurrentUser, useSetUserApproval } from "@workspace/api-client-react";
+import { useRef, useState } from "react";
+import { useListUsers, useUpdateUserRole, getListUsersQueryKey, useUpdateUserStatus, useGetCurrentUser } from "@workspace/api-client-react";
 import type { UserProfileStatus, UpdateUserRoleBodyRole, SetUserApprovalBodyRole } from "@workspace/api-client-react";
-import { useQueryClient, useQuery } from "@tanstack/react-query";
-import { useAuth } from "@clerk/react";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { useAuth, useReverification } from "@clerk/react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search, Mail, CheckCircle2, XCircle, ShieldAlert } from "lucide-react";
 import { assignableRolesForActor, canAssignRoleFromUserManagement } from "@/lib/userManagementPolicy";
+import { approvalMutationFailureMessage, ApprovalMutationError, isApprovalReverificationHint, requestUserApproval } from "@/lib/userApprovalMutation";
 
 type StatusFilter = "all" | "pending" | "approved" | "rejected" | "deactivated";
 type PageTab = "users" | "waitlist";
@@ -357,6 +358,8 @@ function WaitlistTab({ currentRole, currentUserLoaded }: { currentRole: string |
 
 export default function AdminUsers() {
   const queryClient = useQueryClient();
+  const [approvalFeedback, setApprovalFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const approvalRequestActive = useRef(false);
   const [pageTab, setPageTab] = useState<PageTab>("users");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
@@ -380,7 +383,27 @@ export default function AdminUsers() {
   // Single-call combined approval — sets status='approved' AND role in one
   // PATCH /api/admin/users/:id/approval. Used for the inline "Approve as
   // <role>" action on pending rows.
-  const approvalMutation = useSetUserApproval();
+  const reverifiedApprovalRequest = useReverification(requestUserApproval);
+  const approvalMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { approve: true; role: SetUserApprovalBodyRole } }) => {
+      const result = await reverifiedApprovalRequest(id, data);
+      // Clerk retries once after its step-up UI completes. If the API still
+      // rejects freshness, never reinterpret the hint as an approval success.
+      if (isApprovalReverificationHint(result)) throw new ApprovalMutationError(403, "RECENT_AUTH_REQUIRED");
+      if (result.status !== "approved") throw new ApprovalMutationError(502, "INVALID_APPROVAL_RESPONSE");
+      return result;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
+      setApprovalFeedback({ type: "success", message: "Account approval saved. The user list has been refreshed." });
+    },
+    onError: (error: unknown) => {
+      setApprovalFeedback({ type: "error", message: approvalMutationFailureMessage(error) });
+    },
+    onSettled: () => {
+      approvalRequestActive.current = false;
+    },
+  });
 
   // Per-row in-flight role selection for pending users; the row's persisted
   // role only changes once the admin clicks "Approve as <role>".
@@ -411,14 +434,10 @@ export default function AdminUsers() {
   };
 
   const handleApproveWithRole = (id: number, role: SetUserApprovalBodyRole) => {
-    approvalMutation.mutate(
-      { id, data: { approve: true, role } },
-      {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: getListUsersQueryKey() });
-        },
-      },
-    );
+    if (approvalRequestActive.current) return;
+    approvalRequestActive.current = true;
+    setApprovalFeedback(null);
+    approvalMutation.mutate({ id, data: { approve: true, role } });
   };
 
   const allUsers = data?.users ?? [];
@@ -467,6 +486,18 @@ export default function AdminUsers() {
           Manage roles and access. Invite Clerk waitlist applicants.
         </p>
       </div>
+
+      {approvalMutation.isPending && (
+        <p role="status" aria-live="polite" aria-busy="true" className="text-sm text-muted-foreground">
+          Verifying and submitting the approval request…
+        </p>
+      )}
+      {approvalFeedback?.type === "success" && (
+        <p role="status" aria-live="polite" className="text-sm text-green-700">{approvalFeedback.message}</p>
+      )}
+      {approvalFeedback?.type === "error" && (
+        <p role="alert" aria-live="assertive" className="text-sm text-destructive">{approvalFeedback.message}</p>
+      )}
 
       {/* Page tabs — Platform Users (everyone with a DB row) + Waitlist
           (Clerk-only entries that haven't signed up yet). Pending users are
@@ -647,10 +678,11 @@ export default function AdminUsers() {
                                 variant="outline"
                                 className="h-7 text-[10px] uppercase tracking-widest rounded-sm border-green-500/40 text-green-600 hover:bg-green-500/10 hover:text-green-600"
                                 onClick={() => handleApproveWithRole(user.id, draftRole)}
-                                disabled={approvalMutation.isPending}
+                                disabled={approvalMutation.isPending || approvalRequestActive.current}
+                                aria-busy={approvalMutation.isPending}
                                 data-testid={`btn-approve-as-role-${user.id}`}
                               >
-                                {approvalMutation.isPending ? "Approving…" : `Approve as ${draftRole}`}
+                                {approvalMutation.isPending ? "Verifying / approving…" : `Approve as ${draftRole}`}
                               </Button>
                             )}
                             {!isPending && status !== "approved" && (

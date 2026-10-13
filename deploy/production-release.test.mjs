@@ -27,7 +27,7 @@ const expectedConfig = {
       image: `myorder-api:${FROZEN_RELEASE.sha}`,
       environment: {
         NODE_ENV: "production",
-        DATABASE_URL: "postgres://app:masked@db:5432/alavont",
+        DATABASE_URL: "postgres://app@db:5432/alavont",
         CLERK_SECRET_KEY: "masked",
         CLERK_PUBLISHABLE_KEY: "masked",
         SESSION_SECRET: "masked",
@@ -54,7 +54,7 @@ const expectedConfig = {
       },
     },
     migrate: {
-      environment: { DATABASE_URL: "postgres://app:masked@db:5432/alavont" },
+      environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
     nginx: { ports: ["127.0.0.1:8081:80"] },
   },
@@ -329,7 +329,10 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
     /VPS_HOST_FALLBACK|SELECTED_VPS_HOST=\$\{VPS_HOST\}/,
   );
   assert.doesNotMatch(workflow, /ssh-keyscan|StrictHostKeyChecking=accept-new/);
-  assert.match(workflow, /ssh-keygen -F "\$VPS_SSH_HOST_KEY_ALIAS"/);
+  assert.match(
+    workflow,
+    /ssh-keygen\s*\\\s*-F "\$VPS_SSH_HOST_KEY_ALIAS"\s*\\\s*-f ~\/\.ssh\/known_hosts/,
+  );
   assert.match(workflow, /StrictHostKeyChecking=yes/);
   assert.match(workflow, /HostKeyAlias=\$VPS_SSH_HOST_KEY_ALIAS/);
   assert.match(

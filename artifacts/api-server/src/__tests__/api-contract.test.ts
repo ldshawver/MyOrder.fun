@@ -78,6 +78,10 @@ vi.mock("../lib/auth", () => {
     loadDbUser: noop,
     requireDbUser: noop,
     requireApproved: noop,
+    requireAccountOwner: noop,
+    requireRecentOwnerAuth: noop,
+    isConfiguredAccountOwner: () => true,
+    evaluateAccountApproval: () => ({ allowed: true, reason: "valid_provenance" }),
     requireRole: () => noop,
   };
 });
