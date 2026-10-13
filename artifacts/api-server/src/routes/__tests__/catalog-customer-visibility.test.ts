@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const actor = vi.hoisted(() => ({ tenantId: 1, role: "customer" }));
 const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], showOutOfStock: false,
-  productCalls: 0, products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[] }));
+  products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[],
+  sellableSchema: "available" as "available" | "absent" | "partial", executeError: null as Error | null,
+  executedSql: [] as string[] }));
 
 vi.mock("../../lib/auth", () => ({
   requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -21,7 +23,10 @@ vi.mock("drizzle-orm", () => ({
   asc: vi.fn((value: unknown) => value),
   eq: vi.fn((column: string, value: unknown) => ({ kind: "eq", column, value })),
   isNull: vi.fn((column: string) => ({ kind: "isNull", column })),
-  sql: Object.assign(vi.fn(() => ({ kind: "sql" })), { raw: vi.fn(() => ({ kind: "sql" })) }),
+  sql: Object.assign(vi.fn((strings: TemplateStringsArray) => ({ kind: "sql", text: [...strings].join("?") })), {
+    raw: vi.fn((text: string) => ({ kind: "sql", text })),
+    join: vi.fn((parts: Array<{ text?: string }>) => ({ kind: "sql", text: parts.map(part => part.text ?? "?").join(",") })),
+  }),
 }));
 vi.mock("@workspace/db", () => {
   const catalogItemsTable = { _name: "catalog", tenantId: "tenantId", name: "name", id: "id" };
@@ -35,7 +40,27 @@ vi.mock("@workspace/db", () => {
     return candidate?.kind === "eq" && candidate.column === "tenantId" ? rows.catalog.filter(row => row.tenantId === candidate.value) : rows.catalog;
   };
   const db = {
-    execute: vi.fn(async () => (++rows.productCalls % 2 === 1 ? rows.products : rows.options)),
+    execute: vi.fn(async (query: { text?: string }) => {
+      const queryText = query.text ?? "";
+      rows.executedSql.push(queryText);
+      if (rows.executeError) throw rows.executeError;
+      if (queryText.includes("required_columns")) {
+        if (rows.sellableSchema === "partial") return [{ presentTableCount: 2, presentFeatureMarkerCount: 1, presentColumnCount: 1, missingColumnCount: 43, presentIndexCount: 0, presentFunctionCount: 0, presentTriggerCount: 0 }];
+        const available = rows.sellableSchema === "available";
+        return [{
+          presentTableCount: available ? 5 : 1,
+          presentFeatureMarkerCount: available ? 15 : 0,
+          presentColumnCount: available ? 44 : 10,
+          missingColumnCount: available ? 0 : 1,
+          presentIndexCount: available ? 1 : 0,
+          presentFunctionCount: available ? 2 : 0,
+          presentTriggerCount: available ? 2 : 0,
+        }];
+      }
+      if (queryText.includes("FROM catalogue_products")) return rows.products;
+      if (queryText.includes("FROM catalogue_options")) return rows.options;
+      return [];
+    }),
     select: vi.fn((_selection?: Record<string, unknown>) => ({
       from: (table: { _name: string }) => {
         if (table._name === "catalog") {
@@ -59,6 +84,9 @@ const catalogRouter = (await import("../catalog")).default;
 const app = express();
 app.use((req, _res, next) => { req.log = { info: vi.fn() } as never; next(); });
 app.use("/api", catalogRouter);
+app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  res.status(500).json({ error: "Internal Server Error" });
+});
 
 function catalogRow(id: number, patch: Record<string, unknown> = {}) {
   const now = new Date("2026-09-15T00:00:00.000Z");
@@ -74,9 +102,11 @@ beforeEach(() => {
   actor.role = "customer";
   rows.showOutOfStock = false;
   rows.catalog = [];
-  rows.productCalls = 0;
   rows.products = [];
   rows.options = [];
+  rows.sellableSchema = "available";
+  rows.executeError = null;
+  rows.executedSql = [];
 });
 
 describe("customer catalogue visibility", () => {
@@ -113,6 +143,53 @@ describe("customer catalogue visibility", () => {
     expect(response.status, response.text).toBe(200);
     expect(response.body.total).toBe(1);
     expect(response.body.items.map((item: { id: number }) => item.id)).toEqual([1]);
+  });
+
+  it("serves the tenant-scoped base catalog when the optional 0070 schema is wholly absent", async () => {
+    rows.sellableSchema = "absent";
+    rows.catalog = [catalogRow(1)];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&page=1&mode=alavont");
+
+    expect(response.status, response.text).toBe(200);
+    expect(response.body).toMatchObject({ total: 1, items: [{ id: 1 }] });
+    expect(response.body.items[0]).not.toHaveProperty("sellableProduct");
+    expect(rows.executedSql).toHaveLength(1);
+    expect(rows.executedSql.some(query => /\b(ALTER|CREATE|DROP|INSERT|UPDATE|DELETE)\b/i.test(query))).toBe(false);
+  });
+
+  it("does not confuse an empty successful response with a schema failure", async () => {
+    rows.sellableSchema = "absent";
+    const response = await supertest(app).get("/api/catalog?limit=200&page=1&mode=alavont");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ total: 0, items: [] });
+  });
+
+  it("fails visibly if the optional schema is partially installed", async () => {
+    rows.sellableSchema = "partial";
+    const response = await supertest(app).get("/api/catalog?limit=200&page=1&mode=alavont");
+    expect(response.status).toBe(500);
+  });
+
+  it("propagates schema-inspection database errors instead of treating them as an absent feature", async () => {
+    rows.executeError = new Error("synthetic database failure");
+    const response = await supertest(app).get("/api/catalog?limit=200&page=1&mode=alavont");
+    expect(response.status).toBe(500);
+    expect(rows.executedSql).toHaveLength(1);
+  });
+
+  it("rejects missing tenant selection and cross-tenant selection before catalog queries", async () => {
+    actor.role = "global_admin";
+    actor.tenantId = null;
+    const missing = await supertest(app).get("/api/catalog?mode=alavont");
+    expect(missing.status).toBe(403);
+    expect(rows.executedSql).toHaveLength(0);
+
+    actor.role = "admin";
+    actor.tenantId = 1;
+    const crossTenant = await supertest(app).get("/api/catalog?tenantId=2&mode=alavont");
+    expect(crossTenant.status).toBe(403);
+    expect(rows.executedSql).toHaveLength(0);
   });
 
   it("returns restrictive server-derived lifecycle states to an administrator without reactivating the rows", async () => {
