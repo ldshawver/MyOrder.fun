@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const actor = vi.hoisted(() => ({ tenantId: 1, role: "customer" }));
 const rows = vi.hoisted(() => ({ catalog: [] as Record<string, unknown>[], showOutOfStock: false,
+  settingsPresent: true, settingsError: null as Error | null,
   products: [] as Record<string, unknown>[], options: [] as Record<string, unknown>[],
   sellableSchema: "available" as "available" | "absent" | "partial", executeError: null as Error | null,
   executedSql: [] as string[] }));
@@ -68,7 +69,10 @@ vi.mock("@workspace/db", () => {
             where: (condition: unknown) => ({ orderBy: async () => byTenant(condition), limit: async () => byTenant(condition).slice(0, 1) }),
           };
         }
-        if (table._name === "settings") return { limit: async () => [{ showOutOfStock: rows.showOutOfStock }] };
+        if (table._name === "settings") return { where: () => ({ limit: async () => {
+          if (rows.settingsError) throw rows.settingsError;
+          return rows.settingsPresent ? [{ showOutOfStock: rows.showOutOfStock }] : [];
+        } }) };
         if (table._name === "balances") {
           return { innerJoin: () => ({ where: () => ({ groupBy: async () => [] }) }) };
         }
@@ -101,6 +105,8 @@ beforeEach(() => {
   actor.tenantId = 1;
   actor.role = "customer";
   rows.showOutOfStock = false;
+  rows.settingsPresent = true;
+  rows.settingsError = null;
   rows.catalog = [];
   rows.products = [];
   rows.options = [];
@@ -110,6 +116,26 @@ beforeEach(() => {
 });
 
 describe("customer catalogue visibility", () => {
+  it("uses the default when the optional tenant setting row is absent", async () => {
+    rows.settingsPresent = false;
+    rows.catalog = [catalogRow(20, { alavontInStock: false })];
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+
+    expect(response.status, response.text).toBe(200);
+    expect(response.body.items).toEqual([]);
+  });
+
+  it("propagates unexpected tenant-setting database errors", async () => {
+    rows.catalog = [catalogRow(21)];
+    rows.settingsError = new Error("settings database unavailable");
+
+    const response = await supertest(app).get("/api/catalog?limit=200&mode=alavont");
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({ error: "Internal Server Error" });
+  });
+
   it("embeds all sellable sibling options on the actual customer card response", async () => {
     rows.catalog = [catalogRow(182, { name: "T-Shirt Small", price: "20.00" }),
       catalogRow(183, { name: "T-Shirt Medium", price: "22.00" }),

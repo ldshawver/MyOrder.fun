@@ -330,16 +330,12 @@ async function getLinkedInventoryStockByCatalogId(tenantId: number) {
 }
 
 async function getShowOutOfStockSetting(tenantId: number): Promise<boolean> {
-  try {
-    const [settings] = await db
-      .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
-      .from(adminSettingsTable)
-      .where(eq(adminSettingsTable.tenantId, tenantId))
-      .limit(1);
-    return settings?.showOutOfStock === true;
-  } catch {
-    return false;
-  }
+  const [settings] = await db
+    .select({ showOutOfStock: adminSettingsTable.showOutOfStock })
+    .from(adminSettingsTable)
+    .where(eq(adminSettingsTable.tenantId, tenantId))
+    .limit(1);
+  return settings?.showOutOfStock === true;
 }
 
 // GET /api/catalog
