@@ -101,43 +101,6 @@ type AdminSettings = {
 };
 
 const AI_PROMPT_MAX_CHARS = 8000;
-const MAX_BANNER_DATA_URL_LENGTH = 250_000;
-
-async function compressBannerImage(file: File): Promise<string> {
-  const supportedTypes = ["image/jpeg", "image/png", "image/webp"];
-  if (!supportedTypes.includes(file.type)) {
-    throw new Error("Choose a PNG, JPG, or WebP image.");
-  }
-  if (file.size > 12 * 1024 * 1024) {
-    throw new Error("Choose an image smaller than 12 MB.");
-  }
-
-  const bitmap = await createImageBitmap(file);
-  try {
-    let scale = Math.min(1, 1600 / bitmap.width, 900 / bitmap.height);
-    const qualities = [0.86, 0.76, 0.66, 0.56];
-    for (let resizeAttempt = 0; resizeAttempt < 5; resizeAttempt += 1) {
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("Your browser could not process this image.");
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-
-      for (const quality of qualities) {
-        let dataUrl = canvas.toDataURL("image/webp", quality);
-        if (!dataUrl.startsWith("data:image/webp;base64,")) {
-          dataUrl = canvas.toDataURL("image/jpeg", quality);
-        }
-        if (dataUrl.length <= MAX_BANNER_DATA_URL_LENGTH) return dataUrl;
-      }
-      scale *= 0.8;
-    }
-  } finally {
-    bitmap.close();
-  }
-  throw new Error("This image is too detailed to fit. Choose a smaller image.");
-}
 
 const PAYMENT_PROCESSORS = [
   { id: "paypal", label: "PayPal" },
@@ -182,8 +145,6 @@ export default function AdminSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [bannerUploadIndex, setBannerUploadIndex] = useState<number | null>(null);
-  const [bannerUploadError, setBannerUploadError] = useState<string | null>(null);
 
   // WooCommerce credential form state (separate from general settings)
   const [wcStoreUrl, setWcStoreUrl] = useState("https://lucifercruz.com");
@@ -764,53 +725,18 @@ export default function AdminSettingsPage() {
                 <p className="text-xs text-muted-foreground mt-1">These images rotate at the top of the Alavont catalog.</p>
               </div>
               {(settings.catalogBannerImages ?? []).slice(0, 6).map((url, index) => (
-                <div key={index} className="space-y-2">
-                  {url.startsWith("data:image/") && (
-                    <img src={url} alt={`Catalog banner ${index + 1} preview`} className="h-20 w-full rounded-lg object-cover" />
-                  )}
-                  <Input
-                    value={url.startsWith("data:image/") ? "Uploaded image (saved with settings)" : url}
-                    readOnly={url.startsWith("data:image/")}
-                    onChange={(e) => {
-                      const next = [...settings.catalogBannerImages];
-                      next[index] = e.target.value;
-                      set("catalogBannerImages", next);
-                    }}
-                    className="rounded-xl h-9 text-sm bg-background/50"
-                    placeholder="/banners/banner1.png or image URL"
-                    aria-label={`Catalog banner ${index + 1} image URL`}
-                  />
-                  <label className="inline-flex cursor-pointer items-center rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted/50">
-                    {bannerUploadIndex === index ? "Preparing image…" : `Upload banner ${index + 1}`}
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="sr-only"
-                      disabled={bannerUploadIndex !== null}
-                      onChange={async (event) => {
-                        const input = event.currentTarget;
-                        const file = input.files?.[0];
-                        if (!file) return;
-                        setBannerUploadError(null);
-                        setBannerUploadIndex(index);
-                        try {
-                          const dataUrl = await compressBannerImage(file);
-                          const next = [...settings.catalogBannerImages];
-                          next[index] = dataUrl;
-                          set("catalogBannerImages", next);
-                        } catch (uploadError) {
-                          setBannerUploadError(uploadError instanceof Error ? uploadError.message : "Image upload failed.");
-                        } finally {
-                          setBannerUploadIndex(null);
-                          input.value = "";
-                        }
-                      }}
-                    />
-                  </label>
-                </div>
+                <Input
+                  key={index}
+                  value={url}
+                  onChange={(e) => {
+                    const next = [...settings.catalogBannerImages];
+                    next[index] = e.target.value;
+                    set("catalogBannerImages", next);
+                  }}
+                  className="rounded-xl h-9 text-sm bg-background/50"
+                  placeholder="/banners/banner1.png"
+                />
               ))}
-              <p className="text-xs text-muted-foreground">Uploads are resized and saved with the settings. Click Save Settings to publish the changes.</p>
-              {bannerUploadError && <p role="alert" className="text-sm text-destructive">{bannerUploadError}</p>}
             </div>
           </div>
         </TabsContent>

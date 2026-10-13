@@ -84,22 +84,6 @@ describe("/admin/settings — routing rule contract", () => {
     expect(res.body.defaultEtaMinutes).toBe(45);
   });
 
-  it("PUT persists a compressed banner image data URL", async () => {
-    const image = "data:image/webp;base64,UklGRg==";
-    const res = await supertest(await buildApp())
-      .put("/api/admin/settings")
-      .send({ catalogBannerImages: [image] });
-    expect(res.status).toBe(200);
-    expect(res.body.catalogBannerImages).toEqual([image]);
-  });
-
-  it("PUT rejects non-image data URLs for catalog banners", async () => {
-    const res = await supertest(await buildApp())
-      .put("/api/admin/settings")
-      .send({ catalogBannerImages: ["data:text/html;base64,PHNjcmlwdD4="] });
-    expect(res.status).toBe(400);
-  });
-
   it("PUT rejects an unknown routing rule with 400", async () => {
     const res = await supertest(await buildApp())
       .put("/api/admin/settings")
