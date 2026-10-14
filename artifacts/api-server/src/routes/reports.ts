@@ -231,9 +231,17 @@ export async function salesTaxReport(tenantId: number, query: Record<string, unk
     eq(ordersTable.tenantId, tenantId), gte(ordersTable.createdAt, from), lte(ordersTable.createdAt, to),
     locationId ? eq(orderTaxSnapshotsTable.locationId, locationId) : undefined,
   ));
+  // Tax snapshots preserve original collected tax. Refund tax is an append-only
+  // sum of completed return records rather than a mutation of that snapshot.
+  const refundRows = rows.length ? await db.execute(sql`SELECT rt.order_id, COALESCE(sum(rt.tax_amount),0)::numeric AS refunded
+    FROM return_transactions rt JOIN orders o ON o.tenant_id=rt.tenant_id AND o.id=rt.order_id
+    WHERE rt.tenant_id=${tenantId} AND rt.status='completed' AND o.created_at >= ${from} AND o.created_at <= ${to}
+    ${locationId ? sql`AND EXISTS (SELECT 1 FROM order_tax_snapshots ots WHERE ots.tenant_id=rt.tenant_id AND ots.order_id=rt.order_id AND ots.location_id=${locationId})` : sql``}
+    GROUP BY rt.order_id`) : { rows: [] };
+  const refundedTaxByOrder = new Map((refundRows.rows as Array<{ order_id: number; refunded: string }>).map(row => [Number(row.order_id), Number(row.refunded)]));
   return buildSalesTaxReportFromRows(rows.filter(({ order }) => ["paid", "refunded", "partially_refunded"].includes(order.paymentStatus)).map(({ order, tax }) => ({
     id: order.id, total: money(order.total), grossSales: money(tax.grossSales), discounts: money(tax.discountAmount), taxableSales: money(tax.taxableSubtotal), nonTaxableSales: money(tax.nonTaxableSubtotal),
-    taxCalculated: money(tax.taxCalculated), taxCollected: money(tax.taxCollected), taxRefunded: money(tax.taxRefunded), jurisdiction: tax.jurisdiction ?? "UNSPECIFIED", taxRate: money(tax.taxRate),
+    taxCalculated: money(tax.taxCalculated), taxCollected: money(tax.taxCollected), taxRefunded: refundedTaxByOrder.get(order.id) ?? 0, jurisdiction: tax.jurisdiction ?? "UNSPECIFIED", taxRate: money(tax.taxRate),
     paymentMethod: order.paymentMethod ?? "unknown", customerCreditApplied: money(order.customerCreditApplied), voided: Boolean(order.voidedAt), refundAmount: order.paymentStatus === "refunded" ? money(order.total) : 0,
   })));
 }

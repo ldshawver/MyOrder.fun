@@ -5,6 +5,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/
 import { requirePermission } from "../lib/roles";
 import { z } from "zod";
 import { postInventoryMovement } from "../lib/inventoryMovementLedger";
+import { allocateCumulativeQuantityCents, allocateProportionalRefund, parseOriginalTenderAllocations, type OrderLineRefundTax, type OriginalTenderAllocation, type RefundTender } from "../lib/refundAccounting";
 import { restoreCustomerCredit } from "../payments/customerCredit";
 import { requireOnlinePayments } from "../payments/config";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
@@ -31,6 +32,78 @@ const rows = <T extends Row>(value: unknown): T[] => Array.isArray(value) ? valu
 const cents = (v: unknown) => Math.round(Number(v ?? 0) * 100);
 const money = (n: number) => (n / 100).toFixed(2);
 
+function storedLineTaxAllocations(snapshot: unknown): OrderLineRefundTax[] | null {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const value = (snapshot as Record<string, unknown>).lineTaxAllocations;
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const allowed = (row: Record<string, unknown>) => ["lineIndex", "orderItemId", "catalogItemId", "quantity", "grossCents", "discountCents", "taxableBaseCents", "taxCents"]
+    .every(key => Number.isSafeInteger(row[key]) && Number(row[key]) >= 0)
+    && Number(row.orderItemId) > 0 && Number(row.catalogItemId) > 0 && Number(row.quantity) > 0
+    && typeof row.taxable === "boolean"
+    && Number(row.discountCents) <= Number(row.grossCents)
+    && Number(row.taxableBaseCents) === (row.taxable ? Number(row.grossCents) - Number(row.discountCents) : 0)
+    && (row.taxable === true || Number(row.taxCents) === 0);
+  if (!value.every(row => row && typeof row === "object" && !Array.isArray(row) && allowed(row as Record<string, unknown>))) return null;
+  const itemIds = value.map(row => Number((row as Record<string, unknown>).orderItemId));
+  if (new Set(itemIds).size !== itemIds.length) return null;
+  return value as OrderLineRefundTax[];
+}
+
+async function resolveOriginalAllocations(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], tenantId: number, order: Row, immutableSnapshot?: unknown): Promise<OriginalTenderAllocation[] | null> {
+  const totalCents = cents(order.total);
+  const candidate = immutableSnapshot !== undefined ? immutableSnapshot : order.tax_snapshot;
+  const snapshot = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate as Record<string, unknown> : {};
+  const exact = parseOriginalTenderAllocations(snapshot.originalTenderAllocations, totalCents);
+  let allocations = exact;
+  if (!allocations && snapshot.originalTenderAllocations == null) {
+    // Compatibility path for older immutable schemaVersion-3 records. It only
+    // accepts complete source amounts and verifies them against settlement ledgers.
+    const tenderAllocation = snapshot.tenderAllocation && typeof snapshot.tenderAllocation === "object"
+      ? snapshot.tenderAllocation as Record<string, unknown> : {};
+    const creditCents = Number.isSafeInteger(tenderAllocation.customerCreditCents)
+      ? Number(tenderAllocation.customerCreditCents) : cents(order.customer_credit_applied);
+    const externalCents = Number.isSafeInteger(tenderAllocation.externalTenderCents)
+      ? Number(tenderAllocation.externalTenderCents) : totalCents - creditCents;
+    const method = String(snapshot.tender ?? order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
+    const externalTender: RefundTender | null = method.includes("paypal") ? "paypal" : method.includes("cash") ? "cash" : null;
+    if (Number.isSafeInteger(creditCents) && creditCents >= 0 && Number.isSafeInteger(externalCents) && externalCents >= 0
+      && creditCents + externalCents === totalCents
+      && (externalCents === 0 || externalTender !== null)) {
+      allocations = [
+        ...(creditCents > 0 ? [{ tender: "customer_credit" as const, amountCents: creditCents }] : []),
+        ...(externalCents > 0 && externalTender ? [{ tender: externalTender, amountCents: externalCents }] : []),
+      ];
+    }
+  }
+  if (!allocations || cents(order.customer_credit_applied) !== (allocations.find(row => row.tender === "customer_credit")?.amountCents ?? 0)) return null;
+  const credit = allocations.find(row => row.tender === "customer_credit")?.amountCents ?? 0;
+  if (credit > 0) {
+    const settled = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(abs(amount)),0)::numeric AS amount FROM customer_credit_ledger WHERE tenant_id=${tenantId} AND order_id=${Number(order.id)} AND entry_type='payment_consumption'`))[0];
+    if (cents(settled?.amount) !== credit) return null;
+  }
+  const cash = allocations.find(row => row.tender === "cash")?.amountCents ?? 0;
+  const paypal = allocations.find(row => row.tender === "paypal")?.amountCents ?? 0;
+  if (cash > 0) {
+    const settled = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(amount),0)::numeric AS amount FROM cash_ledger_entries WHERE tenant_id=${tenantId} AND order_id=${Number(order.id)} AND entry_type='cash_sale_closeout'`))[0];
+    if (cents(settled?.amount) !== cash) return null;
+  }
+  if (paypal > 0) {
+    const settled = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(pc.amount),0)::numeric AS amount FROM payment_captures pc JOIN payment_attempts pa ON pa.tenant_id=pc.tenant_id AND pa.id=pc.payment_attempt_id WHERE pa.tenant_id=${tenantId} AND pa.order_id=${Number(order.id)} AND pc.provider='paypal'`))[0];
+    if (cents(settled?.amount) !== paypal) return null;
+  }
+  return allocations;
+}
+
+async function refundedByTender(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], tenantId: number, orderId: number): Promise<Record<RefundTender, number>> {
+  const [credit, cash, paypal] = await Promise.all([
+    tx.execute(sql`SELECT COALESCE(sum(amount),0)::numeric AS amount FROM customer_credit_ledger WHERE tenant_id=${tenantId} AND order_id=${orderId} AND entry_type='refund_restoration'`),
+    tx.execute(sql`SELECT COALESCE(sum(abs(amount)),0)::numeric AS amount FROM cash_ledger_entries WHERE tenant_id=${tenantId} AND order_id=${orderId} AND entry_type='cash_refund'`),
+    tx.execute(sql`SELECT COALESCE(sum(pr.amount),0)::numeric AS amount FROM payment_refunds pr JOIN payment_captures pc ON pc.tenant_id=pr.tenant_id AND pc.id=pr.payment_capture_id JOIN payment_attempts pa ON pa.tenant_id=pc.tenant_id AND pa.id=pc.payment_attempt_id WHERE pa.tenant_id=${tenantId} AND pa.order_id=${orderId} AND pr.state IN ('locally_finalized','completed')`),
+  ]);
+  return { customer_credit: cents(rows<Row>(credit)[0]?.amount), cash: cents(rows<Row>(cash)[0]?.amount), paypal: cents(rows<Row>(paypal)[0]?.amount) };
+}
+
 /** Local effects for a PayPal return happen only after the provider identity
  * has been committed.  This function is repeat-safe via the return status and
  * inventory movement idempotency keys. */
@@ -42,6 +115,30 @@ const finalizePayPalReturn = async (input: { returnId: number; tenantId: number;
   if (ret.status !== "pending") throw new Error("Return transaction is not pending provider finalization");
   const order = rows<Row>(await tx.execute(sql`SELECT * FROM orders WHERE tenant_id=${input.tenantId} AND id=${input.orderId} FOR UPDATE`))[0];
   if (!order) throw new Error("Order not found");
+  const immutableTaxSnapshot = rows<Row>(await tx.execute(sql`SELECT snapshot_json FROM order_tax_snapshots WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId} LIMIT 1`))[0]?.snapshot_json;
+  if (!immutableTaxSnapshot || typeof immutableTaxSnapshot !== "object" || Array.isArray(immutableTaxSnapshot)) throw new PaymentServiceError(409, "REFUND_TAX_ALLOCATION_UNAVAILABLE", "Original tax snapshot requires manual reconciliation");
+  const allocations = await resolveOriginalAllocations(tx, input.tenantId, order, immutableTaxSnapshot);
+  if (!allocations) throw new PaymentServiceError(409, "REFUND_ALLOCATION_UNAVAILABLE", "Original payment allocation requires manual reconciliation");
+  const lineTaxAllocations = storedLineTaxAllocations(immutableTaxSnapshot);
+  if (!lineTaxAllocations) throw new PaymentServiceError(409, "REFUND_TAX_ALLOCATION_UNAVAILABLE", "Original line tax allocation requires manual reconciliation");
+  const refunded = await refundedByTender(tx, input.tenantId, input.orderId);
+  const currentProviderRefund = rows<Row>(await tx.execute(sql`SELECT pr.amount, pc.id AS capture_id, pc.amount AS capture_amount, pc.payment_attempt_id FROM payment_refunds pr JOIN payment_captures pc ON pc.tenant_id=pr.tenant_id AND pc.id=pr.payment_capture_id WHERE pr.tenant_id=${input.tenantId} AND pr.idempotency_key=${`return-paypal:${input.returnId}`} LIMIT 1`))[0];
+  if (!currentProviderRefund) throw new PaymentServiceError(409, "REFUND_RECONCILIATION_REQUIRED", "PayPal refund intent is unavailable");
+  const alreadyRefunded: Record<RefundTender, number> = { ...refunded, paypal: refunded.paypal - cents(currentProviderRefund?.amount) };
+  if (alreadyRefunded.paypal < 0) throw new PaymentServiceError(409, "REFUND_RECONCILIATION_REQUIRED", "PayPal refund ledger is inconsistent");
+  const cumulativeBefore = Object.values(alreadyRefunded).reduce((sum, amount) => sum + amount, 0);
+  const proportional = allocateProportionalRefund({ cumulativeRefundCents: cumulativeBefore + cents(ret.refund_amount), original: allocations, alreadyRefunded });
+  if (proportional.paypal !== cents(currentProviderRefund?.amount) || proportional.cash > 0) throw new PaymentServiceError(409, "REFUND_ALLOCATION_MISMATCH", "PayPal return allocation requires manual reconciliation");
+  const creditRestorationCents = proportional.customer_credit;
+  if (creditRestorationCents > 0) await restoreCustomerCredit(tx as never, {
+    tenantId: input.tenantId,
+    customerId: Number(order.customer_id),
+    actorUserId: input.actor.id,
+    orderId: input.orderId,
+    amountCents: creditRestorationCents,
+    idempotencyKey: `return-credit:${input.returnId}`,
+    reason: `Refund/return ${input.returnId}`,
+  });
   const lines = rows<Row>(await tx.execute(sql`SELECT rl.*, oi.catalog_item_id FROM return_lines rl JOIN order_items oi ON oi.id=rl.order_item_id WHERE rl.return_transaction_id=${input.returnId} ORDER BY rl.id`));
   for (const line of lines) {
     if (line.disposition !== "RESTOCK") continue;
@@ -50,6 +147,15 @@ const finalizePayPalReturn = async (input: { returnId: number; tenantId: number;
     await postInventoryMovement(tx as never, { tenantId: input.tenantId, actor: { id: input.actor.id, email: input.actor.email, role: input.actor.role, ipAddress: input.ipAddress }, entityType: "catalog", itemId: Number(line.catalog_item_id), locationId: Number(ret.location_id), movementType: "customer_return", quantity: String(line.quantity), unitCost: sale ? undefined : (valuation?.cost ? String(valuation.cost) : undefined), sourceType: "return", sourceId: sale ? String(sale.id) : `order-item:${line.order_item_id}`, orderId: input.orderId, orderItemId: Number(line.order_item_id), reasonCode: "customer_return_restock", reasonText: String(ret.reason), idempotencyKey: `return-movement:${input.returnId}:${line.order_item_id}` });
   }
   await tx.execute(sql`UPDATE return_transactions SET status='completed', updated_at=now() WHERE id=${input.returnId}`);
+  const [taxLedger] = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(tax_amount),0)::numeric AS refunded FROM return_transactions WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId} AND status='completed'`));
+  const [taxSnapshot] = rows<Row>(await tx.execute(sql`SELECT tax_collected FROM order_tax_snapshots WHERE tenant_id=${input.tenantId} AND order_id=${input.orderId} LIMIT 1`));
+  if (taxSnapshot && cents(taxLedger?.refunded) > cents(taxSnapshot.tax_collected)) throw new PaymentServiceError(409, "TAX_REFUND_LIMIT_EXCEEDED", "Refunded tax exceeds original tax collected");
+  const afterRefund = await refundedByTender(tx, input.tenantId, input.orderId);
+  const orderRefundedCents = Object.values(afterRefund).reduce((sum, amount) => sum + amount, 0);
+  const paypalFull = afterRefund.paypal >= cents(currentProviderRefund.capture_amount);
+  await tx.execute(sql`UPDATE payment_captures SET state=${paypalFull ? "refunded" : "partially_refunded"} WHERE tenant_id=${input.tenantId} AND id=${Number(currentProviderRefund.capture_id)}`);
+  await tx.execute(sql`UPDATE payment_attempts SET state=${paypalFull ? "refunded" : "partially_refunded"} WHERE tenant_id=${input.tenantId} AND id=${Number(currentProviderRefund.payment_attempt_id)}`);
+  await tx.execute(sql`UPDATE orders SET payment_status=${orderRefundedCents >= cents(order.total) ? "refunded" : "partially_refunded"}, status=CASE WHEN ${orderRefundedCents >= cents(order.total)} THEN 'refunded' ELSE status END WHERE tenant_id=${input.tenantId} AND id=${input.orderId}`);
   await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId: input.tenantId, actorId: input.actor.id, actorEmail: input.actor.email ?? "", actorRole: input.actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(input.returnId), metadata: { orderId: input.orderId, refundAmount: String(ret.refund_amount), taxAmount: String(ret.tax_amount), tenderType: "paypal", providerFinalized: true }, ipAddress: input.ipAddress ?? null });
   return { idempotent: false };
 });
@@ -79,7 +185,11 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, ${orderId})`);
     const existing = rows<Row>(await tx.execute(sql`SELECT * FROM return_transactions WHERE tenant_id = ${tenantId} AND idempotency_key = ${parsed.data.idempotencyKey} LIMIT 1`))[0];
     if (existing && existing.status === "completed") return { status: 200, result: { id: Number(existing.id), status: existing.status, refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), idempotent: true } };
-    if (existing && existing.status === "pending" && existing.tender_type === "paypal") return { status: 202, paypalPending: { returnId: Number(existing.id), refundAmount: String(existing.refund_amount), taxAmount: String(existing.tax_amount), reason: String(existing.reason) } };
+    if (existing && existing.status === "pending" && existing.tender_type === "paypal") {
+      const providerRefund = rows<Row>(await tx.execute(sql`SELECT amount FROM payment_refunds WHERE tenant_id=${tenantId} AND idempotency_key=${`return-paypal:${Number(existing.id)}`} LIMIT 1`))[0];
+      if (!providerRefund) return { status: 409, error: "Return payment allocation requires reconciliation" };
+      return { status: 202, paypalPending: { returnId: Number(existing.id), refundAmount: String(existing.refund_amount), paypalAmount: String(providerRefund.amount), creditRefundAmount: money(cents(existing.refund_amount) - cents(providerRefund.amount)), taxAmount: String(existing.tax_amount), reason: String(existing.reason) } };
+    }
     const order = rows<Row>(await tx.execute(sql`
       SELECT o.*, COALESCE(ots.location_id, il.id) AS "locationId"
       FROM orders o LEFT JOIN order_tax_snapshots ots ON ots.tenant_id = o.tenant_id AND ots.order_id = o.id
@@ -92,42 +202,68 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     if (!order.locationId) return { status: 409, error: "Order has no authoritative location" };
     if (role === "csr" && Number(order.assigned_csr_user_id ?? 0) !== actor.id) return { status: 403, error: "Order is outside the CSR location assignment" };
     if (!["paid", "partially_refunded"].includes(String(order.payment_status))) return { status: 409, error: "Only settled orders may be refunded" };
-    const tender = String(order.selected_payment_method ?? order.payment_method ?? "").toLowerCase();
-    const tenderType = tender.includes("customer_credit") || tender === "comp" ? "customer_credit" : tender === "cash" ? "cash" : tender.startsWith("paypal") ? "paypal" : null;
-    if (!tenderType) return { status: 409, error: "Unsupported refund tender" };
-    const paypalConfig = tenderType === "paypal" ? requireOnlinePayments(await loadTenantPaymentConfig(tenantId)) : null;
-    const paypalService = paypalConfig ? new PaymentService(paypalConfig, new PayPalProvider(paypalConfig)) : undefined;
-    const paidCents = tenderType === "customer_credit" ? cents(order.customer_credit_applied) : cents(order.total);
-    const prior = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(refund_amount),0) AS amount FROM return_transactions WHERE tenant_id = ${tenantId} AND order_id = ${orderId} AND status = 'completed'`))[0];
-    const remainingPaid = paidCents - cents(prior?.amount);
-    if (remainingPaid <= 0) return { status: 409, error: "Order is already fully refunded" };
+    const [taxSnapshot] = rows<Row>(await tx.execute(sql`SELECT snapshot_json, tax_collected FROM order_tax_snapshots WHERE tenant_id=${tenantId} AND order_id=${orderId} LIMIT 1`));
+    const immutableTaxSnapshot = taxSnapshot?.snapshot_json;
+    const allocations = await resolveOriginalAllocations(tx, tenantId, order, immutableTaxSnapshot);
+    if (!allocations) return { status: 409, error: "Original payment allocation requires manual reconciliation" };
+    const taxAllocations = storedLineTaxAllocations(immutableTaxSnapshot);
+    if (!taxAllocations) return { status: 409, error: "Original line tax allocation requires manual reconciliation" };
+    if (taxAllocations.reduce((sum, line) => sum + line.taxCents, 0) !== cents(order.tax)) return { status: 409, error: "Original line tax allocation does not match the order tax snapshot" };
+    if (taxAllocations.reduce((sum, line) => sum + line.grossCents - line.discountCents, 0) !== cents(order.subtotal)) return { status: 409, error: "Original line merchandise allocation does not match the order snapshot" };
+    const activeProviderRefund = rows<Row>(await tx.execute(sql`
+      SELECT pr.id FROM payment_refunds pr
+      JOIN payment_captures pc ON pc.tenant_id=pr.tenant_id AND pc.id=pr.payment_capture_id
+      JOIN payment_attempts pa ON pa.tenant_id=pc.tenant_id AND pa.id=pc.payment_attempt_id
+      WHERE pa.tenant_id=${tenantId} AND pa.order_id=${orderId}
+        AND pr.state IN ('requested','pending','provider_succeeded','reconciliation_required') LIMIT 1
+    `))[0];
+    if (activeProviderRefund) return { status: 409, error: "A payment refund is awaiting provider reconciliation" };
+    const otherPending = rows<Row>(await tx.execute(sql`SELECT id FROM return_transactions WHERE tenant_id=${tenantId} AND order_id=${orderId} AND status='pending' LIMIT 1`))[0];
+    if (otherPending) return { status: 409, error: "Another return is awaiting payment reconciliation" };
+    const priorTenderRefunds = await refundedByTender(tx, tenantId, orderId);
+    const priorRefundedCents = Object.values(priorTenderRefunds).reduce((sum, amount) => sum + amount, 0);
+    const originalPaidCents = allocations.reduce((sum, allocation) => sum + allocation.amountCents, 0);
+    if (priorRefundedCents >= originalPaidCents) return { status: 409, error: "Order is already fully refunded" };
+    const [taxTotals] = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rt.tax_amount) FILTER (WHERE rt.status='completed'),0)::numeric AS already_refunded FROM return_transactions rt WHERE rt.tenant_id=${tenantId} AND rt.order_id=${orderId}`));
+    if (!taxSnapshot) return { status: 409, error: "Original tax snapshot requires manual reconciliation" };
     const itemMap = new Map<number, Row>();
     for (const line of rows<Row>(await tx.execute(sql`SELECT * FROM order_items WHERE order_id = ${orderId} FOR SHARE`))) itemMap.set(Number(line.id), line);
     let total = 0; let taxTotal = 0; const computed: Array<{ line: z.infer<typeof lineSchema>; item: Row; amount: number; tax: number; remaining: number }> = [];
+    const requestedItemIds = new Set<number>();
     for (const line of parsed.data.lines) {
+      if (requestedItemIds.has(line.orderItemId)) return { status: 422, error: "A return request may contain each order line only once" };
+      requestedItemIds.add(line.orderItemId);
       const item = itemMap.get(line.orderItemId);
       if (!item) return { status: 422, error: "Return line is not part of this order" };
-      const already = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rl.quantity),0) AS quantity FROM return_lines rl JOIN return_transactions rt ON rt.id = rl.return_transaction_id WHERE rt.tenant_id = ${tenantId} AND rt.order_id = ${orderId} AND rt.status = 'completed' AND rl.order_item_id = ${line.orderItemId}`))[0];
+      const taxRecord = taxAllocations.find(record => record.orderItemId === line.orderItemId);
+      if (!taxRecord || taxRecord.catalogItemId !== Number(item.catalog_item_id) || taxRecord.quantity !== Number(item.quantity)) return { status: 409, error: "Original line tax allocation requires manual reconciliation" };
+      const already = rows<Row>(await tx.execute(sql`SELECT COALESCE(sum(rl.quantity),0)::int AS quantity, COALESCE(sum(rl.unit_value),0)::numeric AS amount, COALESCE(sum(rl.tax_value),0)::numeric AS tax FROM return_lines rl JOIN return_transactions rt ON rt.id = rl.return_transaction_id WHERE rt.tenant_id = ${tenantId} AND rt.order_id = ${orderId} AND rt.status = 'completed' AND rl.order_item_id = ${line.orderItemId}`))[0];
       const remaining = Number(item.quantity) - Number(already?.quantity ?? 0);
       if (line.quantity > remaining) return { status: 409, error: "Return quantity exceeds the remaining refundable quantity" };
-      const amount = cents(item.unit_price) * line.quantity;
-      const tax = cents(order.subtotal) > 0 ? Math.round(cents(order.tax) * amount / cents(order.subtotal)) : 0;
+      const priorQuantity = Number(already?.quantity ?? 0);
+      const expectedPriorAmount = priorQuantity > 0 ? allocateCumulativeQuantityCents({ totalCents: taxRecord.grossCents - taxRecord.discountCents, totalQuantity: taxRecord.quantity, priorQuantity: 0, currentQuantity: priorQuantity }) : 0;
+      const expectedPriorTax = priorQuantity > 0 ? allocateCumulativeQuantityCents({ totalCents: taxRecord.taxCents, totalQuantity: taxRecord.quantity, priorQuantity: 0, currentQuantity: priorQuantity }) : 0;
+      if (priorQuantity > 0 && (cents(already?.amount) !== expectedPriorAmount || cents(already?.tax) !== expectedPriorTax)) return { status: 409, error: "Historical line refund amounts require manual reconciliation" };
+      const amount = allocateCumulativeQuantityCents({ totalCents: taxRecord.grossCents - taxRecord.discountCents, totalQuantity: taxRecord.quantity, priorQuantity: Number(already?.quantity ?? 0), currentQuantity: line.quantity });
+      const tax = allocateCumulativeQuantityCents({ totalCents: taxRecord.taxCents, totalQuantity: taxRecord.quantity, priorQuantity: Number(already?.quantity ?? 0), currentQuantity: line.quantity });
+      if (taxRecord.taxableBaseCents === 0 && tax !== 0) return { status: 409, error: "Nontaxable line has an inconsistent tax snapshot" };
+      if (taxRecord.taxableBaseCents > 0 && !taxRecord.taxable) return { status: 409, error: "Taxable line has an inconsistent tax snapshot" };
       total += amount + tax; taxTotal += tax; computed.push({ line, item, amount, tax, remaining });
     }
     if (total <= 0) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
-    // Allocate the final cent of tax to the final eligible return rather than
-    // rounding each partial line upward. This preserves the immutable paid
-    // total while allowing a valid second return for the remaining quantity.
-    if (total > remainingPaid) {
-      const allRequestedRemainder = computed.every((c) => c.line.quantity === c.remaining);
-      const roundingOverage = total - remainingPaid;
-      if (!allRequestedRemainder || roundingOverage > 1) return { status: 409, error: "Refund exceeds the authoritative refundable amount" };
-      total = remainingPaid;
-      taxTotal = Math.max(0, taxTotal - roundingOverage);
-      const last = computed[computed.length - 1];
-      if (last) last.tax = Math.max(0, last.tax - roundingOverage);
-    }
-    if (parsed.data.preview) return { status: 200, result: { preview: true, tenderType, refundAmount: money(total), taxAmount: money(taxTotal), lines: computed.map(c => ({ orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition })) } };
+    if (cents(taxTotals?.already_refunded) + taxTotal > cents(taxSnapshot.tax_collected)) return { status: 409, error: "Refunded tax exceeds original tax collected" };
+    const cumulativeRefundCents = priorRefundedCents + total;
+    let proportional: Record<RefundTender, number>;
+    try { proportional = allocateProportionalRefund({ cumulativeRefundCents, original: allocations, alreadyRefunded: priorTenderRefunds }); }
+    catch { return { status: 409, error: "Prior refunds conflict with the original proportional tender allocation" }; }
+    if (proportional.cash > 0 && proportional.paypal > 0) return { status: 409, error: "Multiple external tender sources require manual reconciliation" };
+    const creditRefundCents = proportional.customer_credit;
+    const cashRefundCents = proportional.cash;
+    const paypalRefundCents = proportional.paypal;
+    const tenderType = paypalRefundCents > 0 ? "paypal" : cashRefundCents > 0 ? "cash" : "customer_credit";
+    if (parsed.data.preview) return { status: 200, result: { preview: true, tenderType, refundAmount: money(total), taxAmount: money(taxTotal), creditRefundAmount: money(creditRefundCents), cashRefundAmount: money(cashRefundCents), paypalRefundAmount: money(paypalRefundCents), lines: computed.map(c => ({ orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition })) } };
+    const paypalConfig = paypalRefundCents > 0 ? requireOnlinePayments(await loadTenantPaymentConfig(tenantId)) : null;
+    const paypalService = paypalConfig ? new PaymentService(paypalConfig, new PayPalProvider(paypalConfig)) : undefined;
     const inserted = rows<Row>(await tx.execute(sql`
       INSERT INTO return_transactions (tenant_id, location_id, order_id, actor_user_id, status, tender_type, refund_amount, tax_amount, idempotency_key, reason)
       VALUES (${tenantId}, ${Number(order.locationId)}, ${orderId}, ${actor.id}, 'pending', ${tenderType}, ${money(total)}, ${money(taxTotal)}, ${parsed.data.idempotencyKey}, ${parsed.data.reason}) RETURNING id
@@ -139,17 +275,18 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       // is intentionally outside this transaction so a local rollback cannot
       // erase the stable PayPal-Request-Id.
       for (const c of computed) await tx.execute(sql`INSERT INTO return_lines (return_transaction_id, order_item_id, quantity, unit_value, tax_value, disposition) VALUES (${returnId}, ${c.line.orderItemId}, ${c.line.quantity}, ${money(c.amount)}, ${money(c.tax)}, ${c.line.disposition})`);
-      const intent = await paypalService.prepareRefundInTransaction(tx, { tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${returnId}`, amount: money(total), reason: parsed.data.reason });
-      return { status: 202, paypalPending: { returnId, refundAmount: money(total), taxAmount: money(taxTotal), reason: parsed.data.reason, intent } };
+      const intent = await paypalService.prepareRefundInTransaction(tx, { tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${returnId}`, returnId, amount: money(paypalRefundCents), reason: parsed.data.reason });
+      return { status: 202, paypalPending: { returnId, refundAmount: money(total), paypalAmount: money(paypalRefundCents), creditRefundAmount: money(creditRefundCents), taxAmount: money(taxTotal), reason: parsed.data.reason, intent } };
     }
-    if (tenderType === "customer_credit") {
-      await restoreCustomerCredit(tx as never, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: total, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
-    } else {
+    if (creditRefundCents > 0) {
+      await restoreCustomerCredit(tx as never, { tenantId, customerId: Number(order.customer_id), actorUserId: actor.id, orderId, amountCents: creditRefundCents, idempotencyKey: `return-credit:${returnId}`, reason: `Refund/return ${returnId}` });
+    }
+    if (cashRefundCents > 0) {
       const shift = rows<Row>(await tx.execute(sql`SELECT id, tech_id, box_assignment_id, status FROM lab_tech_shifts WHERE tenant_id = ${tenantId} AND id = ${order.assigned_shift_id ?? 0} LIMIT 1`))[0];
       if (!shift || shift.status !== "active") return { status: 409, error: "An active accountable cash session is required for cash refunds" };
       await tx.execute(sql`
         INSERT INTO cash_ledger_entries (tenant_id, order_id, shift_id, csr_user_id, actor_user_id, location_id, box_assignment_id, amount, amount_tendered, change_given, internal_note, entry_type, idempotency_key)
-        VALUES (${tenantId}, ${orderId}, ${Number(shift.id)}, ${Number(shift.tech_id)}, ${actor.id}, ${Number(order.locationId)}, ${String(shift.box_assignment_id)}, ${money(total)}, '0.00', '0.00', ${parsed.data.reason}, 'cash_refund', ${`return-cash:${returnId}`})
+        VALUES (${tenantId}, ${orderId}, ${Number(shift.id)}, ${Number(shift.tech_id)}, ${actor.id}, ${Number(order.locationId)}, ${String(shift.box_assignment_id)}, ${money(cashRefundCents)}, '0.00', '0.00', ${parsed.data.reason}, 'cash_refund', ${`return-cash:${returnId}`})
       `);
     }
     for (const c of computed) {
@@ -161,11 +298,14 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
       }
       await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_LINE_COMPLETED", resourceType: "return_line", resourceId: String(line.id), metadata: { orderId, orderItemId: c.line.orderItemId, quantity: c.line.quantity, disposition: c.line.disposition, returnId }, ipAddress: req.ip ?? null });
     }
-    const full = total >= remainingPaid;
+    const full = priorRefundedCents + total >= originalPaidCents;
     await tx.execute(sql`UPDATE orders SET payment_status = ${full ? "refunded" : "partially_refunded"}, status = CASE WHEN ${full} THEN 'refunded' ELSE status END, updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${orderId}`);
     await tx.execute(sql`UPDATE return_transactions SET status = 'completed', updated_at = now() WHERE id = ${returnId}`);
+    // order_tax_snapshots is immutable by database trigger. Completed return
+    // transactions are the append-only tax-refund ledger; never rewrite the
+    // original tax snapshot to report cumulative refunds.
     await tx.insert((await import("@workspace/db")).auditLogsTable).values({ tenantId, actorId: actor.id, actorEmail: actor.email ?? "", actorRole: actor.role, action: "RETURN_COMPLETED", resourceType: "return_transaction", resourceId: String(returnId), metadata: { orderId, refundAmount: money(total), taxAmount: money(taxTotal), tenderType, reason: parsed.data.reason }, ipAddress: req.ip ?? null });
-    return { status: 200, result: { id: returnId, status: "completed", refundAmount: money(total), taxAmount: money(taxTotal), tenderType, idempotent: false } };
+    return { status: 200, result: { id: returnId, status: "completed", refundAmount: money(total), taxAmount: money(taxTotal), creditRefundAmount: money(creditRefundCents), cashRefundAmount: money(cashRefundCents), paypalRefundAmount: money(paypalRefundCents), tenderType, idempotent: false } };
   });
   if ("paypalPending" in outcome) {
     const pending = outcome.paypalPending;
@@ -175,10 +315,10 @@ router.post("/orders/:id/returns", requirePermission("orders.refund"), async (re
     try {
       // Re-entering with the same return idempotency key reuses the durable
       // provider request ID and therefore cannot create a second refund.
-      const providerResult = await paypalService.refund({ tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${pending.returnId}`, amount: pending.refundAmount, reason: pending.reason });
+      const providerResult = await paypalService.refund({ tenantId, orderId, actorUserId: actor.id, idempotencyKey: `return-paypal:${pending.returnId}`, returnId: pending.returnId, amount: pending.paypalAmount, reason: pending.reason });
       if (providerResult.status !== "completed") { res.status(502).json({ error: "PayPal refund requires reconciliation", returnId: pending.returnId }); return; }
       const local = await finalizePayPalReturn({ returnId: pending.returnId, tenantId, orderId, actor, ipAddress: req.ip });
-      res.status(200).json({ id: pending.returnId, status: "completed", refundAmount: pending.refundAmount, taxAmount: pending.taxAmount, tenderType: "paypal", idempotent: providerResult.replayed && local.idempotent });
+      res.status(200).json({ id: pending.returnId, status: "completed", refundAmount: pending.refundAmount, taxAmount: pending.taxAmount, creditRefundAmount: pending.creditRefundAmount, paypalRefundAmount: pending.paypalAmount, tenderType: "paypal", idempotent: providerResult.replayed && local.idempotent });
       return;
     } catch (error) {
       res.status(error instanceof PaymentServiceError ? error.statusCode : 502).json({ error: error instanceof Error ? error.message : "PayPal refund failed", returnId: pending.returnId });

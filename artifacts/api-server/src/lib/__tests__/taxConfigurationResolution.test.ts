@@ -56,4 +56,21 @@ describe("checkout tax configuration resolution", () => {
       .mockReturnValueOnce(selectResult([]) as never);
     await expect(getCheckoutTaxSettings(1, 3)).rejects.toBeInstanceOf(TaxConfigurationError);
   });
+
+  it("fails closed when effective tenant rows conflict instead of choosing a rate", async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectResult([]) as never)
+      .mockReturnValueOnce(selectResult([
+        { id: 10, rate: "0.08000000", jurisdiction: "Legacy", locationId: null, sourcingRule: "tenant" },
+        { id: 11, rate: "0.08750000", jurisdiction: "Current", locationId: null, sourcingRule: "tenant" },
+      ]) as never);
+    await expect(getCheckoutTaxSettings(1, 3)).rejects.toMatchObject({ name: "TaxConfigurationError" });
+  });
+
+  it("fails closed when the selected rate or jurisdiction is invalid", async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectResult([{
+      id: 12, rate: "1.25000000", jurisdiction: " ", locationId: 3, sourcingRule: "origin",
+    }]) as never);
+    await expect(getCheckoutTaxSettings(1, 3)).rejects.toBeInstanceOf(TaxConfigurationError);
+  });
 });

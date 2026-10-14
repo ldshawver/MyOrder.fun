@@ -32,7 +32,7 @@ vi.mock("@workspace/db", () => {
   const auditLogsTable = { table: "audit" };
   const other = { id: col("id"), tenantId: col("tenantId"), orderId: col("orderId") };
   const orderTaxSnapshotsTable = { ...other, table: "taxSnapshots" };
-  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), financialFinalizedAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3 }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
+  const order = { id: 4, tenantId: 2, customerId: 9, paymentStatus: "unpaid", status: "submitted", checkoutConversionSnapshot: { pricingSnapshot: {} }, legalDisclaimerAccepted: true, finalConfirmationAt: new Date(), financialFinalizedAt: new Date(), selectedPaymentMethod: "paypal", taxSnapshot: { schemaVersion: 3, taxRate: 0, effectiveTaxRate: 0, taxConfigurationId: 1, jurisdiction: "test", locationId: null }, subtotal: "12.00", taxableSubtotal: "12.00", tax: "0.00", customerCreditApplied: "0.00", remainingTenderAmount: "12.00", total: "12.00" };
   function matches(row: Record<string, unknown>, condition: unknown): boolean {
     const c = condition as { kind?: string; field?: string; value?: unknown; values?: unknown[]; conditions?: unknown[] };
     if (c.kind === "eq") return row[c.field!] === c.value;

@@ -14,6 +14,16 @@ export class CheckoutConversionRequiredError extends Error {
 
 const TokenPayload = z.object({ tenantId: z.number().int().positive(), userId: z.number().int().positive(), issuedAt: z.string(), expiresAt: z.string(), items: z.array(z.object({ catalogItemId: z.number().int().positive(), quantity: z.number().int().positive() })).min(1), snapshotHash: z.string().min(16) });
 export type CheckoutConversionTokenPayload = z.infer<typeof TokenPayload>;
+const TaxQuotePayload = z.object({
+  tenantId: z.number().int().positive(), userId: z.number().int().positive(), cartFingerprint: z.string().length(64),
+  // Tax is determined by merchandise and location, not by the payment source.
+  locationId: z.number().int().positive().nullable(),
+  taxConfigurationId: z.number().int().positive(), taxRate: z.number().finite().min(0).max(1),
+  taxableBaseCents: z.number().int().nonnegative(), taxCents: z.number().int().nonnegative(),
+  issuedAt: z.string().datetime(), expiresAt: z.string().datetime(),
+});
+export type CheckoutTaxQuoteContext = Pick<z.infer<typeof TaxQuotePayload>, "tenantId" | "userId" | "cartFingerprint" | "locationId" | "taxConfigurationId" | "taxRate" | "taxableBaseCents" | "taxCents">;
+export const CHECKOUT_TAX_QUOTE_TTL_MS = 5 * 60 * 1000;
 
 function secret(): string { return process.env.CHECKOUT_CONVERSION_SECRET || process.env.SESSION_SECRET || "dev-checkout-conversion-secret"; }
 function stripTransportConversionFields(value: unknown): unknown {
@@ -35,6 +45,38 @@ export async function createVerifiedCheckoutConversionToken(input: { tenantId: n
   const expiresAt = new Date(now.getTime() + CHECKOUT_CONVERSION_TTL_MS).toISOString();
   const snapshotHash = hashConversionSnapshot(input.snapshot);
   return { checkoutConversionToken: signCheckoutConversion({ tenantId: input.tenantId, userId: input.userId, issuedAt: now.toISOString(), expiresAt, items: input.items, snapshotHash }), conversionExpiresAt: expiresAt, snapshotHash };
+}
+
+export function createCheckoutTaxQuoteToken(input: CheckoutTaxQuoteContext & { now?: Date }): string {
+  const now = input.now ?? new Date();
+  const payload = TaxQuotePayload.parse({
+    tenantId: input.tenantId, userId: input.userId, cartFingerprint: input.cartFingerprint,
+    locationId: input.locationId, taxConfigurationId: input.taxConfigurationId,
+    taxRate: input.taxRate, taxableBaseCents: input.taxableBaseCents, taxCents: input.taxCents,
+    issuedAt: now.toISOString(), expiresAt: new Date(now.getTime() + CHECKOUT_TAX_QUOTE_TTL_MS).toISOString(),
+  });
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", secret()).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+export function verifyCheckoutTaxQuoteToken(token: unknown, expected: CheckoutTaxQuoteContext, now = new Date()): boolean {
+  try {
+    if (typeof token !== "string") return false;
+    const [encoded, signature, extra] = token.split(".");
+    if (!encoded || !signature || extra !== undefined) return false;
+    const expectedSignature = crypto.createHmac("sha256", secret()).update(encoded).digest();
+    const actualSignature = Buffer.from(signature, "base64url");
+    if (actualSignature.length !== expectedSignature.length || !crypto.timingSafeEqual(actualSignature, expectedSignature)) return false;
+    const parsed = TaxQuotePayload.safeParse(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")));
+    if (!parsed.success || new Date(parsed.data.expiresAt).getTime() <= now.getTime()) return false;
+    const quote = parsed.data;
+    return quote.tenantId === expected.tenantId && quote.userId === expected.userId
+      && quote.cartFingerprint === expected.cartFingerprint
+      && quote.locationId === expected.locationId && quote.taxConfigurationId === expected.taxConfigurationId
+      && quote.taxRate === expected.taxRate && quote.taxableBaseCents === expected.taxableBaseCents
+      && quote.taxCents === expected.taxCents;
+  } catch { return false; }
 }
 
 export async function requireVerifiedCheckoutConversion(input: { tenantId: number; userId: number; checkoutConversionToken?: unknown; requestedItems: CartLineInputType[]; legalDisclaimerAccepted?: boolean; finalConfirmationAt?: unknown; snapshot?: unknown }): Promise<{ lines: NormalizedCartLine[]; totals: ReturnType<typeof computeCheckoutTotals>; conversionExpiresAt: Date; snapshot: unknown }> {

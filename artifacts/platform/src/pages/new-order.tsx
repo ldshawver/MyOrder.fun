@@ -90,6 +90,7 @@ type CheckoutQuote = {
   tipAmount: number;
   finalAmountDue: number;
   tenderDue: number;
+  checkoutTaxQuoteToken?: string;
 };
 
 const FINAL_SALE_TEXT = "All sales are final. I confirm the item list, quantities, pricing, fees, and fulfillment instructions before payment.";
@@ -328,6 +329,7 @@ export default function NewOrder() {
         confirmedAt: conversionPreview.confirmation.confirmedAt,
         legalDisclaimerText: conversionPreview.confirmation.legalDisclaimerText,
         paymentMethod,
+        checkoutTaxQuoteToken: checkoutQuote.checkoutTaxQuoteToken,
         customerCreditAmount: checkoutQuote.appliedCustomerCredit,
         tipAmount,
         tipPercent: tipMode === "custom" || tipMode === "none" ? undefined : Number(tipMode),
@@ -556,7 +558,7 @@ export default function NewOrder() {
                 )}
                 <div className="flex justify-between font-bold text-lg pt-2 border-t border-border/40">
                   <span>Total</span>
-                  <span className="font-mono" data-testid="text-total">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating quote…"}</span>
+                  <span className="font-mono" data-testid="text-total">{checkoutQuote ? `$${checkoutQuote.finalAmountDue.toFixed(2)}` : "Updating quote…"}</span>
                 </div>
               </div>
             </div>
@@ -786,7 +788,7 @@ export default function NewOrder() {
                       <label className="flex items-center gap-2 text-sm">
                         <input type="checkbox" checked={useCustomerCredit} onChange={event => {
                           setUseCustomerCredit(event.target.checked);
-                          if (event.target.checked && !customerCreditAmount) setCustomerCreditAmount(Math.min(checkoutQuote?.availableCustomerCredit ?? 0, checkoutQuote?.merchandiseSubtotal ?? 0).toFixed(2));
+                          if (event.target.checked && !customerCreditAmount) setCustomerCreditAmount(Math.min(checkoutQuote?.availableCustomerCredit ?? 0, checkoutQuote?.finalAmountDue ?? 0).toFixed(2));
                         }} data-testid="checkbox-use-customer-credit" />
                         Apply Customer Credit
                       </label>
@@ -794,7 +796,7 @@ export default function NewOrder() {
                     {useCustomerCredit && selectedPaymentMethod !== "customer_credit" && (
                       <Input type="number" min="0" step="0.01" value={customerCreditAmount} onChange={event => setCustomerCreditAmount(event.target.value)} aria-label="Customer Credit amount" data-testid="input-customer-credit-amount" />
                     )}
-                    <div className="flex justify-between text-xs"><span>Taxable PayPal merchandise</span><span className="font-mono" data-testid="text-taxable-digital-base">${(checkoutQuote?.taxableDigitalBase ?? 0).toFixed(2)}</span></div>
+                    <div className="flex justify-between text-xs"><span>Taxable merchandise base</span><span className="font-mono" data-testid="text-taxable-digital-base">${(checkoutQuote?.taxableDigitalBase ?? 0).toFixed(2)}</span></div>
                     <div className="flex justify-between text-xs"><span>Customer tax</span><span className="font-mono" data-testid="text-customer-tax">${(checkoutQuote?.customerTax ?? 0).toFixed(2)}</span></div>
                     <div className="flex justify-between text-sm font-semibold"><span>Amount due by selected tender</span><span className="font-mono" data-testid="text-tender-due">{checkoutQuote ? `$${checkoutQuote.tenderDue.toFixed(2)}` : "Updating…"}</span></div>
                     {isQuotingCheckout && <p className="text-xs text-muted-foreground">Updating checkout quote…</p>}

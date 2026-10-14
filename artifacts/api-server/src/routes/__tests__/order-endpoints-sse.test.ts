@@ -72,6 +72,15 @@ vi.mock("../../lib/auth", () => ({
 }));
 
 vi.mock("../../lib/singleTenant", () => ({ getHouseTenantId: async () => 1 }));
+vi.mock("../../payments/customerCredit", () => ({
+  CustomerCreditError: class CustomerCreditError extends Error {
+    constructor(public status: number, public code: string, message: string) { super(message); }
+  },
+  getCustomerCreditBalance: vi.fn(async () => ({ balance: 0, reserved: 0, available: 0 })),
+  reserveCustomerCredit: vi.fn(async () => ({ appliedCents: 0 })),
+  consumeCustomerCredit: vi.fn(async () => undefined),
+  releaseCustomerCredit: vi.fn(async () => undefined),
+}));
 const uberQuoteCalls: Array<{ manifestItems: unknown[] }> = [];
 vi.mock("../../lib/uberDirect", () => {
   class UberDirectConfigError extends Error {}
@@ -157,7 +166,7 @@ vi.mock("../../lib/checkoutNormalizer", async () => {
       const tax = parseFloat((subtotal * 0.08).toFixed(2));
       return { subtotal, tax, total: subtotal + tax, taxRate: 0.08, taxMode: "added" };
     },
-    getCheckoutTaxSettings: async () => ({ taxRate: 0.08, taxMode: "added" }),
+    getCheckoutTaxSettings: async () => ({ taxRate: 0.08, taxMode: "added", taxJurisdiction: "Synthetic test", taxConfigurationId: 1 }),
     buildMerchantPayloadLines: () => [],
     buildReceiptLines: () => [],
   };
@@ -170,9 +179,9 @@ vi.mock("../../lib/checkoutConversionGate", async () => {
   const actual = await vi.importActual<typeof import("../../lib/checkoutConversionGate")>("../../lib/checkoutConversionGate");
   return {
     ...actual,
-    requireVerifiedCheckoutConversion: vi.fn(async (input: { checkoutConversionToken?: unknown; snapshot?: unknown }) => {
+    requireVerifiedCheckoutConversion: vi.fn(async (input: { checkoutConversionToken?: unknown; snapshot?: unknown; requestedItems: Array<{ catalogItemId: number; quantity: number }> }) => {
       if (!input.checkoutConversionToken || !input.snapshot) throw new actual.CheckoutConversionRequiredError();
-      const lines = await import("../../lib/checkoutNormalizer").then((m) => m.normalizeCheckoutCart([]));
+      const lines = await import("../../lib/checkoutNormalizer").then((m) => m.normalizeCheckoutCart(input.requestedItems));
       const totals = await import("../../lib/checkoutNormalizer").then((m) => m.computeCheckoutTotals(lines));
       return { lines, totals, conversionExpiresAt: new Date(Date.now() + 15 * 60_000), snapshot: input.snapshot };
     }),
@@ -378,10 +387,14 @@ async function convertedCheckoutPayload(app = buildApp()) {
     .post("/api/cart/convert")
     .send({ items: convertedItems, confirmation: checkoutConfirmation });
   expect(converted.status).toBe(200);
+  const quote = await supertest(app)
+    .post("/api/checkout/quote")
+    .send({ items: convertedItems, paymentMethod: "cash" });
+  expect(quote.status, quote.text).toBe(200);
   const { conversionToken, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
   return {
     items: convertedItems,
-    checkoutConfirmation,
+    checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken },
     checkoutConversionToken: conversionToken,
     checkoutConversionSnapshot,
   };
@@ -435,6 +448,15 @@ beforeEach(() => {
 });
 
 describe("checkout conversion enforcement on order/provider API routes", () => {
+  it("rejects client-selected fulfillment locations on order creation", async () => {
+    mockActor = dbState.users[0]!;
+    const app = buildApp();
+    const payload = await convertedCheckoutPayload(app);
+    const response = await supertest(app).post("/api/orders").send({ ...payload, locationId: 999 });
+    expect(response.status).toBe(400);
+    expect(dbState.orders).toHaveLength(0);
+  });
+
   it("keeps customer order history scoped to the authenticated tenant and customer despite modified IDs", async () => {
     mockActor = dbState.users[0]!;
     dbState.orders.push(
@@ -525,6 +547,8 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
 
     expect(converted.status).toBe(200);
     expect(converted.body.conversionToken).toEqual(expect.any(String));
+    const quote = await supertest(app).post("/api/checkout/quote").send({ items: convertedItems, paymentMethod: "cash" });
+    expect(quote.status, quote.text).toBe(200);
 
     const { conversionToken, checkoutConversionToken, conversionExpiresAt, snapshotHash, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
     const res = await supertest(app)
@@ -537,7 +561,7 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
         selectedPaymentMethod: "cash",
         checkoutConversionToken: conversionToken,
         checkoutConversionSnapshot,
-        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken },
       });
 
     expect([200, 201]).toContain(res.status);
@@ -552,6 +576,8 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
   it("POST /api/cart/convert accepts catalogItemId 440 and POST /api/orders creates Cash order with safe merchant SKU", async () => {
     mockActor = dbState.users[0]!;
     const app = buildApp();
+    dbState.catalog.push({ id: 440, name: "Catalog 440", price: "10.00", isAvailable: true, tenantId: 1 });
+    dbState.inventoryBalances.push({ id: 61, tenantId: 1, productId: 440, locationId: 50, quantityOnHand: 10, inventoryKind: "sellable_catalog", isSellable: true, quarantinedAt: null });
     const converted = await supertest(app)
       .post("/api/cart/convert")
       .send({ items: alavontShapedSkuRegressionItems, confirmation: checkoutConfirmation });
@@ -559,6 +585,8 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
     expect(converted.status).toBe(200);
     expect(converted.body.cartSnapshot[0].merchantSku).toBe("LC-440");
     expect(converted.body.cartSnapshot[0].merchantSku).not.toMatch(/ALV|ALAVONT/i);
+    const quote = await supertest(app).post("/api/checkout/quote").send({ items: alavontShapedSkuRegressionItems, paymentMethod: "cash" });
+    expect(quote.status, quote.text).toBe(200);
 
     const { conversionToken, checkoutConversionToken, conversionExpiresAt, snapshotHash, ...checkoutConversionSnapshot } = converted.body as Record<string, unknown> & { conversionToken: string };
     const order = await supertest(app)
@@ -571,10 +599,10 @@ describe("checkout conversion enforcement on order/provider API routes", () => {
         selectedPaymentMethod: "cash",
         checkoutConversionToken: conversionToken,
         checkoutConversionSnapshot,
-        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash" },
+        checkoutConfirmation: { ...checkoutConfirmation, paymentMethod: "cash", checkoutTaxQuoteToken: quote.body.checkoutTaxQuoteToken },
       });
 
-    expect([200, 201]).toContain(order.status);
+    expect([200, 201], order.text).toContain(order.status);
     expect(dbState.orders).toHaveLength(1);
     expect(dbState.orders[0]).toEqual(expect.objectContaining({ paymentMethod: "cash", paymentStatus: "unpaid" }));
     expect(checkoutConversionToken).toEqual(expect.any(String));
