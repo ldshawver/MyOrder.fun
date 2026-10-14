@@ -20,7 +20,7 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const ownerId = "user_configured_owner_for_pg_test";
     process.env.MYORDER_OWNER_CLERK_ID = ownerId;
     const database = await import("@workspace/db");
-    const { db, usersTable, tenantsTable, auditLogsTable, notificationsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, csrBoxesTable, pool } = database;
+    const { db, usersTable, tenantsTable, auditLogsTable, notificationsTable, catalogItemsTable, inventoryLocationsTable, inventoryBalancesTable, pool } = database;
     const { eq, and } = await import("drizzle-orm");
     // The migration rehearsal intentionally stops at the production 0067
     // boundary and therefore does not create later inventory objects. Build
@@ -111,6 +111,8 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
     const rollbackTarget = await db.insert(usersTable).values({ clerkId: rollbackId, email: `${rollbackId}@test.invalid`, role: "user", status: "pending", tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
     const syncFailureId = `${subjectId}_sync_failure`;
     const syncFailureTarget = await db.insert(usersTable).values({ clerkId: syncFailureId, email: `${syncFailureId}@test.invalid`, role: "user", status: "pending", tenantId: tenant.id, isActive: true }).returning({ id: usersTable.id });
+    const crossTenantId = `${subjectId}_cross_tenant`;
+    const crossTenantTarget = await db.insert(usersTable).values({ clerkId: crossTenantId, email: `${crossTenantId}@test.invalid`, role: "user", status: "pending", tenantId: foreignTenant.id, isActive: true }).returning({ id: usersTable.id });
     const ownProduct = (await pool.query(`INSERT INTO public.catalog_items(tenant_id,name,category,sku,price,is_available,metadata) VALUES ($1,'P0 own fixture product','test','P0-OWN',1,true,'{}') RETURNING id`, [tenant.id])).rows[0] as { id: number };
     const foreignProduct = (await pool.query(`INSERT INTO public.catalog_items(tenant_id,name,category,sku,price,is_available,metadata) VALUES ($1,'P0 foreign fixture product','test','P0-FOREIGN',1,true,'{}') RETURNING id`, [foreignTenant.id])).rows[0] as { id: number };
     const [ownLocationOne] = await db.insert(inventoryLocationsTable).values({ tenantId: tenant.id, type: "backstock", name: "P0 location one" }).returning({ id: inventoryLocationsTable.id });
@@ -213,6 +215,53 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       expect(approvalAudit).toEqual(expect.arrayContaining([
         expect.objectContaining({ action: "APPROVE_USER", actorId: owner[0].id, resourceType: "user", resourceId: String(subject[0].id) }),
       ]));
+
+      // Global administrators have platform-wide authority. Their approval
+      // audit records the destination tenant, and replay is idempotent.
+      const crossTenantApproval = await supertest(app).patch(`/api/admin/users/${crossTenantTarget[0].id}/approval`).send({ approve: true, role: "user", tenantId: foreignTenant.id });
+      expect(crossTenantApproval.status).toBe(200);
+      const [crossTenantApproved] = await db.select().from(usersTable).where(eq(usersTable.id, crossTenantTarget[0].id));
+      expect(crossTenantApproved).toMatchObject({ status: "approved", approvedByClerkId: ownerId, tenantId: foreignTenant.id });
+      expect(crossTenantApproved.approvedAt).toBeInstanceOf(Date);
+      const crossTenantReplay = await supertest(app).patch(`/api/admin/users/${crossTenantTarget[0].id}/approval`).send({ approve: true, role: "user", tenantId: foreignTenant.id });
+      expect(crossTenantReplay.status).toBe(200);
+      const [crossTenantAfterReplay] = await db.select().from(usersTable).where(eq(usersTable.id, crossTenantTarget[0].id));
+      expect(crossTenantAfterReplay.approvedAt).toEqual(crossTenantApproved.approvedAt);
+      const crossTenantAudit = await db.select().from(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(crossTenantTarget[0].id))));
+      expect(crossTenantAudit.filter((row) => row.action === "APPROVE_USER")).toHaveLength(1);
+      expect(crossTenantAudit[0]).toMatchObject({ tenantId: foreignTenant.id, action: "APPROVE_USER" });
+
+      const selfApproval = await supertest(app).patch(`/api/admin/users/${owner[0].id}/approval`).send({ approve: true, tenantId: tenant.id });
+      expect(selfApproval.status).toBe(404);
+      expect(selfApproval.body.code).toBe("APPROVAL_TARGET_UNAVAILABLE");
+      const [ownerAfterSelfApproval] = await db.select().from(usersTable).where(eq(usersTable.id, owner[0].id));
+      expect(ownerAfterSelfApproval).toMatchObject({ status: "approved", approvedByClerkId: null, approvedAt: null });
+      expect(await db.select().from(auditLogsTable).where(eq(auditLogsTable.resourceId, String(owner[0].id)))).toHaveLength(0);
+
+      // The same route enforces destination scope for tenant administrators,
+      // even when the caller supplies another valid tenant ID.
+      process.env.MYORDER_OWNER_CLERK_ID = adminId;
+      clerkState.userId = adminId;
+      clerkState.sessionClaims = { fva: [1, -1] };
+      const scopedTransfer = await supertest(app).patch(`/api/admin/users/${rollbackTarget[0].id}/approval`).send({ approve: true, tenantId: foreignTenant.id });
+      expect(scopedTransfer.status).toBe(403);
+      expect(scopedTransfer.body.code).toBe("TENANT_SCOPE_REQUIRED");
+      const scopedForeignTarget = await supertest(app).patch(`/api/admin/users/${crossTenantTarget[0].id}/approval`).send({ approve: true, tenantId: foreignTenant.id });
+      expect(scopedForeignTarget.status).toBe(404);
+      expect(scopedForeignTarget.body.code).toBe("APPROVAL_TARGET_UNAVAILABLE");
+      const [untransferred] = await db.select().from(usersTable).where(eq(usersTable.id, rollbackTarget[0].id));
+      expect(untransferred).toMatchObject({ status: "pending", tenantId: tenant.id, approvedByClerkId: null, approvedAt: null });
+      expect(await db.select().from(auditLogsTable).where(eq(auditLogsTable.resourceId, String(rollbackTarget[0].id)))).toHaveLength(0);
+      process.env.MYORDER_OWNER_CLERK_ID = ownerId;
+      clerkState.userId = ownerId;
+
+      const invalidTenant = await supertest(app).patch(`/api/admin/users/${rollbackTarget[0].id}/approval`).send({ approve: true, tenantId: 2147483647 });
+      expect(invalidTenant.status).toBe(404);
+      expect(invalidTenant.body.code).toBe("APPROVAL_TENANT_UNAVAILABLE");
+      const [invalidTenantTarget] = await db.select().from(usersTable).where(eq(usersTable.id, rollbackTarget[0].id));
+      expect(invalidTenantTarget).toMatchObject({ status: "pending", tenantId: tenant.id, approvedByClerkId: null, approvedAt: null });
+      expect(await db.select().from(auditLogsTable).where(eq(auditLogsTable.resourceId, String(rollbackTarget[0].id)))).toHaveLength(0);
+
       // Simulate the supported Clerk re-verification path: only the request
       // retried with fresh server-verified claims reaches persistence.
       expect(result.status).toBe(200);
@@ -274,22 +323,28 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       await db.delete(auditLogsTable).where(and(eq(auditLogsTable.actorId, owner[0].id), eq(auditLogsTable.resourceId, String(subject[0].id))));
       await db.delete(auditLogsTable).where(eq(auditLogsTable.resourceId, String(syncFailureTarget[0].id)));
       await db.delete(auditLogsTable).where(eq(auditLogsTable.resourceId, String(rollbackTarget[0].id)));
+      await db.delete(auditLogsTable).where(eq(auditLogsTable.resourceId, String(crossTenantTarget[0].id)));
       await db.delete(notificationsTable).where(eq(notificationsTable.userId, syncFailureTarget[0].id));
-      await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.tenantId, tenant.id));
-      await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.tenantId, foreignTenant.id));
-      await db.delete(catalogItemsTable).where(eq(catalogItemsTable.tenantId, tenant.id));
-      await db.delete(catalogItemsTable).where(eq(catalogItemsTable.tenantId, foreignTenant.id));
-      await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.tenantId, tenant.id));
-      await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.tenantId, foreignTenant.id));
-      await db.delete(csrBoxesTable).where(eq(csrBoxesTable.tenantId, tenant.id));
-      await db.delete(csrBoxesTable).where(eq(csrBoxesTable.tenantId, foreignTenant.id));
+      await db.delete(notificationsTable).where(eq(notificationsTable.userId, crossTenantTarget[0].id));
+      await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.productId, ownProduct.id));
+      await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.productId, foreignProduct.id));
+      await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, inventory_item_id) IN (SELECT tenant_id, id FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4)))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      await pool.query("DELETE FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, ownProduct.id));
+      await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, foreignProduct.id));
+      await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.id, ownLocationOne.id));
+      await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.id, ownLocationTwo.id));
+      await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.id, foreignLocation.id));
       await db.delete(usersTable).where(eq(usersTable.id, decoy[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, rollbackTarget[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, syncFailureTarget[0].id));
+      await db.delete(usersTable).where(eq(usersTable.id, crossTenantTarget[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, supervisor[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, admin[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, subject[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, owner[0].id));
+      await pool.query("DELETE FROM public.catalogue_products WHERE (tenant_id, name) IN (($1, $2), ($3, $4))", [tenant.id, "P0 own fixture product", foreignTenant.id, "P0 foreign fixture product"]);
       await db.delete(tenantsTable).where(eq(tenantsTable.id, foreignTenant.id));
       await pool.end();
     }

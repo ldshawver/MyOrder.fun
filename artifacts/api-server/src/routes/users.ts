@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { and, eq, ne, sql } from "drizzle-orm";
-import { db, usersTable, notificationsTable, onboardingRequestsTable, auditLogsTable } from "@workspace/db";
+import { db, usersTable, tenantsTable, notificationsTable, onboardingRequestsTable, auditLogsTable } from "@workspace/db";
 import {
   GetCurrentUserResponse,
   ListUsersQueryParams,
@@ -587,6 +587,23 @@ router.patch("/admin/users/:id/approval", requireAccountOwner, requireRecentOwne
     // Keep nonexistent and out-of-scope targets indistinguishable to callers.
     res.status(404).json({ error: "Approval target unavailable", code: "APPROVAL_TARGET_UNAVAILABLE" });
     return;
+  }
+
+  // A tenant-scoped administrator may manage users only within the actor's
+  // tenant. An explicit destination must not turn that authority into a
+  // cross-tenant transfer.
+  if (body.data.approve && body.data.tenantId !== undefined) {
+    if (normalizeRole(actor.role) !== "global_admin" && body.data.tenantId !== actor.tenantId) {
+      res.status(403).json({ error: "Tenant-scoped administrator cannot change the approval tenant", code: "TENANT_SCOPE_REQUIRED" });
+      return;
+    }
+    if (body.data.tenantId !== null) {
+      const [destination] = await db.select({ id: tenantsTable.id }).from(tenantsTable).where(eq(tenantsTable.id, body.data.tenantId)).limit(1);
+      if (!destination) {
+        res.status(404).json({ error: "Approval tenant unavailable", code: "APPROVAL_TENANT_UNAVAILABLE" });
+        return;
+      }
+    }
   }
 
   const newStatus: "approved" | "rejected" = body.data.approve ? "approved" : "rejected";
