@@ -37,11 +37,15 @@ describe("PayPal refund durability regressions", () => {
     expect(webhook).toContain("capture_refunded_without_refund_identity");
   });
 
-  it("retains the tender-specific safeguards for credit, cash, partials, and final-cent allocation", () => {
+  it("retains proportional tender allocation and cumulative line-level cents for returns", () => {
     const returns = readFileSync(resolve(__dirname, "../../routes/returns.ts"), "utf8");
+    const accounting = readFileSync(resolve(__dirname, "../../lib/refundAccounting.ts"), "utf8");
     expect(returns).toContain("restoreCustomerCredit");
     expect(returns).toContain("cash_refund");
-    expect(returns).toContain("roundingOverage");
+    expect(returns).toContain("allocateProportionalRefund");
+    expect(returns).toContain("allocateCumulativeQuantityCents");
     expect(returns).toContain("return-movement:");
+    expect(accounting).toContain("Largest-remainder");
+    expect(accounting).toContain("Unsupported original tender combination");
   });
 });

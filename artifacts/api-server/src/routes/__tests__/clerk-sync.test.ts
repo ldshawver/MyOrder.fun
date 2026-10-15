@@ -222,6 +222,9 @@ describe("PATCH /api/admin/users/:id/approval", () => {
     seedAdmin();
     seedPending(2, "pending-clerk-id");
     process.env.MYORDER_OWNER_CLERK_ID = "different-owner";
+    // Keep the actor approved under the configured policy so this assertion
+    // reaches the exact-subject owner check rather than failing provenance.
+    dbState.users[0]!.approvedByClerkId = "different-owner";
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/2/approval")
@@ -392,19 +395,17 @@ describe("GET /api/admin/users/pending", () => {
 });
 
 describe("Admin route aliases", () => {
-  it("PATCH /api/admin/users/:id/status updates DB and Clerk", async () => {
+  it("PATCH /api/admin/users/:id/status cannot approve outside the owner approval endpoint", async () => {
     seedAdmin();
     seedPending(20, "alias-status-clerk-id");
     const app = buildApp(usersRouter);
     const res = await supertest(app)
       .patch("/api/admin/users/20/status")
       .send({ status: "approved" });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("approved");
-    expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
-      "alias-status-clerk-id",
-      { publicMetadata: expect.objectContaining({ status: "approved" }) },
-    );
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("USE_OWNER_APPROVAL_ENDPOINT");
+    expect(dbState.users.find((u) => u.id === 20)?.status).toBe("pending");
+    expect(clerkClient.users.updateUserMetadata).not.toHaveBeenCalled();
   });
 
   it("PATCH /api/admin/users/:id/role rejects CSRs with 403", async () => {

@@ -460,6 +460,10 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
     res.status(400).json({ error: body.error.message });
     return;
   }
+  if (body.data.status === "approved") {
+    res.status(400).json({ error: "Use the owner approval endpoint to approve accounts", code: "USE_OWNER_APPROVAL_ENDPOINT" });
+    return;
+  }
 
   const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
   if (!target) {
@@ -473,11 +477,9 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
 
   const previousStatus = target.status;
   const newStatus = body.data.status;
-  if (newStatus === "approved" && !isConfiguredAccountOwner(actor)) { res.status(403).json({ error: "Forbidden: account owner approval required" }); return; }
-
   const [updated] = await db
     .update(usersTable)
-    .set(newStatus === "approved" ? { status: newStatus, approvedByClerkId: actor.clerkId, approvedAt: new Date() } : { status: newStatus, approvedByClerkId: null, approvedAt: null })
+    .set({ status: newStatus, approvedByClerkId: null, approvedAt: null })
     .where(eq(usersTable.id, id))
     .returning();
 
@@ -496,23 +498,6 @@ router.patch(["/users/:id/status", "/admin/users/:id/status"], requireAccountOwn
     metadata: { newStatus, previousStatus },
     ipAddress: req.ip,
   });
-
-  if (newStatus === "approved" && previousStatus !== "approved") {
-    // Write in-app notification (non-critical — don't fail the response)
-    try {
-      await db.insert(notificationsTable).values({
-        userId: updated.id,
-        type: "account_approved",
-        title: "Account Approved",
-        message: "Your account has been approved. You can now sign in and start placing orders.",
-        isRead: false,
-        resourceType: "user",
-        resourceId: updated.id,
-      });
-    } catch (err) {
-      logger.error({ err, userId: updated.id }, "Failed to write account approval notification");
-    }
-  }
 
   res.json({
     id: updated.id,

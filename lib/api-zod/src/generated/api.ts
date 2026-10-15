@@ -752,6 +752,7 @@ export const CreateOrderBody = zod.object({
   "confirmedAt": zod.string().optional(),
   "legalDisclaimerText": zod.string().min(1),
   "paymentMethod": zod.enum(['cash', 'paypal', 'paypal_card', 'customer_credit']).optional(),
+  "checkoutTaxQuoteToken": zod.string().min(1).optional(),
   "customerCreditAmount": zod.number().finite().nonnegative().refine(value => /^\d+(?:\.\d{1,2})?$/.test(String(value)), "Customer Credit must use whole cents").optional(),
   "tipAmount": zod.number().nullish(),
   "tipPercent": zod.number().nullish()

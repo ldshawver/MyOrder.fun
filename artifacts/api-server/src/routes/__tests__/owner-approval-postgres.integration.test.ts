@@ -171,6 +171,9 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       await db.update(usersTable).set({ status: "pending" }).where(eq(usersTable.id, owner[0].id));
       expect((await supertest(protectedApp).get("/api/protected-fixture")).status).toBe(403);
       expect((await supertest(shiftApp).get("/api/shift-queue/status")).status).toBe(403);
+      const pendingOwnerMutation = await supertest(app).patch(`/api/admin/users/${rollbackTarget[0].id}/approval`).send({ approve: true, tenantId: tenant.id });
+      expect(pendingOwnerMutation.status).toBe(403);
+      expect(pendingOwnerMutation.body.code).toBe("ACCOUNT_PENDING_APPROVAL");
       await db.update(usersTable).set({ status: "approved" }).where(eq(usersTable.id, owner[0].id));
 
       clerkState.userId = subjectId;
@@ -203,6 +206,11 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       clerkState.sessionClaims = { fva: [1, -1] };
       const result = await supertest(app).patch(`/api/admin/users/${subject[0].id}/approval`).send({ approve: true, role: "csr", tenantId: tenant.id });
       expect(result.status).toBe(200);
+      const legacyApproval = await supertest(app).patch(`/api/users/${rollbackTarget[0].id}/status`).send({ status: "approved" });
+      expect(legacyApproval.status).toBe(400);
+      expect(legacyApproval.body.code).toBe("USE_OWNER_APPROVAL_ENDPOINT");
+      const [legacyTarget] = await db.select().from(usersTable).where(eq(usersTable.id, rollbackTarget[0].id));
+      expect(legacyTarget).toMatchObject({ status: "pending", approvedByClerkId: null, approvedAt: null });
       const [approved] = await db.select().from(usersTable).where(eq(usersTable.id, subject[0].id));
       expect(approved).toMatchObject({ status: "approved", approvedByClerkId: ownerId, tenantId: tenant.id });
       expect(approved.approvedAt).toBeInstanceOf(Date);

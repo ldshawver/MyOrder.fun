@@ -49,30 +49,23 @@ export function evaluateAccountApproval(req: Request, user: {
   return { allowed: true, reason: "valid_provenance" };
 }
 
-let usersSchemaEnsured = false;
+let usersSchemaVerified = false;
 
-async function ensureUsersAuthSchema(): Promise<void> {
-  if (usersSchemaEnsured) return;
+/**
+ * Authentication must never mutate schema during a request. Check the legacy
+ * auth columns read-only; deployments with an incomplete users schema must
+ * apply the reviewed migration before serving authenticated traffic.
+ */
+async function verifyUsersAuthSchema(): Promise<void> {
+  if (usersSchemaVerified) return;
 
-  const statements = [
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_enabled" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_secret" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "mfa_backup_codes" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "first_name" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "last_name" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "contact_phone" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "avatar_url" text`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'pending'`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_active" boolean NOT NULL DEFAULT true`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "is_default_tech" boolean NOT NULL DEFAULT false`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now() NOT NULL`,
-    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now() NOT NULL`,
-  ];
-
-  for (const statement of statements) {
-    await db.execute(statement);
-  }
-  usersSchemaEnsured = true;
+  await db.execute(sql`
+    SELECT mfa_enabled, mfa_secret, mfa_backup_codes, first_name, last_name,
+      contact_phone, avatar_url, status, is_active, is_default_tech,
+      created_at, updated_at
+    FROM users LIMIT 0
+  `);
+  usersSchemaVerified = true;
 }
 
 declare global {
@@ -88,7 +81,7 @@ export async function getOrCreateDbUser(req: Request): Promise<typeof usersTable
   const auth = getAuth(req);
   if (!auth?.userId) return null;
 
-  await ensureUsersAuthSchema();
+  await verifyUsersAuthSchema();
   await ensureProvisioningSchema();
 
   const clerkId = auth.userId;
@@ -217,17 +210,19 @@ export function requireDbUser(req: Request, res: Response, next: NextFunction): 
 
 export function requireRole(...roles: Role[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const user = req.dbUser;
-    if (!user) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    const allowed = roles.map(normalizeRole);
-    if (!hasRoleValue(user.role, allowed)) {
-      res.status(403).json({ error: "Forbidden: insufficient role" });
-      return;
-    }
-    next();
+    requireApproved(req, res, () => {
+      const user = req.dbUser;
+      if (!user) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const allowed = roles.map(normalizeRole);
+      if (!hasRoleValue(user.role, allowed)) {
+        res.status(403).json({ error: "Forbidden: insufficient role" });
+        return;
+      }
+      next();
+    });
   };
 }
 
@@ -266,11 +261,13 @@ export function requireAccountOwner(req: Request, res: Response, next: NextFunct
     res.status(401).json({ error: "Authentication required", code: "AUTHENTICATION_REQUIRED" });
     return;
   }
-  if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
-    res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
-    return;
-  }
-  next();
+  requireApproved(req, res, () => {
+    if (!isAuthenticatedConfiguredAccountOwner(req, req.dbUser)) {
+      res.status(403).json({ error: "Configured account owner authorization required", code: "OWNER_AUTH_REQUIRED" });
+      return;
+    }
+    next();
+  });
 }
 
 export function requireRecentOwnerAuth(req: Request, res: Response, next: NextFunction): void {

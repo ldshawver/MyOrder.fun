@@ -4,7 +4,7 @@ import { db, ordersTable, orderTaxSnapshotsTable, inventoryReservationsTable, pa
 import type { PaymentProvider, PayPalTransmissionHeaders } from "./provider";
 import type { EnabledPaymentConfig } from "./provider";
 import { PayPalProviderError } from "./paypal";
-import { consumeCustomerCredit, releaseCustomerCredit, restoreCustomerCredit } from "./customerCredit";
+import { consumeCustomerCredit, releaseCustomerCredit } from "./customerCredit";
 import { logger } from "../lib/logger";
 import { releaseInventoryReservationsForOrder } from "../lib/inventoryReservations";
 import { ensurePaidOrderInventoryReserved, PaymentInventoryError, type PaymentTransaction } from "./inventory";
@@ -65,12 +65,31 @@ export class PaymentService {
       )).orderBy(sql`${paymentAttemptsTable.createdAt} DESC`).limit(1);
       if (activeAttempt?.providerOrderId) return { attemptId: activeAttempt.id, providerOrderId: activeAttempt.providerOrderId, status: activeAttempt.state, replayed: true };
 
-      const locationId = Number((order.taxSnapshot as { locationId?: unknown } | null)?.locationId);
-      const settings = await getCheckoutTaxSettings(input.tenantId, Number.isInteger(locationId) && locationId > 0 ? locationId : undefined);
+      const storedTax = order.taxSnapshot as { schemaVersion?: unknown; locationId?: unknown; taxConfigurationId?: unknown; taxRate?: unknown; effectiveTaxRate?: unknown; jurisdiction?: unknown } | null;
+      const locationId = Number(storedTax?.locationId);
+      const storedRate = Number(storedTax?.effectiveTaxRate ?? storedTax?.taxRate);
+      let taxRate: number;
+      let taxConfigurationId: number;
+      let taxJurisdiction: string;
+      if (Number(storedTax?.schemaVersion) >= 3) {
+        taxConfigurationId = Number(storedTax?.taxConfigurationId);
+        taxJurisdiction = typeof storedTax?.jurisdiction === "string" ? storedTax.jurisdiction : "";
+        if (!Number.isSafeInteger(taxConfigurationId) || taxConfigurationId <= 0 || !Number.isFinite(storedRate) || storedRate < 0 || storedRate > 1 || !taxJurisdiction.trim()) {
+          throw new PaymentServiceError(409, "FINANCIAL_SNAPSHOT_MISMATCH", "Order tax snapshot requires reconciliation");
+        }
+        taxRate = storedRate;
+      } else {
+        // Legacy orders without an immutable tax snapshot retain the historical
+        // lookup path. New schemaVersion 3 orders settle from their stored quote.
+        const settings = await getCheckoutTaxSettings(input.tenantId, Number.isInteger(locationId) && locationId > 0 ? locationId : undefined);
+        taxRate = settings.taxRate;
+        taxConfigurationId = settings.taxConfigurationId;
+        taxJurisdiction = settings.taxJurisdiction;
+      }
       const taxableMerchandiseCents = dollarsToCents(order.taxableSubtotal ?? order.subtotal);
       const creditCents = dollarsToCents(order.customerCreditApplied);
       const baseTotalCents = dollarsToCents(order.total) - dollarsToCents(order.tax);
-      const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, nonTaxableFundingCents: creditCents, taxRate: settings.taxRate });
+      const { taxableBaseCents, taxCents } = computeTenderTaxCents({ taxableMerchandiseCents, taxRate });
       const totalCents = baseTotalCents + taxCents;
       const remainingCents = totalCents - creditCents;
       if (order.financialFinalizedAt && (dollarsToCents(order.tax) !== taxCents || dollarsToCents(order.total) !== totalCents || dollarsToCents(order.remainingTenderAmount) !== remainingCents)) {
@@ -85,11 +104,15 @@ export class PaymentService {
         pricingSnapshot: { ...pricingSnapshot, tax: taxCents / 100, customerTax: taxCents / 100, total: totalCents / 100,
           totalBeforeTip: (totalCents - tipCents) / 100 },
       } : checkoutSnapshot;
-      const tenderAllocation = { customerCreditCents: creditCents, paypalMerchandiseCents: taxableBaseCents, paypalTaxCents: taxCents };
-      const taxSnapshot = { ...(order.taxSnapshot as Record<string, unknown> ?? {}), schemaVersion: 3, jurisdiction: settings.taxJurisdiction, taxConfigurationId: settings.taxConfigurationId, effectiveTaxRate: settings.taxRate, taxRate: settings.taxRate, customerTaxableTenderBase: taxableBaseCents / 100, customerTaxCollected: taxCents / 100, taxCalculated: taxCents / 100, taxCollected: taxCents / 100, tenderAllocation, tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, pendingTender: false };
+      const tenderAllocation = { customerCreditCents: creditCents, externalTenderCents: remainingCents, taxableMerchandiseCents: taxableBaseCents, taxCents };
+      const taxSnapshot = { ...(order.taxSnapshot as Record<string, unknown> ?? {}), schemaVersion: 3, jurisdiction: taxJurisdiction, taxConfigurationId, effectiveTaxRate: taxRate, taxRate, taxableMerchandiseBase: taxableBaseCents / 100, customerTaxableTenderBase: taxableBaseCents / 100, customerTaxCollected: taxCents / 100, taxCalculated: taxCents / 100, taxCollected: taxCents / 100, tenderAllocation, tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, pendingTender: false };
       await tx.update(ordersTable).set({ tax: centsToDollars(taxCents), total: centsToDollars(totalCents), remainingTenderAmount: centsToDollars(remainingCents), taxSnapshot, checkoutConversionSnapshot: finalCheckoutSnapshot, financialFinalizedAt: new Date() }).where(and(eq(ordersTable.id, order.id), eq(ordersTable.tenantId, order.tenantId)));
       const grossSalesCents = dollarsToCents(order.grossSubtotal ?? order.subtotal);
-      const snapshotValues = { jurisdiction: settings.taxJurisdiction, locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, taxConfigurationId: settings.taxConfigurationId, grossSales: centsToDollars(grossSalesCents), taxRate: String(settings.taxRate), taxableSubtotal: centsToDollars(taxableBaseCents), nonTaxableSubtotal: centsToDollars(Math.max(0, dollarsToCents(order.subtotal) - taxableBaseCents)), discountAmount: String(order.discountTotal ?? "0.00"), cashDiscountAmount: "0.00", taxCollected: centsToDollars(taxCents), taxCalculated: centsToDollars(taxCents), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", exemptionReason: null, snapshotJson: { customerTaxableTenderBaseCents: taxableBaseCents, customerTaxCollectedCents: taxCents, tenderAllocation, taxConfigurationId: settings.taxConfigurationId } };
+      const taxableSubtotalCents = dollarsToCents(order.taxableSubtotal ?? order.subtotal);
+      const nonTaxableSubtotalCents = order.nonTaxableSubtotal == null
+        ? Math.max(0, dollarsToCents(order.subtotal) - taxableSubtotalCents)
+        : dollarsToCents(order.nonTaxableSubtotal);
+      const snapshotValues = { jurisdiction: taxJurisdiction, locationId: Number.isInteger(locationId) && locationId > 0 ? locationId : null, taxConfigurationId, grossSales: centsToDollars(grossSalesCents), taxRate: String(taxRate), taxableSubtotal: centsToDollars(taxableSubtotalCents), nonTaxableSubtotal: centsToDollars(nonTaxableSubtotalCents), discountAmount: String(order.discountTotal ?? "0.00"), cashDiscountAmount: "0.00", taxCollected: centsToDollars(taxCents), taxCalculated: centsToDollars(taxCents), taxRefunded: "0.00", roundingPolicy: "round_half_away_from_zero_per_order", tender: creditCents > 0 ? "customer_credit+paypal" : "paypal", exemptionReason: null, snapshotJson: { taxableMerchandiseBaseCents: taxableBaseCents, customerTaxableTenderBaseCents: taxableBaseCents, customerTaxCollectedCents: taxCents, tenderAllocation, taxConfigurationId } };
       const [existingSnapshot] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, input.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
       if (existingSnapshot) {
         if (dollarsToCents(existingSnapshot.taxCollected) !== taxCents || dollarsToCents(existingSnapshot.grossSales) !== grossSalesCents || !["paypal", "paypal_card"].includes((existingSnapshot.tender ?? "").replace("customer_credit+", ""))) {
@@ -171,25 +194,41 @@ export class PaymentService {
    * uses its own transaction: callers must never wrap the provider call in a
    * larger local transaction whose rollback would erase the request identity.
    */
-  async prepareRefund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
+  async prepareRefund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string; returnId?: number }) {
     return db.transaction(async tx => this.prepareRefundInTransaction(tx, input));
   }
 
-  async prepareRefundInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
+  async prepareRefundInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string; returnId?: number }) {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${input.tenantId}, ${input.orderId})`);
       const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.tenantId, input.tenantId), eq(ordersTable.id, input.orderId))).limit(1);
       if (!order) throw new PaymentServiceError(404, "ORDER_NOT_FOUND", "Order not found");
+      if (input.idempotencyKey.startsWith("return-paypal:") && input.returnId === undefined) throw new PaymentServiceError(409, "INVALID_RETURN_REFUND", "Return refund identities are reserved for the order return workflow");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(and(eq(paymentAttemptsTable.tenantId, input.tenantId), eq(paymentAttemptsTable.orderId, input.orderId))).orderBy(sql`${paymentAttemptsTable.createdAt} DESC`).limit(1);
       if (!attempt) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
       const [capture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.paymentAttemptId, attempt.id)).limit(1);
       if (!capture) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
-      const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter(row => row.state === "locally_finalized" || row.state === "completed");
-      const refunded = completed.reduce((sum, row) => sum + Number(row.amount), 0); const amount = Number(input.amount ?? (Number(capture.amount) - refunded).toFixed(2));
-      if (!Number.isFinite(amount) || amount <= 0 || refunded + amount > Number(capture.amount)) throw new PaymentServiceError(409, "INVALID_REFUND_AMOUNT", "Refund exceeds captured amount");
       const [existing] = await tx.select().from(paymentRefundsTable).where(and(eq(paymentRefundsTable.tenantId, input.tenantId), eq(paymentRefundsTable.paymentCaptureId, capture.id), eq(paymentRefundsTable.idempotencyKey, input.idempotencyKey))).limit(1);
+      if (existing && input.amount !== undefined && !sameMoney(input.amount, String(existing.amount))) throw new PaymentServiceError(409, "IDEMPOTENCY_CONFLICT", "Refund idempotency key was already used with a different amount");
       if (existing && !existing.providerRequestId) throw new PaymentServiceError(409, "LOST_PROVIDER_IDENTITY", "Historical refund requires reconciliation; provider replay is forbidden");
-      const [row] = existing ? [existing] : await tx.insert(paymentRefundsTable).values({ tenantId: input.tenantId, paymentCaptureId: capture.id, idempotencyKey: input.idempotencyKey, providerRequestId: `refund-${randomUUID()}`, amount: amount.toFixed(2), currency: capture.currency, reason: input.reason.slice(0, 500), actorUserId: input.actorUserId, state: "requested", requestedAt: new Date() }).returning();
-      return { refundRowId: row.id, captureId: capture.providerCaptureId, amount: String(row.amount), currency: row.currency, requestId: row.providerRequestId!, reason: row.reason, state: row.state, providerRefundId: row.providerRefundId, replayed: !!existing };
+      if (existing) return { refundRowId: existing.id, captureId: capture.providerCaptureId, amount: String(existing.amount), currency: existing.currency, requestId: existing.providerRequestId!, reason: existing.reason, state: existing.state, providerRefundId: existing.providerRefundId, replayed: true };
+      const prior = await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id));
+      const reserved = prior.filter(row => row.state === "locally_finalized" || row.state === "completed"
+        || row.state === "requested" || row.state === "pending" || row.state === "provider_succeeded" || row.state === "reconciliation_required")
+        .reduce((sum, row) => sum + dollarsToCents(row.amount), 0);
+      // A split-tender refund must be initiated through the line-based return
+      // flow, which apportions Customer Credit and tax from immutable records.
+      if (dollarsToCents(order.customerCreditApplied) > 0 && input.returnId === undefined) throw new PaymentServiceError(409, "SPLIT_TENDER_RETURN_REQUIRED", "Use the order return workflow to refund a split-tender order");
+      if (input.returnId !== undefined) {
+        if (!Number.isSafeInteger(input.returnId) || input.returnId <= 0 || input.idempotencyKey !== `return-paypal:${input.returnId}`) throw new PaymentServiceError(409, "INVALID_RETURN_REFUND", "Return refund identity is invalid");
+        const linkedReturn = await tx.execute(sql`SELECT id FROM return_transactions WHERE id=${input.returnId} AND tenant_id=${input.tenantId} AND order_id=${input.orderId} AND status='pending' AND tender_type='paypal' LIMIT 1`);
+        if (!(linkedReturn as { rows?: unknown[] }).rows?.length) throw new PaymentServiceError(409, "INVALID_RETURN_REFUND", "PayPal refund is not linked to a pending authorized return");
+      }
+      const remainingCents = dollarsToCents(capture.amount) - reserved;
+      const amountCents = input.amount === undefined ? remainingCents : dollarsToCents(input.amount);
+      if (amountCents <= 0 || amountCents > remainingCents) throw new PaymentServiceError(409, "INVALID_REFUND_AMOUNT", "Refund exceeds the remaining captured amount");
+      const amount = amountCents / 100;
+      const [row] = await tx.insert(paymentRefundsTable).values({ tenantId: input.tenantId, paymentCaptureId: capture.id, idempotencyKey: input.idempotencyKey, providerRequestId: `refund-${randomUUID()}`, amount: amount.toFixed(2), currency: capture.currency, reason: input.reason.slice(0, 500), actorUserId: input.actorUserId, state: "requested", requestedAt: new Date() }).returning();
+      return { refundRowId: row.id, captureId: capture.providerCaptureId, amount: String(row.amount), currency: row.currency, requestId: row.providerRequestId!, reason: row.reason, state: row.state, providerRefundId: row.providerRefundId, replayed: false };
   }
 
   async recordRefundProviderResult(input: { refundRowId: number; refund: { refundId: string; status: string; amount?: { value: string; currency: string } } }) {
@@ -212,39 +251,41 @@ export class PaymentService {
   }
 
   async finalizeRefundInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], refundRowId: number) {
-      const [row] = await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.id, refundRowId)).limit(1);
+      let [row] = await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.id, refundRowId)).limit(1);
       if (!row) throw new PaymentServiceError(404, "REFUND_NOT_FOUND", "Refund intent not found");
       if (row.state === "locally_finalized") return { status: "completed", refundId: row.providerRefundId, replayed: true };
       if (row.state !== "provider_succeeded" || !row.providerRefundId) throw new PaymentServiceError(409, "REFUND_NOT_READY", "Provider refund is not finalized");
       const [capture] = await tx.select().from(paymentCapturesTable).where(eq(paymentCapturesTable.id, row.paymentCaptureId)).limit(1);
       if (!capture) throw new PaymentServiceError(409, "NO_CAPTURE", "No captured PayPal payment exists");
       const [attempt] = await tx.select().from(paymentAttemptsTable).where(eq(paymentAttemptsTable.id, capture.paymentAttemptId)).limit(1);
-      const [order] = attempt ? await tx.select().from(ordersTable).where(and(eq(ordersTable.id, attempt.orderId), eq(ordersTable.tenantId, row.tenantId))).limit(1) : [];
-      if (!attempt || !order) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      if (!attempt) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${row.tenantId}, ${attempt.orderId})`);
+      [row] = await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.id, refundRowId)).for("update").limit(1);
+      if (row.state === "locally_finalized") return { status: "completed", refundId: row.providerRefundId, replayed: true };
+      if (row.state !== "provider_succeeded" || !row.providerRefundId) throw new PaymentServiceError(409, "REFUND_NOT_READY", "Provider refund is not finalized");
+      const [order] = await tx.select().from(ordersTable).where(and(eq(ordersTable.id, attempt.orderId), eq(ordersTable.tenantId, row.tenantId))).limit(1);
+      if (!order) throw new PaymentServiceError(409, "PAYMENT_NOT_READY", "Payment attempt is not ready");
       const completed = (await tx.select().from(paymentRefundsTable).where(eq(paymentRefundsTable.paymentCaptureId, capture.id))).filter(refund => refund.state === "locally_finalized" || refund.state === "completed");
-      const refundedBefore = completed.reduce((sum: number, refund) => sum + Number(refund.amount), 0);
-      const amount = Number(row.amount);
+      const refundedBeforeCents = completed.reduce((sum: number, refund) => sum + dollarsToCents(refund.amount), 0);
+      const amountCents = dollarsToCents(row.amount);
       {
-        const fullProviderRefund = refundedBefore + amount === Number(capture.amount);
-        const creditCents = Math.round(Number(order.customerCreditApplied) * 100);
-        if (fullProviderRefund && creditCents > 0) await restoreCustomerCredit(tx, { tenantId: row.tenantId, customerId: order.customerId, actorUserId: row.actorUserId, orderId: order.id, amountCents: creditCents, paymentRefundId: row.id, idempotencyKey: `restore:refund:${row.id}`, reason: "Original-tender refund restoration" });
-        const fullOrderRefund = fullProviderRefund;
-        const [tax] = await tx.select().from(orderTaxSnapshotsTable).where(and(eq(orderTaxSnapshotsTable.tenantId, row.tenantId), eq(orderTaxSnapshotsTable.orderId, order.id))).limit(1);
-        if (tax) {
-          const priorTaxRefunded = Number(tax.taxRefunded); const orderTotal = Number(order.total);
-          const economicRefund = amount + (fullProviderRefund ? creditCents / 100 : 0);
-          const taxRefund = fullOrderRefund ? Number(tax.taxCollected) : Math.round(Number(tax.taxCollected) * economicRefund / orderTotal * 100) / 100;
-          await tx.update(orderTaxSnapshotsTable).set({ taxRefunded: Math.min(Number(tax.taxCollected), priorTaxRefunded + taxRefund).toFixed(2) }).where(eq(orderTaxSnapshotsTable.id, tax.id));
+        const fullProviderRefund = refundedBeforeCents + amountCents === dollarsToCents(capture.amount);
+        // Return refunds have their own line-level tax and tender allocation
+        // finalizer. Do not duplicate those effects here. Generic provider
+        // refunds are restricted to single-tender PayPal orders above.
+        const linkedReturn = await tx.execute(sql`SELECT id FROM return_transactions WHERE tenant_id=${row.tenantId} AND order_id=${order.id} AND status='pending' AND tender_type='paypal' AND id=${Number(row.idempotencyKey.slice("return-paypal:".length))} LIMIT 1`);
+        const isReturnRefund = row.idempotencyKey.startsWith("return-paypal:") && !!(linkedReturn as { rows?: unknown[] }).rows?.length;
+        if (!isReturnRefund) {
+          await tx.update(paymentCapturesTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentCapturesTable.id, capture.id));
+          await tx.update(paymentAttemptsTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentAttemptsTable.id, attempt.id));
+          await tx.update(ordersTable).set(fullProviderRefund ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, order.id));
         }
-        await tx.update(paymentCapturesTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentCapturesTable.id, capture.id));
-        await tx.update(paymentAttemptsTable).set({ state: fullProviderRefund ? "refunded" : "partially_refunded" }).where(eq(paymentAttemptsTable.id, attempt.id));
-        await tx.update(ordersTable).set(fullOrderRefund ? { paymentStatus: "refunded", status: "refunded" } : { paymentStatus: "partially_refunded" }).where(eq(ordersTable.id, order.id));
       }
       await tx.update(paymentRefundsTable).set({ state: "locally_finalized", locallyFinalizedAt: new Date(), failureClass: null }).where(eq(paymentRefundsTable.id, row.id));
       return { status: "completed", refundId: row.providerRefundId, replayed: false };
   }
 
-  async refund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string }) {
+  async refund(input: { tenantId: number; orderId: number; actorUserId: number; idempotencyKey: string; amount?: string; reason: string; returnId?: number }) {
     const intent = await this.prepareRefund(input);
     if (intent.state === "locally_finalized") return { status: "completed", refundId: intent.providerRefundId, replayed: true };
     if (intent.state === "provider_succeeded") return this.finalizeRefund(intent.refundRowId);

@@ -1,20 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { computeTenderTaxCents, customerTaxTreatment, dollarsToCents, isTaxableDigitalTender } from "../tenderTax";
+import { computeTenderTaxCents, customerTaxTreatment, dollarsToCents, isTaxableTender } from "../tenderTax";
 
 describe("server-side tender tax allocation", () => {
-  it.each(["cash", "customer_credit"]) ("classifies %s as non-tax-added", tender => {
-    expect(customerTaxTreatment(tender)).toBe("non_tax_added");
-    expect(isTaxableDigitalTender(tender)).toBe(false);
+  it("classifies stored-value Customer Credit as payment for taxable merchandise", () => {
+    expect(customerTaxTreatment("customer_credit")).toBe("tax_added");
+    expect(isTaxableTender("customer_credit")).toBe(true);
   });
-  it.each(["paypal", "paypal_card"]) ("classifies %s as taxable digital", tender => expect(isTaxableDigitalTender(tender)).toBe(true));
-  it("charges no tax for fully cash or credit funded taxable merchandise", () => {
-    expect(computeTenderTaxCents({ taxableMerchandiseCents: 10000, nonTaxableFundingCents: 10000, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 0, taxCents: 0 });
+  it.each(["cash", "paypal", "paypal_card"]) ("classifies %s as tax-added", tender => {
+    expect(customerTaxTreatment(tender)).toBe("tax_added");
+    expect(isTaxableTender(tender)).toBe(true);
   });
-  it("taxes only the PayPal-funded portion after credit", () => {
-    expect(computeTenderTaxCents({ taxableMerchandiseCents: 10000, nonTaxableFundingCents: 4000, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 6000, taxCents: 525 });
+  it("keeps the full taxable base when stored value funds the entire purchase", () => {
+    expect(computeTenderTaxCents({ taxableMerchandiseCents: 10000, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 10000, taxCents: 875 });
+  });
+  it("taxes the full taxable merchandise when payment is split with stored value", () => {
+    expect(computeTenderTaxCents({ taxableMerchandiseCents: 10000, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 10000, taxCents: 875 });
   });
   it("rounds once in integer cents", () => {
-    expect(computeTenderTaxCents({ taxableMerchandiseCents: 6, nonTaxableFundingCents: 0, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 6, taxCents: 1 });
+    expect(computeTenderTaxCents({ taxableMerchandiseCents: 6, taxRate: 0.0875 })).toEqual({ taxableBaseCents: 6, taxCents: 1 });
   });
   it("parses monetary values as cents without accepting fractional cents", () => {
     expect(dollarsToCents("100.00")).toBe(10000);
