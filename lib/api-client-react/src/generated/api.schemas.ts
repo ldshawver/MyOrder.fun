@@ -810,6 +810,7 @@ export interface UserProfile {
   tenantName?: string;
   mfaEnabled?: boolean;
   status?: UserProfileStatus;
+  isConfiguredOwner: boolean;
   isActive: boolean;
   contactPhone?: string | null;
   avatarUrl?: string | null;

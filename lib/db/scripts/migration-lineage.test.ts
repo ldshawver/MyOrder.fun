@@ -24,6 +24,16 @@ const staging = [
 ].map((entry, index) => ({ id: index + 1, ...entry }));
 staging[33] = { ...staging[33], hash: historicalStaging0058.hash };
 
+test("production 0067 boundary leaves 0068 and later journal history pending", () => {
+  const boundaryIndex = local.findIndex((entry: { tag: string }) => entry.tag === "0067_print_routes_document_types");
+  const deferredIndex = local.findIndex((entry: { tag: string }) => entry.tag === "0068_print_jobs_document_job_types");
+  assert.equal(boundaryIndex, 41);
+  assert.equal(deferredIndex, boundaryIndex + 1);
+  assert.equal(local.slice(0, deferredIndex).length, 42);
+  assert.equal(local[deferredIndex].tag, "0068_print_jobs_document_job_types");
+  assert.ok(local.length > deferredIndex + 1, "later migration journal entries remain present");
+});
+
 test("exact historical staging lineage and ordered forward continuation", () => {
   const verified = validateAppliedLineage(local, staging);
   assert.equal(verified.historicalStagingInventoryRecognized, true);

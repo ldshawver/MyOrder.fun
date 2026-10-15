@@ -3,7 +3,7 @@
  *
  * Verifies that the new staff roles introduced in stab-02 can:
  *  - pass the requireRole gate on /api/shifts/clock-in
- *  - bypass requireApproved even when status="pending" (staff is implicitly approved)
+ *  - require owner approval provenance before shift access
  *  - get a 200 + { alreadyClockedIn: true } on duplicate clock-in
  *  - cause writeAuditLog to fire on clock-out
  */
@@ -107,7 +107,7 @@ import { db } from "@workspace/db";
 import shiftsRouter from "../shifts";
 
 function makeUser(role: string, status: string = "pending", isActive = true, tenantId: number | null = 1) {
-  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive, tenantId };
+  return { id: 50, clerkId: "csr-clerk-id", email: "csr@example.com", firstName: "Marek", lastName: "C", role, status, isActive, tenantId, approvedByClerkId: status === "approved" ? "configured_owner" : null, approvedAt: status === "approved" ? new Date() : null };
 }
 
 /**
@@ -116,13 +116,15 @@ function makeUser(role: string, status: string = "pending", isActive = true, ten
  *   call 2 = active-shift lookup (clock-in / clock-out)
  *   call 3+ = empty (orders / inventory snapshot lookups)
  */
-function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown }) {
+function configureDb(opts: { user: ReturnType<typeof makeUser> | null; activeShift?: unknown; emptyThirdSelect?: boolean }) {
   let n = 0;
   (db.select as ReturnType<typeof vi.fn>).mockImplementation(() => {
     n++;
     if (n === 1) return makeChain(opts.user ? [opts.user] : []);
     if (n === 2 && opts.activeShift) return makeChain([opts.activeShift]);
-    if (n === 3 && !opts.activeShift) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
+    if (n === 3 && opts.emptyThirdSelect) return makeChain([]);
+    if (n === 4 && opts.emptyThirdSelect) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
+    if (n === 3 && !opts.activeShift && !opts.emptyThirdSelect) return makeChain([{ id: 1, tenantId: 1, slug: "sales-box-1", label: "Sales Box 1", isActive: true }]);
     return makeChain([]);
   });
 }
@@ -143,22 +145,21 @@ describe("Shifts: CSR / sales_rep / lab_tech can operate", () => {
     vi.clearAllMocks();
     auditLogInsertSpy.mockClear();
     mockUserId = "csr-clerk-id";
+    process.env.MYORDER_OWNER_CLERK_ID = "configured_owner";
   });
 
   for (const role of ["customer_service_rep", "Customer Service Rep", "CSR", "service_rep", "sales_rep", "lab_tech", "lab_technician", "global_admin"] as const) {
-    it(`role=${role} (status=pending) is allowed past requireApproved + requireRole on clock-in`, async () => {
+    it(`role=${role} (status=pending) is blocked by requireApproved on clock-in`, async () => {
       configureDb({ user: makeUser(role, "pending") });
       const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
-      // Must NOT be 403 (approval gate) and must NOT be 403/forbidden role gate
-      expect(res.status).not.toBe(403);
-      expect([200, 201]).toContain(res.status);
-      expect(res.body.shift).toBeDefined();
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/pending approval/i);
     });
   }
 
   it("approved CSR clock-in returns 201 with shift", async () => {
-    configureDb({ user: makeUser("customer_service_rep", "approved") });
-    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ setup: { wifiReady: true, printerReady: true, locationReady: true } });
+    configureDb({ user: makeUser("customer_service_rep", "approved"), emptyThirdSelect: true });
+    const res = await supertest(buildApp()).post("/api/shifts/clock-in").send({ boxAssignmentId: "sales-box-1", setup: { wifiReady: true, printerReady: true, locationReady: true } });
     expect(res.status).toBe(201);
     expect(res.body.shift).toBeDefined();
   });
