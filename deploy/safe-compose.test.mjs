@@ -126,11 +126,35 @@ test("staging preflight is ordered before every deployment mutation and does not
   const preflight = source.indexOf("verifyStagingMutationPreflight(prefix, resolved)");
   const action = source.indexOf('if (action === "up") run');
   assert.ok(preflight > 0 && action > preflight);
-  const wooPreflight = source.indexOf("if (wooExternalEnabled)");
-  const validatorBuild = source.indexOf('"run", "--build", "--rm", "--no-deps"');
-  assert.ok(wooPreflight > 0 && validatorBuild > wooPreflight);
+  const mutationPreflight = source.indexOf("function verifyStagingMutationPreflight");
+  const wooPreflight = source.indexOf("if (wooExternalEnabled)", mutationPreflight);
+  const lineageValidation = source.indexOf("recognizedStagingLineage(prefix)", mutationPreflight);
+  assert.ok(mutationPreflight > 0 && wooPreflight > mutationPreflight && lineageValidation > wooPreflight);
   assert.doesNotMatch(source, /console\.log\([^\n]*(config|envValues|CLERK_SECRET_KEY|wc_webhook_secret)/i);
   assert.match(source, /stdio: capture \? "pipe" : "inherit"/);
+});
+test("P0 compatibility patch has a staging-only guarded action tied to verified backup and unchanged lineage", () => {
+  assert.equal(validateActionServices("p0", []), true);
+  assert.throws(() => validateActionServices("p0", ["db"]), /does not accept service arguments/);
+  const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
+  const actionGuard = source.indexOf('if (action === "p0" && environment !== "staging")');
+  const p0Function = source.indexOf("function verifyStagingP0Patch");
+  const p0End = source.indexOf("function verifyStagingMutationPreflight", p0Function);
+  const guardedPatch = source.slice(p0Function, p0End);
+  const backupProof = guardedPatch.indexOf("validateStagingBackupEvidence(process.env.MYORDER_STAGING_BACKUP_DIR");
+  const lineageProof = guardedPatch.indexOf("if (!recognizedStagingLineage(prefix))");
+  const absenceProof = guardedPatch.indexOf("Staging P0 objects are not wholly absent");
+  const checksumProof = guardedPatch.indexOf("P0_PATCH_SHA256");
+  const patchExecution = guardedPatch.indexOf('"exec", "-i", "db", "psql"');
+  const postPatchProof = guardedPatch.indexOf("Staging P0 marker/provenance verification failed after patch");
+  const unchangedLedgerProof = guardedPatch.indexOf("Staging Drizzle migration ledger changed during P0 compatibility patch");
+  assert.ok(actionGuard > 0 && p0Function > 0 && backupProof >= 0 && lineageProof > backupProof);
+  assert.ok(absenceProof > lineageProof && checksumProof > absenceProof && patchExecution > checksumProof);
+  assert.ok(postPatchProof > patchExecution && unchangedLedgerProof > postPatchProof);
+  assert.match(source, /const STAGING_BACKUP_ROOT = "\/home\/serveradmin\/release-backups"/);
+  assert.match(source, /if \(environment === "staging" && action === "p0"\) \{\s*verifyStagingP0Patch\(prefix, resolved\)/);
+  assert.match(source, /external WooCommerce explicitly disabled/);
+  assert.match(source, /P0 compatibility patch action is staging-only/);
 });
 test("requires explicit production authorization and exact production targets", () => {
   const args = { environment: "production", root: "/opt/alavont", project: "deploy", config: config("production", "alavont") };

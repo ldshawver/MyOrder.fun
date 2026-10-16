@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -9,12 +10,15 @@ const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
 const WORKTREES_ROOT = "/home/serveradmin/worktrees";
+const STAGING_BACKUP_ROOT = "/home/serveradmin/release-backups";
+const P0_PATCH_SHA256 = "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17dd83db54a";
 const ROOTS = { production: "/opt/alavont" };
 const RELEASE_BASE_SHA = "8744d8e34ab8627555919aec337abde0c3291e0f";
-const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap", "stop"]);
+const ACTIONS = new Set(["config", "build", "up", "migrate", "p0", "bootstrap", "stop"]);
 
 export function validateActionServices(action, services) {
   if (!ACTIONS.has(action)) throw new Error("Unsupported deployment action");
+  if (action === "p0" && services.length !== 0) throw new Error("p0 does not accept service arguments");
   if (action === "stop" && (services.length !== 1 || services[0] !== "api")) {
     throw new Error("stop is restricted to the API service for a controlled migration maintenance window");
   }
@@ -150,6 +154,65 @@ function stageQuery(prefix, dbUser, statement) {
   return run("docker", [...prefix, "exec", "-T", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging, "-Atc", statement], { capture: true }).trim();
 }
 
+function validateStagingBackupEvidence(backupDir, sourceContainer) {
+  const root = path.resolve(STAGING_BACKUP_ROOT);
+  const resolved = path.resolve(backupDir ?? "");
+  if (!resolved.startsWith(`${root}/`)) throw new Error("Verified staging backup evidence is required under the protected release-backups directory");
+  const dirStat = lstatSync(resolved);
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || (dirStat.mode & 0o077) !== 0) throw new Error("Staging backup directory must be a restricted real directory");
+  const backupPath = path.join(resolved, "production-snapshot.dump");
+  const evidencePath = path.join(resolved, "backup-restore-evidence.txt");
+  for (const file of [backupPath, evidencePath]) {
+    const fileStat = lstatSync(file);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || (fileStat.mode & 0o077) !== 0) throw new Error("Staging backup artifacts must be restricted regular files");
+  }
+  const evidenceRows = readFileSync(evidencePath, "utf8").split(/\r?\n/).filter(Boolean).map(line => {
+    const index = line.indexOf("=");
+    if (index < 1) throw new Error("Staging backup evidence is malformed");
+    return [line.slice(0, index), line.slice(index + 1)];
+  });
+  const evidence = Object.fromEntries(evidenceRows);
+  if (evidenceRows.length !== Object.keys(evidence).length || evidence.source_container !== sourceContainer || evidence.migration_count_before_rehearsal !== "49" || !/^myorder-release-restore-/.test(evidence.restore_container ?? "") || !/^\d{4}-\d{2}-\d{2}T/.test(evidence.verified_at_utc ?? "")) throw new Error("Verified staging backup evidence does not match this staging database");
+  const digest = createHash("sha256").update(readFileSync(backupPath)).digest("hex");
+  if (digest !== evidence.backup_sha256) throw new Error("Staging backup checksum does not match its restore evidence");
+  return true;
+}
+
+function recognizedStagingLineage(prefix) {
+  const validator = run("docker", [...prefix, "run", "--build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true });
+  const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
+  const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
+  return validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
+}
+
+function verifyStagingP0Patch(prefix, resolved) {
+  if (resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "false") throw new Error("The staging P0 patch action requires external WooCommerce explicitly disabled");
+  const dbUser = resolved.services.db.environment.POSTGRES_USER;
+  const containerId = run("docker", [...prefix, "ps", "--all", "--quiet", "db"], { capture: true }).trim();
+  if (!containerId || containerId.includes("\n")) throw new Error("Expected exactly one staging database container");
+  const sourceContainer = run("docker", ["inspect", "--format", "{{.Name}}", containerId], { capture: true }).trim().replace(/^\//, "");
+  validateStagingBackupEvidence(process.env.MYORDER_STAGING_BACKUP_DIR, sourceContainer);
+  if (!recognizedStagingLineage(prefix)) throw new Error("Staging migration lineage is not recognized through 0076");
+
+  const p0Absent = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NULL AND to_regclass('public.users_owner_approval_provenance_idx') IS NULL AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name IN ('approved_at','approved_by_clerk_id'))");
+  if (p0Absent !== "t") throw new Error("Staging P0 objects are not wholly absent; refusing compatibility patch");
+  const ledgerFingerprint = () => stageQuery(prefix, dbUser, "SELECT count(*)::text || ':' || md5(coalesce(string_agg(id::text || ':' || hash || ':' || created_at::text, '|' ORDER BY created_at, id), '')) FROM drizzle.__drizzle_migrations");
+  const ledgerBefore = ledgerFingerprint();
+  if (!ledgerBefore.startsWith("49:")) throw new Error("Staging migration ledger count does not match the recognized 49-row lineage");
+
+  const patchPath = path.join(ROOT, "deploy", "hotfix-owner-approval.sql");
+  const patch = readFileSync(patchPath);
+  if (createHash("sha256").update(patch).digest("hex") !== P0_PATCH_SHA256) throw new Error("Approved P0 compatibility patch checksum mismatch");
+  const applied = spawnSync("docker", [...prefix, "exec", "-i", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging], { input: patch, encoding: "utf8" });
+  if (applied.error) throw applied.error;
+  if (applied.status !== 0) throw new Error(`Approved staging P0 patch failed with status ${applied.status}`);
+
+  const p0Ready = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations)=1 AND (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
+  if (p0Ready !== "t") throw new Error("Staging P0 marker/provenance verification failed after patch");
+  if (ledgerFingerprint() !== ledgerBefore) throw new Error("Staging Drizzle migration ledger changed during P0 compatibility patch");
+  console.log("Staging P0 patch applied and verified; recognized 49-row ledger unchanged.");
+}
+
 function verifyStagingMutationPreflight(prefix, resolved) {
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
   const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
@@ -166,17 +229,15 @@ function verifyStagingMutationPreflight(prefix, resolved) {
     const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
     wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL`));
   }
-  const validator = run("docker", [...prefix, "run", "--build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true });
-  const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
-  const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
-  const recognizedLineage = validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
+  const recognizedLineage = recognizedStagingLineage(prefix);
   validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
 }
 
 function main() {
   const [environment, action, ...rest] = process.argv.slice(2);
-  if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|bootstrap|stop> [services] [--authorize-production]");
+  if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|p0|bootstrap|stop> [services] [--authorize-production]");
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
+  if (action === "p0" && environment !== "staging") throw new Error("The P0 compatibility patch action is staging-only");
   const authorization = rest.includes("--authorize-production") && process.env.PRODUCTION_DEPLOY_CONFIRMATION === "DEPLOY-PRODUCTION" ? "DEPLOY-PRODUCTION" : undefined;
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
   if (environment === "production" && !authorization) throw new Error("Production requires explicit authorization before Compose can be resolved");
@@ -192,7 +253,7 @@ function main() {
   validateActionServices(action, services);
   if (services.some(service => !["db", "api", "platform", "nginx"].includes(service))) throw new Error("Service is not in the deployment allowlist");
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
-  if (action === "migrate" && services.length) throw new Error("migrate does not accept service arguments");
+  if ((action === "migrate" || action === "p0") && services.length) throw new Error(`${action} does not accept service arguments`);
   if ((action === "bootstrap" || action === "build" || action === "config") && services.length) throw new Error(`${action} does not accept service arguments`);
 
   const project = PROJECT[environment];
@@ -242,6 +303,10 @@ function main() {
     validateContainer({ environment, project, service, labels, composeFile, composeWorkingDir: path.join(ROOT, "deploy"), resolved, ...containerData });
   }
 
+  if (environment === "staging" && action === "p0") {
+    verifyStagingP0Patch(prefix, resolved);
+    return;
+  }
   if (environment === "staging" && action !== "config") {
     verifyStagingMutationPreflight(prefix, resolved);
   }
