@@ -36,15 +36,29 @@ node deploy/safe-compose.mjs staging migrate
 node deploy/safe-compose.mjs staging up api platform nginx
 ```
 
-The wrapper uses only `deploy/docker-compose.staging.yml` and
-`deploy/.env.staging`, validates the resolved API and migration database, and
-checks that every existing target container belongs to `myorder-staging`. Before
-any staging mutation it runs the read-only migration validator, verifies P0
-provenance and the 0075/0076 schema, and requires an explicit WooCommerce
-external-integration policy. In production-only mode, the API runtime must
-render `WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED=false`; it does not require a
-staging Woo store and all server-side Woo requests fail closed. Explicitly
-enabled staging retains origin, tenant, webhook-secret, and credential checks.
+The wrapper uses only `deploy/docker-compose.staging.yml` and the protected
+staging environment file, validates the resolved API and migration database,
+and checks that each existing target container belongs to `myorder-staging`.
+For the current staging lineage, first create a verified backup/restore
+rehearsal with `scripts/release/backup-restore-rehearsal.sh`, then apply the
+approved P0 compatibility patch through the staging-only guarded action:
+
+```bash
+export MYORDER_STAGING_BACKUP_DIR=/home/serveradmin/release-backups/<verified-staging-backup-directory>
+node deploy/safe-compose.mjs staging p0
+```
+
+The `p0` action requires the backup evidence to identify the selected staging
+database and match the backup checksum. It validates the recognized 49-row
+lineage and 0075/0076 effects, requires all P0 objects to be absent, checks the
+approved SQL checksum, and verifies the marker/provenance schema and unchanged
+Drizzle ledger after applying the patch. Other staging mutations run the
+read-only migration validator and require P0 provenance, 0075/0076 schema, and
+an explicit WooCommerce external-integration policy. In production-only mode,
+the API runtime must render
+`WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED=false`; staging does not require a
+Woo store and all server-side Woo requests fail closed. Explicitly enabled
+staging retains origin, tenant, webhook-secret, and credential checks.
 
 ---
 
