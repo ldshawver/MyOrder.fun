@@ -9,11 +9,20 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { createHmac } from "node:crypto";
+
+const clerkBoundaryControl = vi.hoisted(() => ({ reject: false }));
 
 // Mock dependencies that have side effects on import so app.ts can load
 // in the test environment without real Clerk creds or DB connections.
 vi.mock("@clerk/express", () => ({
-  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  clerkMiddleware: () => (_req: unknown, res: { status: (code: number) => { json: (body: unknown) => void } }, next: () => void) => {
+    if (clerkBoundaryControl.reject) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    next();
+  },
   getAuth: vi.fn(() => ({})),
 }));
 
@@ -123,8 +132,36 @@ vi.mock("drizzle-orm", () => ({
 
 import supertest from "supertest";
 import app from "../app";
+import { db } from "@workspace/db";
 
 describe("API contract — /api/* always returns JSON (real assembled app)", () => {
+  it("accepts a valid provider signature on the exact WooCommerce POST without a Clerk session", async () => {
+    clerkBoundaryControl.reject = true;
+    vi.mocked(db.execute).mockClear();
+    try {
+      const secret = "synthetic-boundary-secret";
+      const raw = '{"id":25}';
+      const signature = createHmac("sha256", secret).update(raw).digest("base64");
+      vi.mocked(db.execute).mockResolvedValueOnce({
+        rows: [{ tenantId: 1, storeUrl: "https://woo.example", secretCiphertext: secret }],
+      } as never);
+      const res = await supertest(app)
+        .post("/api/webhooks/woocommerce")
+        .set("Content-Type", "application/json")
+        .set("X-WC-Webhook-Signature", signature)
+        .set("X-WC-Webhook-Source", "https://woo.example")
+        .set("X-WC-Webhook-Delivery-ID", "synthetic-delivery")
+        .set("X-WC-Webhook-Topic", "customer.created")
+        .send(raw);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, ignored: true });
+      expect(vi.mocked(db.execute)).toHaveBeenCalledOnce();
+      console.info("SANITIZED_WOO_WEBHOOK_BOUNDARY", JSON.stringify({ status: res.status, providerHmacAccepted: true, handlerReached: true }));
+    } finally {
+      clerkBoundaryControl.reject = false;
+    }
+  });
+
   it("unknown /api/* path that bypasses auth gates → JSON 404 with documented {error, path}", async () => {
     // /api/__contract/known-prefix is mounted (test-only) with no sub-routes,
     // so this URL falls straight through to the /api JSON 404 handler.

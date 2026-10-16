@@ -21,6 +21,9 @@ function header(req: Request, name: string): string | null {
 
 export function verifyWooWebhookSignature(rawBody: Buffer, signature: string, secret: string): boolean {
   if (!rawBody.length || !signature || !secret) return false;
+  // SHA-256 HMAC is exactly 32 bytes, encoded as 44 canonical base64 chars.
+  // Buffer.from(base64) is permissive, so reject malformed encodings first.
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(signature)) return false;
   const expected = createHmac("sha256", secret).update(rawBody).digest("base64");
   const receivedBytes = Buffer.from(signature, "base64");
   const expectedBytes = Buffer.from(expected, "base64");

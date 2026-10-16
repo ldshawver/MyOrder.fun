@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import rateLimit from "express-rate-limit";
 import { clerkMiddleware } from "@clerk/express";
+import { clerkSessionBoundary } from "./middlewares/clerkSessionBoundary";
 import { CLERK_PROXY_PATH, clerkProxyMiddleware } from "./middlewares/clerkProxyMiddleware";
 import router from "./routes";
 import healthRouter from "./routes/health";
@@ -176,12 +177,12 @@ const _clerkPubKey =
 const _clerkProxyUrl = _clerkPubKey?.startsWith("pk_test_")
   ? undefined
   : process.env.CLERK_PROXY_URL || process.env.VITE_CLERK_PROXY_URL;
-app.use(clerkMiddleware({
+app.use(clerkSessionBoundary(clerkMiddleware({
   publishableKey: _clerkPubKey,
   ...(process.env.NODE_ENV === "production" && _clerkProxyUrl
     ? { proxyUrl: _clerkProxyUrl }
     : {}),
-}));
+})));
 
 // ── Test-only routes (exercise the real middleware chain in vitest) ─────────
 // These are mounted ONLY when NODE_ENV === "test" so they cannot be hit in

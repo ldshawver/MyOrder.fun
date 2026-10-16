@@ -17,4 +17,12 @@ describe("WooCommerce webhook signature verification", () => {
     expect(verifyWooWebhookSignature(Buffer.from("{}"), "", "secret")).toBe(false);
     expect(verifyWooWebhookSignature(Buffer.from("{}"), "signature", "")).toBe(false);
   });
+
+  it("rejects malformed or non-canonical base64 signatures", () => {
+    const body = Buffer.from('{"id":25}');
+    const valid = createHmac("sha256", "test-only-signing-secret").update(body).digest("base64");
+    expect(verifyWooWebhookSignature(body, `${valid}\n`, "test-only-signing-secret")).toBe(false);
+    expect(verifyWooWebhookSignature(body, valid.slice(0, -1), "test-only-signing-secret")).toBe(false);
+    expect(verifyWooWebhookSignature(body, `${valid.slice(0, -2)}??`, "test-only-signing-secret")).toBe(false);
+  });
 });
