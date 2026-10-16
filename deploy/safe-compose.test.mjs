@@ -123,6 +123,10 @@ test("rejects Compose service substitution and emits no-build/no-pull immutable 
   const runArgs = pinnedRunArgs("migrate", "pnpm");
   assert.deepEqual(runArgs.slice(0, 3), ["run", "--pull", "never"]);
   assert.ok(!runArgs.includes("--build") && !runArgs.includes("--no-build"));
+  const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
+  const deployedCheck = source.slice(source.indexOf("function verifyDeployedImage"), source.indexOf("function stageQuery"));
+  assert.match(deployedCheck, /\.\.\.prefix, "ps", "--all", "--quiet", service/);
+  assert.doesNotMatch(deployedCheck, /"--filter", `label=com\.docker\.compose\.project/);
 });
 test("staging configuration and database readiness fail before mutations", () => {
   const missingOwner = config("staging", "myorder_staging");

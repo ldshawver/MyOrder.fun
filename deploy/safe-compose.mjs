@@ -233,8 +233,8 @@ function verifyPinnedArtifacts() {
   };
 }
 
-function verifyDeployedImage(service, expected, revision) {
-  const ids = run("docker", ["ps", "--all", "--quiet", "--filter", `label=com.docker.compose.project=${PROJECT.staging}`, "--filter", `label=com.docker.compose.service=${service}`], { capture: true }).trim().split(/\s+/).filter(Boolean);
+function verifyDeployedImage(prefix, service, expected, revision) {
+  const ids = run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean);
   if (ids.length !== 1) throw new Error(`Expected one staging ${service} container after deployment`);
   const raw = run("docker", ["inspect", ids[0], "--format", "{{json .}}"], { capture: true });
   const container = JSON.parse(raw);
@@ -432,7 +432,7 @@ function main() {
     if (environment === "staging") {
       verifyPinnedArtifacts();
       run("docker", [...prefix, ...pinnedUpArgs(services)], { env: pinnedEnv });
-      for (const service of services) verifyDeployedImage(service, PINNED_CANDIDATE.images[service], PINNED_CANDIDATE.sha);
+      for (const service of services) verifyDeployedImage(prefix, service, PINNED_CANDIDATE.images[service], PINNED_CANDIDATE.sha);
     } else run("docker", [...prefix, "up", "-d", "--no-deps", ...services]);
   }
   if (action === "migrate") {
