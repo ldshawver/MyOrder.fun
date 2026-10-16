@@ -5,12 +5,13 @@ import {
   ListAuditLogsQueryParams,
   ListAuditLogsResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireApproved } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 
 const router: IRouter = Router();
-router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"));
+const auditAuth = [requireAuth, loadDbUser, requireDbUser, requireApproved, requirePermission("platform.tenants.view")] as const;
 
-router.get("/audit", async (req, res): Promise<void> => {
+router.get("/audit", ...auditAuth, async (req, res): Promise<void> => {
   const query = ListAuditLogsQueryParams.safeParse(req.query);
   if (!query.success) {
     res.status(400).json({ error: query.error.message });
@@ -30,15 +31,15 @@ router.get("/audit", async (req, res): Promise<void> => {
   res.json(ListAuditLogsResponse.parse({
     entries: paged.map(e => ({
       id: e.id,
-      tenantId: e.tenantId,
+      tenantId: e.tenantId ?? undefined,
       actorId: e.actorId,
       actorEmail: e.actorEmail,
       actorRole: e.actorRole,
       action: e.action,
-      resourceType: e.resourceType,
-      resourceId: e.resourceId,
-      metadata: e.metadata,
-      ipAddress: e.ipAddress,
+      resourceType: e.resourceType ?? undefined,
+      resourceId: e.resourceId ?? undefined,
+      metadata: e.metadata ?? undefined,
+      ipAddress: e.ipAddress ?? undefined,
       createdAt: e.createdAt,
     })),
     total,

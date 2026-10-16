@@ -1,11 +1,22 @@
 import { Router, type IRouter } from "express";
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db, labTechShiftsTable, orderItemsTable, ordersTable, orderTaxSnapshotsTable, usersTable } from "@workspace/db";
 import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } from "../lib/auth";
+import { isGlobalAdmin } from "../lib/roles";
+import { requireTenantContext } from "../lib/tenantContext";
 import { buildSalesTaxReportFromRows } from "../lib/salesTaxReport";
 
 const router: IRouter = Router();
-const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin")] as const;
+function requireReportTenantContext(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction): void {
+  if (isGlobalAdmin(req.dbUser) && req.query.tenantId === undefined) {
+    req.authorizedTenantId = undefined;
+    next();
+    return;
+  }
+  requireTenantContext(req, res, next);
+}
+
+const authChain = [requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("global_admin", "admin"), requireReportTenantContext] as const;
 let reportSchemaEnsured = false;
 
 async function ensureReportSchema(): Promise<void> {
@@ -91,7 +102,9 @@ function parseFilters(query: Record<string, unknown>): ReportFilters {
   return filters;
 }
 
-function filterOrders<T extends typeof ordersTable.$inferSelect>(orders: T[], filters: ReportFilters): T[] {
+type ReportOrder = Pick<typeof ordersTable.$inferSelect, "id" | "tenantId" | "createdAt" | "assignedCsrUserId" | "paymentMethod" | "paymentStatus" | "total">;
+
+function filterOrders<T extends ReportOrder>(orders: T[], filters: ReportFilters): T[] {
   return orders.filter((order) => {
     const createdAt = new Date(order.createdAt);
     if (filters.dateFrom && createdAt < filters.dateFrom) return false;
@@ -107,15 +120,26 @@ function csvEscape(value: unknown): string {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-async function buildReport(query: Record<string, unknown>) {
+async function buildReport(tenantId: number | undefined, query: Record<string, unknown>) {
   await ensureReportSchema();
   const filters = parseFilters(query);
-  const [orders, items, shifts, users] = await Promise.all([
-    db.select().from(ordersTable).orderBy(desc(ordersTable.createdAt)).limit(500),
-    db.select().from(orderItemsTable).orderBy(desc(orderItemsTable.createdAt)).limit(2000),
-    db.select().from(labTechShiftsTable).orderBy(desc(labTechShiftsTable.createdAt)).limit(200),
-    db.select().from(usersTable),
+  const [orders, shifts, users] = await Promise.all([
+    tenantId == null
+      ? db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).orderBy(desc(ordersTable.createdAt)).limit(500)
+      : db.select({ id: ordersTable.id, tenantId: ordersTable.tenantId, createdAt: ordersTable.createdAt, assignedCsrUserId: ordersTable.assignedCsrUserId, paymentMethod: ordersTable.paymentMethod, paymentStatus: ordersTable.paymentStatus, total: ordersTable.total }).from(ordersTable).where(eq(ordersTable.tenantId, tenantId)).orderBy(desc(ordersTable.createdAt)).limit(500),
+    tenantId == null
+      ? db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).orderBy(desc(labTechShiftsTable.createdAt)).limit(200)
+      : db.select({ id: labTechShiftsTable.id, tenantId: labTechShiftsTable.tenantId, createdAt: labTechShiftsTable.createdAt, techId: labTechShiftsTable.techId, status: labTechShiftsTable.status, clockedInAt: labTechShiftsTable.clockedInAt, clockedOutAt: labTechShiftsTable.clockedOutAt, summary: labTechShiftsTable.summary, differenceAmount: labTechShiftsTable.differenceAmount, depositAmount: labTechShiftsTable.depositAmount }).from(labTechShiftsTable).where(eq(labTechShiftsTable.tenantId, tenantId)).orderBy(desc(labTechShiftsTable.createdAt)).limit(200),
+    tenantId == null
+      ? db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable)
+      : db.select({ id: usersTable.id, tenantId: usersTable.tenantId, firstName: usersTable.firstName, lastName: usersTable.lastName, email: usersTable.email }).from(usersTable).where(eq(usersTable.tenantId, tenantId)),
   ]);
+  // Order items have no tenant column. Resolve their IDs only through orders
+  // already selected in the authenticated tenant scope.
+  const orderIds = orders.map((order) => order.id);
+  const items = orderIds.length
+    ? await db.select({ orderId: orderItemsTable.orderId, catalogItemName: orderItemsTable.catalogItemName, quantity: orderItemsTable.quantity, totalPrice: orderItemsTable.totalPrice, createdAt: orderItemsTable.createdAt }).from(orderItemsTable).where(inArray(orderItemsTable.orderId, orderIds)).orderBy(desc(orderItemsTable.createdAt)).limit(2000)
+    : [];
 
   let filteredOrders = filterOrders(orders, filters);
   if (filters.product) {
@@ -205,11 +229,11 @@ async function buildReport(query: Record<string, unknown>) {
 }
 
 router.get("/admin/reports/summary", ...authChain, async (req, res): Promise<void> => {
-  res.json(await buildReport(req.query));
+  res.json(await buildReport(req.authorizedTenantId, req.query));
 });
 
 router.get("/admin/reports/export.csv", ...authChain, async (req, res): Promise<void> => {
-  const report = await buildReport(req.query);
+  const report = await buildReport(req.authorizedTenantId, req.query);
   const lines = [
     ["section", "name", "count", "revenue"].map(csvEscape).join(","),
     ...report.salesTrend.map(row => ["sales_trend", row.date, row.orders, row.revenue].map(csvEscape).join(",")),

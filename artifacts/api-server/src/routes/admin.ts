@@ -17,16 +17,18 @@ import {
   VerifyMfaBody,
   VerifyMfaResponse,
 } from "@workspace/api-zod";
-import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, writeAuditLog } from "../lib/auth";
+import { requireAuth, loadDbUser, requireDbUser, requireRole, requireApproved, requireRecentOwnerAuth, writeAuditLog } from "../lib/auth";
+import { requirePermission } from "../lib/roles";
 import { generateSecret, generateURI, verifySync } from "otplib";
 import qrcode from "qrcode";
 import crypto from "crypto";
+import { z } from "zod";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole("admin"));
 
 // GET /api/admin/stats
-router.get("/admin/stats", async (req, res): Promise<void> => {
+router.get("/admin/stats", requirePermission("platform.tenants.view"), async (req, res): Promise<void> => {
   const [{ count: totalTenants }] = await db.select({ count: count() }).from(tenantsTable);
   const [{ count: activeTenants }] = await db.select({ count: count() }).from(tenantsTable).where(eq(tenantsTable.status, "active"));
   const [{ count: pendingOnboarding }] = await db.select({ count: count() }).from(onboardingRequestsTable).where(eq(onboardingRequestsTable.status, "submitted"));
@@ -51,15 +53,15 @@ router.get("/admin/stats", async (req, res): Promise<void> => {
     newTenantsThisMonth,
     recentActivity: recentActivity.map(e => ({
       id: e.id,
-      tenantId: e.tenantId,
+      tenantId: e.tenantId ?? undefined,
       actorId: e.actorId,
       actorEmail: e.actorEmail,
       actorRole: e.actorRole,
       action: e.action,
-      resourceType: e.resourceType,
-      resourceId: e.resourceId,
-      metadata: e.metadata,
-      ipAddress: e.ipAddress,
+      resourceType: e.resourceType ?? undefined,
+      resourceId: e.resourceId ?? undefined,
+      metadata: e.metadata ?? undefined,
+      ipAddress: e.ipAddress ?? undefined,
       createdAt: e.createdAt,
     })),
   }));
@@ -139,46 +141,48 @@ router.post("/admin/mfa/verify", async (req, res): Promise<void> => {
   res.json(VerifyMfaResponse.parse({ verified: true, message: "MFA enabled successfully" }));
 });
 
-// POST /api/admin/purge — Emergency Kill Switch
-// Deletes all active (non-delivered, non-cancelled) orders and their items/notes.
-// Only callable by global_admin. Logs the action.
-router.post("/admin/purge", async (req, res): Promise<void> => {
+const purgeBodySchema = z.object({ confirm: z.literal("PURGE_ALL_SESSIONS") }).strict();
+
+// POST /api/admin/purge — platform-wide emergency maintenance operation.
+// The router's admin role gate includes tenant_admin for tenant operations, so
+// this route adds the platform permission and recent-auth checks explicitly.
+router.post("/admin/purge", requirePermission("platform.global_settings.manage"), requireRecentOwnerAuth, async (req, res): Promise<void> => {
   const actor = req.dbUser!;
-  const { confirm } = req.body as { confirm?: string };
-  if (confirm !== "PURGE_ALL_SESSIONS") {
-    res.status(400).json({ error: "Must send confirm: 'PURGE_ALL_SESSIONS' to proceed" });
+  const parsed = purgeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid purge request" });
     return;
   }
 
-  // Find all active orders (not delivered, not cancelled)
-  const activeOrders = await db
-    .select({ id: ordersTable.id })
-    .from(ordersTable)
-    .where(notInArray(ordersTable.status, ["delivered", "cancelled"]));
+  const result = await db.transaction(async (tx) => {
+    const activeOrders = await tx
+      .select({ id: ordersTable.id })
+      .from(ordersTable)
+      .where(notInArray(ordersTable.status, ["delivered", "cancelled"]));
+    const activeIds = activeOrders.map(o => o.id);
 
-  const activeIds = activeOrders.map(o => o.id);
+    if (activeIds.length > 0) {
+      await tx.delete(orderNotesTable).where(inArray(orderNotesTable.orderId, activeIds));
+      await tx.delete(orderItemsTable).where(inArray(orderItemsTable.orderId, activeIds));
+      await tx.delete(ordersTable).where(inArray(ordersTable.id, activeIds));
+    }
 
-  if (activeIds.length > 0) {
-    await db.delete(orderNotesTable).where(inArray(orderNotesTable.orderId, activeIds));
-    await db.delete(orderItemsTable).where(inArray(orderItemsTable.orderId, activeIds));
-    await db.delete(ordersTable).where(inArray(ordersTable.id, activeIds));
-  }
-
-  // Clear all unread notifications
-  await db.delete(notificationsTable).where(eq(notificationsTable.isRead, false));
-
-  await writeAuditLog({
-    actorId: actor.id,
-    actorEmail: actor.email,
-    actorRole: actor.role,
-    action: "EMERGENCY_PURGE",
-    resourceType: "platform",
-    resourceId: "all",
-    metadata: { purgedOrderCount: activeIds.length },
-    ipAddress: req.ip,
+    const deletedNotifications = await tx.delete(notificationsTable).where(eq(notificationsTable.isRead, false)).returning({ id: notificationsTable.id });
+    await tx.insert(auditLogsTable).values({
+      actorId: actor.id,
+      actorEmail: actor.email ?? "",
+      actorRole: actor.role,
+      action: "EMERGENCY_PURGE",
+      tenantId: null,
+      resourceType: "platform",
+      resourceId: "all",
+      metadata: { scope: "platform", purgedOrderCount: activeIds.length, purgedNotificationCount: deletedNotifications.length },
+      ipAddress: req.ip ?? null,
+    });
+    return { orderCount: activeIds.length, notificationCount: deletedNotifications.length };
   });
 
-  res.json({ purged: true, ordersDeleted: activeIds.length });
+  res.json({ purged: true, ordersDeleted: result.orderCount, notificationsDeleted: result.notificationCount });
 });
 
 export default router;

@@ -336,9 +336,17 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       await db.delete(notificationsTable).where(eq(notificationsTable.userId, crossTenantTarget[0].id));
       await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.productId, ownProduct.id));
       await db.delete(inventoryBalancesTable).where(eq(inventoryBalancesTable.productId, foreignProduct.id));
-      await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, inventory_item_id) IN (SELECT tenant_id, id FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4)))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
-      await pool.query("DELETE FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
-      await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      const catalogueOptionsExists = await pool.query("SELECT to_regclass('public.catalogue_options') IS NOT NULL AS exists");
+      const inventoryItemsExists = await pool.query("SELECT to_regclass('public.inventory_items') IS NOT NULL AS exists");
+      if (catalogueOptionsExists.rows[0]?.exists) {
+        await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, inventory_item_id) IN (SELECT tenant_id, id FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4)))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      }
+      if (inventoryItemsExists.rows[0]?.exists) {
+        await pool.query("DELETE FROM public.inventory_items WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      }
+      if (catalogueOptionsExists.rows[0]?.exists) {
+        await pool.query("DELETE FROM public.catalogue_options WHERE (tenant_id, catalog_item_id) IN (($1, $2), ($3, $4))", [tenant.id, ownProduct.id, foreignTenant.id, foreignProduct.id]);
+      }
       await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, ownProduct.id));
       await db.delete(catalogItemsTable).where(eq(catalogItemsTable.id, foreignProduct.id));
       await db.delete(inventoryLocationsTable).where(eq(inventoryLocationsTable.id, ownLocationOne.id));
@@ -352,7 +360,10 @@ integrationSuite("owner approval security against isolated PostgreSQL", () => {
       await db.delete(usersTable).where(eq(usersTable.id, admin[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, subject[0].id));
       await db.delete(usersTable).where(eq(usersTable.id, owner[0].id));
-      await pool.query("DELETE FROM public.catalogue_products WHERE (tenant_id, name) IN (($1, $2), ($3, $4))", [tenant.id, "P0 own fixture product", foreignTenant.id, "P0 foreign fixture product"]);
+      const catalogueProductsExists = await pool.query("SELECT to_regclass('public.catalogue_products') IS NOT NULL AS exists");
+      if (catalogueProductsExists.rows[0]?.exists) {
+        await pool.query("DELETE FROM public.catalogue_products WHERE (tenant_id, name) IN (($1, $2), ($3, $4))", [tenant.id, "P0 own fixture product", foreignTenant.id, "P0 foreign fixture product"]);
+      }
       await db.delete(tenantsTable).where(eq(tenantsTable.id, foreignTenant.id));
       await pool.end();
     }
