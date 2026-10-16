@@ -56,6 +56,10 @@ export function pinnedUpArgs(services) {
   return ["up", "--pull", "never", "--no-build", "-d", "--no-deps", ...services];
 }
 
+export function pinnedRunArgs(service, entrypoint) {
+  return ["run", "--pull", "never", "--rm", "--no-deps", ...(entrypoint ? ["--entrypoint", entrypoint] : []), service];
+}
+
 export function validateBuildPolicy({ environment, action, deploySha }) {
   if (environment === "staging" && action === "build" && deploySha === PINNED_CANDIDATE.sha) throw new Error("The approved candidate images are immutable; rebuild is prohibited");
   return true;
@@ -267,7 +271,7 @@ function validateStagingBackupEvidence(backupDir, sourceContainer) {
 }
 
 function recognizedStagingLineage(prefix, env = process.env) {
-  const validator = run("docker", [...prefix, "run", "--pull", "never", "--no-build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true, env });
+  const validator = run("docker", [...prefix, ...pinnedRunArgs("migrate", "pnpm"), "--filter", "@workspace/db", "db:validate-migrations"], { capture: true, env });
   const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
   const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
   return validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
@@ -434,7 +438,7 @@ function main() {
   if (action === "migrate") {
     if (environment === "staging") {
       verifyPinnedArtifacts();
-      run("docker", [...prefix, "run", "--pull", "never", "--no-build", "--rm", "migrate"], { env: pinnedEnv });
+      run("docker", [...prefix, ...pinnedRunArgs("migrate")], { env: pinnedEnv });
     } else run("docker", [...prefix, "run", "--rm", "migrate"]);
   }
 }

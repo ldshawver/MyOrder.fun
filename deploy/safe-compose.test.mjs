@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { pinnedUpArgs, validateActionServices, validateBuildPolicy, validateCandidateIdentity, validateContainer, validatePinnedComposeImages, validatePinnedImageMetadata, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
+import { pinnedRunArgs, pinnedUpArgs, validateActionServices, validateBuildPolicy, validateCandidateIdentity, validateContainer, validatePinnedComposeImages, validatePinnedImageMetadata, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
 
 const root = "/home/serveradmin/worktrees/myorder-release-convergence-20261016";
 function config(environment, database) {
@@ -120,6 +120,9 @@ test("rejects Compose service substitution and emits no-build/no-pull immutable 
   assert.ok(!args.includes("build") && !args.includes("always"));
   assert.throws(() => validateBuildPolicy({ environment: "staging", action: "build", deploySha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833" }), /rebuild is prohibited/);
   assert.equal(validateBuildPolicy({ environment: "staging", action: "build", deploySha: "another-candidate" }), true);
+  const runArgs = pinnedRunArgs("migrate", "pnpm");
+  assert.deepEqual(runArgs.slice(0, 3), ["run", "--pull", "never"]);
+  assert.ok(!runArgs.includes("--build") && !runArgs.includes("--no-build"));
 });
 test("staging configuration and database readiness fail before mutations", () => {
   const missingOwner = config("staging", "myorder_staging");
@@ -167,8 +170,8 @@ test("staging preflight is ordered before every deployment mutation and does not
   assert.doesNotMatch(source, /console\.log\([^\n]*(config|envValues|CLERK_SECRET_KEY|wc_webhook_secret)/i);
   assert.match(source, /stdio: capture \? "pipe" : "inherit"/);
   const lineage = source.slice(source.indexOf("function recognizedStagingLineage"), source.indexOf("function verifyStagingP0Patch"));
-  assert.match(lineage, /"--pull", "never", "--no-build"/);
-  assert.doesNotMatch(lineage, /"--build"/);
+  assert.match(lineage, /pinnedRunArgs\("migrate", "pnpm"\)/);
+  assert.doesNotMatch(lineage, /"--build"|"--no-build"/);
 });
 test("P0 compatibility patch has a staging-only guarded action tied to verified backup and unchanged lineage", () => {
   assert.equal(validateActionServices("p0", []), true);
