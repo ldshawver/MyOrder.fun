@@ -19,10 +19,17 @@ the project/file and rejects a checkout, environment, database, or existing
 container mismatch. Staging and production Compose files declare distinct
 project names: `myorder-staging` and `deploy`.
 
-Staging deployments use the guard from the configured staging checkout:
+Staging deployments use a clean worktree descended from the reviewed release
+base. The guard verifies both full commit and tree SHA, the registered worktree
+location, the Compose project, database, network, volume, ports, and all image
+tags. Set `MYORDER_STAGING_ENV_FILE` to the protected staging environment file
+path supplied by the host's secret-management configuration; the path and its
+contents are not stored in source. The file must be mode `0600`.
 
 ```bash
-cd /home/serveradmin/worktrees/myorder-release-gates-20261002
+cd /path/from/approved/release-worktree-registration
+export DEPLOY_SHA="$(git rev-parse HEAD)"
+export DEPLOY_TREE="$(git rev-parse 'HEAD^{tree}')"
 node deploy/safe-compose.mjs staging build
 node deploy/safe-compose.mjs staging up db
 node deploy/safe-compose.mjs staging migrate
@@ -31,7 +38,11 @@ node deploy/safe-compose.mjs staging up api platform nginx
 
 The wrapper uses only `deploy/docker-compose.staging.yml` and
 `deploy/.env.staging`, validates the resolved API and migration database, and
-checks that every existing target container belongs to `myorder-staging`.
+checks that every existing target container belongs to `myorder-staging`. Before
+any staging mutation it runs the read-only migration validator, verifies P0
+provenance and the 0075/0076 schema, and requires a test WooCommerce store URL
+and webhook secret with no consumer API credentials. It fails closed if any of
+these prerequisites or outbound-effect controls are missing.
 
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -8,7 +8,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT = { staging: "myorder-staging", production: "deploy" };
 const ENVIRONMENT = { staging: "staging", production: "production" };
 const DATABASE = { staging: "myorder_staging", production: "alavont" };
-const ROOTS = { staging: "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006", production: "/opt/alavont" };
+const WORKTREES_ROOT = "/home/serveradmin/worktrees";
+const ROOTS = { production: "/opt/alavont" };
+const RELEASE_BASE_SHA = "8744d8e34ab8627555919aec337abde0c3291e0f";
 const ACTIONS = new Set(["config", "build", "up", "migrate", "bootstrap", "stop"]);
 
 export function validateActionServices(action, services) {
@@ -19,15 +21,26 @@ export function validateActionServices(action, services) {
   return true;
 }
 
-export function validatePlan({ environment, root, project, config, authorization }) {
+export function validatePlan({ environment, root, project, config, authorization, deploySha }) {
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
-  if (path.resolve(root) !== ROOTS[environment]) throw new Error("Unexpected deployment working tree");
+  if (!isApprovedRoot(environment, root)) throw new Error("Unexpected deployment working tree");
   if (project !== PROJECT[environment]) throw new Error("Compose project does not match the selected environment");
   if (config?.name !== PROJECT[environment]) throw new Error("Resolved Compose project does not match the selected environment");
   if (config?.services?.api?.environment?.NODE_ENV !== ENVIRONMENT[environment]) throw new Error("API environment does not match the selected environment");
   const apiEnvironment = config.services.api.environment;
+  const imageSha = config.services.api.image?.split(":").at(-1);
+  if (!/^[a-f0-9]{40}$/.test(imageSha ?? "") ||
+      config.services.api.image !== `myorder-api:${imageSha}` ||
+      config.services.platform.image !== `myorder-platform:${imageSha}` ||
+      config.services.migrate.image !== `myorder-migrate:${imageSha}` ||
+      (deploySha && deploySha !== imageSha)) throw new Error("Compose image SHA does not match the validated release candidate");
   if (environment === "production" && Object.keys(apiEnvironment).some(name => name.startsWith("STAGING_"))) throw new Error("Staging-only settings cannot be attached to production");
   if (environment === "staging" && (apiEnvironment.PAYPAL_ENVIRONMENT && apiEnvironment.PAYPAL_ENVIRONMENT !== "sandbox" || apiEnvironment.LIVE_PAYMENTS_ENABLED === "true")) throw new Error("Staging cannot enable live payment credentials or mode");
+  if (environment === "staging") {
+    if (!/^user_[A-Za-z0-9_-]+$/.test(apiEnvironment.MYORDER_OWNER_CLERK_ID ?? "")) throw new Error("Staging owner Clerk configuration is missing or invalid");
+    validateStagingWooOrigin(apiEnvironment.STAGING_WOOCOMMERCE_ORIGIN);
+    if (apiEnvironment.RECEIPT_PRINT_ENABLED === "true" || apiEnvironment.LABEL_PRINT_ENABLED === "true" || apiEnvironment.EMAIL_ENABLED !== "false" || apiEnvironment.SMS_ENABLED !== "false" || apiEnvironment.PUSH_ENABLED !== "false" || apiEnvironment.ORDER_NOTIFICATION_WORKER_ENABLED === "1" || apiEnvironment.UBER_DIRECT_DISPATCH_ENABLED === "true") throw new Error("Staging external side effects must remain disabled during release testing");
+  }
   const dbUrl = config.services.api.environment.DATABASE_URL;
   let database;
   let host;
@@ -61,11 +74,35 @@ export function validatePlan({ environment, root, project, config, authorization
   return true;
 }
 
-export function validateCandidateIdentity({ root, environment, status, headSha, deploySha }) {
-  if (path.resolve(root) !== ROOTS[environment]) throw new Error("Unexpected deployment working tree");
+export function validateCandidateIdentity({ root, environment, status, headSha, headTree, deploySha, deployTree, baseInAncestry, worktreeRegistered }) {
+  if (!isApprovedRoot(environment, root)) throw new Error("Unexpected deployment working tree");
+  if (environment === "staging" && worktreeRegistered !== true) throw new Error("Staging source is not a registered Git worktree");
   if (status) throw new Error("Deployment checkout must be clean");
-  if (deploySha && deploySha !== headSha) throw new Error("Deploy SHA does not match the clean checkout HEAD");
+  if (!/^[a-f0-9]{40}$/.test(headSha ?? "") || !/^[a-f0-9]{40}$/.test(headTree ?? "")) throw new Error("Deployment checkout identity is invalid");
+  if (deploySha !== headSha || deployTree !== headTree) throw new Error("Deploy SHA/tree does not match the clean checkout HEAD");
+  if (environment === "staging" && !baseInAncestry) throw new Error("Deployment candidate is not descended from the authorized release base");
   return headSha;
+}
+
+function isApprovedRoot(environment, root) {
+  const resolved = path.resolve(root);
+  if (environment === "production") return resolved === ROOTS.production;
+  return environment === "staging" && resolved.startsWith(`${WORKTREES_ROOT}/`) && path.dirname(resolved) === WORKTREES_ROOT;
+}
+
+export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooSafeTenantCount }) {
+  if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
+  if (!recognizedLineage) throw new Error("Staging migration lineage is not recognized through 0076");
+  if (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1) throw new Error("Staging WooCommerce test integration is missing or has outbound credentials enabled");
+  return true;
+}
+
+export function validateStagingWooOrigin(raw) {
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error("Staging WooCommerce origin is invalid"); }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash)
+    throw new Error("Staging WooCommerce origin must be a dedicated HTTPS origin");
+  return parsed.origin;
 }
 
 export function validateContainer({ environment, project, service, labels, envValues = {}, mounts = [], portBindings = {}, networks = {}, composeFile, composeWorkingDir, resolved }) {
@@ -104,6 +141,30 @@ function run(command, args, { capture = false, ...options } = {}) {
   return result.stdout ?? "";
 }
 
+function stageQuery(prefix, dbUser, statement) {
+  return run("docker", [...prefix, "exec", "-T", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging, "-Atc", statement], { capture: true }).trim();
+}
+
+function verifyStagingMutationPreflight(prefix, resolved) {
+  const dbUser = resolved.services.db.environment.POSTGRES_USER;
+  const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
+  let p0Ready = false;
+  if (markerTableExists === "t") {
+    const marker = stageQuery(prefix, dbUser, "SELECT (SELECT count(*) FROM public.myorder_hotfix_migrations WHERE migration_id='p0_owner_approval_provenance')=1 AND to_regclass('public.users_owner_approval_provenance_idx') IS NOT NULL AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_at' AND data_type='timestamp with time zone' AND is_nullable='YES')=1 AND (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='approved_by_clerk_id' AND data_type='text' AND is_nullable='YES')=1 AND EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='users_owner_approval_provenance_idx' AND i.indisvalid AND i.indisready AND pg_get_expr(i.indpred, i.indrelid) = '(status = ''approved''::text)')");
+    p0Ready = marker === "t";
+  }
+  if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
+  const expectedWooOrigin = validateStagingWooOrigin(resolved.services.api.environment.STAGING_WOOCOMMERCE_ORIGIN);
+  const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
+  const wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NULL AND wc_consumer_secret IS NULL`));
+  if (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1) throw new Error("Staging WooCommerce test integration is missing or has outbound credentials enabled");
+  const validator = run("docker", [...prefix, "run", "--build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true });
+  const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
+  const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
+  const recognizedLineage = validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
+  validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooSafeTenantCount });
+}
+
 function main() {
   const [environment, action, ...rest] = process.argv.slice(2);
   if (!ACTIONS.has(action)) throw new Error("Usage: safe-compose.mjs <staging|production> <config|build|up|migrate|bootstrap|stop> [services] [--authorize-production]");
@@ -111,10 +172,14 @@ function main() {
   const authorization = rest.includes("--authorize-production") && process.env.PRODUCTION_DEPLOY_CONFIRMATION === "DEPLOY-PRODUCTION" ? "DEPLOY-PRODUCTION" : undefined;
   if (rest.includes("--authorize-production") && !authorization) throw new Error("Production authorization flag and confirmation must both be present");
   if (environment === "production" && !authorization) throw new Error("Production requires explicit authorization before Compose can be resolved");
-  if (path.resolve(ROOT) !== ROOTS[environment]) throw new Error("Unexpected deployment working tree");
+  if (!isApprovedRoot(environment, ROOT)) throw new Error("Unexpected deployment working tree");
   const headSha = run("git", ["-C", ROOT, "rev-parse", "HEAD"], { capture: true }).trim();
+  const headTree = run("git", ["-C", ROOT, "rev-parse", "HEAD^{tree}"], { capture: true }).trim();
   const status = run("git", ["-C", ROOT, "status", "--porcelain=v1"], { capture: true }).trim();
-  process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, deploySha: process.env.DEPLOY_SHA?.trim() });
+  const worktrees = run("git", ["-C", ROOT, "worktree", "list", "--porcelain"], { capture: true });
+  const worktreeRegistered = worktrees.split("\n").some(line => line.startsWith("worktree ") && path.resolve(line.slice("worktree ".length)) === path.resolve(ROOT));
+  const baseInAncestry = environment !== "staging" || spawnSync("git", ["-C", ROOT, "merge-base", "--is-ancestor", RELEASE_BASE_SHA, "HEAD"], { stdio: "ignore" }).status === 0;
+  process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, headTree, deploySha: process.env.DEPLOY_SHA?.trim(), deployTree: process.env.DEPLOY_TREE?.trim(), baseInAncestry, worktreeRegistered });
   const services = rest.filter(arg => arg !== "--authorize-production");
   validateActionServices(action, services);
   if (services.some(service => !["db", "api", "platform", "nginx"].includes(service))) throw new Error("Service is not in the deployment allowlist");
@@ -124,11 +189,13 @@ function main() {
 
   const project = PROJECT[environment];
   const composeFile = path.join(ROOT, "deploy", environment === "production" ? "docker-compose.yml" : "docker-compose.staging.yml");
-  const envFile = environment === "production" ? path.join(ROOT, "deploy", ".env") : path.join(ROOT, "deploy", ".env.staging");
+  const envFile = environment === "production" ? path.join(ROOT, "deploy", ".env") : process.env.MYORDER_STAGING_ENV_FILE;
+  if (typeof envFile !== "string" || !path.isAbsolute(envFile)) throw new Error("MYORDER_STAGING_ENV_FILE must point to the protected staging environment file");
   if (!existsSync(composeFile) || !existsSync(envFile)) throw new Error("Expected Compose file or environment file is missing");
+  if (environment === "staging" && (statSync(envFile).mode & 0o077) !== 0) throw new Error("Staging environment file permissions must restrict group and other access");
   const prefix = ["compose", "--project-name", project, "--env-file", envFile, "--file", composeFile];
   const resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true }));
-  validatePlan({ environment, root: ROOT, project, config: resolved, authorization });
+  validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA });
 
   if (action === "bootstrap") {
     const existing = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
@@ -165,6 +232,10 @@ function main() {
     }
     containerData.networks = JSON.parse(run("docker", ["inspect", "--format", "{{json .NetworkSettings.Networks}}", ids[0]], { capture: true }));
     validateContainer({ environment, project, service, labels, composeFile, composeWorkingDir: path.join(ROOT, "deploy"), resolved, ...containerData });
+  }
+
+  if (environment === "staging" && action !== "config") {
+    verifyStagingMutationPreflight(prefix, resolved);
   }
 
   if (action === "config") return;

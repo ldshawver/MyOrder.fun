@@ -7,6 +7,14 @@ on:
         description: Type I_AUTHORIZE_PRODUCTION_DEPLOYMENT to enable the production job
         required: true
         type: string
+      release_sha:
+        description: Exact full commit SHA proposed for this release
+        required: true
+        type: string
+      release_tree:
+        description: Exact Git tree SHA corresponding to release_sha
+        required: true
+        type: string
 
 concurrency:
   group: deploy-myorderfun
@@ -59,7 +67,7 @@ jobs:
     timeout-minutes: 30
     needs: test
     environment: production
-    if: ${{ inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' }}
+    if: ${{ inputs.production_confirmation == 'I_AUTHORIZE_PRODUCTION_DEPLOYMENT' && inputs.release_sha != '' && inputs.release_tree != '' }}
 
     permissions:
       contents: read
@@ -77,8 +85,10 @@ jobs:
 
       DEPLOY_PATH: /opt/alavont
 
-      RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360
-      RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf
+      RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f
+      RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba
+      RELEASE_SHA: ${{ inputs.release_sha }}
+      RELEASE_TREE: ${{ inputs.release_tree }}
 
       # The production database and current application containers belong to
       # the `deploy` project. Never create a second `alavont` stack: it has a
@@ -215,17 +225,18 @@ jobs:
           set -euo pipefail
 
           test "$(git rev-parse "$RELEASE_SHA^{tree}")" = "$RELEASE_TREE"
-
-          test "$RELEASE_SHA" = \
-            "65a85f2f82daf9f30a07f1a2de13092d5be80360"
-
-          test "$RELEASE_TREE" = \
-            "0411a10aa3326308bc480ff2fd15ecca037419bf"
+          test "$RELEASE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse "$RELEASE_BASE_SHA^{tree}")" = "$RELEASE_BASE_TREE"
+          git merge-base --is-ancestor "$RELEASE_BASE_SHA" "$RELEASE_SHA"
 
           RELEASE_ARCHIVE="$RUNNER_TEMP/myorder-release-$RELEASE_SHA.tar.gz"
-
-          git archive --format=tar "$RELEASE_SHA" |
-            gzip -n > "$RELEASE_ARCHIVE"
+          RELEASE_TAR="$RUNNER_TEMP/myorder-release-$RELEASE_SHA.tar"
+          git archive --format=tar "$RELEASE_SHA" > "$RELEASE_TAR"
+          printf '{"baseSha":"%s","baseTree":"%s","sha":"%s","tree":"%s"}\n' \
+            "$RELEASE_BASE_SHA" "$RELEASE_BASE_TREE" "$RELEASE_SHA" "$RELEASE_TREE" \
+            > "$RUNNER_TEMP/MYORDER-RELEASE-IDENTITY.json"
+          tar --append --file "$RELEASE_TAR" -C "$RUNNER_TEMP" MYORDER-RELEASE-IDENTITY.json
+          gzip -n "$RELEASE_TAR" > "$RELEASE_ARCHIVE"
 
           RELEASE_ARCHIVE_SHA256="$(
             sha256sum "$RELEASE_ARCHIVE" | awk '{print $1}'
@@ -311,6 +322,8 @@ jobs:
              node '$DEPLOY_PATH/control/$TOOLING_SHA/production-release.mjs' \
              deploy \
              --authorized \
+             --base-sha '$RELEASE_BASE_SHA' \
+             --base-tree '$RELEASE_BASE_TREE' \
              --release-sha '$RELEASE_SHA' \
              --release-tree '$RELEASE_TREE' \
              --archive '$DEPLOY_PATH/incoming/$RELEASE_ARCHIVE_NAME' \

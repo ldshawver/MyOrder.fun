@@ -2,13 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
+  EXPECTED_PRODUCTION_MIGRATIONS,
   FROZEN_RELEASE,
   PRODUCTION,
   PRODUCTION_STEPS,
   ROLLBACK_SHA,
   assertProductionConfig,
   assertRelease,
+  assertReleaseIdentityManifest,
   assertNoEncryptedProductionPayPalSettings,
   executeProductionSequence,
   mayRestoreRollbackApi,
@@ -32,6 +35,7 @@ const expectedConfig = {
         CLERK_PUBLISHABLE_KEY: "masked",
         SESSION_SECRET: "masked",
         SETTINGS_ENC_KEY: "masked",
+        MYORDER_OWNER_CLERK_ID: "user_testowner",
         PAYMENT_MODE: "disabled",
         PAYPAL_ENVIRONMENT: "",
         PAYPAL_CLIENT_ID: "",
@@ -54,6 +58,7 @@ const expectedConfig = {
       },
     },
     migrate: {
+      image: `myorder-migrate:${FROZEN_RELEASE.sha}`,
       environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
     nginx: { ports: ["127.0.0.1:8081:80"] },
@@ -65,7 +70,7 @@ const expectedConfig = {
   },
 };
 
-test("accepts only the frozen Release 1 identity and its immutable release path", () => {
+test("accepts only a clean descendant release identity and its immutable release path", () => {
   assert.equal(
     assertRelease({
       sha: FROZEN_RELEASE.sha,
@@ -76,17 +81,14 @@ test("accepts only the frozen Release 1 identity and its immutable release path"
     }),
     true,
   );
-  assert.throws(
-    () =>
-      assertRelease({
-        sha: "b".repeat(40),
-        tree: FROZEN_RELEASE.tree,
-        releaseRoot,
-        archivePath,
-        archiveSha256: "a".repeat(64),
-      }),
-    /frozen/,
-  );
+  assert.throws(() => assertReleaseIdentityManifest(
+    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: "b".repeat(40), tree: FROZEN_RELEASE.tree },
+    { sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
+  ), /protected candidate identity/);
+  assert.equal(assertReleaseIdentityManifest(
+    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
+    { sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
+  ), true);
   assert.throws(
     () =>
       assertRelease({
@@ -116,6 +118,7 @@ test("production Compose is pinned to the production database, release images, v
     assertProductionConfig(expectedConfig, {
       apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
       platformImage: `myorder-platform:${FROZEN_RELEASE.sha}`,
+      migrateImage: `myorder-migrate:${FROZEN_RELEASE.sha}`,
     }),
     true,
   );
@@ -137,7 +140,7 @@ test("production Compose is pinned to the production database, release images, v
   assert.throws(() => assertProductionConfig(wrongRole), /PostgreSQL role/);
   const wrongRelease = structuredClone(expectedConfig);
   wrongRelease.services.api.image =
-    "myorder-api:579cce225c0f9e7bee41a4c226d43e5ba5c86606";
+    `myorder-api:${ROLLBACK_SHA}`;
   assert.throws(
     () =>
       assertProductionConfig(wrongRelease, {
@@ -145,6 +148,13 @@ test("production Compose is pinned to the production database, release images, v
       }),
     /frozen release/,
   );
+  const wrongMigrator = structuredClone(expectedConfig);
+  wrongMigrator.services.migrate.image = `myorder-migrate:${ROLLBACK_SHA}`;
+  assert.throws(() => assertProductionConfig(wrongMigrator, {
+    apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
+    platformImage: `myorder-platform:${FROZEN_RELEASE.sha}`,
+    migrateImage: `myorder-migrate:${FROZEN_RELEASE.sha}`,
+  }), /Migration image/);
   const enabledPaypal = structuredClone(expectedConfig);
   enabledPaypal.services.api.environment.PAYMENT_MODE = "live";
   assert.throws(() => assertProductionConfig(enabledPaypal), /fail-closed/);
@@ -245,7 +255,23 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("rollback release identity remains pinned", () => {
-  assert.equal(ROLLBACK_SHA, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
+  assert.equal(ROLLBACK_SHA, "c549816b2ce647c38fdf4a7c4d7d5e5b0036a8a6");
+  assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
+  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
+    "0068_print_jobs_document_job_types",
+    "0069_inventory_tenant_quantity_foundation",
+    "0070_catalogue_products_options_reorder",
+    "0071_refund_state_constraint_reconciliation",
+    "0072_order_created_notifications",
+    "0073_admin_settings_tenant_uniqueness",
+    "0074_tenant_slug_case_insensitive_unique",
+    "0075_catalogue_variant_attributes",
+    "0076_tenant_woo_store_url_no_default",
+  ]);
+  assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS.slice(-2), [
+    "0075_catalogue_variant_attributes",
+    "0076_tenant_woo_store_url_no_default",
+  ]);
   assert.equal(
     mayRestoreRollbackApi({ apiStopAttempted: true, migrationStarted: false }),
     true,
@@ -266,6 +292,36 @@ test("production PayPal configuration stays fail-closed in Release 1", () => {
     () => assertNoEncryptedProductionPayPalSettings(1),
     /provider readiness/,
   );
+});
+
+test("approved P0 patch identity and rerun semantics are verified without changing the Drizzle ledger", () => {
+  const sql = readFileSync(new URL("./hotfix-owner-approval.sql", import.meta.url), "utf8");
+  const digest = createHash("sha256").update(sql).digest("hex");
+  assert.equal(digest, "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17dd83db54a");
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS approved_by_clerk_id/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS approved_at/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS users_owner_approval_provenance_idx/);
+  assert.match(sql, /ON CONFLICT \(migration_id\) DO NOTHING/);
+  assert.doesNotMatch(sql, /drizzle\.__drizzle_migrations/);
+});
+
+test("migration verifier checks physical 0075/0076 effects and release gates bind P0 state", () => {
+  const validator = readFileSync(new URL("../lib/db/scripts/validate-migration-ledger.ts", import.meta.url), "utf8");
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  const guard = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
+  assert.match(validator, /applied\.has\(49\)/);
+  assert.match(validator, /applied\.has\(50\)/);
+  assert.match(validator, /0075 catalogue variant physical effects/);
+  assert.match(validator, /0076 WooCommerce webhook physical effects/);
+  assert.match(validator, /woocommerce_webhook_events_pkey/);
+  assert.match(controller, /verifyP0Schema\(compose\)/);
+  assert.match(controller, /recognized lineage preserved: 42\/51/);
+  assert.match(controller, /recognized lineage preserved: 51\/51/);
+  assert.match(guard, /recognized lineage preserved: 49\/51/);
+  assert.match(guard, /appliedMigrations\.length === 51/);
+  assert.match(guard, /hasPendingMigrations/);
+  assert.match(guard, /users_owner_approval_provenance_idx/);
+  assert.match(guard, /wc_consumer_key IS NULL AND wc_consumer_secret IS NULL/);
 });
 
 test("production workflow uses versioned release archives and never deletes or synchronizes into the live checkout", () => {
@@ -338,12 +394,19 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(
     workflow,
-    /RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360/,
+    /RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f/,
   );
   assert.match(
     workflow,
-    /RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf/,
+    /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/,
   );
+  assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
+  assert.match(workflow, /test "\$RELEASE_SHA" = "\$GITHUB_SHA"/);
+  assert.match(workflow, /RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba/);
+  assert.match(workflow, /git rev-parse "\$RELEASE_BASE_SHA\^\{tree\}"/);
+  assert.match(workflow, /git merge-base --is-ancestor "\$RELEASE_BASE_SHA" "\$RELEASE_SHA"/);
+  assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
+  assert.match(readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8"), /assertReleaseIdentityManifest\(packagedIdentity, \{ sha, tree \}\)/);
 });
 
 test("SSH connectivity diagnostic is pinned, secret-backed, and read-only", () => {

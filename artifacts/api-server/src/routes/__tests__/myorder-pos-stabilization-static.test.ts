@@ -254,8 +254,15 @@ describe("receipts and deploy workflow", () => {
       "production_confirmation:",
       "environment: production",
       "production-release.mjs",
-      "RELEASE_SHA: 65a85f2f82daf9f30a07f1a2de13092d5be80360",
-      "RELEASE_TREE: 0411a10aa3326308bc480ff2fd15ecca037419bf",
+      "release_sha:",
+      "release_tree:",
+      "RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f",
+      "RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba",
+      "RELEASE_SHA: ${{ inputs.release_sha }}",
+      "RELEASE_TREE: ${{ inputs.release_tree }}",
+      "test \"$RELEASE_SHA\" = \"$GITHUB_SHA\"",
+      "git merge-base --is-ancestor",
+      "MYORDER-RELEASE-IDENTITY.json",
     ]) {
       expect(deploy).toContain(required);
     }

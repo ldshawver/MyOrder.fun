@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { validateActionServices, validateCandidateIdentity, validateContainer, validatePlan } from "./safe-compose.mjs";
+import { validateActionServices, validateCandidateIdentity, validateContainer, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
 
-const root = "/home/serveradmin/worktrees/myorder-coordinated-staging-20261006";
+const root = "/home/serveradmin/worktrees/myorder-release-convergence-20261016";
 function config(environment, database) {
   const project = environment === "staging" ? "myorder-staging" : "deploy";
+  const imageSha = "a".repeat(40);
   const networks = environment === "staging" ? { internal: {} } : { internal: {}, external: {} };
   return {
     name: project,
     services: {
-      api: { environment: { NODE_ENV: environment, DATABASE_URL: `postgres://app@db:5432/${database}` }, networks: { internal: {} } },
+      api: { image: `myorder-api:${imageSha}`, environment: { NODE_ENV: environment, DATABASE_URL: `postgres://app@db:5432/${database}`, MYORDER_OWNER_CLERK_ID: "user_testowner", ...(environment === "staging" ? { STAGING_WOOCOMMERCE_ORIGIN: "https://store.test.example" } : {}), EMAIL_ENABLED: "false", SMS_ENABLED: "false", PUSH_ENABLED: "false", RECEIPT_PRINT_ENABLED: "false", LABEL_PRINT_ENABLED: "false", UBER_DIRECT_DISPATCH_ENABLED: "false", ORDER_NOTIFICATION_WORKER_ENABLED: "0" }, networks: { internal: {} } },
       db: { environment: { POSTGRES_DB: database }, networks: { internal: {} } },
-      migrate: { environment: { DATABASE_URL: `postgres://app@db:5432/${database}` }, networks: { internal: {} } },
-      platform: { networks: { internal: {} } },
+      migrate: { image: `myorder-migrate:${imageSha}`, environment: { DATABASE_URL: `postgres://app@db:5432/${database}` }, networks: { internal: {} } },
+      platform: { image: `myorder-platform:${imageSha}`, networks: { internal: {} } },
       nginx: { ports: [environment === "staging" ? "127.0.0.1:28081:80" : "127.0.0.1:8081:80"], networks: environment === "staging" ? { internal: {} } : { internal: {}, external: {} } },
     },
     networks: Object.fromEntries(Object.keys(networks).map(name => [name, { name: `${project}_${name}` }])),
@@ -37,6 +39,13 @@ test("rejects a conflicting resolved project or migration database", () => {
   const remoteDatabase = config("staging", "myorder_staging");
   remoteDatabase.services.api.environment.DATABASE_URL = "postgres://app@production-db:5432/myorder_staging";
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: remoteDatabase }), /database host/);
+});
+test("rejects a mixed or unapproved full-SHA image set", () => {
+  const wrong = config("staging", "myorder_staging");
+  wrong.services.platform.image = `myorder-platform:${"b".repeat(40)}`;
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: wrong }), /image SHA/);
+  const mismatchedCandidate = config("staging", "myorder_staging");
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: mismatchedCandidate, deploySha: "c".repeat(40) }), /image SHA/);
 });
 test("rejects staging settings in production and live payments in staging", () => {
   const productionWithStageSetting = config("production", "alavont");
@@ -68,9 +77,43 @@ test("rejects mismatched Compose API environment, wrong tree and wrong project",
   assert.throws(() => validatePlan({ environment: "staging", root, project: "deploy", config: config("staging", "myorder_staging") }), /project/);
 });
 test("requires a clean candidate checkout and an exact candidate SHA", () => {
-  assert.equal(validateCandidateIdentity({ root, environment: "staging", status: "", headSha: "abc123", deploySha: "abc123" }), "abc123");
-  assert.throws(() => validateCandidateIdentity({ root, environment: "staging", status: " M deploy/file", headSha: "abc123" }), /clean/);
-  assert.throws(() => validateCandidateIdentity({ root, environment: "staging", status: "", headSha: "abc123", deploySha: "different" }), /HEAD/);
+  const sha = "a".repeat(40), tree = "b".repeat(40);
+  const identity = { root, environment: "staging", status: "", headSha: sha, headTree: tree, deploySha: sha, deployTree: tree, baseInAncestry: true, worktreeRegistered: true };
+  assert.equal(validateCandidateIdentity(identity), sha);
+  assert.throws(() => validateCandidateIdentity({ ...identity, root: "/tmp/incorrect" }), /working tree/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, worktreeRegistered: false }), /registered Git worktree/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, status: " M deploy/file" }), /clean/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, deploySha: "different" }), /SHA\/tree/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, deployTree: "c".repeat(40) }), /SHA\/tree/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, baseInAncestry: false }), /authorized release base/);
+});
+test("staging configuration and database readiness fail before mutations", () => {
+  const missingOwner = config("staging", "myorder_staging");
+  delete missingOwner.services.api.environment.MYORDER_OWNER_CLERK_ID;
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: missingOwner }), /owner Clerk/);
+  const unsafeSideEffect = config("staging", "myorder_staging");
+  unsafeSideEffect.services.api.environment.RECEIPT_PRINT_ENABLED = "true";
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: unsafeSideEffect }), /external side effects/);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: false, recognizedLineage: true, wooSafeTenantCount: 1 }), /P0 marker/);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: false, wooSafeTenantCount: 1 }), /migration lineage/);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooSafeTenantCount: 0 }), /WooCommerce/);
+  assert.equal(validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooSafeTenantCount: 1 }), true);
+});
+test("staging Woo configuration is an explicit HTTPS origin", () => {
+  assert.equal(validateStagingWooOrigin("https://store.test.example"), "https://store.test.example");
+  assert.throws(() => validateStagingWooOrigin("http://store.test.example"), /HTTPS origin/);
+  assert.throws(() => validateStagingWooOrigin("https://store.test.example/path"), /HTTPS origin/);
+});
+test("staging preflight is ordered before every deployment mutation and does not render secrets", () => {
+  const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
+  const preflight = source.indexOf("verifyStagingMutationPreflight(prefix, resolved)");
+  const action = source.indexOf('if (action === "up") run');
+  assert.ok(preflight > 0 && action > preflight);
+  const wooPreflight = source.indexOf("if (!Number.isSafeInteger(wooSafeTenantCount)");
+  const validatorBuild = source.indexOf('"run", "--build", "--rm", "--no-deps"');
+  assert.ok(wooPreflight > 0 && validatorBuild > wooPreflight);
+  assert.doesNotMatch(source, /console\.log\([^\n]*(config|envValues|CLERK_SECRET_KEY|wc_webhook_secret)/i);
+  assert.match(source, /stdio: capture \? "pipe" : "inherit"/);
 });
 test("requires explicit production authorization and exact production targets", () => {
   const args = { environment: "production", root: "/opt/alavont", project: "deploy", config: config("production", "alavont") };
