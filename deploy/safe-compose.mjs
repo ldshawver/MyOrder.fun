@@ -14,7 +14,52 @@ const STAGING_BACKUP_ROOT = "/home/serveradmin/release-backups";
 const P0_PATCH_SHA256 = "cd496d318643c3f485a563445ae5d3f59b3f4ea79d991108b2e7c17dd83db54a";
 const ROOTS = { production: "/opt/alavont" };
 const RELEASE_BASE_SHA = "8744d8e34ab8627555919aec337abde0c3291e0f";
+const EXPECTED_DOCKER_DAEMON_ID = "90b592a4-aee8-4d61-99a2-1a6a8b58ed55";
+const EXPECTED_ARCH = "amd64";
+const PINNED_CANDIDATE = {
+  sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  tree: "76bb2bc969450206f0be4754a6ef95434cd27b4a",
+  images: {
+    api: { id: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b", reference: "myorder-api@sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b" },
+    platform: { id: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13", reference: "myorder-platform@sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13" },
+    migrate: { id: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461", reference: "myorder-migrate@sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461" },
+  },
+};
+const PINNED_ROLLBACK = {
+  sha: "c549816b2ce647c38fdf4a7c4d7d5e5b0036a8a6",
+  tree: "eb3bb038ca02ef94312c08ab8a8899f958ab51f7",
+  images: {
+    api: { id: "sha256:c88bc44648cb2c953fc3662c0141e8066bf1af97beb413fc4e7557aaeee69a2c", reference: "myorder-api@sha256:c88bc44648cb2c953fc3662c0141e8066bf1af97beb413fc4e7557aaeee69a2c" },
+    platform: { id: "sha256:62397f96aa63207aa0b63ab90f1c0bbbcd30df19f0aef142e6931bb1356e829a", reference: "myorder-platform@sha256:62397f96aa63207aa0b63ab90f1c0bbbcd30df19f0aef142e6931bb1356e829a" },
+  },
+};
+const TOOLING_ONLY_PATHS = new Set(["deploy/docker-compose.staging.yml", "deploy/safe-compose.mjs", "deploy/safe-compose.test.mjs"]);
 const ACTIONS = new Set(["config", "build", "up", "migrate", "p0", "bootstrap", "stop"]);
+
+export function validatePinnedImageMetadata({ daemonId, expectedDaemonId = EXPECTED_DOCKER_DAEMON_ID, image, expected, revision, architecture = EXPECTED_ARCH }) {
+  if (daemonId !== expectedDaemonId) throw new Error("Docker daemon identity does not match the approved staging host");
+  if (!image || image.Id !== expected.id) throw new Error("Local image ID does not match the approved artifact");
+  if (image.Os !== "linux" || image.Architecture !== architecture) throw new Error("Local image architecture does not match the approved artifact");
+  if (image.Config?.Labels?.["org.opencontainers.image.revision"] !== revision || image.Config?.Labels?.["com.myorder.deploy-sha"] !== revision) throw new Error("Local image OCI revision does not match the approved source");
+  if (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(expected.reference)) throw new Error("Immutable local image digest reference is unavailable");
+  return expected.reference;
+}
+
+export function validatePinnedComposeImages(config, images) {
+  for (const service of ["api", "platform", "migrate"]) {
+    if (config?.services?.[service]?.image !== images[service]?.reference) throw new Error(`Resolved ${service} image is not the approved immutable digest`);
+  }
+  return true;
+}
+
+export function pinnedUpArgs(services) {
+  return ["up", "--pull", "never", "--no-build", "-d", "--no-deps", ...services];
+}
+
+export function validateBuildPolicy({ environment, action, deploySha }) {
+  if (environment === "staging" && action === "build" && deploySha === PINNED_CANDIDATE.sha) throw new Error("The approved candidate images are immutable; rebuild is prohibited");
+  return true;
+}
 
 export function validateActionServices(action, services) {
   if (!ACTIONS.has(action)) throw new Error("Unsupported deployment action");
@@ -25,19 +70,22 @@ export function validateActionServices(action, services) {
   return true;
 }
 
-export function validatePlan({ environment, root, project, config, authorization, deploySha }) {
+export function validatePlan({ environment, root, project, config, authorization, deploySha, pinnedImages }) {
   if (!(environment in PROJECT)) throw new Error("Unknown deployment environment");
   if (!isApprovedRoot(environment, root)) throw new Error("Unexpected deployment working tree");
   if (project !== PROJECT[environment]) throw new Error("Compose project does not match the selected environment");
   if (config?.name !== PROJECT[environment]) throw new Error("Resolved Compose project does not match the selected environment");
   if (config?.services?.api?.environment?.NODE_ENV !== ENVIRONMENT[environment]) throw new Error("API environment does not match the selected environment");
   const apiEnvironment = config.services.api.environment;
-  const imageSha = config.services.api.image?.split(":").at(-1);
-  if (!/^[a-f0-9]{40}$/.test(imageSha ?? "") ||
-      config.services.api.image !== `myorder-api:${imageSha}` ||
-      config.services.platform.image !== `myorder-platform:${imageSha}` ||
-      config.services.migrate.image !== `myorder-migrate:${imageSha}` ||
-      (deploySha && deploySha !== imageSha)) throw new Error("Compose image SHA does not match the validated release candidate");
+  if (pinnedImages) validatePinnedComposeImages(config, pinnedImages);
+  else {
+    const imageSha = config.services.api.image?.split(":").at(-1);
+    if (!/^[a-f0-9]{40}$/.test(imageSha ?? "") ||
+        config.services.api.image !== `myorder-api:${imageSha}` ||
+        config.services.platform.image !== `myorder-platform:${imageSha}` ||
+        config.services.migrate.image !== `myorder-migrate:${imageSha}` ||
+        (deploySha && deploySha !== imageSha)) throw new Error("Compose image SHA does not match the validated release candidate");
+  }
   if (environment === "production" && Object.keys(apiEnvironment).some(name => name.startsWith("STAGING_"))) throw new Error("Staging-only settings cannot be attached to production");
   if (environment === "production" && apiEnvironment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "true") throw new Error("Production WooCommerce integration policy must be explicitly enabled");
   if (environment === "staging" && (apiEnvironment.PAYPAL_ENVIRONMENT && apiEnvironment.PAYPAL_ENVIRONMENT !== "sandbox" || apiEnvironment.LIVE_PAYMENTS_ENABLED === "true")) throw new Error("Staging cannot enable live payment credentials or mode");
@@ -82,14 +130,16 @@ export function validatePlan({ environment, root, project, config, authorization
   return true;
 }
 
-export function validateCandidateIdentity({ root, environment, status, headSha, headTree, deploySha, deployTree, baseInAncestry, worktreeRegistered }) {
+export function validateCandidateIdentity({ root, environment, status, headSha, headTree, deploySha, deployTree, baseInAncestry, worktreeRegistered, toolingSuccessor = false, applicationInAncestry = false, applicationTreeMatches = false, toolingDiffPaths = [] }) {
   if (!isApprovedRoot(environment, root)) throw new Error("Unexpected deployment working tree");
   if (environment === "staging" && worktreeRegistered !== true) throw new Error("Staging source is not a registered Git worktree");
   if (status) throw new Error("Deployment checkout must be clean");
   if (!/^[a-f0-9]{40}$/.test(headSha ?? "") || !/^[a-f0-9]{40}$/.test(headTree ?? "")) throw new Error("Deployment checkout identity is invalid");
-  if (deploySha !== headSha || deployTree !== headTree) throw new Error("Deploy SHA/tree does not match the clean checkout HEAD");
+  const exactHead = deploySha === headSha && deployTree === headTree;
+  const approvedToolingSuccessor = toolingSuccessor && applicationInAncestry && applicationTreeMatches && toolingDiffPaths.length > 0 && toolingDiffPaths.every(file => TOOLING_ONLY_PATHS.has(file));
+  if (!exactHead && !approvedToolingSuccessor) throw new Error("Application SHA/tree is not the clean checkout or an approved deployment-tooling-only successor");
   if (environment === "staging" && !baseInAncestry) throw new Error("Deployment candidate is not descended from the authorized release base");
-  return headSha;
+  return deploySha;
 }
 
 function isApprovedRoot(environment, root) {
@@ -150,6 +200,44 @@ function run(command, args, { capture = false, ...options } = {}) {
   return result.stdout ?? "";
 }
 
+function verifyImage(expected, revision, daemonId) {
+  const raw = run("docker", ["image", "inspect", expected.id, "--format", "{{json .}}"], { capture: true });
+  return validatePinnedImageMetadata({ daemonId, image: JSON.parse(raw), expected, revision });
+}
+
+function verifyPinnedArtifacts() {
+  const daemonId = run("docker", ["info", "--format", "{{.ID}}"], { capture: true }).trim();
+  if (daemonId !== EXPECTED_DOCKER_DAEMON_ID) throw new Error("Docker daemon identity does not match the approved staging host");
+  const appTree = run("git", ["-C", ROOT, "rev-parse", `${PINNED_CANDIDATE.sha}^{tree}`], { capture: true }).trim();
+  if (appTree !== PINNED_CANDIDATE.tree) throw new Error("Pinned candidate source tree identity does not match");
+  const rollbackRoot = "/home/serveradmin/worktrees/myorder-pos-rollback-compat";
+  const rollbackHead = run("git", ["-C", rollbackRoot, "rev-parse", "HEAD"], { capture: true }).trim();
+  const rollbackTree = run("git", ["-C", rollbackRoot, "rev-parse", "HEAD^{tree}"], { capture: true }).trim();
+  const rollbackStatus = run("git", ["-C", rollbackRoot, "status", "--porcelain=v1"], { capture: true }).trim();
+  if (rollbackHead !== PINNED_ROLLBACK.sha || rollbackTree !== PINNED_ROLLBACK.tree || rollbackStatus) throw new Error("Validated rollback checkout is not exact and clean");
+  for (const expected of Object.values(PINNED_CANDIDATE.images)) verifyImage(expected, PINNED_CANDIDATE.sha, daemonId);
+  for (const expected of Object.values(PINNED_ROLLBACK.images)) verifyImage(expected, PINNED_ROLLBACK.sha, daemonId);
+  return {
+    daemonId,
+    candidate: PINNED_CANDIDATE,
+    rollback: PINNED_ROLLBACK,
+    composeEnvironment: {
+      MYORDER_API_IMAGE: PINNED_CANDIDATE.images.api.reference,
+      MYORDER_PLATFORM_IMAGE: PINNED_CANDIDATE.images.platform.reference,
+      MYORDER_MIGRATE_IMAGE: PINNED_CANDIDATE.images.migrate.reference,
+    },
+  };
+}
+
+function verifyDeployedImage(service, expected, revision) {
+  const ids = run("docker", ["ps", "--all", "--quiet", "--filter", `label=com.docker.compose.project=${PROJECT.staging}`, "--filter", `label=com.docker.compose.service=${service}`], { capture: true }).trim().split(/\s+/).filter(Boolean);
+  if (ids.length !== 1) throw new Error(`Expected one staging ${service} container after deployment`);
+  const raw = run("docker", ["inspect", ids[0], "--format", "{{json .}}"], { capture: true });
+  const container = JSON.parse(raw);
+  if (container.Image !== expected.id || container.Config?.Image !== expected.reference) throw new Error(`Staging ${service} did not start from its approved immutable image`);
+  validatePinnedImageMetadata({ daemonId: EXPECTED_DOCKER_DAEMON_ID, image: JSON.parse(run("docker", ["image", "inspect", container.Image, "--format", "{{json .}}"], { capture: true })), expected, revision });
+}
+
 function stageQuery(prefix, dbUser, statement) {
   return run("docker", [...prefix, "exec", "-T", "db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", dbUser, "-d", DATABASE.staging, "-Atc", statement], { capture: true }).trim();
 }
@@ -178,8 +266,8 @@ function validateStagingBackupEvidence(backupDir, sourceContainer) {
   return true;
 }
 
-function recognizedStagingLineage(prefix) {
-  const validator = run("docker", [...prefix, "run", "--build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true });
+function recognizedStagingLineage(prefix, env = process.env) {
+  const validator = run("docker", [...prefix, "run", "--pull", "never", "--no-build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true, env });
   const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
   const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
   return validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
@@ -213,7 +301,7 @@ function verifyStagingP0Patch(prefix, resolved) {
   console.log("Staging P0 patch applied and verified; recognized 49-row ledger unchanged.");
 }
 
-function verifyStagingMutationPreflight(prefix, resolved) {
+function verifyStagingMutationPreflight(prefix, resolved, env) {
   const dbUser = resolved.services.db.environment.POSTGRES_USER;
   const markerTableExists = stageQuery(prefix, dbUser, "SELECT to_regclass('public.myorder_hotfix_migrations') IS NOT NULL");
   let p0Ready = false;
@@ -229,7 +317,7 @@ function verifyStagingMutationPreflight(prefix, resolved) {
     const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
     wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL`));
   }
-  const recognizedLineage = recognizedStagingLineage(prefix);
+  const recognizedLineage = recognizedStagingLineage(prefix, env);
   validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
 }
 
@@ -248,11 +336,18 @@ function main() {
   const worktrees = run("git", ["-C", ROOT, "worktree", "list", "--porcelain"], { capture: true });
   const worktreeRegistered = worktrees.split("\n").some(line => line.startsWith("worktree ") && path.resolve(line.slice("worktree ".length)) === path.resolve(ROOT));
   const baseInAncestry = environment !== "staging" || spawnSync("git", ["-C", ROOT, "merge-base", "--is-ancestor", RELEASE_BASE_SHA, "HEAD"], { stdio: "ignore" }).status === 0;
-  process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, headTree, deploySha: process.env.DEPLOY_SHA?.trim(), deployTree: process.env.DEPLOY_TREE?.trim(), baseInAncestry, worktreeRegistered });
+  const deploySha = process.env.DEPLOY_SHA?.trim();
+  const deployTree = process.env.DEPLOY_TREE?.trim();
+  const exactToolingCandidate = deploySha === headSha;
+  const applicationInAncestry = !exactToolingCandidate && spawnSync("git", ["-C", ROOT, "merge-base", "--is-ancestor", deploySha ?? "", "HEAD"], { stdio: "ignore" }).status === 0;
+  const applicationTreeMatches = !exactToolingCandidate && deploySha ? spawnSync("git", ["-C", ROOT, "rev-parse", `${deploySha}^{tree}`], { encoding: "utf8" }).stdout?.trim() === deployTree : false;
+  const toolingDiffPaths = !exactToolingCandidate && deploySha ? run("git", ["-C", ROOT, "diff", "--name-only", `${deploySha}..HEAD`], { capture: true }).trim().split("\n").filter(Boolean) : [];
+  process.env.DEPLOY_SHA = validateCandidateIdentity({ root: ROOT, environment, status, headSha, headTree, deploySha, deployTree, baseInAncestry, worktreeRegistered, toolingSuccessor: !exactToolingCandidate, applicationInAncestry, applicationTreeMatches, toolingDiffPaths });
   const services = rest.filter(arg => arg !== "--authorize-production");
   validateActionServices(action, services);
   if (services.some(service => !["db", "api", "platform", "nginx"].includes(service))) throw new Error("Service is not in the deployment allowlist");
   if (action === "up" && (!services.length || services.some(service => !["db", "api", "platform", "nginx"].includes(service)))) throw new Error("up requires an explicit allowlisted service list");
+  if (environment === "staging" && action === "up" && (services.length !== 2 || !services.includes("api") || !services.includes("platform"))) throw new Error("Pinned staging release up is restricted to the API and platform services");
   if ((action === "migrate" || action === "p0") && services.length) throw new Error(`${action} does not accept service arguments`);
   if ((action === "bootstrap" || action === "build" || action === "config") && services.length) throw new Error(`${action} does not accept service arguments`);
 
@@ -263,8 +358,22 @@ function main() {
   if (!existsSync(composeFile) || !existsSync(envFile)) throw new Error("Expected Compose file or environment file is missing");
   if (environment === "staging" && (statSync(envFile).mode & 0o077) !== 0) throw new Error("Staging environment file permissions must restrict group and other access");
   const prefix = ["compose", "--project-name", project, "--env-file", envFile, "--file", composeFile];
-  const resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true }));
+  const composeEnv = { ...process.env };
+  delete composeEnv.MYORDER_API_IMAGE;
+  delete composeEnv.MYORDER_PLATFORM_IMAGE;
+  delete composeEnv.MYORDER_MIGRATE_IMAGE;
+  let resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true, env: composeEnv }));
   validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA });
+  let pins;
+  let pinnedEnv;
+  if (environment === "staging" && (action === "up" || action === "migrate")) {
+    if (process.env.DEPLOY_SHA !== PINNED_CANDIDATE.sha || process.env.DEPLOY_TREE !== PINNED_CANDIDATE.tree) throw new Error("Pinned local images are approved only for the validated candidate commit/tree");
+    pins = verifyPinnedArtifacts();
+    pinnedEnv = { ...composeEnv, ...pins.composeEnvironment };
+    resolved = JSON.parse(run("docker", [...prefix, "config", "--format", "json"], { capture: true, env: pinnedEnv }));
+    validatePlan({ environment, root: ROOT, project, config: resolved, authorization, deploySha: process.env.DEPLOY_SHA, pinnedImages: PINNED_CANDIDATE.images });
+  }
+  validateBuildPolicy({ environment, action, deploySha: process.env.DEPLOY_SHA });
 
   if (action === "bootstrap") {
     const existing = ["db", "api", "platform", "nginx"].flatMap(service => run("docker", [...prefix, "ps", "--all", "--quiet", service], { capture: true }).trim().split(/\s+/).filter(Boolean));
@@ -308,15 +417,26 @@ function main() {
     return;
   }
   if (environment === "staging" && action !== "config") {
-    verifyStagingMutationPreflight(prefix, resolved);
+    verifyStagingMutationPreflight(prefix, resolved, pinnedEnv ?? composeEnv);
   }
 
   if (action === "config") return;
   if (environment === "production" && !authorization) throw new Error("Production action requires explicit authorization");
   if (action === "stop") run("docker", [...prefix, "stop", ...services]);
   if (action === "build") run("docker", [...prefix, "build"]);
-  if (action === "up") run("docker", [...prefix, "up", "-d", "--no-deps", ...services]);
-  if (action === "migrate") run("docker", [...prefix, "run", "--rm", "migrate"]);
+  if (action === "up") {
+    if (environment === "staging") {
+      verifyPinnedArtifacts();
+      run("docker", [...prefix, ...pinnedUpArgs(services)], { env: pinnedEnv });
+      for (const service of services) verifyDeployedImage(service, PINNED_CANDIDATE.images[service], PINNED_CANDIDATE.sha);
+    } else run("docker", [...prefix, "up", "-d", "--no-deps", ...services]);
+  }
+  if (action === "migrate") {
+    if (environment === "staging") {
+      verifyPinnedArtifacts();
+      run("docker", [...prefix, "run", "--pull", "never", "--no-build", "--rm", "migrate"], { env: pinnedEnv });
+    } else run("docker", [...prefix, "run", "--rm", "migrate"]);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

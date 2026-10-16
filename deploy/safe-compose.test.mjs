@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { validateActionServices, validateCandidateIdentity, validateContainer, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
+import { pinnedUpArgs, validateActionServices, validateBuildPolicy, validateCandidateIdentity, validateContainer, validatePinnedComposeImages, validatePinnedImageMetadata, validatePlan, validateStagingDatabasePreflight, validateStagingWooOrigin } from "./safe-compose.mjs";
 
 const root = "/home/serveradmin/worktrees/myorder-release-convergence-20261016";
 function config(environment, database) {
@@ -87,6 +87,40 @@ test("requires a clean candidate checkout and an exact candidate SHA", () => {
   assert.throws(() => validateCandidateIdentity({ ...identity, deployTree: "c".repeat(40) }), /SHA\/tree/);
   assert.throws(() => validateCandidateIdentity({ ...identity, baseInAncestry: false }), /authorized release base/);
 });
+test("accepts a clean tooling-only successor while retaining the application source identity", () => {
+  const sha = "a".repeat(40), tree = "b".repeat(40);
+  const identity = { root, environment: "staging", status: "", headSha: "c".repeat(40), headTree: "d".repeat(40), deploySha: sha, deployTree: tree, baseInAncestry: true, worktreeRegistered: true, toolingSuccessor: true, applicationInAncestry: true, applicationTreeMatches: true, toolingDiffPaths: ["deploy/safe-compose.mjs"] };
+  assert.equal(validateCandidateIdentity(identity), sha);
+  assert.throws(() => validateCandidateIdentity({ ...identity, toolingDiffPaths: ["artifacts/api-server/src/index.ts"] }), /tooling-only successor/);
+  assert.throws(() => validateCandidateIdentity({ ...identity, applicationTreeMatches: false }), /tooling-only successor/);
+});
+test("pins exact local image IDs, source labels, architecture and daemon", () => {
+  const id = `sha256:${"a".repeat(64)}`;
+  const expected = { id, reference: `myorder-api@${id}` };
+  const image = { Id: id, Os: "linux", Architecture: "amd64", RepoDigests: [expected.reference], Config: { Labels: { "org.opencontainers.image.revision": "4".repeat(40), "com.myorder.deploy-sha": "4".repeat(40) } } };
+  assert.equal(validatePinnedImageMetadata({ daemonId: "daemon", expectedDaemonId: "daemon", image, expected, revision: "4".repeat(40) }), expected.reference);
+  assert.throws(() => validatePinnedImageMetadata({ daemonId: "other", expectedDaemonId: "daemon", image, expected, revision: "4".repeat(40) }), /daemon identity/);
+  assert.throws(() => validatePinnedImageMetadata({ daemonId: "daemon", expectedDaemonId: "daemon", image: { ...image, Id: `sha256:${"b".repeat(64)}` }, expected, revision: "4".repeat(40) }), /image ID/);
+  assert.throws(() => validatePinnedImageMetadata({ daemonId: "daemon", expectedDaemonId: "daemon", image: { ...image, Architecture: "arm64" }, expected, revision: "4".repeat(40) }), /architecture/);
+  assert.throws(() => validatePinnedImageMetadata({ daemonId: "daemon", expectedDaemonId: "daemon", image: { ...image, Config: { Labels: { ...image.Config.Labels, "org.opencontainers.image.revision": "5".repeat(40) } } }, expected, revision: "4".repeat(40) }), /OCI revision/);
+  assert.throws(() => validatePinnedImageMetadata({ daemonId: "daemon", expectedDaemonId: "daemon", image: { ...image, RepoDigests: [] }, expected, revision: "4".repeat(40) }), /digest reference/);
+});
+test("rejects Compose service substitution and emits no-build/no-pull immutable up flags", () => {
+  const pinned = { api: { id: "api-id", reference: "myorder-api@sha256:api" }, platform: { id: "platform-id", reference: "myorder-platform@sha256:platform" }, migrate: { id: "migrate-id", reference: "myorder-migrate@sha256:migrate" } };
+  const resolved = config("staging", "myorder_staging");
+  resolved.services.api.image = pinned.api.reference;
+  resolved.services.platform.image = pinned.platform.reference;
+  resolved.services.migrate.image = pinned.migrate.reference;
+  assert.equal(validatePinnedComposeImages(resolved, pinned), true);
+  resolved.services.api.image = "myorder-api:mutable-tag";
+  assert.throws(() => validatePinnedComposeImages(resolved, pinned), /immutable digest/);
+  const args = pinnedUpArgs(["api", "platform"]);
+  assert.ok(args.includes("--no-build"));
+  assert.deepEqual(args.slice(0, 3), ["up", "--pull", "never"]);
+  assert.ok(!args.includes("build") && !args.includes("always"));
+  assert.throws(() => validateBuildPolicy({ environment: "staging", action: "build", deploySha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833" }), /rebuild is prohibited/);
+  assert.equal(validateBuildPolicy({ environment: "staging", action: "build", deploySha: "another-candidate" }), true);
+});
 test("staging configuration and database readiness fail before mutations", () => {
   const missingOwner = config("staging", "myorder_staging");
   delete missingOwner.services.api.environment.MYORDER_OWNER_CLERK_ID;
@@ -123,15 +157,18 @@ test("staging external-integration mode retains HTTPS origin validation", () => 
 });
 test("staging preflight is ordered before every deployment mutation and does not render secrets", () => {
   const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
-  const preflight = source.indexOf("verifyStagingMutationPreflight(prefix, resolved)");
-  const action = source.indexOf('if (action === "up") run');
+  const preflight = source.indexOf("verifyStagingMutationPreflight(prefix, resolved,");
+  const action = source.indexOf('if (action === "up") {');
   assert.ok(preflight > 0 && action > preflight);
   const mutationPreflight = source.indexOf("function verifyStagingMutationPreflight");
   const wooPreflight = source.indexOf("if (wooExternalEnabled)", mutationPreflight);
-  const lineageValidation = source.indexOf("recognizedStagingLineage(prefix)", mutationPreflight);
+  const lineageValidation = source.indexOf("recognizedStagingLineage(prefix, env)", mutationPreflight);
   assert.ok(mutationPreflight > 0 && wooPreflight > mutationPreflight && lineageValidation > wooPreflight);
   assert.doesNotMatch(source, /console\.log\([^\n]*(config|envValues|CLERK_SECRET_KEY|wc_webhook_secret)/i);
   assert.match(source, /stdio: capture \? "pipe" : "inherit"/);
+  const lineage = source.slice(source.indexOf("function recognizedStagingLineage"), source.indexOf("function verifyStagingP0Patch"));
+  assert.match(lineage, /"--pull", "never", "--no-build"/);
+  assert.doesNotMatch(lineage, /"--build"/);
 });
 test("P0 compatibility patch has a staging-only guarded action tied to verified backup and unchanged lineage", () => {
   assert.equal(validateActionServices("p0", []), true);

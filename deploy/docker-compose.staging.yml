@@ -20,7 +20,7 @@ services:
     networks: [internal]
 
   migrate:
-    image: myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_MIGRATE_IMAGE:-myorder-migrate:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.migrate
@@ -37,7 +37,7 @@ services:
     restart: "no"
 
   api:
-    image: myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_API_IMAGE:-myorder-api:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
@@ -132,7 +132,7 @@ services:
     networks: [internal]
 
   platform:
-    image: myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}
+    image: ${MYORDER_PLATFORM_IMAGE:-myorder-platform:${DEPLOY_SHA:?DEPLOY_SHA is required}}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.platform
