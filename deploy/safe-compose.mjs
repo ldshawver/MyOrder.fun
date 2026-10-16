@@ -35,10 +35,14 @@ export function validatePlan({ environment, root, project, config, authorization
       config.services.migrate.image !== `myorder-migrate:${imageSha}` ||
       (deploySha && deploySha !== imageSha)) throw new Error("Compose image SHA does not match the validated release candidate");
   if (environment === "production" && Object.keys(apiEnvironment).some(name => name.startsWith("STAGING_"))) throw new Error("Staging-only settings cannot be attached to production");
+  if (environment === "production" && apiEnvironment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "true") throw new Error("Production WooCommerce integration policy must be explicitly enabled");
   if (environment === "staging" && (apiEnvironment.PAYPAL_ENVIRONMENT && apiEnvironment.PAYPAL_ENVIRONMENT !== "sandbox" || apiEnvironment.LIVE_PAYMENTS_ENABLED === "true")) throw new Error("Staging cannot enable live payment credentials or mode");
   if (environment === "staging") {
     if (!/^user_[A-Za-z0-9_-]+$/.test(apiEnvironment.MYORDER_OWNER_CLERK_ID ?? "")) throw new Error("Staging owner Clerk configuration is missing or invalid");
-    validateStagingWooOrigin(apiEnvironment.STAGING_WOOCOMMERCE_ORIGIN);
+    const wooPolicy = apiEnvironment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+    if (wooPolicy !== "true" && wooPolicy !== "false") throw new Error("Staging WooCommerce external integration policy must be explicit");
+    if (wooPolicy === "false" && Object.hasOwn(apiEnvironment, "STAGING_WOOCOMMERCE_ORIGIN")) throw new Error("Disabled staging WooCommerce policy must not render an external store origin");
+    if (wooPolicy === "true") validateStagingWooOrigin(apiEnvironment.STAGING_WOOCOMMERCE_ORIGIN);
     if (apiEnvironment.RECEIPT_PRINT_ENABLED === "true" || apiEnvironment.LABEL_PRINT_ENABLED === "true" || apiEnvironment.EMAIL_ENABLED !== "false" || apiEnvironment.SMS_ENABLED !== "false" || apiEnvironment.PUSH_ENABLED !== "false" || apiEnvironment.ORDER_NOTIFICATION_WORKER_ENABLED === "1" || apiEnvironment.UBER_DIRECT_DISPATCH_ENABLED === "true") throw new Error("Staging external side effects must remain disabled during release testing");
   }
   const dbUrl = config.services.api.environment.DATABASE_URL;
@@ -90,10 +94,11 @@ function isApprovedRoot(environment, root) {
   return environment === "staging" && resolved.startsWith(`${WORKTREES_ROOT}/`) && path.dirname(resolved) === WORKTREES_ROOT;
 }
 
-export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooSafeTenantCount }) {
+export function validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount }) {
   if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
   if (!recognizedLineage) throw new Error("Staging migration lineage is not recognized through 0076");
-  if (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1) throw new Error("Staging WooCommerce test integration is missing or has outbound credentials enabled");
+  if (typeof wooExternalEnabled !== "boolean") throw new Error("Staging WooCommerce external integration policy is not explicit");
+  if (wooExternalEnabled && (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1)) throw new Error("Staging WooCommerce test integration is missing or required tenant credentials are absent");
   return true;
 }
 
@@ -154,15 +159,18 @@ function verifyStagingMutationPreflight(prefix, resolved) {
     p0Ready = marker === "t";
   }
   if (!p0Ready) throw new Error("Staging P0 marker/provenance schema is not verified");
-  const expectedWooOrigin = validateStagingWooOrigin(resolved.services.api.environment.STAGING_WOOCOMMERCE_ORIGIN);
-  const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
-  const wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NULL AND wc_consumer_secret IS NULL`));
-  if (!Number.isSafeInteger(wooSafeTenantCount) || wooSafeTenantCount < 1) throw new Error("Staging WooCommerce test integration is missing or has outbound credentials enabled");
+  const wooExternalEnabled = resolved.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED === "true";
+  let wooSafeTenantCount = null;
+  if (wooExternalEnabled) {
+    const expectedWooOrigin = validateStagingWooOrigin(resolved.services.api.environment.STAGING_WOOCOMMERCE_ORIGIN);
+    const escapedOrigin = expectedWooOrigin.replaceAll("'", "''");
+    wooSafeTenantCount = Number(stageQuery(prefix, dbUser, `SELECT count(*) FROM public.admin_settings WHERE wc_store_url='${escapedOrigin}' AND wc_webhook_secret IS NOT NULL AND wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL`));
+  }
   const validator = run("docker", [...prefix, "run", "--build", "--rm", "--no-deps", "--entrypoint", "pnpm", "migrate", "--filter", "@workspace/db", "db:validate-migrations"], { capture: true });
   const appliedMigrations = [...validator.matchAll(/\[migration-ledger\] APPLIED ([^ ]+)/g)].map(match => match[1]);
   const hasPendingMigrations = /\[migration-ledger\] PENDING /.test(validator);
   const recognizedLineage = validator.includes("recognized lineage preserved: 49/51") && appliedMigrations.length === 51 && !hasPendingMigrations && validator.includes("APPLIED 0075_catalogue_variant_attributes ") && validator.includes("APPLIED 0076_tenant_woo_store_url_no_default ");
-  validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooSafeTenantCount });
+  validateStagingDatabasePreflight({ p0Ready, recognizedLineage, wooExternalEnabled, wooSafeTenantCount });
 }
 
 function main() {

@@ -40,9 +40,11 @@ The wrapper uses only `deploy/docker-compose.staging.yml` and
 `deploy/.env.staging`, validates the resolved API and migration database, and
 checks that every existing target container belongs to `myorder-staging`. Before
 any staging mutation it runs the read-only migration validator, verifies P0
-provenance and the 0075/0076 schema, and requires a test WooCommerce store URL
-and webhook secret with no consumer API credentials. It fails closed if any of
-these prerequisites or outbound-effect controls are missing.
+provenance and the 0075/0076 schema, and requires an explicit WooCommerce
+external-integration policy. In production-only mode, the API runtime must
+render `WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED=false`; it does not require a
+staging Woo store and all server-side Woo requests fail closed. Explicitly
+enabled staging retains origin, tenant, webhook-secret, and credential checks.
 
 ---
 

@@ -144,6 +144,7 @@ export function pickWooCategory(categories: Array<{ name?: string }> | undefined
 }
 
 import { fetchWooSafely } from "../lib/wooSafeHttp";
+import { isWooCommerceExternalIntegrationEnabled, wooCommerceDisabledResponse } from "../lib/wooExternalPolicy";
 const WOO_MAX_PAGES = 100;
 
 async function fetchWoo(storeUrl: string, path: string, consumerKey: string, consumerSecret: string): Promise<Response> {
@@ -292,6 +293,10 @@ async function syncWooProductVariants(input: {
 // via getDecryptedWooCreds(). Request-body overrides are intentionally NOT
 // accepted, to avoid an admin-gated SSRF surface.
 export async function syncHandler(req: import("express").Request, res: import("express").Response, targetWooProductId?: string): Promise<void> {
+    if (!isWooCommerceExternalIntegrationEnabled()) {
+      res.status(503).json(wooCommerceDisabledResponse());
+      return;
+    }
     try {
       await ensureWooCatalogSchema();
     } catch {
@@ -512,6 +517,10 @@ router.post(
   requirePermission("settings.manage_tenant"),
   requireTenantAssignedOrGlobal,
   async (req, res): Promise<void> => {
+    if (!isWooCommerceExternalIntegrationEnabled()) {
+      res.status(503).json(wooCommerceDisabledResponse());
+      return;
+    }
     // Test only the SAVED credentials. We deliberately do not honor
     // request-body overrides (admin-gated SSRF) and we deliberately do
     // not fall back to env vars (so missing persisted config surfaces

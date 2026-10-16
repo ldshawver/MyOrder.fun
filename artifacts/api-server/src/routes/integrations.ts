@@ -25,6 +25,7 @@ import { requireAuth, loadDbUser, requireDbUser, requireApproved, requireRole } 
 import { getUberDirectRuntimeConfig } from "../lib/uberDirectConfig";
 import { safeDecrypt } from "../lib/crypto";
 import { fetchWooSafely } from "../lib/wooSafeHttp";
+import { isWooCommerceExternalIntegrationEnabled } from "../lib/wooExternalPolicy";
 import { loadTenantPaymentConfig } from "../payments/tenantConfig";
 
 const router: IRouter = Router();
@@ -69,7 +70,8 @@ function checkGitHub(): IntegrationStatus {
 }
 
 /** Use the same tenant credentials and safe transport as the admin test. */
-async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+export async function checkWooCommerce(tenantId: number): Promise<IntegrationStatus> {
+  if (!isWooCommerceExternalIntegrationEnabled()) return "missing_config";
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return "missing_config";
   try {
     const [row] = await db.select({ enabled: adminSettingsTable.wcEnabled, storeUrl: adminSettingsTable.wcStoreUrl,

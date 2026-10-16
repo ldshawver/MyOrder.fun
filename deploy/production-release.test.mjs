@@ -36,6 +36,7 @@ const expectedConfig = {
         SESSION_SECRET: "masked",
         SETTINGS_ENC_KEY: "masked",
         MYORDER_OWNER_CLERK_ID: "user_testowner",
+        WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "true",
         PAYMENT_MODE: "disabled",
         PAYPAL_ENVIRONMENT: "",
         PAYPAL_CLIENT_ID: "",
@@ -135,6 +136,12 @@ test("production Compose is pinned to the production database, release images, v
   const missingAuth = structuredClone(expectedConfig);
   missingAuth.services.api.environment.SESSION_SECRET = "";
   assert.throws(() => assertProductionConfig(missingAuth), /SESSION_SECRET/);
+  const disabledWoo = structuredClone(expectedConfig);
+  disabledWoo.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+  assert.throws(() => assertProductionConfig(disabledWoo), /WooCommerce external integration policy/);
+  const missingWooPolicy = structuredClone(expectedConfig);
+  delete missingWooPolicy.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+  assert.throws(() => assertProductionConfig(missingWooPolicy), /WooCommerce external integration policy/);
   const wrongRole = structuredClone(expectedConfig);
   wrongRole.services.db.environment.POSTGRES_USER = "staging_user";
   assert.throws(() => assertProductionConfig(wrongRole), /PostgreSQL role/);
@@ -321,7 +328,8 @@ test("migration verifier checks physical 0075/0076 effects and release gates bin
   assert.match(guard, /appliedMigrations\.length === 51/);
   assert.match(guard, /hasPendingMigrations/);
   assert.match(guard, /users_owner_approval_provenance_idx/);
-  assert.match(guard, /wc_consumer_key IS NULL AND wc_consumer_secret IS NULL/);
+  assert.match(guard, /wooExternalEnabled/);
+  assert.match(guard, /wc_consumer_key IS NOT NULL AND wc_consumer_secret IS NOT NULL/);
 });
 
 test("production workflow uses versioned release archives and never deletes or synchronizes into the live checkout", () => {
@@ -516,7 +524,7 @@ test("application startup does not trigger Woo synchronization or Uber dispatch"
   assert.match(startup, /startOrderNotificationWorker\(\)/);
   assert.doesNotMatch(
     startup,
-    /Woo|woo|syncPending|dispatchPendingUberDelivery|createUberDelivery/,
+    /syncPending|dispatchPendingUberDelivery|createUberDelivery|createWooOrder|fetchWooSafely/,
   );
   const runner = readFileSync(
     new URL("./production-release.mjs", import.meta.url),

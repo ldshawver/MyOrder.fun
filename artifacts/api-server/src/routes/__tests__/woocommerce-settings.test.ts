@@ -143,6 +143,7 @@ function makeApp() {
 
 describe("woocommerce settings save/load/sync", () => {
   beforeEach(() => {
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
     state.row = null;
     nextId = 1;
     vi.restoreAllMocks();
@@ -228,6 +229,24 @@ describe("woocommerce settings save/load/sync", () => {
     expect(res.body.ok).toBe(false);
     expect(res.body.status).toBe(412);
     expect(typeof res.body.message).toBe("string");
+  });
+
+  it("disabled global staging policy blocks test and manual sync even when tenant settings save credentials and enable Woo", async () => {
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+    const app = makeApp();
+    const saved = await supertest(app).put("/api/admin/settings/woocommerce")
+      .send({ wcStoreUrl: "https://saved-tenant.example", wcConsumerKey: "ck_preserved", wcConsumerSecret: "cs_preserved", enabled: true });
+    expect(saved.status).toBe(200);
+    expect(state.row?.wcConsumerKey).not.toBe("ck_preserved");
+    expect(state.row?.wcConsumerSecret).not.toBe("cs_preserved");
+
+    const connection = await supertest(app).post("/api/admin/woocommerce/test").send({});
+    expect(connection.status).toBe(503);
+    expect(connection.body.code).toBe("woocommerce_external_integration_disabled");
+    const sync = await supertest(app).post("/api/admin/woocommerce/sync").send({});
+    expect(sync.status).toBe(503);
+    expect(sync.body.code).toBe("woocommerce_external_integration_disabled");
+    expect(fetchWooSafely).not.toHaveBeenCalled();
   });
 
   it("does not substitute a generic or environment Woo URL when tenant configuration is empty", async () => {

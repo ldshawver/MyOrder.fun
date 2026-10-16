@@ -145,6 +145,8 @@ export function assertProductionConfig(config, expected) {
   }
   if (!/^user_[A-Za-z0-9_-]+$/.test(api.MYORDER_OWNER_CLERK_ID))
     throw new Error("Production owner Clerk subject is invalid");
+  if (api.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "true")
+    throw new Error("Production WooCommerce external integration policy must be explicitly enabled");
   if (
     typeof db.POSTGRES_PASSWORD !== "string" ||
     db.POSTGRES_PASSWORD.trim() === ""

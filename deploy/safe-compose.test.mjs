@@ -11,7 +11,7 @@ function config(environment, database) {
   return {
     name: project,
     services: {
-      api: { image: `myorder-api:${imageSha}`, environment: { NODE_ENV: environment, DATABASE_URL: `postgres://app@db:5432/${database}`, MYORDER_OWNER_CLERK_ID: "user_testowner", ...(environment === "staging" ? { STAGING_WOOCOMMERCE_ORIGIN: "https://store.test.example" } : {}), EMAIL_ENABLED: "false", SMS_ENABLED: "false", PUSH_ENABLED: "false", RECEIPT_PRINT_ENABLED: "false", LABEL_PRINT_ENABLED: "false", UBER_DIRECT_DISPATCH_ENABLED: "false", ORDER_NOTIFICATION_WORKER_ENABLED: "0" }, networks: { internal: {} } },
+      api: { image: `myorder-api:${imageSha}`, environment: { NODE_ENV: environment, DATABASE_URL: `postgres://app@db:5432/${database}`, MYORDER_OWNER_CLERK_ID: "user_testowner", ...(environment === "staging" ? { WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false" } : { WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "true" }), EMAIL_ENABLED: "false", SMS_ENABLED: "false", PUSH_ENABLED: "false", RECEIPT_PRINT_ENABLED: "false", LABEL_PRINT_ENABLED: "false", UBER_DIRECT_DISPATCH_ENABLED: "false", ORDER_NOTIFICATION_WORKER_ENABLED: "0" }, networks: { internal: {} } },
       db: { environment: { POSTGRES_DB: database }, networks: { internal: {} } },
       migrate: { image: `myorder-migrate:${imageSha}`, environment: { DATABASE_URL: `postgres://app@db:5432/${database}` }, networks: { internal: {} } },
       platform: { image: `myorder-platform:${imageSha}`, networks: { internal: {} } },
@@ -94,22 +94,39 @@ test("staging configuration and database readiness fail before mutations", () =>
   const unsafeSideEffect = config("staging", "myorder_staging");
   unsafeSideEffect.services.api.environment.RECEIPT_PRINT_ENABLED = "true";
   assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: unsafeSideEffect }), /external side effects/);
-  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: false, recognizedLineage: true, wooSafeTenantCount: 1 }), /P0 marker/);
-  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: false, wooSafeTenantCount: 1 }), /migration lineage/);
-  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooSafeTenantCount: 0 }), /WooCommerce/);
-  assert.equal(validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooSafeTenantCount: 1 }), true);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: false, recognizedLineage: true, wooExternalEnabled: false }), /P0 marker/);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: false, wooExternalEnabled: false }), /migration lineage/);
+  assert.equal(validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooExternalEnabled: false }), true);
+  assert.throws(() => validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooExternalEnabled: true, wooSafeTenantCount: 0 }), /WooCommerce/);
+  assert.equal(validateStagingDatabasePreflight({ p0Ready: true, recognizedLineage: true, wooExternalEnabled: true, wooSafeTenantCount: 1 }), true);
 });
-test("staging Woo configuration is an explicit HTTPS origin", () => {
+test("staging production-only mode is explicit and does not require a Woo store or tenant", () => {
+  assert.equal(validatePlan({ environment: "staging", root, project: "myorder-staging", config: config("staging", "myorder_staging") }), true);
+  const unset = config("staging", "myorder_staging");
+  delete unset.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: unset }), /policy must be explicit/);
+  const disabledWithOrigin = config("staging", "myorder_staging");
+  disabledWithOrigin.services.api.environment.STAGING_WOOCOMMERCE_ORIGIN = "https://production.example";
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: disabledWithOrigin }), /must not render an external store origin/);
+});
+test("staging external-integration mode retains HTTPS origin validation", () => {
+  const enabled = config("staging", "myorder_staging");
+  enabled.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
+  enabled.services.api.environment.STAGING_WOOCOMMERCE_ORIGIN = "https://store.test.example";
+  assert.equal(validatePlan({ environment: "staging", root, project: "myorder-staging", config: enabled }), true);
   assert.equal(validateStagingWooOrigin("https://store.test.example"), "https://store.test.example");
   assert.throws(() => validateStagingWooOrigin("http://store.test.example"), /HTTPS origin/);
   assert.throws(() => validateStagingWooOrigin("https://store.test.example/path"), /HTTPS origin/);
+  const enabledWithoutOrigin = config("staging", "myorder_staging");
+  enabledWithoutOrigin.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
+  assert.throws(() => validatePlan({ environment: "staging", root, project: "myorder-staging", config: enabledWithoutOrigin }), /origin/);
 });
 test("staging preflight is ordered before every deployment mutation and does not render secrets", () => {
   const source = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
   const preflight = source.indexOf("verifyStagingMutationPreflight(prefix, resolved)");
   const action = source.indexOf('if (action === "up") run');
   assert.ok(preflight > 0 && action > preflight);
-  const wooPreflight = source.indexOf("if (!Number.isSafeInteger(wooSafeTenantCount)");
+  const wooPreflight = source.indexOf("if (wooExternalEnabled)");
   const validatorBuild = source.indexOf('"run", "--build", "--rm", "--no-deps"');
   assert.ok(wooPreflight > 0 && validatorBuild > wooPreflight);
   assert.doesNotMatch(source, /console\.log\([^\n]*(config|envValues|CLERK_SECRET_KEY|wc_webhook_secret)/i);
@@ -119,6 +136,9 @@ test("requires explicit production authorization and exact production targets", 
   const args = { environment: "production", root: "/opt/alavont", project: "deploy", config: config("production", "alavont") };
   assert.throws(() => validatePlan(args), /authorization/);
   assert.equal(validatePlan({ ...args, authorization: "DEPLOY-PRODUCTION" }), true);
+  const disabledProduction = config("production", "alavont");
+  disabledProduction.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+  assert.throws(() => validatePlan({ ...args, config: disabledProduction, authorization: "DEPLOY-PRODUCTION" }), /Production WooCommerce.*explicitly enabled/);
   assert.throws(() => validatePlan({ ...args, project: "myorder-staging", authorization: "DEPLOY-PRODUCTION" }), /project/);
 });
 test("restricts migration maintenance stop to the API container only", () => {

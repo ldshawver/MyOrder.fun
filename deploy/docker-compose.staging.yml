@@ -58,9 +58,9 @@ services:
       DB_SSL: "false"
       DEPLOY_SHA: ${DEPLOY_SHA:?DEPLOY_SHA is required}
       MYORDER_OWNER_CLERK_ID: ${MYORDER_OWNER_CLERK_ID:?MYORDER_OWNER_CLERK_ID must be supplied}
-      # Declared staging Woo origin is checked against the tenant row before
-      # any staging mutation; the application does not trust it for tenancy.
-      STAGING_WOOCOMMERCE_ORIGIN: ${STAGING_WOOCOMMERCE_ORIGIN:?a dedicated non-production WooCommerce origin is required}
+      # Explicit fail-closed external integration policy. Production-only
+      # WooCommerce means tenant DB credentials remain stored but unusable here.
+      WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: ${WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED:?Set explicitly to true or false}
       CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:?CLERK_SECRET_KEY is required}
       CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?CLERK_PUBLISHABLE_KEY is required}
       CLERK_PROXY_URL: ${VITE_CLERK_PROXY_URL:?VITE_CLERK_PROXY_URL is required}

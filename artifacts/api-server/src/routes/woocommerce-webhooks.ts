@@ -5,6 +5,7 @@ import { db } from "@workspace/db";
 import { safeDecrypt } from "../lib/crypto";
 import { assertWooHttpsOrigin } from "../lib/wooSafeHttp";
 import { logger } from "../lib/logger";
+import { isWooCommerceExternalIntegrationEnabled, wooCommerceDisabledResponse } from "../lib/wooExternalPolicy";
 import { reconcileWooWebhookProduct } from "./woocommerce";
 
 const router = Router();
@@ -42,6 +43,11 @@ function reject(res: Response, code: string, status: number): void {
 }
 
 router.post("/webhooks/woocommerce", async (req, res): Promise<void> => {
+  if (!isWooCommerceExternalIntegrationEnabled()) {
+    logger.warn({ code: "external_integration_disabled" }, "WooCommerce webhook rejected");
+    res.status(503).json(wooCommerceDisabledResponse());
+    return;
+  }
   if (!Buffer.isBuffer(req.body) || req.body.length === 0 || req.body.length > MAX_BODY_BYTES) {
     reject(res, "raw_body_invalid", 400);
     return;

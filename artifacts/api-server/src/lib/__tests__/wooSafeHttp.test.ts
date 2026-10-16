@@ -1,9 +1,44 @@
 import { EventEmitter } from "node:events";
 import type { request } from "node:https";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertWooHttpsOrigin, fetchWooSafely, isPublicWooAddress, resolvePublicWooAddress } from "../wooSafeHttp";
+import { createWooOrder } from "../wooClient";
 
 describe("WooCommerce SSRF boundary", () => {
+  const priorWooPolicy = process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+  afterEach(() => {
+    if (priorWooPolicy === undefined) delete process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
+    else process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = priorWooPolicy;
+  });
+
+  it("blocks the shared outbound transport in disabled mode before DNS or HTTP", async () => {
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+    const transport = vi.fn();
+    await expect(fetchWooSafely("https://shop.example", "/wp-json/wc/v3/system_status", "synthetic", "synthetic", transport as never)).rejects.toThrow(/disabled/);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("blocks the legacy order-dispatch writer when disabled even if process credentials exist", async () => {
+    const priorFetch = globalThis.fetch;
+    const priorKey = process.env.WC_CONSUMER_KEY;
+    const priorSecret = process.env.WC_CONSUMER_SECRET;
+    const priorStore = process.env.WC_STORE_URL;
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+    process.env.WC_CONSUMER_KEY = "synthetic-key";
+    process.env.WC_CONSUMER_SECRET = "synthetic-secret";
+    process.env.WC_STORE_URL = "https://store.example";
+    const outbound = vi.fn();
+    globalThis.fetch = outbound as unknown as typeof fetch;
+    try {
+      await expect(createWooOrder({ orderId: 1, lines: [] })).resolves.toBeNull();
+      expect(outbound).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = priorFetch;
+      for (const [key, value] of [["WC_CONSUMER_KEY", priorKey], ["WC_CONSUMER_SECRET", priorSecret], ["WC_STORE_URL", priorStore]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
   it.each(["http://shop.example", "https://user:pass@shop.example", "https://localhost", "https://127.0.0.1", "https://10.0.0.2", "https://169.254.169.254", "https://[::1]", "https://[fc00::1]", "https://shop.local", "https://shop.example/path", "https://shop.example?secret=1"])("rejects prohibited origin %s", url => {
     expect(() => assertWooHttpsOrigin(url)).toThrow();
   });

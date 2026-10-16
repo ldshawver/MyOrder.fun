@@ -69,10 +69,21 @@ function post(body = BODY, deliveryId = "delivery-1", sig = signature(body), sou
 
 describe("WooCommerce webhook HTTP authentication and delivery state", () => {
   beforeEach(() => {
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
     mockState.dbResults = [];
     mockState.reconcileCalls = [];
     mockState.failNextReconcile = false;
     vi.mocked(db.execute).mockClear();
+  });
+
+  it("fails closed before tenant lookup or reconciliation when staging external integration is disabled", async () => {
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
+    const response = await post();
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe("woocommerce_external_integration_disabled");
+    expect(vi.mocked(db.execute)).not.toHaveBeenCalled();
+    expect(mockState.reconcileCalls).toHaveLength(0);
+    process.env.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
   });
 
   it("authenticates exact raw bytes, derives tenant from stored configuration, and processes once", async () => {

@@ -43,6 +43,7 @@ services:
     environment:
       PORT: "8080"
       NODE_ENV: development
+      WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: ${WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED:-false}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       DB_SSL: "false"
       DEPLOY_SHA: ${DEPLOY_SHA:-dev}

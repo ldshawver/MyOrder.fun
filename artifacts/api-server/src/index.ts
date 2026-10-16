@@ -2,6 +2,9 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { startFeedbackArchiveScheduler } from "./lib/feedbackArchiveScheduler";
 import { startOrderNotificationWorker } from "./lib/orderNotifications";
+import { assertWooCommerceExternalIntegrationPolicy } from "./lib/wooExternalPolicy";
+
+assertWooCommerceExternalIntegrationPolicy();
 
 const rawPort = process.env["PORT"];
 

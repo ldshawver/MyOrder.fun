@@ -87,9 +87,8 @@ The staging Clerk owner value must be the designated owner's immutable user
 subject from the dedicated staging Clerk application, verified through that
 application's authenticated Backend API. Install it directly into the
 protected staging environment file selected by `MYORDER_STAGING_ENV_FILE`;
-never send it through chat, logs, tickets, or source control. The current file
-is mode `0600`, but the owner setting is absent. The owner must install and
-verify it through the authorized secret-management channel.
+never send it through chat, logs, tickets, or source control. The protected
+file is mode `0600`; the owner setting is now present and format-checked.
 
 The Clerk keys, session secret, encryption key, database URL, and Clerk webhook
 secret are present in both environment files; only presence was checked. The
@@ -99,25 +98,22 @@ environment variable: the API code currently sets credentialed CORS with a
 reflected request origin (`origin: true`). This is the implemented policy; no
 additional CORS secret or value should be invented for this release.
 
-Configure a dedicated non-production WooCommerce store, and install its exact
-HTTPS origin as `STAGING_WOOCOMMERCE_ORIGIN` through protected staging
-configuration. The guard matches the tenant row to that declared test origin.
-In the staging tenant's Admin Settings → WooCommerce, save the sandbox store's
-HTTPS origin and its generated webhook signing secret. The API encrypts the secret at rest
-with `SETTINGS_ENC_KEY` and returns only a saved/not-saved flag. Leave consumer
-API keys/secrets unset for webhook authentication testing; this prevents
-outbound WooCommerce API mutations. The current staging database has no tenant
-with both store URL and webhook secret. The owner must provision the sandbox
-store and enter its values directly through the authorized staging admin
-channel; do not provide the secret in chat.
+The owner has decided WooCommerce external integration is production-only.
+Staging must explicitly set `WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED=false`.
+The staging Compose file does not pass a WooCommerce store origin to the API,
+and the release guard does not require a Woo tenant. Server-side request
+boundaries block test-connection, sync, health probes, webhook reconciliation,
+and order dispatch even when tenant credentials remain stored. Do not remove
+or rotate saved tenant credentials. Existing signed-webhook and PostgreSQL
+tests validate the implementation offline; staging does not contact an
+external WooCommerce store.
 
 Before staging tests, disable receipt and label printing. Payment mode and
 PayPal must remain sandbox, live payment stays false, email/SMS/push stay
 disabled, Uber dispatch stays disabled, and order notification workers stay
-off. The current staging env has receipt printing enabled, so the candidate
-guard rejects it. A test must use only the staging Woo store and must not use
-production payment, communications, dispatch, printer, or WooCommerce
-credentials.
+off. Staging uses the explicit production-only WooCommerce policy; the API
+blocks all external WooCommerce operations even if encrypted tenant credentials
+remain stored. No external WooCommerce store is used during staging acceptance.
 
 ## Tax decision
 
@@ -132,8 +128,8 @@ consistency change is prepared. No tax configuration is changed here.
 
 No backup, image, staging database change, or production change is performed by
 this source-preparation task. Staging remains blocked until the guard identity,
-owner setting, sandbox Woo store, P0 patch, full migration validation, and
-disabled external side effects are verified. Production requires a separate
+owner setting, explicit production-only Woo policy, P0 patch, and full migration
+validation are verified. Production requires a separate
 owner tax decision, a verified backup/restore point, the nine-migration
 preflight, owner/configuration checks, immutable images, and separate explicit
 production authorization.
