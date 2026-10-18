@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
+  APPROVED_RELEASE,
   EXPECTED_PRODUCTION_MIGRATIONS,
   FROZEN_RELEASE,
+  PRODUCTION_BASELINE,
   PRODUCTION,
   PRODUCTION_STEPS,
-  ROLLBACK_SHA,
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
@@ -17,17 +18,17 @@ import {
   mayRestoreRollbackApi,
 } from "./production-release.mjs";
 
-const releaseRoot = path.join(PRODUCTION.root, "releases", FROZEN_RELEASE.sha);
+const releaseRoot = path.join(PRODUCTION.root, "releases", APPROVED_RELEASE.sha);
 const archivePath = path.join(
   PRODUCTION.root,
   "incoming",
-  `${FROZEN_RELEASE.sha}.tar.gz`,
+  `${APPROVED_RELEASE.sha}.tar.gz`,
 );
 const expectedConfig = {
   name: "deploy",
   services: {
     api: {
-      image: `myorder-api:${FROZEN_RELEASE.sha}`,
+      image: `myorder-api@${APPROVED_RELEASE.images.api}`,
       environment: {
         NODE_ENV: "production",
         DATABASE_URL: "postgres://app@db:5432/alavont",
@@ -36,7 +37,10 @@ const expectedConfig = {
         SESSION_SECRET: "masked",
         SETTINGS_ENC_KEY: "masked",
         MYORDER_OWNER_CLERK_ID: "user_testowner",
-        WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "true",
+        WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false",
+        RECEIPT_PRINT_ENABLED: "false",
+        LABEL_PRINT_ENABLED: "false",
+        ORDER_NOTIFICATION_WORKER_ENABLED: "0",
         PAYMENT_MODE: "disabled",
         PAYPAL_ENVIRONMENT: "",
         PAYPAL_CLIENT_ID: "",
@@ -50,7 +54,7 @@ const expectedConfig = {
         },
       ],
     },
-    platform: { image: `myorder-platform:${FROZEN_RELEASE.sha}` },
+    platform: { image: `myorder-platform@${APPROVED_RELEASE.images.platform}` },
     db: {
       environment: {
         POSTGRES_DB: "alavont",
@@ -59,7 +63,7 @@ const expectedConfig = {
       },
     },
     migrate: {
-      image: `myorder-migrate:${FROZEN_RELEASE.sha}`,
+      image: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
       environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
     nginx: { ports: ["127.0.0.1:8081:80"] },
@@ -71,11 +75,11 @@ const expectedConfig = {
   },
 };
 
-test("accepts only a clean descendant release identity and its immutable release path", () => {
+test("accepts only the approved frozen release identity and immutable release path", () => {
   assert.equal(
     assertRelease({
-      sha: FROZEN_RELEASE.sha,
-      tree: FROZEN_RELEASE.tree,
+      sha: APPROVED_RELEASE.sha,
+      tree: APPROVED_RELEASE.tree,
       releaseRoot,
       archivePath,
       archiveSha256: "a".repeat(64),
@@ -83,18 +87,18 @@ test("accepts only a clean descendant release identity and its immutable release
     true,
   );
   assert.throws(() => assertReleaseIdentityManifest(
-    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: "b".repeat(40), tree: FROZEN_RELEASE.tree },
-    { sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
+    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: "b".repeat(40), tree: APPROVED_RELEASE.tree },
+    { sha: APPROVED_RELEASE.sha, tree: APPROVED_RELEASE.tree },
   ), /protected candidate identity/);
   assert.equal(assertReleaseIdentityManifest(
-    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
-    { sha: FROZEN_RELEASE.sha, tree: FROZEN_RELEASE.tree },
+    { baseSha: FROZEN_RELEASE.sha, baseTree: FROZEN_RELEASE.tree, sha: APPROVED_RELEASE.sha, tree: APPROVED_RELEASE.tree },
+    { sha: APPROVED_RELEASE.sha, tree: APPROVED_RELEASE.tree },
   ), true);
   assert.throws(
     () =>
       assertRelease({
-        sha: FROZEN_RELEASE.sha,
-        tree: FROZEN_RELEASE.tree,
+        sha: APPROVED_RELEASE.sha,
+        tree: APPROVED_RELEASE.tree,
         releaseRoot: PRODUCTION.root,
         archivePath,
         archiveSha256: "a".repeat(64),
@@ -104,22 +108,33 @@ test("accepts only a clean descendant release identity and its immutable release
   assert.throws(
     () =>
       assertRelease({
-        sha: FROZEN_RELEASE.sha,
-        tree: FROZEN_RELEASE.tree,
+        sha: APPROVED_RELEASE.sha,
+        tree: APPROVED_RELEASE.tree,
         releaseRoot,
         archivePath: "/opt/alavont/deploy/.env",
         archiveSha256: "a".repeat(64),
       }),
     /incoming/,
   );
+  assert.throws(
+    () =>
+      assertRelease({
+        sha: "b".repeat(40),
+        tree: APPROVED_RELEASE.tree,
+        releaseRoot,
+        archivePath,
+        archiveSha256: "a".repeat(64),
+      }),
+    /approved immutable candidate/,
+  );
 });
 
 test("production Compose is pinned to the production database, release images, volume and loopback proxy", () => {
   assert.equal(
     assertProductionConfig(expectedConfig, {
-      apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
-      platformImage: `myorder-platform:${FROZEN_RELEASE.sha}`,
-      migrateImage: `myorder-migrate:${FROZEN_RELEASE.sha}`,
+      apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
+      platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
+      migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
     }),
     true,
   );
@@ -136,31 +151,31 @@ test("production Compose is pinned to the production database, release images, v
   const missingAuth = structuredClone(expectedConfig);
   missingAuth.services.api.environment.SESSION_SECRET = "";
   assert.throws(() => assertProductionConfig(missingAuth), /SESSION_SECRET/);
-  const disabledWoo = structuredClone(expectedConfig);
-  disabledWoo.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "false";
-  assert.throws(() => assertProductionConfig(disabledWoo), /WooCommerce external integration policy/);
+  assert.equal(assertProductionConfig(expectedConfig), true);
+  const enabledWoo = structuredClone(expectedConfig);
+  enabledWoo.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED = "true";
+  assert.throws(() => assertProductionConfig(enabledWoo), /remain explicitly disabled/);
   const missingWooPolicy = structuredClone(expectedConfig);
   delete missingWooPolicy.services.api.environment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED;
-  assert.throws(() => assertProductionConfig(missingWooPolicy), /WooCommerce external integration policy/);
+  assert.throws(() => assertProductionConfig(missingWooPolicy), /remain explicitly disabled/);
   const wrongRole = structuredClone(expectedConfig);
   wrongRole.services.db.environment.POSTGRES_USER = "staging_user";
   assert.throws(() => assertProductionConfig(wrongRole), /PostgreSQL role/);
   const wrongRelease = structuredClone(expectedConfig);
-  wrongRelease.services.api.image =
-    `myorder-api:${ROLLBACK_SHA}`;
+  wrongRelease.services.api.image = "myorder-api:other";
   assert.throws(
     () =>
       assertProductionConfig(wrongRelease, {
-        apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
+        apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
       }),
     /frozen release/,
   );
   const wrongMigrator = structuredClone(expectedConfig);
-  wrongMigrator.services.migrate.image = `myorder-migrate:${ROLLBACK_SHA}`;
+  wrongMigrator.services.migrate.image = "myorder-migrate:other";
   assert.throws(() => assertProductionConfig(wrongMigrator, {
-    apiImage: `myorder-api:${FROZEN_RELEASE.sha}`,
-    platformImage: `myorder-platform:${FROZEN_RELEASE.sha}`,
-    migrateImage: `myorder-migrate:${FROZEN_RELEASE.sha}`,
+    apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
+    platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
+    migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
   }), /Migration image/);
   const enabledPaypal = structuredClone(expectedConfig);
   enabledPaypal.services.api.environment.PAYMENT_MODE = "live";
@@ -174,6 +189,28 @@ test("production Compose is pinned to the production database, release images, v
   );
 });
 
+test("release deploys only digest-pinned approved artifacts with external Woo disabled", () => {
+  assert.deepEqual(PRODUCTION_STEPS.slice(0, 3), [
+    "validate",
+    "verify-release-images",
+    "validate-lineage",
+  ]);
+  assert.equal(PRODUCTION_STEPS.includes("build"), false);
+  const overlay = readFileSync(new URL("./production-runtime-overlay.yml", import.meta.url), "utf8");
+  assert.match(overlay, /image: \$\{MYORDER_API_IMAGE:\?approved API image is required\}/);
+  assert.match(overlay, /image: \$\{MYORDER_PLATFORM_IMAGE:\?approved Platform image is required\}/);
+  assert.match(overlay, /image: \$\{MYORDER_MIGRATE_IMAGE:\?approved Migrator image is required\}/);
+  assert.equal((overlay.match(/pull_policy: never/g) ?? []).length, 3);
+  assert.match(overlay, /WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false"/);
+  assert.match(overlay, /RECEIPT_PRINT_ENABLED: "false"/);
+  assert.match(overlay, /LABEL_PRINT_ENABLED: "false"/);
+  assert.match(overlay, /ORDER_NOTIFICATION_WORKER_ENABLED: "0"/);
+  const controller = readFileSync(new URL("./production-release.mjs", import.meta.url), "utf8");
+  assert.match(controller, /docker", \["image", "inspect", reference\]/);
+  assert.match(controller, /"--pull", "never", "--no-build"/);
+  assert.doesNotMatch(controller, /compose\.args, "build"/);
+});
+
 test("deployment ordering stops all writers and verifies the protected snapshot before migration", async () => {
   const observed = [];
   const actions = Object.fromEntries(
@@ -181,7 +218,7 @@ test("deployment ordering stops all writers and verifies the protected snapshot 
   );
   await executeProductionSequence(actions);
   assert.deepEqual(observed, [...PRODUCTION_STEPS]);
-  assert.ok(observed.indexOf("build") < observed.indexOf("validate-lineage"));
+  assert.ok(observed.indexOf("verify-release-images") < observed.indexOf("validate-lineage"));
   assert.ok(
     observed.indexOf("validate-lineage") < observed.indexOf("stop-writers"),
   );
@@ -209,7 +246,7 @@ test("deployment ordering stops all writers and verifies the protected snapshot 
 });
 
 for (const failedGate of [
-  "build",
+  "verify-release-images",
   "validate-lineage",
   "verify-writer-inventory",
   "stop-writers",
@@ -261,8 +298,12 @@ test("missing production authorization is rejected by the executable entrypoint"
   assert.match(source, /--authorized/);
 });
 
-test("rollback release identity remains pinned", () => {
-  assert.equal(ROLLBACK_SHA, "c549816b2ce647c38fdf4a7c4d7d5e5b0036a8a6");
+test("production rollback baseline is the current pre-release image set", () => {
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "8a3e1ccd8e132425ad82163a14ca67c53ba745b2");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
+  assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
   assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
     "0068_print_jobs_document_job_types",
@@ -409,7 +450,12 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
     /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/,
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
-  assert.match(workflow, /test "\$RELEASE_SHA" = "\$GITHUB_SHA"/);
+  assert.match(workflow, /test "\$RELEASE_SHA" = "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833"/);
+  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833' \}\}/);
+  assert.match(workflow, /name: Release controller tests/);
+  assert.match(workflow, /needs: \[test, release-tooling\]/);
+  assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba/);
   assert.match(workflow, /git rev-parse "\$RELEASE_BASE_SHA\^\{tree\}"/);
   assert.match(workflow, /git merge-base --is-ancestor "\$RELEASE_BASE_SHA" "\$RELEASE_SHA"/);

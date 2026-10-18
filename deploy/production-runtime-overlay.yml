@@ -1,4 +1,17 @@
 services:
   api:
+    image: ${MYORDER_API_IMAGE:?approved API image is required}
+    pull_policy: never
+    environment:
+      WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED: "false"
+      RECEIPT_PRINT_ENABLED: "false"
+      LABEL_PRINT_ENABLED: "false"
+      ORDER_NOTIFICATION_WORKER_ENABLED: "0"
     volumes:
       - /opt/alavont/shared/print-assets:/var/lib/myorder/print-assets
+  platform:
+    image: ${MYORDER_PLATFORM_IMAGE:?approved Platform image is required}
+    pull_policy: never
+  migrate:
+    image: ${MYORDER_MIGRATE_IMAGE:?approved Migrator image is required}
+    pull_policy: never
