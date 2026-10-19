@@ -709,6 +709,38 @@ router.use(async (_req, res, next) => {
   }
 });
 
+const CSR_INVENTORY_EXCLUDED_NAMES = new Set([
+  "squirting dildo",
+  "real feel deluxe no 7 wallbanger vibrating dildo",
+  "realistic foreskin dildo",
+  "real feel deluxe 11 inch wall banger vibe in black",
+  "silky - intimate gel collection",
+  "aqua - intimate gel collection",
+  "crimson brick condoms",
+  "obsidian edge collection",
+  "sex machine with dildo",
+  "vibrating mechanical dildo",
+  "metal cockrings",
+  "blue cockring",
+  "black cockring",
+  "leather cockrings",
+  "silicone cockrings",
+  "1 morning after pill",
+  "glass vase",
+  "oil burning massage candle",
+  "couples dice games",
+  "midnight lace set",
+  "velvet embrace set",
+  "crimson silk ensemble",
+  "obsidian desire set",
+  "euphoria lace collection",
+  "soft touch satin set",
+]);
+
+function isCsrInventoryExcludedName(name: string | null | undefined): boolean {
+  return typeof name === "string" && CSR_INVENTORY_EXCLUDED_NAMES.has(name.trim().toLowerCase().replace(/\\s+/g, " "));
+}
+
 async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof inventoryTemplatesTable.$inferSelect[]> {
   const allTemplateRows = await db
     .select()
@@ -732,7 +764,7 @@ async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof 
     )
     .orderBy(asc(catalogItemsTable.alavontCategory), asc(catalogItemsTable.name));
 
-  if (catalogRows.length === 0) return allTemplateRows;
+  if (catalogRows.length === 0) return allTemplateRows.filter(row => !isCsrInventoryExcludedName(row.itemName));
 
   const allowedCatalogIds = new Set(catalogRows.map(row => row.id));
 
@@ -782,7 +814,7 @@ async function ensureClockInInventoryTemplate(tenantId: number): Promise<typeof 
     .orderBy(asc(inventoryTemplatesTable.displayOrder));
   const filtered = updatedRows.filter(row => {
     const name = String(row.itemName ?? "").trim().toLowerCase();
-    return !name.startsWith("safe") && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
+    return !name.startsWith("safe") && !isCsrInventoryExcludedName(row.itemName) && (row.catalogItemId == null || allowedCatalogIds.has(row.catalogItemId));
   });
 
   // Deduplicate by catalogItemId — keep the lowest-displayOrder row per product.
@@ -1851,32 +1883,7 @@ router.delete(
 // Seeds the canonical inventory template from the Alavont CSR cash box spreadsheet.
 // Safe to call multiple times — upserts by item name.
 const CSR_INVENTORY_SEED = [
-  { itemName: "Squirting Dildo",                                startingQty: 0,    menuPrice: 100, payoutPrice: 90  },
-  { itemName: "Real Feel Deluxe No 7 Wallbanger Vibrating Dildo", startingQty: 0, menuPrice: 80,  payoutPrice: 75  },
-  { itemName: "Realistic Foreskin Dildo",                       startingQty: 0,    menuPrice: 95,  payoutPrice: 90  },
-  { itemName: "Real Feel Deluxe 11 Inch Wall Banger Vibe in Black", startingQty: 8.5, menuPrice: 20, payoutPrice: 15 },
-  { itemName: "Silky - Intimate Gel Collection",                startingQty: 2,    menuPrice: 25,  payoutPrice: 20  },
-  { itemName: "Aqua - Intimate Gel Collection",                 startingQty: 2,    menuPrice: 40,  payoutPrice: 30  },
-  { itemName: "Crimson Brick Condoms",                          startingQty: 8,    menuPrice: 7,   payoutPrice: 6   },
-  { itemName: "Obsidian Edge Collection",                       startingQty: 17,   menuPrice: 10,  payoutPrice: 9   },
-  { itemName: "Sex Machine with Dildo",                         startingQty: 3.5,  menuPrice: 100, payoutPrice: 100 },
-  { itemName: "Vibrating Mechanical Dildo",                     startingQty: 2.32, menuPrice: 12,  payoutPrice: 12  },
-  { itemName: "Metal Cockrings",                                startingQty: 10,   menuPrice: 5,   payoutPrice: 5   },
-  { itemName: "Blue Cockring",                                  startingQty: 0,    menuPrice: 5,   payoutPrice: 5   },
-  { itemName: "Black Cockring",                                 startingQty: 1,    menuPrice: 40,  payoutPrice: 40  },
-  { itemName: "Leather Cockrings",                              startingQty: 1,    menuPrice: 25,  payoutPrice: 25  },
-  { itemName: "Silicone Cockrings",                             startingQty: 0.5,  menuPrice: 60,  payoutPrice: 60  },
-  { itemName: "1 Morning After Pill",                           startingQty: 9,    menuPrice: 20,  payoutPrice: 18  },
-  { itemName: "Glass Vase",                                     startingQty: 1,    menuPrice: 10,  payoutPrice: 8   },
   { itemName: "Butane Lighter",                                 startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
-  { itemName: "Oil Burning Massage Candle",                     startingQty: 2,    menuPrice: 10,  payoutPrice: 8   },
-  { itemName: "Couples Dice Games",                             startingQty: 3,    menuPrice: 1,   payoutPrice: 0   },
-  { itemName: "Midnight Lace Set",                              startingQty: 15,   menuPrice: 6,   payoutPrice: 5   },
-  { itemName: "Velvet Embrace Set",                             startingQty: 2,    menuPrice: 4,   payoutPrice: 4   },
-  { itemName: "Crimson Silk Ensemble",                          startingQty: 6,    menuPrice: 3,   payoutPrice: 3   },
-  { itemName: "Obsidian Desire Set",                            startingQty: 4,    menuPrice: 9,   payoutPrice: 8   },
-  { itemName: "Euphoria Lace Collection",                       startingQty: 21,   menuPrice: 6,   payoutPrice: 5   },
-  { itemName: "Soft Touch Satin Set",                           startingQty: 114,  menuPrice: 5,   payoutPrice: 5   },
 ];
 
 router.post(
