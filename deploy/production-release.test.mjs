@@ -13,6 +13,8 @@ import {
   assertProductionConfig,
   assertRelease,
   assertReleaseIdentityManifest,
+  assertReusableReleaseIdentity,
+  assertKnownNonWriterService,
   assertNoEncryptedProductionPayPalSettings,
   executeProductionSequence,
   mayRestoreRollbackApi,
@@ -28,7 +30,7 @@ const expectedConfig = {
   name: "deploy",
   services: {
     api: {
-      image: `myorder-api@${APPROVED_RELEASE.images.api}`,
+      image: APPROVED_RELEASE.references.api,
       environment: {
         NODE_ENV: "production",
         DATABASE_URL: "postgres://app@db:5432/alavont",
@@ -54,7 +56,7 @@ const expectedConfig = {
         },
       ],
     },
-    platform: { image: `myorder-platform@${APPROVED_RELEASE.images.platform}` },
+    platform: { image: APPROVED_RELEASE.references.platform },
     db: {
       environment: {
         POSTGRES_DB: "alavont",
@@ -63,7 +65,7 @@ const expectedConfig = {
       },
     },
     migrate: {
-      image: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+      image: APPROVED_RELEASE.references.migrate,
       environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
     nginx: { ports: ["127.0.0.1:8081:80"] },
@@ -132,9 +134,9 @@ test("accepts only the approved frozen release identity and immutable release pa
 test("production Compose is pinned to the production database, release images, volume and loopback proxy", () => {
   assert.equal(
     assertProductionConfig(expectedConfig, {
-      apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
-      platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
-      migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+      apiImage: APPROVED_RELEASE.references.api,
+      platformImage: APPROVED_RELEASE.references.platform,
+      migrateImage: APPROVED_RELEASE.references.migrate,
     }),
     true,
   );
@@ -166,16 +168,16 @@ test("production Compose is pinned to the production database, release images, v
   assert.throws(
     () =>
       assertProductionConfig(wrongRelease, {
-        apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
+        apiImage: APPROVED_RELEASE.references.api,
       }),
     /frozen release/,
   );
   const wrongMigrator = structuredClone(expectedConfig);
   wrongMigrator.services.migrate.image = "myorder-migrate:other";
   assert.throws(() => assertProductionConfig(wrongMigrator, {
-    apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
-    platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
-    migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+    apiImage: APPROVED_RELEASE.references.api,
+    platformImage: APPROVED_RELEASE.references.platform,
+    migrateImage: APPROVED_RELEASE.references.migrate,
   }), /Migration image/);
   const enabledPaypal = structuredClone(expectedConfig);
   enabledPaypal.services.api.environment.PAYMENT_MODE = "live";
@@ -209,6 +211,65 @@ test("release deploys only digest-pinned approved artifacts with external Woo di
   assert.match(controller, /docker", \["image", "inspect", reference\]/);
   assert.match(controller, /"--pull", "never", "--no-build"/);
   assert.doesNotMatch(controller, /compose\.args, "build"/);
+});
+
+test("reuses only the exact immutable staged release identity", () => {
+  const expected = {
+    sha: APPROVED_RELEASE.sha,
+    tree: APPROVED_RELEASE.tree,
+    archiveSha256: "a".repeat(64),
+    toolingSha: "b".repeat(40),
+  };
+  assert.equal(assertReusableReleaseIdentity({ ...expected }, expected), true);
+  for (const field of ["sha", "tree", "archiveSha256"]) {
+    assert.throws(
+      () =>
+        assertReusableReleaseIdentity(
+          { ...expected, [field]: "0".repeat(expected[field].length) },
+          expected,
+        ),
+      /does not match/,
+    );
+  }
+  assert.equal(
+    assertReusableReleaseIdentity(
+      { ...expected, toolingSha: "c".repeat(40) },
+      expected,
+    ),
+    true,
+  );
+});
+
+test("allowlists only the exact localhost Vite preview service identity", () => {
+  const properties = {
+    Id: "myorder-preview.service",
+    ActiveState: "active",
+    SubState: "running",
+    User: "serveradmin",
+    Group: "serveradmin",
+    ExecStart:
+      "{ path=/usr/bin/npm ; argv[]=/usr/bin/npm run preview -- --host 127.0.0.1 --port 4173 ; ignore_errors=no ; }",
+    WorkingDirectory: "/home/serveradmin/worktrees/myorder-preview",
+    FragmentPath: "/etc/systemd/system/myorder-preview.service",
+    EnvironmentFiles: "",
+  };
+  assert.equal(
+    assertKnownNonWriterService("myorder-preview.service", properties),
+    true,
+  );
+  assert.throws(
+    () =>
+      assertKnownNonWriterService("myorder-preview.service", {
+        ...properties,
+        ExecStart:
+          "{ path=/usr/bin/npm ; argv[]=/usr/bin/npm run worker ; ignore_errors=no ; }",
+      }),
+    /command mismatch/,
+  );
+  assert.throws(
+    () => assertKnownNonWriterService("unknown.service", properties),
+    /not an approved non-writer/,
+  );
 });
 
 test("deployment ordering stops all writers and verifies the protected snapshot before migration", async () => {
@@ -304,6 +365,11 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6");
   assert.equal(PRODUCTION_BASELINE.platformRevision, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
+  assert.equal(APPROVED_RELEASE.images.api, "sha256:d0c4853cb3c0c0f10a40cee30357b8436bed09570a8ddd1117f98bd091da2eea");
+  assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.revisions.platform, FROZEN_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.revisions.migrate, FROZEN_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
   assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
     "0068_print_jobs_document_job_types",
@@ -443,20 +509,20 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   );
   assert.match(
     workflow,
-    /RELEASE_BASE_SHA: 8744d8e34ab8627555919aec337abde0c3291e0f/,
+    /RELEASE_BASE_SHA: 40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833/,
   );
   assert.match(
     workflow,
     /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/,
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
-  assert.match(workflow, /test "\$RELEASE_SHA" = "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833"/);
-  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833' \}\}/);
+  assert.match(workflow, /test "\$RELEASE_SHA" = "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb"/);
+  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' \}\}/);
   assert.match(workflow, /name: Release controller tests/);
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba/);
+  assert.match(workflow, /RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a/);
   assert.match(workflow, /git rev-parse "\$RELEASE_BASE_SHA\^\{tree\}"/);
   assert.match(workflow, /git merge-base --is-ancestor "\$RELEASE_BASE_SHA" "\$RELEASE_SHA"/);
   assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
@@ -552,8 +618,17 @@ test("maintenance closes ingress during database work and checks the API private
     new URL("./production-release.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(runner, /"stop",\s*"nginx",\s*"api"/);
+  assert.match(runner, /run\("docker", \["stop", nginxId\]\)/);
+  assert.match(runner, /run\("docker", \["stop", apiId\]\)/);
+  assert.ok(
+    runner.indexOf('run("docker", ["stop", nginxId])') <
+      runner.indexOf('run("docker", ["stop", apiId])'),
+  );
   assert.match(runner, /waitForApiContainer\(compose, sha\)/);
+  assert.match(
+    runner,
+    /\.\.\.compose\.args, "ps", "--all", "--quiet", "api"\],\s*\{ env: releaseComposeEnvironment\(\) \}/,
+  );
   assert.match(runner, /Production ingress proxy did not stop/);
   assert.ok(
     runner.indexOf('"verify-api": async () => waitForApiContainer') <
@@ -577,4 +652,22 @@ test("application startup does not trigger Woo synchronization or Uber dispatch"
     "utf8",
   );
   assert.doesNotMatch(runner, /fetch\([^\n]*(woocommerce|uber)/i);
+});
+
+
+test("post-migration resume accepts only exact approved runtime identities", () => {
+  const controller = readFileSync(
+    new URL("./production-release.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(controller, /apiIsBaseline/);
+  assert.match(controller, /apiIsApproved/);
+  assert.match(controller, /platformIsBaseline/);
+  assert.match(controller, /platformIsApproved/);
+  assert.match(controller, /current\?\.image === approvedImageReference\(service\)/);
+  assert.match(
+    controller,
+    /runtimeAlreadyAdvanced && migrationState !== "applied"/,
+  );
+  assert.match(controller, /exact 51-row migration lineage is applied/);
 });

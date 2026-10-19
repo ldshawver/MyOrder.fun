@@ -20,19 +20,34 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const FROZEN_RELEASE = Object.freeze({
-  // Immutable forward-release base. The protected workflow supplies and
-  // attests the exact successor SHA/tree; this base must remain in ancestry.
-  sha: "8744d8e34ab8627555919aec337abde0c3291e0f",
-  tree: "86c004b66acf42c5394fbfddde807e1882edafba",
-});
-export const APPROVED_RELEASE = Object.freeze({
+  // The replacement candidate must descend from the previously approved
+  // application candidate; deployment-only successors cannot change it.
   sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
   tree: "76bb2bc969450206f0be4754a6ef95434cd27b4a",
+});
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
   images: Object.freeze({
-    api: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
+    api: "sha256:d0c4853cb3c0c0f10a40cee30357b8436bed09570a8ddd1117f98bd091da2eea",
     platform: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
     migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
   }),
+  revisions: Object.freeze({
+    api: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+    platform: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+    migrate: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  }),
+  references: Object.freeze({
+    api: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
+    platform: "myorder-platform@sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+    migrate: "myorder-migrate@sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
+  }),
+});
+export const MIGRATED_RUNTIME_BASELINE = Object.freeze({
+  apiImage: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
+  apiRevision: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  apiReference: "myorder-api@sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
 });
 export const PRODUCTION_BASELINE = Object.freeze({
   apiImage: "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d",
@@ -116,6 +131,42 @@ export function assertReleaseIdentityManifest(identity, expected) {
   if (identity?.baseSha !== FROZEN_RELEASE.sha || identity?.baseTree !== FROZEN_RELEASE.tree ||
       identity?.sha !== expected?.sha || identity?.tree !== expected?.tree)
     throw new Error("Packaged release commit/tree does not match the protected candidate identity");
+  return true;
+}
+
+export function assertReusableReleaseIdentity(identity, expected) {
+  if (
+    identity?.sha !== expected?.sha ||
+    identity?.tree !== expected?.tree ||
+    identity?.archiveSha256 !== expected?.archiveSha256
+  )
+    throw new Error("Existing versioned release identity does not match this guarded deployment");
+  return true;
+}
+
+export function assertKnownNonWriterService(service, properties) {
+  if (service !== "myorder-preview.service")
+    throw new Error("Service is not an approved non-writer");
+  const expected = {
+    Id: "myorder-preview.service",
+    ActiveState: "active",
+    SubState: "running",
+    User: "serveradmin",
+    Group: "serveradmin",
+    WorkingDirectory: "/home/serveradmin/worktrees/myorder-preview",
+    FragmentPath: "/etc/systemd/system/myorder-preview.service",
+    EnvironmentFiles: "",
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if ((properties?.[key] ?? "") !== value)
+      throw new Error(`Known non-writer service identity mismatch: ${key}`);
+  }
+  if (
+    !/^\{ path=\/usr\/bin\/npm ; argv\[\]=\/usr\/bin\/npm run preview -- --host 127\.0\.0\.1 --port 4173 ;/.test(
+      properties?.ExecStart ?? "",
+    )
+  )
+    throw new Error("Known non-writer service command mismatch");
   return true;
 }
 
@@ -224,7 +275,7 @@ export function assertProductionConfig(config, expected) {
 }
 
 function approvedImageReference(service) {
-  return `myorder-${service}@${APPROVED_RELEASE.images[service]}`;
+  return APPROVED_RELEASE.references[service];
 }
 
 function releaseComposeEnvironment() {
@@ -251,8 +302,8 @@ function verifyApprovedReleaseImages() {
       image.Id !== APPROVED_RELEASE.images[service] ||
       image.Os !== "linux" ||
       image.Architecture !== "amd64" ||
-      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.sha ||
-      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.sha
+      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.revisions[service] ||
+      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.revisions[service]
     )
       throw new Error(`Approved ${service} image metadata does not match the frozen release`);
     if (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(reference))
@@ -266,7 +317,9 @@ export async function executeProductionSequence(actions) {
   for (const name of PRODUCTION_STEPS) {
     if (typeof actions[name] !== "function")
       throw new Error(`Missing production deployment action: ${name}`);
+    console.log(`production step start=${name}`);
     await actions[name]();
+    console.log(`production step complete=${name}`);
   }
 }
 
@@ -400,7 +453,7 @@ function validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile) {
     )
   )
     throw new Error("Persistent print asset mount is missing");
-  return { args, config };
+  return { args, config, releaseRoot };
 }
 
 function query(compose, sql, env = {}) {
@@ -461,16 +514,30 @@ function verifyWriterSet(compose) {
     throw new Error(
       `Unexpected production project services; expected ${expected.join(",")}`,
     );
-  if (
-    idsByService.get("api")?.imageId !== PRODUCTION_BASELINE.apiImage ||
-    idsByService.get("api")?.revision !== PRODUCTION_BASELINE.apiRevision
-  )
-    throw new Error("Current production API does not match the recorded pre-release rollback image");
-  if (
-    idsByService.get("platform")?.imageId !== PRODUCTION_BASELINE.platformImage ||
-    idsByService.get("platform")?.revision !== PRODUCTION_BASELINE.platformRevision
-  )
-    throw new Error("Current production Platform does not match the recorded pre-release rollback image");
+  const api = idsByService.get("api");
+  const apiIsBaseline =
+    api?.imageId === PRODUCTION_BASELINE.apiImage &&
+    api?.revision === PRODUCTION_BASELINE.apiRevision;
+  const apiIsMigratedBaseline =
+    api?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
+    api?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
+    api?.image === MIGRATED_RUNTIME_BASELINE.apiReference;
+  const apiIsApproved =
+    api?.imageId === APPROVED_RELEASE.images.api &&
+    api?.revision === APPROVED_RELEASE.revisions.api &&
+    api?.image === approvedImageReference("api");
+  if (!apiIsBaseline && !apiIsMigratedBaseline && !apiIsApproved)
+    throw new Error("Current production API is not an exact recognized rollback, migrated, or approved image");
+  const platform = idsByService.get("platform");
+  const platformIsBaseline =
+    platform?.imageId === PRODUCTION_BASELINE.platformImage &&
+    platform?.revision === PRODUCTION_BASELINE.platformRevision;
+  const platformIsApproved =
+    platform?.imageId === APPROVED_RELEASE.images.platform &&
+    platform?.revision === APPROVED_RELEASE.revisions.platform &&
+    platform?.image === approvedImageReference("platform");
+  if (!platformIsBaseline && !platformIsApproved)
+    throw new Error("Current production Platform is neither the recorded rollback image nor the exact approved release image");
   if (idsByService.get("migrate")?.running)
     throw new Error("A production migration container is already running");
   for (const id of run("docker", ["ps", "--all", "--quiet"])
@@ -517,32 +584,50 @@ function verifyWriterSet(compose) {
     )
       throw new Error("A production migration container is already running");
   }
-  const externalWriters = run(
+  const externalWriterCandidates = run(
     "sh",
     [
       "-lc",
       "systemctl list-units --all --type=service --no-legend --plain | awk 'tolower($0) ~ /(myorder|alavont).*active/ {print $1}'; systemctl list-timers --all --no-legend --plain | awk 'tolower($0) ~ /(myorder|alavont)/ {print $1}'; grep -RIlE '/opt/alavont|myorder|alavont' /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily /var/spool/cron/crontabs 2>/dev/null | grep -vE '/(certbot|logrotate|e2scrub|sysstat)' || true",
     ],
     { encoding: "utf8" },
-  ).trim();
-  if (externalWriters)
+  )
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  const previewUnit = "myorder-preview.service";
+  const previewIndex = externalWriterCandidates.indexOf(previewUnit);
+  if (previewIndex !== -1) {
+    const properties = Object.fromEntries(
+      run("systemctl", [
+        "show",
+        previewUnit,
+        "--no-pager",
+        "--property=Id,ActiveState,SubState,User,Group,ExecStart,WorkingDirectory,FragmentPath,EnvironmentFiles",
+      ])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const separator = line.indexOf("=");
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+    assertKnownNonWriterService(previewUnit, properties);
+    externalWriterCandidates.splice(previewIndex, 1);
+  }
+  if (externalWriterCandidates.length)
     throw new Error(
-      `Potential external production writer/scheduler exists: ${externalWriters}`,
+      `Potential external production writer/scheduler exists: ${externalWriterCandidates.join("\n")}`,
     );
   return idsByService;
 }
 
-function stopAndVerifyWriters(compose) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+function stopAndVerifyWriters(compose, containerBaseline) {
+  const apiId = containerBaseline?.get("api")?.id;
   if (!apiId)
     throw new Error(
-      "Production API container disappeared during writer shutdown",
+      "Verified production API container identity is unavailable during writer shutdown",
     );
   const running = run("docker", [
     "inspect",
@@ -552,13 +637,7 @@ function stopAndVerifyWriters(compose) {
   ]).trim();
   if (running !== "false")
     throw new Error("Production API writer did not stop");
-  const nginxId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "nginx",
-  ]).trim();
+  const nginxId = containerBaseline?.get("nginx")?.id;
   if (
     !nginxId ||
     run("docker", [
@@ -591,17 +670,10 @@ function verifyProductionPayPalDisabled(compose) {
   assertNoEncryptedProductionPayPalSettings(Number(encryptedSettings));
 }
 
-function safePrintAssetsCopy(compose, sharedRoot) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+function safePrintAssetsCopy(apiId, sharedRoot) {
   if (!apiId)
     throw new Error(
-      "Existing API container missing; cannot preserve print assets",
+      "Verified API container identity is unavailable; cannot preserve print assets",
     );
   const destination = path.join(sharedRoot, "print-assets");
   if (existsSync(destination))
@@ -727,7 +799,7 @@ function createSnapshot(compose, backupRoot) {
   const tocInputFd = openSync(partial, "r");
   const toc = spawnSync(
     "docker",
-    [...compose.args, "exec", "-T", "db", "pg_restore", "--list", "-"],
+    [...compose.args, "exec", "-T", "db", "pg_restore", "--list"],
     {
       env: { ...process.env, DEPLOY_SHA: releaseIdentity.sha },
       stdio: [tocInputFd, tocFd, "pipe"],
@@ -1045,14 +1117,20 @@ function validatePendingLineage(compose) {
   const pending = [
     ...output.matchAll(/\[migration-ledger\] PENDING ([^ ]+)/g),
   ].map((match) => match[1]);
-  if (JSON.stringify(pending) !== JSON.stringify(expected))
-    throw new Error(
-      `Production pending migration sequence differs from expected Release 1 path: ${pending.join(",")}`,
-    );
-  if (!output.includes("recognized lineage preserved: 42/51"))
-    throw new Error(
-      "Production lineage validator did not recognize the exact 42-row candidate prefix",
-    );
+  if (
+    JSON.stringify(pending) === JSON.stringify(expected) &&
+    output.includes("recognized lineage preserved: 42/51")
+  )
+    return "pending";
+  if (
+    pending.length === 0 &&
+    expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
+    output.includes("recognized lineage preserved: 51/51")
+  )
+    return "applied";
+  throw new Error(
+    `Production migration state is neither the exact 42-row pending path nor the verified 51-row applied lineage: ${pending.join(",")}`,
+  );
 }
 
 async function waitFor(url, expectedSha, attempts = 45) {
@@ -1070,13 +1148,11 @@ async function waitFor(url, expectedSha, attempts = 45) {
 }
 
 async function waitForApiContainer(compose, expectedSha, attempts = 45) {
-  const apiId = run("docker", [
-    ...compose.args,
-    "ps",
-    "--all",
-    "--quiet",
-    "api",
-  ]).trim();
+  const apiId = run(
+    "docker",
+    [...compose.args, "ps", "--all", "--quiet", "api"],
+    { env: releaseComposeEnvironment() },
+  ).trim();
   if (!apiId) throw new Error("Production API container is missing");
   const probe = `fetch('http://127.0.0.1:8080/healthz').then(async r=>{const b=await r.json();if(!r.ok||b.sha!==${JSON.stringify(expectedSha)})process.exit(1)}).catch(()=>process.exit(1))`;
   for (let i = 0; i < attempts; i++) {
@@ -1139,10 +1215,11 @@ async function main() {
   if ((await sha256File(archivePath)) !== archiveSha256)
     throw new Error("Release archive SHA-256 does not match workflow metadata");
   mkdirSync(path.dirname(releaseRoot), { recursive: true, mode: 0o755 });
-  if (existsSync(releaseRoot))
-    throw new Error(
-      "Versioned release directory already exists; refusing overwrite",
-    );
+  const identityPath = path.join(
+    PRODUCTION.root,
+    "releases",
+    `${sha}.identity.json`,
+  );
   const archiveEntries = run("tar", ["--list", "--gzip", "--file", archivePath])
     .split("\n")
     .filter(Boolean);
@@ -1169,38 +1246,58 @@ async function main() {
   try { packagedIdentity = JSON.parse(packagedIdentityText); }
   catch { throw new Error("Release archive identity manifest is invalid"); }
   assertReleaseIdentityManifest(packagedIdentity, { sha, tree });
-  const unpackRoot = `${releaseRoot}.extract-${process.pid}`;
-  if (existsSync(unpackRoot))
-    throw new Error(
-      "A prior incomplete extraction exists; refusing to overwrite it",
+  if (existsSync(releaseRoot)) {
+    assertRealFilesystemPath(releaseRoot, "directory");
+    assertRealFilesystemPath(identityPath, "file");
+    let existingIdentity;
+    let installedManifest;
+    try {
+      existingIdentity = JSON.parse(readFileSync(identityPath, "utf8"));
+      installedManifest = JSON.parse(
+        readFileSync(
+          path.join(releaseRoot, "MYORDER-RELEASE-IDENTITY.json"),
+          "utf8",
+        ),
+      );
+    } catch {
+      throw new Error("Existing versioned release identity metadata is invalid");
+    }
+    assertReusableReleaseIdentity(existingIdentity, {
+      sha,
+      tree,
+      archiveSha256,
+      toolingSha,
+    });
+    assertReleaseIdentityManifest(installedManifest, { sha, tree });
+  } else {
+    const unpackRoot = `${releaseRoot}.extract-${process.pid}`;
+    if (existsSync(unpackRoot))
+      throw new Error(
+        "A prior incomplete extraction exists; refusing to overwrite it",
+      );
+    mkdirSync(unpackRoot, { mode: 0o755 });
+    try {
+      run("tar", [
+        "--extract",
+        "--gzip",
+        "--file",
+        archivePath,
+        "--directory",
+        unpackRoot,
+        "--no-same-owner",
+        "--no-same-permissions",
+      ]);
+      renameSync(unpackRoot, releaseRoot);
+    } catch (error) {
+      rmSync(unpackRoot, { recursive: true, force: true });
+      throw error;
+    }
+    writeFileSync(
+      identityPath,
+      `${JSON.stringify({ sha, tree, archiveSha256, toolingSha, installedAt: new Date().toISOString() }, null, 2)}\n`,
+      { flag: "wx", mode: 0o444 },
     );
-  mkdirSync(unpackRoot, { mode: 0o755 });
-  try {
-    run("tar", [
-      "--extract",
-      "--gzip",
-      "--file",
-      archivePath,
-      "--directory",
-      unpackRoot,
-      "--no-same-owner",
-      "--no-same-permissions",
-    ]);
-    renameSync(unpackRoot, releaseRoot);
-  } catch (error) {
-    rmSync(unpackRoot, { recursive: true, force: true });
-    throw error;
   }
-  const identityPath = path.join(
-    PRODUCTION.root,
-    "releases",
-    `${sha}.identity.json`,
-  );
-  writeFileSync(
-    identityPath,
-    `${JSON.stringify({ sha, tree, archiveSha256, toolingSha, installedAt: new Date().toISOString() }, null, 2)}\n`,
-    { flag: "wx", mode: 0o444 },
-  );
   if (
     realpathSync(releaseRoot) !== releaseRoot ||
     lstatSync(releaseRoot).isSymbolicLink()
@@ -1218,6 +1315,7 @@ async function main() {
   const snapshot = { value: null };
   let compose;
   let containerBaseline;
+  let migrationState = "unknown";
   let apiStopAttempted = false;
   let migrationStarted = false;
   const actions = {
@@ -1227,7 +1325,24 @@ async function main() {
       verifyProductionPayPalDisabled(compose);
       containerBaseline = verifyWriterSet(compose);
     },
-    "validate-lineage": async () => validatePendingLineage(compose),
+    "validate-lineage": async () => {
+      migrationState = validatePendingLineage(compose);
+      const runtimeAlreadyAdvanced = ["api", "platform"].some((service) => {
+        const current = containerBaseline.get(service);
+        return (
+          (current?.imageId === APPROVED_RELEASE.images[service] &&
+            current?.revision === APPROVED_RELEASE.revisions[service] &&
+            current?.image === approvedImageReference(service)) ||
+          (service === "api" &&
+            current?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
+            current?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
+            current?.image === MIGRATED_RUNTIME_BASELINE.apiReference)
+        );
+      });
+      if (runtimeAlreadyAdvanced && migrationState !== "applied")
+        throw new Error("Approved runtime image cannot be resumed before the exact 51-row migration lineage is applied");
+      if (migrationState === "applied") migrationStarted = true;
+    },
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
       if (
@@ -1239,17 +1354,30 @@ async function main() {
         );
     },
     "stop-writers": async () => {
+      const nginxId = containerBaseline?.get("nginx")?.id;
+      const apiId = containerBaseline?.get("api")?.id;
+      if (!nginxId || !apiId)
+        throw new Error("Verified production API/ingress container IDs are unavailable");
       apiStopAttempted = true;
-      run("docker", [...compose.args, "stop", "nginx", "api"]);
+      run("docker", ["stop", nginxId]);
+      run("docker", ["stop", apiId]);
     },
     "verify-writers-stopped": async () => {
-      stopAndVerifyWriters(compose);
-      safePrintAssetsCopy(compose, sharedRoot);
+      stopAndVerifyWriters(compose, containerBaseline);
+      safePrintAssetsCopy(containerBaseline.get("api").id, sharedRoot);
     },
     snapshot: async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: snapshot already completed before the verified migration");
+        return;
+      }
       snapshot.value = createSnapshot(compose, backupRoot);
     },
     "verify-snapshot": async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: snapshot verification already completed before the verified migration");
+        return;
+      }
       if (
         !snapshot.value?.archive ||
         (await sha256File(snapshot.value.archive)) !== snapshot.value.digest
@@ -1262,8 +1390,18 @@ async function main() {
       )
         throw new Error("Snapshot archive inspection is incomplete");
     },
-    "restore-rehearsal": async () => restoreSnapshotInIsolation(snapshot.value),
+    "restore-rehearsal": async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: isolated restore rehearsal already completed before the verified migration");
+        return;
+      }
+      return restoreSnapshotInIsolation(snapshot.value);
+    },
     migrate: async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: exact 51-row migration lineage is already applied");
+        return;
+      }
       migrationStarted = true;
       run("docker", [...compose.args, "run", "--pull", "never", "--rm", "--no-deps", "migrate"], {
         env: releaseComposeEnvironment(),

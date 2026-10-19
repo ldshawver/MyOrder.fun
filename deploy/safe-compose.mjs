@@ -91,7 +91,7 @@ export function validatePlan({ environment, root, project, config, authorization
         (deploySha && deploySha !== imageSha)) throw new Error("Compose image SHA does not match the validated release candidate");
   }
   if (environment === "production" && Object.keys(apiEnvironment).some(name => name.startsWith("STAGING_"))) throw new Error("Staging-only settings cannot be attached to production");
-  if (environment === "production" && apiEnvironment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED !== "true") throw new Error("Production WooCommerce integration policy must be explicitly enabled");
+  if (environment === "production" && !["true", "false"].includes(apiEnvironment.WOOCOMMERCE_EXTERNAL_INTEGRATION_ENABLED)) throw new Error("Production WooCommerce integration policy must be explicitly set to true or false");
   if (environment === "staging" && (apiEnvironment.PAYPAL_ENVIRONMENT && apiEnvironment.PAYPAL_ENVIRONMENT !== "sandbox" || apiEnvironment.LIVE_PAYMENTS_ENABLED === "true")) throw new Error("Staging cannot enable live payment credentials or mode");
   if (environment === "staging") {
     if (!/^user_[A-Za-z0-9_-]+$/.test(apiEnvironment.MYORDER_OWNER_CLERK_ID ?? "")) throw new Error("Staging owner Clerk configuration is missing or invalid");

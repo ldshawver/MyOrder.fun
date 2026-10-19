@@ -34,11 +34,15 @@ describe("WooCommerce external integration policy", () => {
     expect(() => assertWooCommerceExternalIntegrationPolicy()).not.toThrow();
   });
 
-  it("requires explicit enabled policy in production", () => {
+  it("requires an explicit boolean policy in production and permits fail-closed disablement", () => {
     process.env.NODE_ENV = "production";
+    delete process.env[WOO_EXTERNAL_INTEGRATION_ENV];
+    expect(() => assertWooCommerceExternalIntegrationPolicy()).toThrow(/explicitly set/);
     process.env[WOO_EXTERNAL_INTEGRATION_ENV] = "false";
-    expect(() => assertWooCommerceExternalIntegrationPolicy()).toThrow(/must be true in production/);
+    expect(() => assertWooCommerceExternalIntegrationPolicy()).not.toThrow();
+    expect(isWooCommerceExternalIntegrationEnabled()).toBe(false);
     process.env[WOO_EXTERNAL_INTEGRATION_ENV] = "true";
     expect(() => assertWooCommerceExternalIntegrationPolicy()).not.toThrow();
+    expect(isWooCommerceExternalIntegrationEnabled()).toBe(true);
   });
 });
