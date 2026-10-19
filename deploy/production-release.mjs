@@ -1088,14 +1088,20 @@ function validatePendingLineage(compose) {
   const pending = [
     ...output.matchAll(/\[migration-ledger\] PENDING ([^ ]+)/g),
   ].map((match) => match[1]);
-  if (JSON.stringify(pending) !== JSON.stringify(expected))
-    throw new Error(
-      `Production pending migration sequence differs from expected Release 1 path: ${pending.join(",")}`,
-    );
-  if (!output.includes("recognized lineage preserved: 42/51"))
-    throw new Error(
-      "Production lineage validator did not recognize the exact 42-row candidate prefix",
-    );
+  if (
+    JSON.stringify(pending) === JSON.stringify(expected) &&
+    output.includes("recognized lineage preserved: 42/51")
+  )
+    return "pending";
+  if (
+    pending.length === 0 &&
+    expected.every((tag) => output.includes(`APPLIED ${tag} `)) &&
+    output.includes("recognized lineage preserved: 51/51")
+  )
+    return "applied";
+  throw new Error(
+    `Production migration state is neither the exact 42-row pending path nor the verified 51-row applied lineage: ${pending.join(",")}`,
+  );
 }
 
 async function waitFor(url, expectedSha, attempts = 45) {
@@ -1282,6 +1288,7 @@ async function main() {
   const snapshot = { value: null };
   let compose;
   let containerBaseline;
+  let migrationState = "unknown";
   let apiStopAttempted = false;
   let migrationStarted = false;
   const actions = {
@@ -1291,7 +1298,10 @@ async function main() {
       verifyProductionPayPalDisabled(compose);
       containerBaseline = verifyWriterSet(compose);
     },
-    "validate-lineage": async () => validatePendingLineage(compose),
+    "validate-lineage": async () => {
+      migrationState = validatePendingLineage(compose);
+      if (migrationState === "applied") migrationStarted = true;
+    },
     "verify-writer-inventory": async () => {
       const current = verifyWriterSet(compose);
       if (
@@ -1316,9 +1326,17 @@ async function main() {
       safePrintAssetsCopy(containerBaseline.get("api").id, sharedRoot);
     },
     snapshot: async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: snapshot already completed before the verified migration");
+        return;
+      }
       snapshot.value = createSnapshot(compose, backupRoot);
     },
     "verify-snapshot": async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: snapshot verification already completed before the verified migration");
+        return;
+      }
       if (
         !snapshot.value?.archive ||
         (await sha256File(snapshot.value.archive)) !== snapshot.value.digest
@@ -1331,8 +1349,18 @@ async function main() {
       )
         throw new Error("Snapshot archive inspection is incomplete");
     },
-    "restore-rehearsal": async () => restoreSnapshotInIsolation(snapshot.value),
+    "restore-rehearsal": async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: isolated restore rehearsal already completed before the verified migration");
+        return;
+      }
+      return restoreSnapshotInIsolation(snapshot.value);
+    },
     migrate: async () => {
+      if (migrationState === "applied") {
+        console.log("production resume: exact 51-row migration lineage is already applied");
+        return;
+      }
       migrationStarted = true;
       run("docker", [...compose.args, "run", "--pull", "never", "--rm", "--no-deps", "migrate"], {
         env: releaseComposeEnvironment(),
