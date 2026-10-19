@@ -30,17 +30,17 @@ export const APPROVED_RELEASE = Object.freeze({
   tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
   images: Object.freeze({
     api: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-    platform: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+    platform: "sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
     migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
   }),
   revisions: Object.freeze({
     api: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
-    platform: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+    platform: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
     migrate: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
   }),
   references: Object.freeze({
     api: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
-    platform: "myorder-platform@sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+    platform: "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf",
     migrate: "myorder-migrate@sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
   }),
 });
@@ -50,10 +50,10 @@ export const MIGRATED_RUNTIME_BASELINE = Object.freeze({
   apiReference: "myorder-api@sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
 });
 export const PRODUCTION_BASELINE = Object.freeze({
-  apiImage: "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d",
-  apiRevision: "8a3e1ccd8e132425ad82163a14ca67c53ba745b2",
-  platformImage: "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6",
-  platformRevision: "579cce225c0f9e7bee41a4c226d43e5ba5c86606",
+  apiImage: "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
+  apiRevision: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  platformImage: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+  platformRevision: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
 });
 let releaseIdentity = APPROVED_RELEASE;
 export const PRODUCTION = Object.freeze({
