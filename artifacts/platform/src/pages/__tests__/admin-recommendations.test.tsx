@@ -83,3 +83,35 @@ it("keeps variants, location inventory, and Global Admin compliance controls tog
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/admin/product-master/70/lifecycle", expect.objectContaining({ method: "PATCH" })));
   expect(JSON.parse(String(fetchMock.mock.calls.find(([path]) => path === "/api/admin/product-master/70/lifecycle")?.[1]?.body))).toEqual({ complianceHold: true, reason: "Review required" });
 });
+
+it("does not change inventory when Shared is selected and requires an explicit reconciliation preview", async () => {
+  const requests: Array<{ path: string; method?: string }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    const path = String(input); requests.push({ path, method: init?.method });
+    if (path === "/api/admin/catalogue/products") return new Response(JSON.stringify({ products: [{ id: 7, name: "Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION", options: [
+      { id: 9, catalogItemId: 70, label: "Small", optionValues: { Size: "S" }, sku: "S", price: "12.00", active: true, isAvailable: true, inventoryItemId: 90, baseUnit: "each", consumptionQuantity: "1", complianceHold: false, complianceReason: null },
+      { id: 10, catalogItemId: 71, label: "Large", optionValues: { Size: "L" }, sku: "L", price: "14.00", active: true, isAvailable: true, inventoryItemId: 91, baseUnit: "each", consumptionQuantity: "1", complianceHold: false, complianceReason: null },
+    ] }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path === "/api/admin/catalogue/recommendations") return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.startsWith("/api/admin/catalogue/inventory/") && path.endsWith("/locations")) return new Response(JSON.stringify({ locations: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    if (path.endsWith("/inventory-reconciliation/preview")) return new Response(JSON.stringify({ product: { id: 7, name: "Shirt", inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION" },
+      target: { inventoryItemId: 90 }, targetUnit: "each", variants: [], reservations: [], committed: [], costs: [], legacyHistory: [], locations: [], orderHistory: [], issues: [], costRequired: false, fingerprint: "a".repeat(64) }), { status: 200, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "Unexpected request" }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }));
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  await act(async () => root!.render(createElement(AdminCatalogueProducts)));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Shirt"));
+  const productButton = [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Shirt"));
+  await act(async () => productButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Options / variants"));
+  const inventoryModel = host!.querySelectorAll("select")[2] as HTMLSelectElement;
+  await act(async () => { inventoryModel.value = "SHARED"; inventoryModel.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(host?.textContent).toContain("Reconcile inventory");
+  expect(requests.some(request => request.method === "PATCH" && request.path.endsWith("/products/7"))).toBe(false);
+  const previewButton = [...host!.querySelectorAll("button")].find(button => button.textContent?.includes("Reconcile inventory · preview"));
+  expect(previewButton).toBeTruthy();
+  await act(async () => previewButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  await vi.waitFor(() => expect(host?.textContent).toContain("Preview · proposed base unit: each"));
+  expect(requests.filter(request => request.method === "POST" && request.path.endsWith("/inventory-reconciliation/preview"))).toHaveLength(1);
+  expect(requests.some(request => request.method === "PATCH" && request.path.endsWith("/products/7"))).toBe(false);
+});

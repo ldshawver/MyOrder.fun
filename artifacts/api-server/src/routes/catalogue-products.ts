@@ -8,6 +8,7 @@ import { quantityText, quantityUnits } from "../lib/exactQuantity";
 import { recommendReplenishment, type LocationPolicyInput } from "../lib/cataloguePolicy";
 import { upsertInventoryBalanceThroughAuthority } from "../lib/inventoryAuthority";
 import { loadSellableProducts } from "../lib/catalogueSellable";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 router.use(requireAuth, loadDbUser, requireDbUser, requireApproved, requireTenantContext);
@@ -16,19 +17,32 @@ const id = z.coerce.number().int().positive();
 const physical = z.string().refine(value => {
   try { quantityUnits(value); return true; } catch { return false; }
 }, "Use a nonnegative decimal with at most six places");
+const positiveConsumption = physical.refine(value => quantityUnits(value) > 0n, "Consumption must be greater than zero");
 const money = z.string().regex(/^\d{1,8}(?:\.\d{1,2})?$/);
 const optionValuesInput = z.record(z.string().trim().min(1).max(80), z.string().trim().min(1).max(120))
   .refine(value => Object.keys(value).length <= 8, "A variant may have at most eight option axes");
+const createVariantInput = z.object({
+  label: z.string().trim().min(1).max(80),
+  optionValues: optionValuesInput.default({}),
+  sku: z.string().trim().max(120).nullable().optional(),
+  barcode: z.string().trim().max(120).nullable().optional(),
+  price: money,
+  compareAtPrice: money.nullable().optional(),
+  consumptionQuantity: positiveConsumption,
+  isAvailable: z.boolean().default(true),
+}).strict();
 const productInput = z.object({
   name: z.string().trim().min(1).max(160),
-  category: z.string().trim().min(1).max(120),
-  price: money,
+  category: z.string().trim().min(1).max(120).default("Products"),
+  price: money.optional(),
   sku: z.string().trim().max(120).nullable().optional(),
+  barcode: z.string().trim().max(120).nullable().optional(),
   firstOptionLabel: z.string().trim().min(1).max(80).default("Standard"),
   inventoryModel: z.enum(["SHARED", "SEPARATE_VARIANTS"]).default("SEPARATE_VARIANTS"),
   locationEvaluation: z.enum(["PER_LOCATION", "COMBINED_LOCATIONS"]).default("PER_LOCATION"),
   baseUnit: z.string().trim().min(1).max(40).default("each"),
-  consumptionQuantity: physical.default("1"),
+  consumptionQuantity: positiveConsumption.default("1"),
+  variants: z.array(createVariantInput).min(1).max(100).optional(),
 }).strict();
 const optionInput = z.object({
   label: z.string().trim().min(1).max(80),
@@ -37,7 +51,7 @@ const optionInput = z.object({
   barcode: z.string().trim().max(120).nullable().optional(),
   price: money,
   compareAtPrice: money.nullable().optional(),
-  consumptionQuantity: physical,
+  consumptionQuantity: positiveConsumption,
   inventoryItemId: z.number().int().positive().optional(),
   active: z.boolean().optional(),
   isAvailable: z.boolean().optional(),
@@ -46,6 +60,9 @@ const optionInput = z.object({
 function rows<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   return ((result as { rows?: T[] } | undefined)?.rows ?? []);
+}
+function textArray(values: string[]) {
+  return sql`ARRAY[${sql.join(values.map(value => sql`${value}`), sql`, `)}]::text[]`;
 }
 type ProductRow = { id: number; tenantId: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; active: boolean };
 type OptionRow = { id: number; productId: number; catalogItemId: number; inventoryItemId: number; inventoryCatalogItemId: number; label: string; optionValues: Record<string, string>; consumptionQuantity: string; sku: string | null; barcode: string | null; price: string; compareAtPrice: string | null; baseUnit: string; active: boolean; isAvailable: boolean; complianceHold: boolean; complianceReason: string | null };
@@ -118,35 +135,87 @@ router.get("/admin/catalogue/products", admin, async (req, res): Promise<void> =
 
 router.post("/admin/catalogue/products", admin, async (req, res): Promise<void> => {
   const parsed = productInput.safeParse(req.body);
-  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  if (!parsed.success) { res.status(400).json({ error: "Enter a valid product and variant configuration." }); return; }
   const tenantId = req.authorizedTenantId!;
   const body = parsed.data;
+  const variants = body.variants ?? (body.price ? [{ label: body.firstOptionLabel, optionValues: {}, sku: body.sku,
+    barcode: body.barcode, price: body.price, compareAtPrice: null, consumptionQuantity: body.consumptionQuantity, isAvailable: true }] : []);
+  if (!variants.length) { res.status(400).json({ error: "Add at least one variant with a price." }); return; }
+  const normalizedVariants = variants.map(variant => ({ ...variant, optionValues: Object.fromEntries(Object.entries(variant.optionValues)
+    .sort(([a], [b]) => a.localeCompare(b))) }));
+  const axisKeys = JSON.stringify(Object.keys(normalizedVariants[0].optionValues).sort());
+  if (normalizedVariants.some(variant => JSON.stringify(Object.keys(variant.optionValues).sort()) !== axisKeys)) {
+    res.status(400).json({ error: "Every variant must use the same option fields." }); return;
+  }
+  const normalizedValues = normalizedVariants.map(variant => Object.keys(variant.optionValues).length ? variant.optionValues : { Option: variant.label });
+  if (new Set(normalizedValues.map(value => JSON.stringify(value))).size !== normalizedValues.length) {
+    res.status(400).json({ error: "Variant option values must be unique." }); return;
+  }
+  if (new Set(normalizedVariants.flatMap(v => v.sku?.trim() ? [v.sku.trim().toLocaleLowerCase()] : [])).size !== normalizedVariants.filter(v => v.sku?.trim()).length) {
+    res.status(400).json({ error: "Each variant SKU must be unique." }); return;
+  }
   try {
     const created = await db.transaction(async tx => {
-      // The catalogue insert trigger creates the safe one-product/Standard-option baseline.
-      const catalog = rows<{ id: number }>(await tx.execute(sql`
-        INSERT INTO catalog_items (tenant_id, name, category, price, sku, merchant_brand,
-          customer_safe_name, customer_safe_description, display_category,
-          alavont_name, lucifer_cruz_name, merchant_name, stock_unit)
-        VALUES (${tenantId}, ${body.name}, ${body.category}, ${body.price}, ${body.sku ?? null},
-          'lucifer_cruz', ${body.name}, ${body.name}, ${body.category}, ${body.name},
-          ${body.name}, ${body.name}, ${body.baseUnit}) RETURNING id
-      `))[0];
-      const auto = rows<{ id: number; productId: number; inventoryItemId: number }>(await tx.execute(sql`
-        SELECT id, product_id AS "productId", inventory_item_id AS "inventoryItemId"
-        FROM catalogue_options WHERE tenant_id = ${tenantId} AND catalog_item_id = ${catalog.id}
-      `))[0];
-      await tx.execute(sql`UPDATE catalogue_products SET name = ${body.name}, inventory_model = ${body.inventoryModel},
-        location_evaluation = ${body.locationEvaluation} WHERE tenant_id = ${tenantId} AND id = ${auto.productId}`);
-      await tx.execute(sql`UPDATE catalogue_options SET label = ${body.firstOptionLabel},
-        option_values = '{}'::jsonb, consumption_quantity = ${quantityText(quantityUnits(body.consumptionQuantity))}
-        WHERE tenant_id = ${tenantId} AND id = ${auto.id}`);
-      await tx.execute(sql`UPDATE inventory_items SET base_unit = ${body.baseUnit}
-        WHERE tenant_id = ${tenantId} AND id = ${auto.inventoryItemId}`);
-      return { productId: auto.productId, optionId: auto.id, catalogItemId: catalog.id, inventoryItemId: auto.inventoryItemId };
+      const skuValues = normalizedVariants.flatMap(v => v.sku?.trim() ? [v.sku.trim()] : []);
+      if (skuValues.length) {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${tenantId}, 740015)`);
+        const duplicate = rows<{ id: number }>(await tx.execute(sql`SELECT id FROM catalog_items WHERE tenant_id=${tenantId}
+          AND lower(btrim(sku))=ANY(${textArray(skuValues.map(s => s.toLocaleLowerCase()))}) LIMIT 1`))[0];
+        if (duplicate) throw Object.assign(new Error("A variant SKU already exists in this tenant."), { safeMessage: "A variant SKU already exists in this tenant." });
+      }
+      let productId = 0; let sharedInventoryItemId = 0;
+      const createdOptions: Array<{ optionId: number; catalogItemId: number; inventoryItemId: number }> = [];
+      for (let index = 0; index < normalizedVariants.length; index++) {
+        const variant = normalizedVariants[index];
+        const itemName = index === 0 ? body.name : `${body.name} ${variant.label}`;
+        const catalog = rows<{ id: number }>(await tx.execute(sql`
+          INSERT INTO catalog_items (tenant_id,name,category,price,compare_at_price,sku,barcode,is_available,merchant_brand,
+            customer_safe_name,customer_safe_description,display_category,alavont_name,lucifer_cruz_name,merchant_name,stock_unit)
+          VALUES (${tenantId},${itemName},${body.category},${variant.price},${variant.compareAtPrice ?? null},
+            ${variant.sku?.trim() || null},${variant.barcode?.trim() || null},${variant.isAvailable},'lucifer_cruz',
+            ${itemName},${itemName},${body.category},${itemName},${itemName},${itemName},${body.baseUnit}) RETURNING id
+        `))[0];
+        if (!catalog) throw new Error("Catalogue item insert returned no identifier");
+        const auto = rows<{ id: number; productId: number; inventoryItemId: number }>(await tx.execute(sql`
+          SELECT id,product_id AS "productId",inventory_item_id AS "inventoryItemId" FROM catalogue_options
+          WHERE tenant_id=${tenantId} AND catalog_item_id=${catalog.id}
+        `))[0];
+        if (!auto) throw new Error("Catalogue inventory option was not created");
+        if (index === 0) {
+          productId = auto.productId; sharedInventoryItemId = auto.inventoryItemId;
+          await tx.execute(sql`UPDATE catalogue_products SET name=${body.name},inventory_model=${body.inventoryModel},
+            location_evaluation=${body.locationEvaluation} WHERE tenant_id=${tenantId} AND id=${productId}`);
+          await tx.execute(sql`UPDATE inventory_items SET base_unit=${body.baseUnit} WHERE tenant_id=${tenantId} AND id=${sharedInventoryItemId}`);
+        }
+        const inventoryItemId = body.inventoryModel === "SHARED" ? sharedInventoryItemId : auto.inventoryItemId;
+        await tx.execute(sql`UPDATE catalogue_options SET product_id=${productId},label=${variant.label},
+          option_values=${JSON.stringify(normalizedValues[index])}::jsonb,inventory_item_id=${inventoryItemId},
+          consumption_quantity=${quantityText(quantityUnits(variant.consumptionQuantity))}::numeric,active=true,updated_at=now()
+          WHERE tenant_id=${tenantId} AND id=${auto.id}`);
+        if (inventoryItemId !== auto.inventoryItemId) await tx.execute(sql`DELETE FROM inventory_items WHERE tenant_id=${tenantId} AND id=${auto.inventoryItemId}`);
+        if (auto.productId !== productId) await tx.execute(sql`DELETE FROM catalogue_products WHERE tenant_id=${tenantId} AND id=${auto.productId}`);
+        createdOptions.push({ optionId: auto.id, catalogItemId: Number(catalog.id), inventoryItemId });
+      }
+      return { productId, ...createdOptions[0], options: createdOptions, sharedInventoryItemId };
     });
     res.status(201).json(created);
-  } catch (error) { res.status(409).json({ error: (error as Error).message }); }
+  } catch (error) {
+    const wrapped = error as { cause?: unknown; safeMessage?: unknown };
+    const pgError = (wrapped?.cause as Record<string, unknown> | undefined) ?? error as Record<string, unknown>;
+    const sqlState = typeof pgError.code === "string" && /^[0-9A-Z]{5}$/.test(pgError.code) ? pgError.code : "UNKNOWN";
+    const constraint = typeof pgError.constraint === "string" ? pgError.constraint : null;
+    const table = typeof pgError.table === "string" ? pgError.table : null;
+    const routine = typeof pgError.routine === "string" ? pgError.routine : null;
+    logger.error({ sqlState, constraint, table, routine, tenantId }, "Catalogue product creation failed");
+    const safeMessage = (typeof wrapped?.safeMessage === "string" ? wrapped.safeMessage : null) ?? (sqlState === "23505" && constraint === "catalog_items_tenant_sku_ci_unique"
+      ? "A variant SKU already exists in this tenant."
+      : sqlState === "42P01" || sqlState === "42703"
+        ? "Product inventory schema is incomplete. Ask an administrator to verify the current database migrations."
+        : sqlState === "23502" || sqlState === "23503" || sqlState === "23514" || sqlState === "P0001"
+          ? "The database rejected a required product or inventory relationship. No changes were saved; review the variant details or ask an administrator to verify the database schema."
+          : "Product could not be created. No changes were saved. Review the fields and try again.");
+    res.status(sqlState === "23505" ? 409 : sqlState === "UNKNOWN" ? 500 : 422).json({ error: safeMessage, code: "PRODUCT_CREATE_FAILED" });
+  }
 });
 
 router.patch("/admin/catalogue/products/:productId", admin, async (req, res): Promise<void> => {

@@ -9,6 +9,14 @@ type Option = { id: number; catalogItemId: number; label: string; optionValues: 
 type Product = { id: number; name: string; inventoryModel: "SHARED" | "SEPARATE_VARIANTS"; locationEvaluation: "PER_LOCATION" | "COMBINED_LOCATIONS"; options: Option[] };
 type Location = { locationId: number; name: string; quantityOnHand: string; par: string; reorderPoint: string; preferredReorderQuantity: string; moq: string };
 type Recommendation = { inventoryItemId: number; productName: string; baseUnit: string; recommendations: Array<{ locationId: number; locationName: string; internalTransfers: Array<{ fromLocationId: number; quantity: string }>; externalPurchaseQuantity: string }> };
+type InventoryPreview = { product: { id: number; name: string; inventoryModel: string; locationEvaluation: string }; target: { inventoryItemId?: number; create?: { name: string; baseUnit: string } }; targetUnit: string;
+  variants: Array<{ optionId: number; label: string; optionValues: Record<string,string>; inventoryItemId: number; catalogItemId: number; inventoryCatalogItemId: number; baseUnit: string; consumptionQuantity: string; proposedConsumption: string; price: string; sku: string | null; barcode: string | null }>;
+  reservations: Array<{ catalogItemId: number; locationId: number; locationName: string; status: string; quantity: string; expiresAt: string; orderId: number }>;
+  costs: Array<{ inventoryItemId: number; catalogItemId: number; baseUnit: string; onHand: string; costStatus: string; averageUnitCost: string | null; inventoryValue: string | null; reliable: boolean; convertedUnitCost: string | null }>;
+  legacyHistory: Array<{ catalogItemId: number; locationId: number | null; transactionCount: number; netQuantityChange: string }>;
+  locations: Array<{ locationId: number; locationName: string; sourceBalances: Array<{ catalogItemId: number; locationId: number; quantity: string; ledgerQuantity: string; movementCount: number }>; proposedSharedBalance: string }>;
+  orderHistory: Array<{ optionId: number; orderLineCount: number }>; committed: Array<{ optionId: number; label: string; orderId: number; status: string; committedConsumption: string; orderLineCount: number }>;
+  issues: string[]; costRequired: boolean; fingerprint: string };
 
 type ProductForm = { name: string; category: string; price: string; sku: string; firstOptionLabel: string;
   inventoryModel: Product["inventoryModel"]; locationEvaluation: Product["locationEvaluation"]; baseUnit: string; consumptionQuantity: string };
@@ -16,6 +24,7 @@ const defaultProduct: ProductForm = { name: "", category: "", price: "0.00", sku
   inventoryModel: "SEPARATE_VARIANTS", locationEvaluation: "PER_LOCATION",
   baseUnit: "each", consumptionQuantity: "1.000000" };
 const defaultOption = { label: "", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000" };
+const defaultCreationVariant = { label: "Standard", optionValuesText: "", sku: "", barcode: "", price: "0.00", compareAtPrice: "", consumptionQuantity: "1.000000", isAvailable: true };
 
 function parseOptionValues(text: string): Record<string, string> {
   if (!text.trim()) return {};
@@ -62,6 +71,7 @@ export default function AdminCatalogueProducts() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [create, setCreate] = useState(defaultProduct);
+  const [creationVariants, setCreationVariants] = useState([defaultCreationVariant]);
   const [newOption, setNewOption] = useState(defaultOption);
   const [combinationText, setCombinationText] = useState("");
   const [editName, setEditName] = useState("");
@@ -69,9 +79,27 @@ export default function AdminCatalogueProducts() {
   const [message, setMessage] = useState("");
   const [complianceReason, setComplianceReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [inventoryModelDraft, setInventoryModelDraft] = useState<Product["inventoryModel"]>("SEPARATE_VARIANTS");
+  const [reconcileTarget, setReconcileTarget] = useState<string>("");
+  const [createSharedItem, setCreateSharedItem] = useState(false);
+  const [sharedItemName, setSharedItemName] = useState("");
+  const [sharedBaseUnit, setSharedBaseUnit] = useState("each");
+  const [reconcileReason, setReconcileReason] = useState("");
+  const [manualUnitCost, setManualUnitCost] = useState("");
+  const [costBasisNote, setCostBasisNote] = useState("");
+  const [preview, setPreview] = useState<InventoryPreview | null>(null);
+  const [confirmReconciliation, setConfirmReconciliation] = useState(false);
   const selected = products.find(product => product.id === selectedId);
-  useEffect(() => { setEditName(selected?.name ?? ""); }, [selected?.name]);
-  useEffect(() => { setEditBaseUnit(selected?.options.find(option => option.inventoryItemId === selectedItemId)?.baseUnit ?? ""); }, [selected, selectedItemId]);
+  const selectedIdValue = selected?.id;
+  const selectedName = selected?.name ?? "";
+  const selectedInventoryModel = selected?.inventoryModel;
+  const firstActiveOption = selected?.options.find(option => option.active);
+  const selectedItemBaseUnit = selected?.options.find(option => option.inventoryItemId === selectedItemId)?.baseUnit ?? "";
+  useEffect(() => { setEditName(selectedName); setInventoryModelDraft(selectedInventoryModel ?? "SEPARATE_VARIANTS");
+    setPreview(null); setConfirmReconciliation(false); setReconcileTarget(String(firstActiveOption?.inventoryItemId ?? ""));
+    setSharedBaseUnit(firstActiveOption?.baseUnit ?? "each"); setSharedItemName(selectedName ? `${selectedName} shared inventory` : "");
+  }, [selectedIdValue, selectedName, selectedInventoryModel, firstActiveOption?.inventoryItemId, firstActiveOption?.baseUnit]);
+  useEffect(() => { setEditBaseUnit(selectedItemBaseUnit); }, [selectedItemBaseUnit]);
 
   const request = useCallback(async (path: string, init?: RequestInit) => {
     const token = await getToken();
@@ -105,11 +133,41 @@ export default function AdminCatalogueProducts() {
       .then(result => setLocations(result.locations)).catch(error => setMessage(error.message));
   }, [request, selectedItemId]);
 
-  async function perform(action: () => Promise<void>) {
+  async function perform(action: () => Promise<void>, successMessage = "Saved") {
     setBusy(true); setMessage("");
-    try { await action(); await refresh(); setMessage("Saved"); }
+    try { await action(); await refresh(); setMessage(successMessage); }
     catch (error) { setMessage(error instanceof Error ? error.message : "Save failed"); }
     finally { setBusy(false); }
+  }
+  const reconciliationTarget = () => createSharedItem
+    ? { create: { name: sharedItemName.trim(), baseUnit: sharedBaseUnit.trim() } }
+    : { inventoryItemId: Number(reconcileTarget) };
+  async function loadReconciliationPreview() {
+    if (!selected) return;
+    setBusy(true); setMessage(""); setPreview(null); setConfirmReconciliation(false);
+    try {
+      const data = await request(`/api/admin/catalogue/products/${selected.id}/inventory-reconciliation/preview`, {
+        method: "POST", body: JSON.stringify({ target: reconciliationTarget() }),
+      }) as InventoryPreview;
+      setPreview(data);
+      setMessage(data.issues.length ? "Preview loaded with blocking issues. Resolve them before reconciliation." : "Preview ready. Review every balance and valuation before confirming.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not load inventory preview"); }
+    finally { setBusy(false); }
+  }
+  async function applyInventoryReconciliation() {
+    if (!selected || !preview || !confirmReconciliation || preview.issues.length || !reconcileReason.trim()) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await request(`/api/admin/catalogue/products/${selected.id}/inventory-reconciliation/apply`, {
+        method: "POST", body: JSON.stringify({ target: reconciliationTarget(), previewFingerprint: preview.fingerprint,
+          confirmPreview: true, idempotencyKey: crypto.randomUUID(), reason: reconcileReason.trim(),
+          ...(manualUnitCost ? { manualUnitCost, costBasisNote } : {}) }),
+      }) as { reconciliationId: string; targetInventoryItemId: number };
+      await refresh(); setInventoryModelDraft("SHARED"); setPreview(null); setConfirmReconciliation(false);
+      setMessage(`Inventory reconciled successfully. Shared inventory item #${result.targetInventoryItemId}; audit record ${result.reconciliationId}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? `Reconciliation was not saved: ${error.message}` : "Reconciliation was not saved.");
+    } finally { setBusy(false); }
   }
   const updateLocation = (locationId: number, key: keyof Location, value: string) =>
     setLocations(current => current.map(location => location.locationId === locationId ? { ...location, [key]: value } : location));
@@ -123,20 +181,38 @@ export default function AdminCatalogueProducts() {
       <div className="grid gap-2 md:grid-cols-4">
         <label>Name<Input value={create.name} onChange={event => setCreate({ ...create, name: event.target.value })} /></label>
         <label>Category<Input value={create.category} onChange={event => setCreate({ ...create, category: event.target.value })} /></label>
-        <label>First option<Input value={create.firstOptionLabel} onChange={event => setCreate({ ...create, firstOptionLabel: event.target.value })} /></label>
-        <label>SKU<Input value={create.sku} onChange={event => setCreate({ ...create, sku: event.target.value })} /></label>
-        <label>Price<Input value={create.price} onChange={event => setCreate({ ...create, price: event.target.value })} /></label>
         <label>Base unit<Input value={create.baseUnit} onChange={event => setCreate({ ...create, baseUnit: event.target.value })} /></label>
-        <label>Consumption per option<Input value={create.consumptionQuantity} onChange={event => setCreate({ ...create, consumptionQuantity: event.target.value })} /></label>
         <label>Inventory model<select className="block w-full rounded border bg-background p-2" value={create.inventoryModel} onChange={event => setCreate({ ...create, inventoryModel: event.target.value as typeof create.inventoryModel })}>
           <option>SEPARATE_VARIANTS</option><option>SHARED</option></select></label>
         <label>Location evaluation<select className="block w-full rounded border bg-background p-2" value={create.locationEvaluation} onChange={event => setCreate({ ...create, locationEvaluation: event.target.value as typeof create.locationEvaluation })}>
           <option>PER_LOCATION</option><option>COMBINED_LOCATIONS</option></select></label>
       </div>
+      <div className="space-y-2 rounded border p-3">
+        <div className="flex items-center justify-between"><h3 className="font-medium">Variants and quantity consumption</h3>
+          <Button type="button" variant="outline" disabled={busy || creationVariants.length >= 100} onClick={() => setCreationVariants(current => [...current, { ...defaultCreationVariant, label: `Variant ${current.length + 1}` }])}>Add variant</Button></div>
+        <p className="text-xs text-muted-foreground">Each variant keeps its own price, SKU, barcode, option values and quantity consumed. Shared variants use one inventory item from creation.</p>
+        {creationVariants.map((variant, index) => <div key={index} className="grid gap-2 border-t py-2 md:grid-cols-4">
+          <label>Variant label<Input value={variant.label} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,label:event.target.value}:v))} /></label>
+          <label>Option values<Input placeholder="Size=Large; Color=Black" value={variant.optionValuesText} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,optionValuesText:event.target.value}:v))} /></label>
+          <label>SKU<Input value={variant.sku} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,sku:event.target.value}:v))} /></label>
+          <label>Barcode<Input value={variant.barcode} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,barcode:event.target.value}:v))} /></label>
+          <label>Price<Input value={variant.price} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,price:event.target.value}:v))} /></label>
+          <label>Compare-at price<Input value={variant.compareAtPrice} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,compareAtPrice:event.target.value}:v))} /></label>
+          <label>Consumption ({create.baseUnit})<Input value={variant.consumptionQuantity} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,consumptionQuantity:event.target.value}:v))} /></label>
+          <label className="flex items-center gap-2 self-end"><input type="checkbox" checked={variant.isAvailable} onChange={event => setCreationVariants(current => current.map((v,i)=>i===index?{...v,isAvailable:event.target.checked}:v))} />Sellable</label>
+          {creationVariants.length > 1 && <Button type="button" variant="outline" className="self-end" onClick={() => setCreationVariants(current => current.filter((_,i)=>i!==index))}>Remove variant</Button>}
+        </div>)}
+      </div>
       <Button disabled={busy} onClick={() => void perform(async () => {
-        const result = await request("/api/admin/catalogue/products", { method: "POST", body: JSON.stringify(create) }) as { productId: number };
-        setSelectedId(result.productId); setCreate(defaultProduct);
-      })}>Create product</Button>
+        const variants = creationVariants.map(variant => ({ label: variant.label, optionValues: parseOptionValues(variant.optionValuesText),
+          sku: variant.sku || null, barcode: variant.barcode || null, price: variant.price,
+          compareAtPrice: variant.compareAtPrice || null, consumptionQuantity: variant.consumptionQuantity, isAvailable: variant.isAvailable }));
+        const result = await request("/api/admin/catalogue/products", { method: "POST", body: JSON.stringify({
+          name: create.name, category: create.category || undefined, inventoryModel: create.inventoryModel,
+          locationEvaluation: create.locationEvaluation, baseUnit: create.baseUnit, variants,
+        }) }) as { productId: number };
+        setSelectedId(result.productId); setCreate(defaultProduct); setCreationVariants([defaultCreationVariant]);
+      }, "Product and variants created successfully.")}>Create product</Button>
     </section>
     <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
       <aside className="rounded-xl border p-3 space-y-1"><h2 className="font-semibold mb-2">Products</h2>
@@ -152,14 +228,57 @@ export default function AdminCatalogueProducts() {
               await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ name: editName }) });
             })}>Save name</Button></div>
           <div className="grid gap-2 md:grid-cols-2">
-            <label>Inventory model<select className="block w-full rounded border bg-background p-2" value={selected.inventoryModel}
-              onChange={event => void perform(async () => { await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ inventoryModel: event.target.value }) }); })}>
+            <label>Inventory model<select className="block w-full rounded border bg-background p-2" value={inventoryModelDraft}
+              onChange={event => {
+                const next = event.target.value as Product["inventoryModel"];
+                setInventoryModelDraft(next); setPreview(null); setConfirmReconciliation(false);
+                if (next === "SEPARATE_VARIANTS" && selected.inventoryModel !== next) void perform(async () => {
+                  await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ inventoryModel: next }) });
+                });
+              }}>
               <option>SEPARATE_VARIANTS</option><option>SHARED</option></select></label>
             <label>Location evaluation<select className="block w-full rounded border bg-background p-2" value={selected.locationEvaluation}
               onChange={event => void perform(async () => { await request(`/api/admin/catalogue/products/${selected.id}`, { method: "PATCH", body: JSON.stringify({ locationEvaluation: event.target.value }) }); })}>
               <option>PER_LOCATION</option><option>COMBINED_LOCATIONS</option></select></label>
           </div>
           <p className="text-xs text-muted-foreground">Changing an active inventory model with balances, reservations, orders or movements requires controlled reconciliation.</p>
+          {selected.inventoryModel === "SEPARATE_VARIANTS" && inventoryModelDraft === "SHARED" && <div className="rounded border p-3 space-y-3" aria-label="Inventory reconciliation">
+            <h3 className="font-semibold">Reconcile inventory</h3>
+            <p className="text-sm text-muted-foreground">Selecting Shared does not change stock. Review a server-generated preview and confirm the audited reconciliation before variants are linked.</p>
+            <div className="grid gap-2 md:grid-cols-3">
+              <label>Shared inventory item<select className="block w-full rounded border bg-background p-2" value={createSharedItem ? "create" : reconcileTarget} onChange={event => {
+                setCreateSharedItem(event.target.value === "create"); if (event.target.value !== "create") setReconcileTarget(event.target.value); setPreview(null);
+              }}>
+                {Array.from(new Set(selected.options.filter(o => o.active).map(o => o.inventoryItemId))).map(itemId => <option key={itemId} value={itemId}>Use inventory item #{itemId}</option>)}
+                <option value="create">Create a new shared item</option>
+              </select></label>
+              {createSharedItem && <><label>New shared item name<Input value={sharedItemName} onChange={event => { setSharedItemName(event.target.value); setPreview(null); }} /></label>
+                <label>Shared base unit<Input value={sharedBaseUnit} onChange={event => { setSharedBaseUnit(event.target.value); setPreview(null); }} /></label></>}
+            </div>
+            <Button disabled={busy || (!createSharedItem && !reconcileTarget) || (createSharedItem && (!sharedItemName.trim() || !sharedBaseUnit.trim()))} onClick={() => void loadReconciliationPreview()}>Reconcile inventory · preview</Button>
+            {preview && <div className="space-y-3 rounded bg-muted/30 p-3 text-sm">
+              <h4 className="font-medium">Preview · proposed base unit: {preview.targetUnit}</h4>
+              <p>Product #{preview.product.id} · location evaluation remains <strong>{preview.product.locationEvaluation}</strong>.</p>
+              <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr><th>Variant / option ID</th><th>Inventory item ID</th><th>Catalog item ID</th><th>Base unit → shared</th><th>Consumption</th><th>Retail price</th></tr></thead><tbody>
+                {preview.variants.map(v => <tr key={v.optionId} className="border-t"><td>{v.label} · #{v.optionId}</td><td>#{v.inventoryItemId}</td><td>#{v.catalogItemId}</td><td>{v.baseUnit} → {preview.targetUnit}</td><td>{v.consumptionQuantity} → {v.proposedConsumption} {preview.targetUnit}</td><td>{v.price}</td></tr>)}
+              </tbody></table></div>
+              {preview.locations.map(location => <div key={location.locationId} className="rounded border p-2">
+                <strong>{location.locationName} · proposed shared balance {location.proposedSharedBalance} {preview.targetUnit}</strong>
+                <ul>{location.sourceBalances.map(b => { const v = preview.variants.find(row => row.inventoryCatalogItemId === b.catalogItemId); return <li key={b.catalogItemId}>Inventory item #{v?.inventoryItemId} / catalog item #{b.catalogItemId}: on hand {b.quantity}; ledger {b.ledgerQuantity}; movements {b.movementCount}</li>; })}</ul>
+              </div>)}
+              <div><strong>Valuation</strong><ul>{preview.costs.map(cost => <li key={cost.inventoryItemId}>Inventory item #{cost.inventoryItemId}: {cost.onHand} {cost.baseUnit}; {cost.reliable ? `recorded ${cost.averageUnitCost} per ${cost.baseUnit} (${cost.convertedUnitCost} per ${preview.targetUnit}), inventory value ${cost.inventoryValue}` : `cost ${cost.costStatus}; documented cost required`}</li>)}</ul>
+                {preview.costRequired && <p>A positive documented unit cost in the shared base unit is required. Retail prices are not inventory cost.</p>}</div>
+              {preview.legacyHistory.length > 0 && <div><strong>Legacy inventory history</strong><ul>{preview.legacyHistory.map((row,index) => <li key={`${row.catalogItemId}:${row.locationId}:${index}`}>Catalog item #{row.catalogItemId}, location #{row.locationId ?? "unknown"}: {row.transactionCount} historical transactions; net recorded change {row.netQuantityChange}.</li>)}</ul></div>}
+              <div><strong>Reservations and committed stock</strong>{preview.reservations.length ? <ul>{preview.reservations.map((r,index) => <li key={`${r.catalogItemId}:${r.locationId}:${index}`}>{r.status}: {r.quantity} at {r.locationName}, order #{r.orderId}</li>)}</ul> : <p>No active reservations.</p>}
+                {preview.committed.length > 0 && <ul>{preview.committed.map((row,index) => <li key={`${row.optionId}:${row.orderId}:${index}`}>{row.status} order #{row.orderId}, {row.label}: {row.committedConsumption} committed consumption</li>)}</ul>}
+                <p>Historical order lines retained: {preview.orderHistory.reduce((sum,row) => sum + row.orderLineCount, 0)}.</p></div>
+              {preview.issues.length > 0 && <div role="alert" className="rounded border border-red-500 p-2"><strong>Blocking issues</strong><ul>{preview.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>}
+              <label>Reconciliation reason<Input value={reconcileReason} onChange={event => setReconcileReason(event.target.value)} maxLength={500} /></label>
+              {preview.costRequired && <div className="grid gap-2 md:grid-cols-2"><label>Verified positive unit cost · {preview.targetUnit}<Input inputMode="decimal" value={manualUnitCost} onChange={event => setManualUnitCost(event.target.value)} /></label><label>Cost source / documentation note<Input value={costBasisNote} onChange={event => setCostBasisNote(event.target.value)} maxLength={500} /></label></div>}
+              <label className="flex items-start gap-2"><input type="checkbox" checked={confirmReconciliation} onChange={event => setConfirmReconciliation(event.target.checked)} />I reviewed the inventory balances, conversions, reservations, valuation, and discrepancies, and authorize this reconciliation.</label>
+              <Button disabled={busy || preview.issues.length > 0 || !confirmReconciliation || reconcileReason.trim().length < 10 || (preview.costRequired && (!manualUnitCost || costBasisNote.trim().length < 8))} onClick={() => void applyInventoryReconciliation()}>Confirm and reconcile inventory</Button>
+            </div>}
+          </div>}
         </section>
         <section className={`rounded-xl border p-4 space-y-3 ${selected.options.some(option => option.complianceHold) ? "border-orange-500/60 bg-orange-500/5" : ""}`} aria-label="Catalogue item compliance hold">
           <div className="flex flex-wrap items-center justify-between gap-2">
