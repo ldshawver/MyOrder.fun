@@ -271,7 +271,7 @@ jobs:
             "$RELEASE_BASE_SHA" "$RELEASE_BASE_TREE" "$RELEASE_SHA" "$RELEASE_TREE" \
             > "$RUNNER_TEMP/MYORDER-RELEASE-IDENTITY.json"
           tar --append --file "$RELEASE_TAR" -C "$RUNNER_TEMP" MYORDER-RELEASE-IDENTITY.json
-          gzip -n "$RELEASE_TAR" > "$RELEASE_ARCHIVE"
+          gzip -n -c "$RELEASE_TAR" > "$RELEASE_ARCHIVE"
 
           RELEASE_ARCHIVE_SHA256="$(
             sha256sum "$RELEASE_ARCHIVE" | awk '{print $1}'
