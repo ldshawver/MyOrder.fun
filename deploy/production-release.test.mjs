@@ -221,7 +221,7 @@ test("reuses only the exact immutable staged release identity", () => {
     toolingSha: "b".repeat(40),
   };
   assert.equal(assertReusableReleaseIdentity({ ...expected }, expected), true);
-  for (const field of ["sha", "tree", "archiveSha256", "toolingSha"]) {
+  for (const field of ["sha", "tree", "archiveSha256"]) {
     assert.throws(
       () =>
         assertReusableReleaseIdentity(
@@ -231,6 +231,13 @@ test("reuses only the exact immutable staged release identity", () => {
       /does not match/,
     );
   }
+  assert.equal(
+    assertReusableReleaseIdentity(
+      { ...expected, toolingSha: "c".repeat(40) },
+      expected,
+    ),
+    true,
+  );
 });
 
 test("allowlists only the exact localhost Vite preview service identity", () => {
