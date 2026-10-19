@@ -85,6 +85,24 @@ test("rollback recognizes feature containers and permits rollback when app healt
   assert.equal(validateStagingRollbackAppState({ ...base, apiImage: featureApiId, platformImage: featurePlatformId,
     apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha,
     apiHealth: "unhealthy", platformHealth: "unhealthy", allowUnhealthy: true }), true);
+  for (const health of ["starting", "unhealthy"]) {
+    assert.equal(validateStagingRollbackAppState({
+      ...base, apiImage: featureApiId, platformImage: featurePlatformId,
+      apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha,
+      apiHealth: health, platformHealth: health, allowUnhealthy: true,
+    }), true);
+  }
+  assert.equal(validateStagingRollbackAppState({
+    ...base, apiImage: STAGING_FEATURE.rollback.api, platformImage: featurePlatformId,
+    apiRevision: STAGING_FEATURE.rollbackRevision, platformRevision: STAGING_FEATURE.sha,
+    apiHealth: "starting", platformHealth: "unhealthy", allowUnhealthy: true,
+  }), true);
+  assert.throws(() => validateStagingRollbackAppState({
+    ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha, apiRunning: false, allowUnhealthy: true,
+  }), /not running/);
+  assert.throws(() => validateStagingRollbackAppState({
+    ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha, apiHealth: "unknown", allowUnhealthy: true,
+  }), /not healthy/);
   assert.throws(() => validateStagingRollbackAppState({ ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha,
     apiHealth: "unhealthy" }), /not healthy/);
   assert.throws(() => validateStagingRollbackAppState({ ...base, apiImage: `sha256:${"c".repeat(64)}`, apiRevision: STAGING_FEATURE.sha }), /not an approved/);
@@ -223,6 +241,8 @@ test("rollback uses deployed feature identities and allows unhealthy API/Platfor
   assert.match(source, /verifiedImages\(featureRefs\(\), STAGING_FEATURE\.sha\)/);
   assert.match(source, /verifyLiveRollback\(prefix, currentFeatureImages, action === "rollback"\)/);
   assert.match(source, /allowUnhealthyApp && \["api", "platform"\]/);
+  assert.match(source, /\["starting", "unhealthy"\]\.includes\(container\.State\?\.Health\?\.Status\)/);
+  assert.match(source, /apiRunning: api\.State\?\.Running === true/);
   assert.match(rollback, /checkRunningFeature\(prefix, normalizedImages\)/);
 });
 
