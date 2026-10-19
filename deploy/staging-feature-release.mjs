@@ -132,7 +132,7 @@ function verifyLiveRollback(prefix, permittedCurrentImages = null, allowUnhealth
   for (const [service, container] of [["api", api], ["platform", platform], ["db", database], ["nginx", nginx]]) {
     const networks = Object.keys(container.NetworkSettings?.Networks ?? {});
     if (networks.length !== 1 || networks[0] !== "myorder-staging_internal") throw new Error("Staging service is attached to a non-staging network");
-    if (container.State?.Health?.Status !== "healthy" && !(allowUnhealthyApp && ["api", "platform"].includes(service) && container.State?.Health?.Status === "unhealthy")) throw new Error(`A running staging ${service} service is not healthy`);
+    if (container.State?.Health?.Status !== "healthy" && !(allowUnhealthyApp && ["api", "platform"].includes(service) && ["starting", "unhealthy"].includes(container.State?.Health?.Status))) throw new Error(`A running staging ${service} service is not healthy`);
   }
   const serviceImages = [[api, "api"], [platform, "platform"]];
   const serviceBaselines = new Map(serviceImages.map(([container, service]) => [service, container.Image === STAGING_FEATURE.rollback[service]]));
@@ -141,6 +141,7 @@ function verifyLiveRollback(prefix, permittedCurrentImages = null, allowUnhealth
     apiRevision: api.Config?.Labels?.["org.opencontainers.image.revision"],
     platformRevision: platform.Config?.Labels?.["org.opencontainers.image.revision"],
     apiHealth: api.State?.Health?.Status, platformHealth: platform.State?.Health?.Status,
+    apiRunning: api.State?.Running === true, platformRunning: platform.State?.Running === true,
     featureApiId: permittedCurrentImages?.api.id, featurePlatformId: permittedCurrentImages?.platform.id,
     allowUnhealthy: allowUnhealthyApp,
   });
