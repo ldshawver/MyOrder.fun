@@ -81,8 +81,6 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Test guarded production release orchestration
-        run: node --test deploy/safe-compose.test.mjs deploy/production-release.test.mjs
 
   release-tooling:
     name: Release controller tests
