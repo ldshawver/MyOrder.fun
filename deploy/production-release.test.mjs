@@ -388,6 +388,14 @@ for (const failedGate of [
   });
 }
 
+test("pre-ingress API verification probes the SHA-bearing health endpoint", () => {
+  const source = readFileSync(
+    new URL("./production-release.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /fetch\('http:\/\/127\.0\.0\.1:8080\/api\/healthz'\)/);
+});
+
 test("missing production authorization is rejected by the executable entrypoint", () => {
   const source = readFileSync(
     new URL("./production-release.mjs", import.meta.url),
