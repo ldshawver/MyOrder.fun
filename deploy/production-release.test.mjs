@@ -522,7 +522,7 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
-  assert.match(workflow, /RELEASE_BASE_TREE: 86c004b66acf42c5394fbfddde807e1882edafba/);
+  assert.match(workflow, /RELEASE_BASE_TREE: 76bb2bc969450206f0be4754a6ef95434cd27b4a/);
   assert.match(workflow, /git rev-parse "\$RELEASE_BASE_SHA\^\{tree\}"/);
   assert.match(workflow, /git merge-base --is-ancestor "\$RELEASE_BASE_SHA" "\$RELEASE_SHA"/);
   assert.match(workflow, /MYORDER-RELEASE-IDENTITY\.json/);
