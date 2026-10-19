@@ -12,9 +12,6 @@ export function assertWooCommerceExternalIntegrationPolicy(): void {
   if (policy !== "true" && policy !== "false") {
     throw new Error(`${WOO_EXTERNAL_INTEGRATION_ENV} must be explicitly set to true or false`);
   }
-  if (process.env.NODE_ENV === "production" && policy !== "true") {
-    throw new Error(`${WOO_EXTERNAL_INTEGRATION_ENV} must be true in production`);
-  }
 }
 
 export function wooCommerceDisabledResponse(): { error: string; code: string } {
