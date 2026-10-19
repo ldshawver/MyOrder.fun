@@ -284,7 +284,7 @@ jobs:
              docker pull '$REPLACEMENT_API_REFERENCE'; \
              test \"\$(docker image inspect --format '{{.Id}}' '$REPLACEMENT_API_REFERENCE')\" = 'sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154'; \
              docker pull '$REPLACEMENT_PLATFORM_REFERENCE'; \
-             test \"\$(docker image inspect --format '{{.Id}}' '$REPLACEMENT_PLATFORM_REFERENCE')\" = 'sha256:760803933f9fd6a705a5d263c6298a94e30fb2f0b861ae962d56d732f27e237e'; \
+             test \"\$(docker image inspect --format '{{.Id}}' '$REPLACEMENT_PLATFORM_REFERENCE')\" = 'sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf'; \
              test \"\$(docker image inspect --format '{{.Os}}/{{.Architecture}}' '$REPLACEMENT_PLATFORM_REFERENCE')\" = 'linux/amd64'; \
              docker image inspect --format '{{.Config.Labels}}' '$REPLACEMENT_PLATFORM_REFERENCE' | grep -Fq 'org.opencontainers.image.revision:3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb'; \
              docker image inspect --format '{{.Config.Labels}}' '$REPLACEMENT_PLATFORM_REFERENCE' | grep -Fq 'com.myorder.deploy-sha:3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb'; \
