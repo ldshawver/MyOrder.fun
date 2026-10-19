@@ -78,7 +78,7 @@ test("rollback recognizes feature containers and permits rollback when app healt
   const featureApiId = `sha256:${"a".repeat(64)}`, featurePlatformId = `sha256:${"b".repeat(64)}`;
   const base = { apiImage: STAGING_FEATURE.rollback.api, platformImage: STAGING_FEATURE.rollback.platform,
     apiRevision: STAGING_FEATURE.rollbackRevision, platformRevision: STAGING_FEATURE.rollbackRevision,
-    apiHealth: "healthy", platformHealth: "healthy", featureApiId, featurePlatformId };
+    apiHealth: "healthy", platformHealth: "healthy", apiRunning: true, platformRunning: true, featureApiId, featurePlatformId };
   assert.equal(validateStagingRollbackAppState(base), true);
   assert.equal(validateStagingRollbackAppState({ ...base, apiImage: featureApiId, platformImage: featurePlatformId,
     apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha }), true);
