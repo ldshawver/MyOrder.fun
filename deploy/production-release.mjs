@@ -302,7 +302,9 @@ export async function executeProductionSequence(actions) {
   for (const name of PRODUCTION_STEPS) {
     if (typeof actions[name] !== "function")
       throw new Error(`Missing production deployment action: ${name}`);
+    console.log(`production step start=${name}`);
     await actions[name]();
+    console.log(`production step complete=${name}`);
   }
 }
 
