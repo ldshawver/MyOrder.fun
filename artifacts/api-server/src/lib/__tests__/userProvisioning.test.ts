@@ -64,7 +64,7 @@ describe("Clerk provisioning reconciliation", () => {
   it("verified Clerk user automatically creates internal user", async () => {
     const res = await provisionVerifiedClerkUser({ clerkUser: clerk(), source: "test" });
     expect(res.status).toBe("created");
-    expect(state.users[0]).toMatchObject({ clerkId: "user_1", normalizedEmail: "new@example.com", role: "user", status: "approved", tenantId: 1 });
+    expect(state.users[0]).toMatchObject({ clerkId: "user_1", normalizedEmail: "new@example.com", role: "user", status: "pending", tenantId: 1 });
   });
   it("duplicate webhook delivery is idempotent by Clerk id", async () => {
     await provisionVerifiedClerkUser({ clerkUser: clerk(), source: "test" });
@@ -81,10 +81,10 @@ describe("Clerk provisioning reconciliation", () => {
     expect(res).toMatchObject({ status: "skipped", error: "email_not_verified" });
     expect(state.users).toHaveLength(0);
   });
-  it("promotes a pending customer and repairs tenant access after verification", async () => {
+  it("keeps a pending customer denied while repairing identity metadata", async () => {
     state.users.push({ id: 3, clerkId: "user_1", email: "new@example.com", normalizedEmail: "new@example.com", tenantId: null, role: "user", status: "pending", isActive: false });
     const res = await provisionVerifiedClerkUser({ clerkUser: clerk(), source: "webhook:user.updated" });
-    expect(res.user).toMatchObject({ tenantId: 1, role: "user", status: "approved", isActive: true, identityStatus: "verified", provisioningStatus: "active" });
+    expect(res.user).toMatchObject({ tenantId: 1, role: "user", status: "pending", isActive: false, identityStatus: "verified", provisioningStatus: "active" });
   });
   it("identity exists but local user missing self-heals", async () => {
     const res = await provisionVerifiedClerkUser({ clerkUser: clerk("user_login"), source: "login_reconciliation" });

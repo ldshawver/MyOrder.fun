@@ -94,7 +94,12 @@ vi.mock("@workspace/db", () => {
   const inventoryBalancesTable = { id: "id_col", tenantId: "tenantId_col", productId: "productId_col", locationId: "locationId_col", quantityOnHand: "quantityOnHand_col", inventoryKind: "inventoryKind_col", quarantineStatus: "quarantineStatus_col", quarantineReason: "quarantineReason_col", parLevel: "parLevel_col" };
 
   const db = {
-    execute: vi.fn(() => Promise.resolve()),
+    execute: vi.fn((query: { strings?: TemplateStringsArray }) => {
+      const queryText = query.strings?.join("") ?? "";
+      return Promise.resolve(queryText.includes("required_columns")
+        ? [{ presentTableCount: 1, presentFeatureMarkerCount: 0, presentColumnCount: 10, missingColumnCount: 1, presentIndexCount: 0, presentFunctionCount: 0, presentTriggerCount: 0 }]
+        : []);
+    }),
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
@@ -130,6 +135,13 @@ vi.mock("@workspace/db", () => {
   };
 });
 
+const { sqlTag } = vi.hoisted(() => ({
+  sqlTag: Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
+    { join: vi.fn((parts: unknown[], separator?: unknown) => ({ parts, separator })) },
+  ),
+}));
+
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
@@ -138,7 +150,7 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col) => col),
   gte: vi.fn((col, val) => ({ col, val })),
   isNull: vi.fn((col) => ({ col, isNull: true })),
-  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values })),
+  sql: sqlTag,
 }));
 
 // Stub heavy route dependencies so they don't need real config
@@ -192,7 +204,8 @@ function makePendingUser() {
 }
 
 function makeApprovedUser() {
-  return { ...makePendingUser(), id: 11, email: "approved@example.com", status: "approved" };
+  process.env.MYORDER_OWNER_CLERK_ID = "test-owner";
+  return { ...makePendingUser(), id: 11, email: "approved@example.com", status: "approved", approvedByClerkId: "test-owner", approvedAt: new Date() };
 }
 
 /**

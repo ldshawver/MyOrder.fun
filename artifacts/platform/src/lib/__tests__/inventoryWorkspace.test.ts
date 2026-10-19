@@ -1,44 +1,41 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { catalogueItemsAtLocation, loadInventoryWorkspace } from "../inventoryWorkspace";
 
-const source = readFileSync(new URL("../../pages/admin/inventory.tsx", import.meta.url), "utf8");
+const empty = { items: [] };
 
-describe("consolidated inventory workspace", () => {
-  it("opens on the single canonical inventory workspace", () => {
-    expect(source).toContain('useState<"combined" | "locations">("combined")');
-    expect(source).toContain('{ key: "combined" as const, label: "Inventory"');
-    expect(source).not.toContain('{ key: "stockgrid" as const, label: "All Inventory"');
+describe("inventory workspace loading", () => {
+  it("loads every inventory panel and accepts authoritative empty success responses", async () => {
+    const request = vi.fn(async () => empty);
+    const data = await loadInventoryWorkspace(request);
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(data).toEqual({ catalogue: empty, sections: empty, items: empty, balances: empty });
   });
 
-  it("provides searchable, server-authoritative catalogue and non-catalogue inventory", () => {
-    expect(source).toContain('Search inventory');
-    expect(source).toContain('Non-Catalogue Inventory');
-    expect(source).toContain('server projections');
-    expect(source).not.toContain('const saveBalance = async (balance: InventoryBalance)');
-    expect(source).not.toContain('`/api/admin/inventory-balances/${balance.id}`');
+  it.each([401, 403, 500])("does not convert HTTP %i into an empty inventory", async status => {
+    const request = vi.fn(async (path: string) => {
+      if (path === "/api/admin/non-catalog/items") throw new Error(`Inventory request failed (${status})`);
+      return empty;
+    });
+    await expect(loadInventoryWorkspace(request)).rejects.toThrow(`Inventory request failed (${status})`);
   });
 
-  it("shows one catalogue product row with an expandable all-location quantity view", () => {
-    expect(source).toContain("{items.map(item => <CombinedItemCard key={item.id}");
-    expect(source).toContain("const [showLocations, setShowLocations] = useState(false)");
-    expect(source).toContain("aria-expanded={showLocations}");
-    expect(source).toContain("Quantities by location");
-    expect(source).toContain("const visibleLocations = locationRows");
+  it("surfaces network failures and allows the caller to retry the full snapshot", async () => {
+    const request = vi.fn()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue(empty);
+    await expect(loadInventoryWorkspace(request)).rejects.toThrow("offline");
+    const retried = await loadInventoryWorkspace(request);
+    expect(retried.catalogue).toEqual(empty);
+    expect(request).toHaveBeenCalledTimes(8);
   });
 
-  it("keeps Inventory Health secondary and shows the canonical preferred reorder quantity", () => {
-    expect(source).toContain("Inventory Health");
-    expect(source).toContain("showInventoryHealth");
-    expect(source).toContain("Preferred reorder");
-    expect(source).not.toContain('{ key: "health"');
-  });
-
-  it("keeps movements behind the canonical detail workflow and refreshes balances after success", () => {
-    expect(source).toContain('openAction={detail.action}');
-    expect(source).toContain('<Button size="sm" onClick={actions.receive}>Receive</Button>');
-    expect(source).toContain('<Button size="sm" variant="outline" onClick={actions.transfer}>Transfer</Button>');
-    expect(source).toContain('onClick={actions.loss}>Loss');
-    expect(source).toContain('movementType: "waste"');
-    expect(source).toContain('onChanged?.();');
+  it("keeps location-filtered catalogue rows within the selected location", () => {
+    const products = [
+      { id: 1, locations: [{ locationId: 10 }] },
+      { id: 2, locations: [{ locationId: 20 }] },
+      { id: 3, locations: [] },
+    ];
+    expect(catalogueItemsAtLocation(products, 10).map(row => row.id)).toEqual([1]);
+    expect(catalogueItemsAtLocation(products, null)).toEqual(products);
   });
 });

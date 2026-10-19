@@ -3,7 +3,7 @@
  *
  * Verifies POST /api/admin/users/waitlist/:id/invite:
  *  - calls clerkClient.waitlistEntries.invite with the right entry id
- *  - inserts a `users` row with status='approved', the picked role, the
+ *  - inserts a `users` row with status='pending', the picked role, the
  *    email pulled from the Clerk waitlist entry, and a sentinel clerkId
  *    of the form `pending_invite:<entryId>`
  *  - writes an INVITE_WAITLIST_USER audit log
@@ -16,6 +16,7 @@ import express from "express";
 import supertest from "supertest";
 
 let mockUserId: string | null = "admin-clerk-id";
+let mockSessionClaims: Record<string, unknown> = { fva: [1, -1] };
 
 vi.mock("@clerk/express", () => {
   const updateUserMetadata = vi.fn(async () => ({}));
@@ -29,7 +30,7 @@ vi.mock("@clerk/express", () => {
   const reject = vi.fn(async (id: string) => ({ id, status: "rejected" }));
   return {
     clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-    getAuth: vi.fn(() => (mockUserId ? { userId: mockUserId, sessionClaims: undefined } : {})),
+    getAuth: vi.fn(() => (mockUserId ? { userId: mockUserId, sessionClaims: mockSessionClaims } : {})),
     clerkClient: {
       users: { updateUserMetadata, getUser },
       waitlistEntries: { invite, list, reject },
@@ -208,6 +209,8 @@ function seedAdmin() {
     lastName: "User",
     role: "admin",
     status: "approved",
+    approvedByClerkId: "admin-clerk-id",
+    approvedAt: new Date(),
     isActive: true,
     contactPhone: null,
     mfaEnabled: false,
@@ -222,10 +225,12 @@ beforeEach(() => {
   dbState.audits = [];
   dbState.notifications = [];
   mockUserId = "admin-clerk-id";
+  mockSessionClaims = { fva: [1, -1] };
+  process.env.MYORDER_OWNER_CLERK_ID = "admin-clerk-id";
 });
 
 describe("POST /api/admin/users/waitlist/:id/invite", () => {
-  it("invites the waitlist entry and pre-creates an approved users row with the picked role", async () => {
+  it("invites the waitlist entry and pre-creates a pending users row with the picked role", async () => {
     seedAdmin();
     const app = buildApp();
     const res = await supertest(app)
@@ -246,7 +251,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       (u) => u.clerkId === "pending_invite:wlent_abc",
     );
     expect(created).toBeTruthy();
-    expect(created?.status).toBe("approved");
+    expect(created?.status).toBe("pending");
     expect(created?.role).toBe("csr");
     expect(created?.email).toBe("newhire@example.com");
     expect(created?.firstName).toBe("Sam");
@@ -265,7 +270,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
       (u) => u.clerkId === "pending_invite:wlent_default",
     );
     expect(created?.role).toBe("user");
-    expect(created?.status).toBe("approved");
+    expect(created?.status).toBe("pending");
   });
 
   it("rejects an unknown role with 400", async () => {
@@ -278,7 +283,7 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     expect(clerkClient.waitlistEntries.invite).not.toHaveBeenCalled();
   });
 
-  it("promotes an existing real user instead of creating a sentinel when the email already has an account", async () => {
+  it("links an existing real user without approving the account", async () => {
     seedAdmin();
     // Pre-existing real user with a real Clerk id and the same email the
     // waitlist invite would resolve to.
@@ -313,15 +318,15 @@ describe("POST /api/admin/users/waitlist/:id/invite", () => {
     );
     expect(sentinel).toBeUndefined();
 
-    // Existing row promoted to approved + new role.
+    // Existing account remains pending until explicit approval.
     const promoted = dbState.users.find((u) => u.id === 42)!;
-    expect(promoted.status).toBe("approved");
+    expect(promoted.status).toBe("pending");
     expect(promoted.role).toBe("admin");
 
     // And we mirror status+role into Clerk via the real id.
     expect(clerkClient.users.updateUserMetadata).toHaveBeenCalledWith(
       "user_real_clerk_id",
-      { publicMetadata: expect.objectContaining({ status: "approved", role: "admin" }) },
+      { publicMetadata: expect.objectContaining({ status: "pending", role: "admin" }) },
     );
   });
 

@@ -14,6 +14,7 @@ import SessionWatermark from "@/components/session-watermark";
 import Layout from "@/components/layout";
 import { normalizeNotificationRole } from "@/hooks/usePushNotifications";
 import { canAccessStaffRoute, normalizeApplicationRole } from "@/lib/routingPolicy";
+import { getAccountApprovalScreenStatus } from "@/lib/accountApprovalError";
 
 import NotFound from "@/pages/not-found";
 import PendingPage from "@/pages/pending";
@@ -247,9 +248,11 @@ function useSessionLogger(_userEmail: string) {
 function AuthErrorScreen({
   onSignOut,
   onRetry,
+  message,
 }: {
   onSignOut: () => void;
   onRetry: () => void;
+  message?: string;
 }) {
   const { branding } = useBrand();
   return (
@@ -263,7 +266,7 @@ function AuthErrorScreen({
           Unable to load your account.
         </p>
         <p className="text-xs font-mono" style={{ color: "#444" }}>
-          The server could not verify your session.
+          {message ?? "The server could not verify your session."}
         </p>
       </div>
       <div className="flex gap-3">
@@ -371,11 +374,9 @@ function AuthenticatedApp() {
       const queryKey = event.query.queryKey as unknown[];
       if (queryKey[0] === "getCurrentUser") return;
 
-      const err = event.query.state.error as { status?: number; data?: { status?: string } } | null;
-      if (err?.status !== 403) return;
-
-      const apiStatus = err?.data?.status;
-      setMidSessionStatus(apiStatus === "rejected" ? "rejected" : "pending");
+      const err = event.query.state.error as { status?: number; data?: { code?: string } } | null;
+      const approvalStatus = getAccountApprovalScreenStatus(err);
+      if (approvalStatus) setMidSessionStatus(approvalStatus);
     });
   }, [qc]);
 
@@ -453,20 +454,19 @@ function AuthenticatedApp() {
   if (!clerkLoaded || !authTokenReady || isLoading || disclaimerLoading) return <LoadingScreen />;
 
   if (isError) {
-    const err = error as { status?: number; data?: { status?: string } } | null;
+    const err = error as { status?: number; data?: { code?: string; error?: string } } | null;
+    const approvalStatus = getAccountApprovalScreenStatus(err);
 
-    if (err?.status === 403) {
-      const apiStatus = err?.data?.status;
-
-      if (apiStatus === "rejected") {
-        return <PendingPage status="rejected" userEmail={clerkEmail} />;
-      }
-
+    if (approvalStatus === "rejected") {
+      return <PendingPage status="rejected" userEmail={clerkEmail} />;
+    }
+    if (approvalStatus === "pending") {
       return <PendingPage status="pending" userEmail={clerkEmail} onCheckStatus={handleCheckStatus} />;
     }
 
     return (
       <AuthErrorScreen
+        message={err?.status === 403 ? (err.data?.error ?? "Your account is not authorized to access this resource.") : undefined}
         onSignOut={() => signOut(() => window.location.replace(`${basePath}/sign-in`))}
         onRetry={() => refreshCurrentUser().catch(() => {})}
       />
@@ -496,7 +496,7 @@ function AuthenticatedApp() {
     </SensitiveScreen>
   );
 
-  if ((user.status === "pending" || user.status === "rejected") && !isAdmin) {
+  if ((user.status === "pending" || user.status === "rejected") && !user.isConfiguredOwner && !isAdmin) {
     return (
       <PendingPage
         status={user.status}

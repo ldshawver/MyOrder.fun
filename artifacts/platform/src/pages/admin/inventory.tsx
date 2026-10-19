@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { catalogueItemsAtLocation, loadInventoryWorkspace } from "@/lib/inventoryWorkspace";
 
 // ─── Stock Levels Types ───────────────────────────────────────────────────────
 
@@ -1010,7 +1011,10 @@ function StockLevelsTab({ getToken }: { getToken: () => Promise<string | null> }
 
   if (error) {
     return (
-      <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">{error}</div>
+      <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">
+        <p>{error}</p>
+        <Button size="sm" variant="outline" className="mt-3" onClick={() => void fetchInventory()}>Retry inventory load</Button>
+      </div>
     );
   }
 
@@ -1449,7 +1453,10 @@ function StockGridTab({ getToken }: { getToken: () => Promise<string | null> }) 
   );
 
   if (error) return (
-    <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">{error}</div>
+    <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-400 p-4 text-sm">
+      <p>{error}</p>
+      <Button size="sm" variant="outline" className="mt-3" onClick={() => void fetchBalances()}>Retry inventory load</Button>
+    </div>
   );
 
   const activeLocations = locations.filter(l => l.isActive);
@@ -1684,6 +1691,7 @@ function NonCatalogTab({ getToken }: { getToken: () => Promise<string | null> })
   const filteredItems = items.filter(item => { const quantity = locationId ? stockFor(item.id) : balances.filter(balance => balance.itemId === item.id).reduce((sum, balance) => sum + n(balance.quantityOnHand), 0); const matchText = `${item.name} ${item.sku ?? ""} ${item.barcode ?? ""} ${item.supplier ?? ""}`.toLowerCase().includes(search.toLowerCase()); const matchSection = sectionFilter === "all" || item.sectionId === Number(sectionFilter); const matchState = stockFilter === "all" || (stockFilter === "low" && quantity < effectivePar(item)) || (stockFilter === "out" && quantity <= 0); return matchText && matchSection && matchState && (showArchived || item.isActive); });
   const updateField = (key: keyof NonCatalogForm, value: string) => setForm(current => ({ ...current, [key]: value }));
   const input = (label: string, key: keyof NonCatalogForm, type = "text") => <label className="text-xs text-muted-foreground"><span className="mb-1 block">{label}</span><Input type={type} value={form[key]} onChange={event => updateField(key, event.target.value)} /></label>;
+  if (error) return <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400"><p>{error}</p><Button size="sm" variant="outline" className="mt-3" onClick={() => { setError(null); void load().catch(e => setError(e instanceof Error ? e.message : "Inventory could not be loaded")); }}>Retry inventory load</Button></div>;
   return <div className="space-y-4">
     <div className="rounded-xl border border-border/40 bg-card/50 p-4 space-y-3"><div className="flex flex-wrap items-end gap-3"><label className="min-w-52 flex-1 text-xs text-muted-foreground"><span className="mb-1 flex items-center gap-1"><Search size={12} /> Search</span><Input placeholder="Name, SKU, barcode, supplier" value={search} onChange={event => setSearch(event.target.value)} /></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Section</span><select className="h-9 rounded-md border bg-background px-2" value={sectionFilter} onChange={event => setSectionFilter(event.target.value)}><option value="all">All sections</option>{sections.filter(section => section.isActive).map(section => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Location</span><select className="h-9 rounded-md border bg-background px-2" value={locationId} onChange={event => setLocationId(event.target.value)}><option value="">All locations</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Stock state</span><select className="h-9 rounded-md border bg-background px-2" value={stockFilter} onChange={event => setStockFilter(event.target.value)}><option value="all">All stock</option><option value="low">Low stock</option><option value="out">Out of stock</option></select></label><label className="text-xs text-muted-foreground"><span className="mb-1 block">Inventory type</span><select className="h-9 rounded-md border bg-background px-2" value="non-catalog" aria-label="Inventory type"><option value="non-catalog">Non-Catalog</option></select></label><label className="flex items-center gap-2 pb-2 text-xs"><input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} /> Show archived</label></div><p className="text-xs text-muted-foreground">Low stock uses item PAR at the selected location (or total stock when no location is selected). MOQ informs purchasing only.</p></div>
     {error && <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>}
@@ -1732,8 +1740,14 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
     const token = await getToken();
     const response = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      throw new Error(body.error ?? `Could not load inventory (${response.status})`);
+      const message = response.status === 401
+        ? "Your sign-in expired. Sign in again, then retry inventory."
+        : response.status === 403
+          ? "You do not have access to this inventory. Contact the account owner if you believe this is an error."
+          : response.status >= 500
+            ? "The server could not load inventory. Your data has not been changed. Retry shortly."
+            : "Inventory could not be loaded. Retry or contact the account owner.";
+      throw new Error(message);
     }
     return response.json();
   }, [getToken]);
@@ -1742,12 +1756,7 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
     setLoading(true);
     setError(null);
     try {
-      const [catalogueResponse, sectionResponse, itemResponse, balanceResponse] = await Promise.all([
-        request("/api/admin/inventory"),
-        request("/api/admin/non-catalog/sections"),
-        request("/api/admin/non-catalog/items"),
-        request("/api/admin/non-catalog/balances"),
-      ]);
+      const { catalogue: catalogueResponse, sections: sectionResponse, items: itemResponse, balances: balanceResponse } = await loadInventoryWorkspace(request);
       setCatalogue(catalogueResponse.items ?? []);
       setLocations(catalogueResponse.locations ?? []);
       setSections(sectionResponse.sections ?? []);
@@ -1771,7 +1780,7 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
   const needle = search.trim().toLowerCase();
   const matches = (value: string) => !needle || value.toLowerCase().includes(needle);
   const catalogueByCategory = new Map<string, InvItem[]>();
-  for (const item of catalogue) {
+  for (const item of catalogueItemsAtLocation(catalogue, locationId ? selectedLocation : null)) {
     const location = locationId ? item.locations.find(row => row.locationId === selectedLocation) : null;
     const searchable = `${item.name} ${item.customerSafeName ?? ""} ${item.alavontName ?? ""} ${item.luciferCruzName ?? ""} ${item.sku ?? ""} ${item.category}`;
     if (!matches(searchable)) continue;
@@ -1835,6 +1844,7 @@ function CombinedInventoryTab({ getToken }: { getToken: () => Promise<string | n
   const toggle = (key: string) => setOpenGroups(current => ({ ...current, [key]: !isOpen(key) }));
 
   if (loading) return <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 size={16} className="animate-spin" /> Loading inventory…</div>;
+  if (error) return <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400"><p>{error}</p><Button size="sm" variant="outline" className="mt-3" onClick={() => void load()}><RefreshCw size={13} />Retry inventory load</Button></div>;
 
   return <div className="space-y-5">
     <div className="rounded-xl border border-border/40 bg-card/50 p-4">

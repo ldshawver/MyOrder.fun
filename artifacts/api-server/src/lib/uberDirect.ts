@@ -146,7 +146,7 @@ export function normalizeUberAddress(value: string | UberAddress): UberAddress {
   }
 
   const trimmed = value.trim().replace(/\u00a0/g, " ");
-  // eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
   if (!trimmed || trimmed.length > 300 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(trimmed)) throw new UberDirectConfigError("A valid delivery address is required for Uber Direct.");
 
   if (trimmed.startsWith("{")) {
@@ -181,7 +181,7 @@ function validateUberAddress(value: UberAddress): UberAddress {
   const zip = clean(value.zip_code);
   const country = clean(value.country).toUpperCase();
   const all = [...street, city, state, zip, country];
-  // eslint-disable-next-line no-control-regex
+// eslint-disable-next-line no-control-regex -- reject ASCII control bytes in user supplied addresses
   if (!street.length || street.length > 2 || !city || !state || !zip || !/^[A-Z]{2}$/.test(country) || all.some(entry => entry.length > 120 || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(entry))) {
     throw new UberDirectConfigError("A complete, valid delivery address is required for Uber Direct.");
   }
