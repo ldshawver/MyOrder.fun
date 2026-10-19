@@ -499,16 +499,26 @@ function verifyWriterSet(compose) {
     throw new Error(
       `Unexpected production project services; expected ${expected.join(",")}`,
     );
-  if (
-    idsByService.get("api")?.imageId !== PRODUCTION_BASELINE.apiImage ||
-    idsByService.get("api")?.revision !== PRODUCTION_BASELINE.apiRevision
-  )
-    throw new Error("Current production API does not match the recorded pre-release rollback image");
-  if (
-    idsByService.get("platform")?.imageId !== PRODUCTION_BASELINE.platformImage ||
-    idsByService.get("platform")?.revision !== PRODUCTION_BASELINE.platformRevision
-  )
-    throw new Error("Current production Platform does not match the recorded pre-release rollback image");
+  const api = idsByService.get("api");
+  const apiIsBaseline =
+    api?.imageId === PRODUCTION_BASELINE.apiImage &&
+    api?.revision === PRODUCTION_BASELINE.apiRevision;
+  const apiIsApproved =
+    api?.imageId === APPROVED_RELEASE.images.api &&
+    api?.revision === APPROVED_RELEASE.sha &&
+    api?.image === approvedImageReference("api");
+  if (!apiIsBaseline && !apiIsApproved)
+    throw new Error("Current production API is neither the recorded rollback image nor the exact approved release image");
+  const platform = idsByService.get("platform");
+  const platformIsBaseline =
+    platform?.imageId === PRODUCTION_BASELINE.platformImage &&
+    platform?.revision === PRODUCTION_BASELINE.platformRevision;
+  const platformIsApproved =
+    platform?.imageId === APPROVED_RELEASE.images.platform &&
+    platform?.revision === APPROVED_RELEASE.sha &&
+    platform?.image === approvedImageReference("platform");
+  if (!platformIsBaseline && !platformIsApproved)
+    throw new Error("Current production Platform is neither the recorded rollback image nor the exact approved release image");
   if (idsByService.get("migrate")?.running)
     throw new Error("A production migration container is already running");
   for (const id of run("docker", ["ps", "--all", "--quiet"])
@@ -1298,6 +1308,16 @@ async function main() {
     },
     "validate-lineage": async () => {
       migrationState = validatePendingLineage(compose);
+      const runtimeAlreadyAdvanced = ["api", "platform"].some((service) => {
+        const current = containerBaseline.get(service);
+        return (
+          current?.imageId === APPROVED_RELEASE.images[service] &&
+          current?.revision === APPROVED_RELEASE.sha &&
+          current?.image === approvedImageReference(service)
+        );
+      });
+      if (runtimeAlreadyAdvanced && migrationState !== "applied")
+        throw new Error("Approved runtime image cannot be resumed before the exact 51-row migration lineage is applied");
       if (migrationState === "applied") migrationStarted = true;
     },
     "verify-writer-inventory": async () => {
