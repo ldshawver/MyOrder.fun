@@ -393,7 +393,7 @@ test("pre-ingress API verification probes the SHA-bearing health endpoint", () =
     new URL("./production-release.mjs", import.meta.url),
     "utf8",
   );
-  assert.match(source, /fetch\('http:\/\/127\.0\.0\.0:8080\/api\/healthz'\)/);
+  assert.match(source, /fetch\('http:\/\/127\.0\.0\.1:8080\/api\/healthz'\)/);
 });
 
 test("missing production authorization is rejected by the executable entrypoint", () => {
