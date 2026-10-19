@@ -270,7 +270,12 @@ jobs:
           printf '{"baseSha":"%s","baseTree":"%s","sha":"%s","tree":"%s"}\n' \
             "$RELEASE_BASE_SHA" "$RELEASE_BASE_TREE" "$RELEASE_SHA" "$RELEASE_TREE" \
             > "$RUNNER_TEMP/MYORDER-RELEASE-IDENTITY.json"
-          tar --append --file "$RELEASE_TAR" -C "$RUNNER_TEMP" MYORDER-RELEASE-IDENTITY.json
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$RELEASE_SHA")"
+          touch -d "@$SOURCE_DATE_EPOCH" "$RUNNER_TEMP/MYORDER-RELEASE-IDENTITY.json"
+          chmod 0644 "$RUNNER_TEMP/MYORDER-RELEASE-IDENTITY.json"
+          tar --append --file "$RELEASE_TAR" \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP" MYORDER-RELEASE-IDENTITY.json
           gzip -n -c "$RELEASE_TAR" > "$RELEASE_ARCHIVE"
 
           RELEASE_ARCHIVE_SHA256="$(
