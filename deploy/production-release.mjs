@@ -438,7 +438,7 @@ function validateComposeRuntimeConfig(releaseRoot, envFile, overlayFile) {
     )
   )
     throw new Error("Persistent print asset mount is missing");
-  return { args, config };
+  return { args, config, releaseRoot };
 }
 
 function query(compose, sql, env = {}) {
