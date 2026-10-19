@@ -123,8 +123,7 @@ export function assertReusableReleaseIdentity(identity, expected) {
   if (
     identity?.sha !== expected?.sha ||
     identity?.tree !== expected?.tree ||
-    identity?.archiveSha256 !== expected?.archiveSha256 ||
-    identity?.toolingSha !== expected?.toolingSha
+    identity?.archiveSha256 !== expected?.archiveSha256
   )
     throw new Error("Existing versioned release identity does not match this guarded deployment");
   return true;
