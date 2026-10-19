@@ -20,19 +20,34 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const FROZEN_RELEASE = Object.freeze({
-  // Immutable forward-release base. The protected workflow supplies and
-  // attests the exact successor SHA/tree; this base must remain in ancestry.
-  sha: "8744d8e34ab8627555919aec337abde0c3291e0f",
-  tree: "86c004b66acf42c5394fbfddde807e1882edafba",
-});
-export const APPROVED_RELEASE = Object.freeze({
+  // The replacement candidate must descend from the previously approved
+  // application candidate; deployment-only successors cannot change it.
   sha: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
   tree: "76bb2bc969450206f0be4754a6ef95434cd27b4a",
+});
+export const APPROVED_RELEASE = Object.freeze({
+  sha: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+  tree: "c2851c74077f94e189867b574a3f1aef244f61cc",
   images: Object.freeze({
-    api: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
+    api: "sha256:d0c4853cb3c0c0f10a40cee30357b8436bed09570a8ddd1117f98bd091da2eea",
     platform: "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
     migrate: "sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
   }),
+  revisions: Object.freeze({
+    api: "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb",
+    platform: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+    migrate: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  }),
+  references: Object.freeze({
+    api: "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154",
+    platform: "myorder-platform@sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13",
+    migrate: "myorder-migrate@sha256:878d21dec057bfccbf294465e77627f20e04df6d82bba70f549473aa84454461",
+  }),
+});
+export const MIGRATED_RUNTIME_BASELINE = Object.freeze({
+  apiImage: "sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
+  apiRevision: "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833",
+  apiReference: "myorder-api@sha256:acafc8bdb7899d2c85b47cc234ac58ad99e854034571ba6634aa51983c6b229b",
 });
 export const PRODUCTION_BASELINE = Object.freeze({
   apiImage: "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d",
@@ -260,7 +275,7 @@ export function assertProductionConfig(config, expected) {
 }
 
 function approvedImageReference(service) {
-  return `myorder-${service}@${APPROVED_RELEASE.images[service]}`;
+  return APPROVED_RELEASE.references[service];
 }
 
 function releaseComposeEnvironment() {
@@ -287,8 +302,8 @@ function verifyApprovedReleaseImages() {
       image.Id !== APPROVED_RELEASE.images[service] ||
       image.Os !== "linux" ||
       image.Architecture !== "amd64" ||
-      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.sha ||
-      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.sha
+      image.Config?.Labels?.["org.opencontainers.image.revision"] !== APPROVED_RELEASE.revisions[service] ||
+      image.Config?.Labels?.["com.myorder.deploy-sha"] !== APPROVED_RELEASE.revisions[service]
     )
       throw new Error(`Approved ${service} image metadata does not match the frozen release`);
     if (!Array.isArray(image.RepoDigests) || !image.RepoDigests.includes(reference))
@@ -503,19 +518,23 @@ function verifyWriterSet(compose) {
   const apiIsBaseline =
     api?.imageId === PRODUCTION_BASELINE.apiImage &&
     api?.revision === PRODUCTION_BASELINE.apiRevision;
+  const apiIsMigratedBaseline =
+    api?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
+    api?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
+    api?.image === MIGRATED_RUNTIME_BASELINE.apiReference;
   const apiIsApproved =
     api?.imageId === APPROVED_RELEASE.images.api &&
-    api?.revision === APPROVED_RELEASE.sha &&
+    api?.revision === APPROVED_RELEASE.revisions.api &&
     api?.image === approvedImageReference("api");
-  if (!apiIsBaseline && !apiIsApproved)
-    throw new Error("Current production API is neither the recorded rollback image nor the exact approved release image");
+  if (!apiIsBaseline && !apiIsMigratedBaseline && !apiIsApproved)
+    throw new Error("Current production API is not an exact recognized rollback, migrated, or approved image");
   const platform = idsByService.get("platform");
   const platformIsBaseline =
     platform?.imageId === PRODUCTION_BASELINE.platformImage &&
     platform?.revision === PRODUCTION_BASELINE.platformRevision;
   const platformIsApproved =
     platform?.imageId === APPROVED_RELEASE.images.platform &&
-    platform?.revision === APPROVED_RELEASE.sha &&
+    platform?.revision === APPROVED_RELEASE.revisions.platform &&
     platform?.image === approvedImageReference("platform");
   if (!platformIsBaseline && !platformIsApproved)
     throw new Error("Current production Platform is neither the recorded rollback image nor the exact approved release image");
@@ -1311,9 +1330,13 @@ async function main() {
       const runtimeAlreadyAdvanced = ["api", "platform"].some((service) => {
         const current = containerBaseline.get(service);
         return (
-          current?.imageId === APPROVED_RELEASE.images[service] &&
-          current?.revision === APPROVED_RELEASE.sha &&
-          current?.image === approvedImageReference(service)
+          (current?.imageId === APPROVED_RELEASE.images[service] &&
+            current?.revision === APPROVED_RELEASE.revisions[service] &&
+            current?.image === approvedImageReference(service)) ||
+          (service === "api" &&
+            current?.imageId === MIGRATED_RUNTIME_BASELINE.apiImage &&
+            current?.revision === MIGRATED_RUNTIME_BASELINE.apiRevision &&
+            current?.image === MIGRATED_RUNTIME_BASELINE.apiReference)
         );
       });
       if (runtimeAlreadyAdvanced && migrationState !== "applied")
