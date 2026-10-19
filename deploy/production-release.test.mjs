@@ -30,7 +30,7 @@ const expectedConfig = {
   name: "deploy",
   services: {
     api: {
-      image: `myorder-api@${APPROVED_RELEASE.images.api}`,
+      image: APPROVED_RELEASE.references.api,
       environment: {
         NODE_ENV: "production",
         DATABASE_URL: "postgres://app@db:5432/alavont",
@@ -56,7 +56,7 @@ const expectedConfig = {
         },
       ],
     },
-    platform: { image: `myorder-platform@${APPROVED_RELEASE.images.platform}` },
+    platform: { image: APPROVED_RELEASE.references.platform },
     db: {
       environment: {
         POSTGRES_DB: "alavont",
@@ -65,7 +65,7 @@ const expectedConfig = {
       },
     },
     migrate: {
-      image: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+      image: APPROVED_RELEASE.references.migrate,
       environment: { DATABASE_URL: "postgres://app@db:5432/alavont" },
     },
     nginx: { ports: ["127.0.0.1:8081:80"] },
@@ -134,9 +134,9 @@ test("accepts only the approved frozen release identity and immutable release pa
 test("production Compose is pinned to the production database, release images, volume and loopback proxy", () => {
   assert.equal(
     assertProductionConfig(expectedConfig, {
-      apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
-      platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
-      migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+      apiImage: APPROVED_RELEASE.references.api,
+      platformImage: APPROVED_RELEASE.references.platform,
+      migrateImage: APPROVED_RELEASE.references.migrate,
     }),
     true,
   );
@@ -168,16 +168,16 @@ test("production Compose is pinned to the production database, release images, v
   assert.throws(
     () =>
       assertProductionConfig(wrongRelease, {
-        apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
+        apiImage: APPROVED_RELEASE.references.api,
       }),
     /frozen release/,
   );
   const wrongMigrator = structuredClone(expectedConfig);
   wrongMigrator.services.migrate.image = "myorder-migrate:other";
   assert.throws(() => assertProductionConfig(wrongMigrator, {
-    apiImage: `myorder-api@${APPROVED_RELEASE.images.api}`,
-    platformImage: `myorder-platform@${APPROVED_RELEASE.images.platform}`,
-    migrateImage: `myorder-migrate@${APPROVED_RELEASE.images.migrate}`,
+    apiImage: APPROVED_RELEASE.references.api,
+    platformImage: APPROVED_RELEASE.references.platform,
+    migrateImage: APPROVED_RELEASE.references.migrate,
   }), /Migration image/);
   const enabledPaypal = structuredClone(expectedConfig);
   enabledPaypal.services.api.environment.PAYMENT_MODE = "live";
@@ -365,6 +365,11 @@ test("production rollback baseline is the current pre-release image set", () => 
   assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6");
   assert.equal(PRODUCTION_BASELINE.platformRevision, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
+  assert.equal(APPROVED_RELEASE.images.api, "sha256:d0c4853cb3c0c0f10a40cee30357b8436bed09570a8ddd1117f98bd091da2eea");
+  assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.revisions.platform, FROZEN_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.revisions.migrate, FROZEN_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
   assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
     "0068_print_jobs_document_job_types",
@@ -511,8 +516,8 @@ test("production SSH uses an ephemeral Tailscale route and pinned SSH host ident
     /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/,
   );
   assert.match(workflow, /RELEASE_TREE: \$\{\{ inputs\.release_tree \}\}/);
-  assert.match(workflow, /test "\$RELEASE_SHA" = "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833"/);
-  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833' \}\}/);
+  assert.match(workflow, /test "\$RELEASE_SHA" = "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb"/);
+  assert.match(workflow, /ref: \$\{\{ inputs\.release_sha \|\| '3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb' \}\}/);
   assert.match(workflow, /name: Release controller tests/);
   assert.match(workflow, /needs: \[test, release-tooling\]/);
   assert.match(workflow, /branches:\n\s+- "release-tooling\/\*\*"/);
