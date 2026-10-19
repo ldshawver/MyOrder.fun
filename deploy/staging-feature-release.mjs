@@ -15,6 +15,7 @@ import {
   validateStaging0077Ledger,
   validateStagingMigrationValidatorOutput,
   validateStagingFeatureTarget,
+  validateStagingRollbackAppState,
 } from "./staging-feature-release-guards.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -114,7 +115,7 @@ function stagingService(prefix, service) {
   return data;
 }
 
-function verifyLiveRollback(prefix, permittedCurrentImages = null) {
+function verifyLiveRollback(prefix, permittedCurrentImages = null, allowUnhealthyApp = false) {
   const api = stagingService(prefix, "api");
   const platform = stagingService(prefix, "platform");
   const database = stagingService(prefix, "db");
@@ -128,17 +129,22 @@ function verifyLiveRollback(prefix, permittedCurrentImages = null) {
   const nginxBindings = Object.values(nginx.HostConfig?.PortBindings ?? {}).flat().map(binding => `${binding.HostIp}:${binding.HostPort}`);
   if (nginxBindings.length !== 1 || nginxBindings[0] !== "127.0.0.1:28081") throw new Error("Staging nginx does not bind only the expected staging proxy port");
   if (Object.values(database.HostConfig?.PortBindings ?? {}).flat().length !== 0) throw new Error("Staging database must not publish a host port");
-  for (const container of [api, platform, database, nginx]) {
+  for (const [service, container] of [["api", api], ["platform", platform], ["db", database], ["nginx", nginx]]) {
     const networks = Object.keys(container.NetworkSettings?.Networks ?? {});
     if (networks.length !== 1 || networks[0] !== "myorder-staging_internal") throw new Error("Staging service is attached to a non-staging network");
-    if (container.State?.Health?.Status !== "healthy") throw new Error("A running staging service is not healthy");
+    if (container.State?.Health?.Status !== "healthy" && !(allowUnhealthyApp && ["api", "platform"].includes(service) && ["starting", "unhealthy"].includes(container.State?.Health?.Status))) throw new Error(`A running staging ${service} service is not healthy`);
   }
   const serviceImages = [[api, "api"], [platform, "platform"]];
   const serviceBaselines = new Map(serviceImages.map(([container, service]) => [service, container.Image === STAGING_FEATURE.rollback[service]]));
-  const serviceFeatures = new Map(serviceImages.map(([container, service]) => [service, Boolean(permittedCurrentImages && container.Image === permittedCurrentImages[service].id)]));
-  const allBaseline = [...serviceBaselines.values()].every(Boolean);
-  const allAllowedForRollback = serviceImages.every(([, service]) => serviceBaselines.get(service) || serviceFeatures.get(service));
-  if (!allBaseline && !(permittedCurrentImages && allAllowedForRollback)) throw new Error("Live staging image baseline differs from the approved rollback or selected feature images");
+  validateStagingRollbackAppState({
+    apiImage: api.Image, platformImage: platform.Image,
+    apiRevision: api.Config?.Labels?.["org.opencontainers.image.revision"],
+    platformRevision: platform.Config?.Labels?.["org.opencontainers.image.revision"],
+    apiHealth: api.State?.Health?.Status, platformHealth: platform.State?.Health?.Status,
+    apiRunning: api.State?.Running === true, platformRunning: platform.State?.Running === true,
+    featureApiId: permittedCurrentImages?.api.id, featurePlatformId: permittedCurrentImages?.platform.id,
+    allowUnhealthy: allowUnhealthyApp,
+  });
   const rollbackRefs = {
     api: { id: STAGING_FEATURE.rollback.api, reference: `myorder-api@${STAGING_FEATURE.rollback.api}` },
     platform: { id: STAGING_FEATURE.rollback.platform, reference: `myorder-platform@${STAGING_FEATURE.rollback.platform}` },
@@ -217,9 +223,10 @@ function main() {
   const dbUser = config.services.db.environment.POSTGRES_USER;
   if (!dbUser) throw new Error("Staging database user is missing from protected Compose configuration");
   const normalizedImages = verifiedImages(refs, action === "rollback" ? "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833" : STAGING_FEATURE.sha);
+  const currentFeatureImages = action === "rollback" ? verifiedImages(featureRefs(), STAGING_FEATURE.sha) : null;
   const backup = action === "migrate" ? validateFeatureBackup() : undefined;
   validateFeatureMutation({ action, environment: "staging", services: action === "up" || action === "rollback" ? ["api", "platform"] : [], backup });
-  verifyLiveRollback(prefix, action === "rollback" ? normalizedImages : null);
+  verifyLiveRollback(prefix, currentFeatureImages, action === "rollback");
 
   if (action === "verify") {
     ledgerState(prefix, dbUser, false);

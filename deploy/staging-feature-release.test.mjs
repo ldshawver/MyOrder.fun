@@ -16,6 +16,7 @@ import {
   validateStagingFeatureTarget,
   validateStagingMigrationValidatorOutput,
   validateStagingRollbackBaseline,
+  validateStagingRollbackAppState,
 } from "./staging-feature-release-guards.mjs";
 
 const IMAGE = Object.freeze({
@@ -71,6 +72,40 @@ test("requires all three Compose image refs to equal the verified immutable cand
     changed.services[service].image = `myorder-${service}:mutable`;
     assert.throws(() => validateFeatureComposeImages(changed, IMAGE));
   }
+});
+
+test("rollback recognizes feature containers and permits rollback when app health is unhealthy", () => {
+  const featureApiId = `sha256:${"a".repeat(64)}`, featurePlatformId = `sha256:${"b".repeat(64)}`;
+  const base = { apiImage: STAGING_FEATURE.rollback.api, platformImage: STAGING_FEATURE.rollback.platform,
+    apiRevision: STAGING_FEATURE.rollbackRevision, platformRevision: STAGING_FEATURE.rollbackRevision,
+    apiHealth: "healthy", platformHealth: "healthy", apiRunning: true, platformRunning: true, featureApiId, featurePlatformId };
+  assert.equal(validateStagingRollbackAppState(base), true);
+  assert.equal(validateStagingRollbackAppState({ ...base, apiImage: featureApiId, platformImage: featurePlatformId,
+    apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha }), true);
+  assert.equal(validateStagingRollbackAppState({ ...base, apiImage: featureApiId, platformImage: featurePlatformId,
+    apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha,
+    apiHealth: "unhealthy", platformHealth: "unhealthy", allowUnhealthy: true }), true);
+  for (const health of ["starting", "unhealthy"]) {
+    assert.equal(validateStagingRollbackAppState({
+      ...base, apiImage: featureApiId, platformImage: featurePlatformId,
+      apiRevision: STAGING_FEATURE.sha, platformRevision: STAGING_FEATURE.sha,
+      apiHealth: health, platformHealth: health, allowUnhealthy: true,
+    }), true);
+  }
+  assert.equal(validateStagingRollbackAppState({
+    ...base, apiImage: STAGING_FEATURE.rollback.api, platformImage: featurePlatformId,
+    apiRevision: STAGING_FEATURE.rollbackRevision, platformRevision: STAGING_FEATURE.sha,
+    apiHealth: "starting", platformHealth: "unhealthy", allowUnhealthy: true,
+  }), true);
+  assert.throws(() => validateStagingRollbackAppState({
+    ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha, apiRunning: false, allowUnhealthy: true,
+  }), /not running/);
+  assert.throws(() => validateStagingRollbackAppState({
+    ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha, apiHealth: "unknown", allowUnhealthy: true,
+  }), /not healthy/);
+  assert.throws(() => validateStagingRollbackAppState({ ...base, apiImage: featureApiId, apiRevision: STAGING_FEATURE.sha,
+    apiHealth: "unhealthy" }), /not healthy/);
+  assert.throws(() => validateStagingRollbackAppState({ ...base, apiImage: `sha256:${"c".repeat(64)}`, apiRevision: STAGING_FEATURE.sha }), /not an approved/);
 });
 
 test("fails closed on staging rollback baseline, migration lineage and migration postcondition drift", () => {
@@ -198,6 +233,17 @@ test("CLI keeps production controller untouched and mutation commands cannot bui
   assert.doesNotMatch(source, /project-name", "deploy"|docker-compose\.yml/);
   const oldController = readFileSync(new URL("./safe-compose.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(oldController, /staging-feature-release/);
+});
+
+test("rollback uses deployed feature identities and allows unhealthy API/Platform", () => {
+  const source = readFileSync(new URL("./staging-feature-release.mjs", import.meta.url), "utf8");
+  const rollback = source.slice(source.indexOf('if (action === "rollback")'), source.indexOf('throw new Error("Unknown staging feature action")'));
+  assert.match(source, /verifiedImages\(featureRefs\(\), STAGING_FEATURE\.sha\)/);
+  assert.match(source, /verifyLiveRollback\(prefix, currentFeatureImages, action === "rollback"\)/);
+  assert.match(source, /allowUnhealthyApp && \["api", "platform"\]/);
+  assert.match(source, /\["starting", "unhealthy"\]\.includes\(container\.State\?\.Health\?\.Status\)/);
+  assert.match(source, /apiRunning: api\.State\?\.Running === true/);
+  assert.match(rollback, /checkRunningFeature\(prefix, normalizedImages\)/);
 });
 
 test("rollback is app-only, uses the approved old digests, and keeps 0077 forward-only", () => {

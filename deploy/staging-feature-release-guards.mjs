@@ -93,6 +93,21 @@ export function validateStagingRollbackBaseline({ project, apiId, platformId, da
   return true;
 }
 
+export function validateStagingRollbackAppState({ apiImage, platformImage, apiRevision, platformRevision, apiHealth, platformHealth, apiRunning, platformRunning, featureApiId, featurePlatformId, allowUnhealthy = false }) {
+  const items = [
+    { name: "api", image: apiImage, revision: apiRevision, health: apiHealth, running: apiRunning, baseline: STAGING_FEATURE.rollback.api, feature: featureApiId },
+    { name: "platform", image: platformImage, revision: platformRevision, health: platformHealth, running: platformRunning, baseline: STAGING_FEATURE.rollback.platform, feature: featurePlatformId },
+  ];
+  for (const item of items) {
+    const baseline = item.image === item.baseline && item.revision === STAGING_FEATURE.rollbackRevision;
+    const feature = typeof item.feature === "string" && item.image === item.feature && item.revision === STAGING_FEATURE.sha;
+    if (!baseline && !feature) throw new Error(`Live staging ${item.name} image/revision is not an approved rollback or feature artifact`);
+    if (item.running !== true) throw new Error(`Live staging ${item.name} container is not running`);
+    if (item.health !== "healthy" && !(allowUnhealthy && ["starting", "unhealthy"].includes(item.health))) throw new Error(`Live staging ${item.name} is not healthy`);
+  }
+  return true;
+}
+
 export function validateStaging0077Ledger({ count, has0075, has0076, has0077, hash0075, hash0076, hash0077, schemaApplied = false }) {
   const validPreviousHashes = hash0075 === STAGING_FEATURE.previousMigrationHashes["0075_catalogue_variant_attributes"] && hash0076 === STAGING_FEATURE.previousMigrationHashes["0076_tenant_woo_store_url_no_default"];
   if (schemaApplied) {
