@@ -540,7 +540,7 @@ test("production workflow uses versioned release archives and never deletes or s
   assert.ok(workflow.includes("name: Stage immutable replacement API and Platform images"));
   assert.ok(workflow.includes("REPLACEMENT_PLATFORM_REFERENCE: ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
   assert.ok(workflow.includes("docker pull '$REPLACEMENT_PLATFORM_REFERENCE'"));
-  assert.ok(workflow.includes("sha256:760803933f9fd6a705a5d263c6298a94e30fb2f0b861ae962d56d732f27e237e"));
+  assert.ok(workflow.includes("sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf"));
   assert.ok(workflow.includes("grep -Fx '$REPLACEMENT_PLATFORM_REFERENCE'"));
 });
 
