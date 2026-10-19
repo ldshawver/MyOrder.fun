@@ -648,3 +648,21 @@ test("application startup does not trigger Woo synchronization or Uber dispatch"
   );
   assert.doesNotMatch(runner, /fetch\([^\n]*(woocommerce|uber)/i);
 });
+
+
+test("post-migration resume accepts only exact approved runtime identities", () => {
+  const controller = readFileSync(
+    new URL("./production-release.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(controller, /apiIsBaseline/);
+  assert.match(controller, /apiIsApproved/);
+  assert.match(controller, /platformIsBaseline/);
+  assert.match(controller, /platformIsApproved/);
+  assert.match(controller, /current\?\.image === approvedImageReference\(service\)/);
+  assert.match(
+    controller,
+    /runtimeAlreadyAdvanced && migrationState !== "applied"/,
+  );
+  assert.match(controller, /exact 51-row migration lineage is applied/);
+});
