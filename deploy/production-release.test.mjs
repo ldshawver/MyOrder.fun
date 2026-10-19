@@ -425,16 +425,18 @@ test("missing production authorization is rejected by the executable entrypoint"
 });
 
 test("production rollback baseline is the current pre-release image set", () => {
-  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:49cb8da488e00ebb58cd027d5c703768af17c5ec2b053fe028c99362d75d768d");
-  assert.equal(PRODUCTION_BASELINE.apiRevision, "8a3e1ccd8e132425ad82163a14ca67c53ba745b2");
-  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:e9362c335f4f7a8de8db03673d63afb4c8c1e46d7cc5bed9fe45afc5221765e6");
-  assert.equal(PRODUCTION_BASELINE.platformRevision, "579cce225c0f9e7bee41a4c226d43e5ba5c86606");
+  assert.equal(PRODUCTION_BASELINE.apiImage, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
+  assert.equal(PRODUCTION_BASELINE.apiRevision, "3e5a5c833b93c0e5c345cb2d2f2f9537400d16cb");
+  assert.equal(PRODUCTION_BASELINE.platformImage, "sha256:fbd2185bca1e471462a41fac0c50595643c84a6e506076311655c792b2a2ca13");
+  assert.equal(PRODUCTION_BASELINE.platformRevision, "40fccbc3d9464ddfa5574f2cb57b71d0fe3ab833");
   assert.deepEqual(Object.keys(APPROVED_RELEASE.images).sort(), ["api", "migrate", "platform"]);
   assert.equal(APPROVED_RELEASE.images.api, "sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
+  assert.equal(APPROVED_RELEASE.images.platform, "sha256:760803933f9fd6a705a5d263c6298a94e30fb2f0b861ae962d56d732f27e237e");
   assert.equal(APPROVED_RELEASE.revisions.api, APPROVED_RELEASE.sha);
-  assert.equal(APPROVED_RELEASE.revisions.platform, FROZEN_RELEASE.sha);
+  assert.equal(APPROVED_RELEASE.revisions.platform, APPROVED_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.revisions.migrate, FROZEN_RELEASE.sha);
   assert.equal(APPROVED_RELEASE.references.api, "ghcr.io/ldshawver/myorder-api@sha256:8e8299bb7b92ada12827071578987463ba9dfb97ece47235b4856f097dc5e154");
+  assert.equal(APPROVED_RELEASE.references.platform, "ghcr.io/ldshawver/myorder-platform@sha256:ac052a7439d4cabacbbf1bdddef9f375f5220379d871970f5e2b050870c348cf");
   assert.equal(EXPECTED_PRODUCTION_MIGRATIONS.length, 9);
   assert.deepEqual(EXPECTED_PRODUCTION_MIGRATIONS, [
     "0068_print_jobs_document_job_types",
