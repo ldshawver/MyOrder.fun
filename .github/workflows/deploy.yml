@@ -22,7 +22,6 @@ on:
 concurrency:
   group: deploy-myorderfun
   cancel-in-progress: false
-
 jobs:
   test:
     name: Typecheck, Lint & Test
